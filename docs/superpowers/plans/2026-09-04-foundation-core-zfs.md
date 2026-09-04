@@ -1060,7 +1060,7 @@ errors: No known data errors
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test zfs::pool`
-Expected: PASS (13 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1490,7 +1490,7 @@ tank/data@2026-09-04\t2000
 - [ ] **Step 2: Run the tests**
 
 Run: `cargo test zfs::snapshot`
-Expected: PASS (9 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 3: Commit**
 
