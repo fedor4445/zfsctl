@@ -17,6 +17,7 @@ pub enum MutationCall {
     ReplaceDisk { pool: String, old_disk: String, new_disk: String },
     CreateDataset { name: String },
     DestroyDataset { name: String },
+    CreateSnapshot { dataset: String, name: String },
 }
 
 impl MutationCall {
@@ -37,6 +38,7 @@ impl MutationCall {
             }
             MutationCall::CreateDataset { name } => crate::zfs::dataset::create_dataset(runner, name),
             MutationCall::DestroyDataset { name } => crate::zfs::dataset::destroy_dataset(runner, name),
+            MutationCall::CreateSnapshot { dataset, name } => crate::zfs::snapshot::create_snapshot(runner, dataset, name),
         }
     }
 }
@@ -71,6 +73,9 @@ pub enum FormKind {
     ReplaceDisk { host: usize, pool: String, old_disk: String },
     /// Fields: `[name]`.
     CreateDataset { host: usize },
+    /// Fields: `[name]` — the snapshot's name; the dataset is fixed at
+    /// modal-open time from the selected Datasets row.
+    CreateSnapshot { host: usize, dataset: String },
 }
 
 /// A modal dialog awaiting user input before a mutation runs.
@@ -189,5 +194,14 @@ mod tests {
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
+    }
+
+    #[test]
+    fn create_snapshot_call_runs_create_snapshot() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::CreateSnapshot { dataset: "tank/data".to_string(), name: "manual-1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["snapshot".to_string(), "--".to_string(), "tank/data@manual-1".to_string()]));
     }
 }

@@ -263,6 +263,18 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('s') if self.current_section() == Section::Datasets => {
+                if let Some(i) = self.datasets_table.selected() {
+                    if let Some(ds) = self.datasets.get(i) {
+                        self.modal = Some(Modal::Form {
+                            title: format!("Snapshot dataset '{}'", ds.name),
+                            fields: vec![FormField { label: "Snapshot name".to_string(), value: String::new() }],
+                            focused: 0,
+                            kind: FormKind::CreateSnapshot { host: self.selected_host, dataset: ds.name.clone() },
+                        });
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Snapshots => {
                 move_table_selection(&mut self.snapshots_table, self.snapshots.len(), true);
             }
@@ -589,6 +601,17 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 host: *host,
                 section: Section::Datasets,
                 call: MutationCall::CreateDataset { name: name.to_string() },
+            })
+        }
+        FormKind::CreateSnapshot { host, dataset } => {
+            let name = fields[0].value.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(PendingAction {
+                host: *host,
+                section: Section::Snapshots,
+                call: MutationCall::CreateSnapshot { dataset: dataset.clone(), name: name.to_string() },
             })
         }
     }
@@ -1326,6 +1349,62 @@ mod tests {
             }
             other => panic!("expected ConfirmTyped modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_key_s_on_datasets_opens_create_snapshot_form_with_implied_dataset() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![crate::zfs::dataset::Dataset {
+            name: "tank/data".to_string(),
+            kind: crate::zfs::dataset::DatasetKind::Filesystem,
+            used: 0,
+            available: 0,
+            referenced: 0,
+            mountpoint: None,
+        }];
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right);
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Char('s'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(*kind, crate::ui::modal::FormKind::CreateSnapshot { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_create_snapshot_form_submits_with_implied_dataset() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![crate::zfs::dataset::Dataset {
+            name: "tank/data".to_string(),
+            kind: crate::zfs::dataset::DatasetKind::Filesystem,
+            used: 0,
+            available: 0,
+            referenced: 0,
+            mountpoint: None,
+        }];
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right);
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Char('s'));
+        for c in "manual-1".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(
+            result,
+            Some(crate::ui::modal::PendingAction {
+                host: 0,
+                section: Section::Snapshots,
+                call: crate::ui::modal::MutationCall::CreateSnapshot {
+                    dataset: "tank/data".to_string(),
+                    name: "manual-1".to_string(),
+                },
+            })
+        );
     }
 
     #[test]
