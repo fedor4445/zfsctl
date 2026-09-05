@@ -368,15 +368,17 @@ impl SshRunner {
     }
 
     /// Builds the argument list passed to the local `ssh` binary:
-    /// `ssh <host> "<remote command>"`, where the remote command is
-    /// `cmd` and `args` shell-quoted and joined into one string.
+    /// `ssh -- <host> "<remote command>"`, where the remote command is
+    /// `cmd` and `args` shell-quoted and joined into one string. The
+    /// leading `--` stops `ssh` from treating a `host` value that starts
+    /// with `-` as an option flag (argument injection / flag smuggling).
     fn build_args(&self, cmd: &str, args: &[&str]) -> Vec<String> {
         let mut remote = shell_quote(cmd);
         for arg in args {
             remote.push(' ');
             remote.push_str(&shell_quote(arg));
         }
-        vec![self.host.clone(), remote]
+        vec!["--".to_string(), self.host.clone(), remote]
     }
 }
 
@@ -417,14 +419,14 @@ mod tests {
     fn builds_simple_command_unquoted() {
         let runner = SshRunner::new("backup-host");
         let args = runner.build_args("zpool", &["list", "-H", "-p"]);
-        assert_eq!(args, vec!["backup-host".to_string(), "zpool list -H -p".to_string()]);
+        assert_eq!(args, vec!["--".to_string(), "backup-host".to_string(), "zpool list -H -p".to_string()]);
     }
 
     #[test]
     fn quotes_args_containing_spaces() {
         let runner = SshRunner::new("backup-host");
         let args = runner.build_args("echo", &["hello world"]);
-        assert_eq!(args, vec!["backup-host".to_string(), "echo 'hello world'".to_string()]);
+        assert_eq!(args, vec!["--".to_string(), "backup-host".to_string(), "echo 'hello world'".to_string()]);
     }
 
     #[test]
@@ -433,7 +435,7 @@ mod tests {
         let args = runner.build_args("echo", &["it's here"]);
         assert_eq!(
             args,
-            vec!["backup-host".to_string(), r"echo 'it'\''s here'".to_string()]
+            vec!["--".to_string(), "backup-host".to_string(), r"echo 'it'\''s here'".to_string()]
         );
     }
 
@@ -443,8 +445,15 @@ mod tests {
         let args = runner.build_args("zfs", &["snapshot", "tank/data@2026-09-04"]);
         assert_eq!(
             args,
-            vec!["backup-host".to_string(), "zfs snapshot tank/data@2026-09-04".to_string()]
+            vec!["--".to_string(), "backup-host".to_string(), "zfs snapshot tank/data@2026-09-04".to_string()]
         );
+    }
+
+    #[test]
+    fn guards_against_host_values_that_look_like_flags() {
+        let runner = SshRunner::new("-oProxyCommand=touch /tmp/pwned");
+        let args = runner.build_args("zpool", &["list"]);
+        assert_eq!(args[0], "--", "a leading '--' must precede the host so ssh cannot parse it as an option");
     }
 }
 ```
