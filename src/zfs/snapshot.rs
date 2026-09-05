@@ -11,7 +11,8 @@ pub struct Snapshot {
 pub const SNAPSHOT_LIST_ARGS: &[&str] = &["list", "-t", "snapshot", "-H", "-p", "-o", "name,used"];
 
 /// Parses `zfs list -t snapshot -H -p -o name,used` output. Each line's
-/// first field is `dataset@snapshot`, split on the last `@`.
+/// first field is `dataset@snapshot`, split on the first `@` (dataset
+/// names cannot themselves contain `@`, so this is unambiguous).
 pub fn parse_snapshot_list(output: &str) -> Result<Vec<Snapshot>> {
     output
         .lines()
@@ -29,9 +30,8 @@ pub fn parse_snapshot_list(output: &str) -> Result<Vec<Snapshot>> {
             Ok(Snapshot {
                 dataset: dataset.to_string(),
                 name: name.to_string(),
-                used: fields[1]
-                    .parse()
-                    .map_err(|_| AppError::Parse(format!("bad used in: {line:?}")))?,
+                used: super::parse_numeric_or_dash(fields[1])
+                    .ok_or_else(|| AppError::Parse(format!("bad used in: {line:?}")))?,
             })
         })
         .collect()
@@ -178,6 +178,15 @@ tank/data@2026-09-04\t2000
     fn rejects_line_missing_at_sign() {
         let result = parse_snapshot_list("tank-data-no-at-sign\t10000\n");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_snapshot_list_line_with_dash_used_field() {
+        let snapshots = parse_snapshot_list("tank/data@old\t-\n").unwrap();
+        assert_eq!(
+            snapshots,
+            vec![Snapshot { dataset: "tank/data".to_string(), name: "old".to_string(), used: 0 }]
+        );
     }
 
     #[test]

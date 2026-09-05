@@ -28,8 +28,9 @@ pub struct Dataset {
     pub mountpoint: Option<String>,
 }
 
-pub const DATASET_LIST_ARGS: &[&str] =
-    &["list", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type"];
+pub const DATASET_LIST_ARGS: &[&str] = &[
+    "list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type",
+];
 
 /// Parses `zfs list -H -p -o name,used,avail,refer,mountpoint,type`
 /// output (tab-separated, one dataset per line).
@@ -50,15 +51,12 @@ pub fn parse_dataset_list(output: &str) -> Result<Vec<Dataset>> {
             };
             Ok(Dataset {
                 name: fields[0].to_string(),
-                used: fields[1]
-                    .parse()
-                    .map_err(|_| AppError::Parse(format!("bad used in: {line:?}")))?,
-                available: fields[2]
-                    .parse()
-                    .map_err(|_| AppError::Parse(format!("bad avail in: {line:?}")))?,
-                referenced: fields[3]
-                    .parse()
-                    .map_err(|_| AppError::Parse(format!("bad refer in: {line:?}")))?,
+                used: super::parse_numeric_or_dash(fields[1])
+                    .ok_or_else(|| AppError::Parse(format!("bad used in: {line:?}")))?,
+                available: super::parse_numeric_or_dash(fields[2])
+                    .ok_or_else(|| AppError::Parse(format!("bad avail in: {line:?}")))?,
+                referenced: super::parse_numeric_or_dash(fields[3])
+                    .ok_or_else(|| AppError::Parse(format!("bad refer in: {line:?}")))?,
                 mountpoint,
                 kind: DatasetKind::parse(fields[5]),
             })
@@ -153,7 +151,26 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
         assert_eq!(datasets.len(), 2);
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0].0, "zfs");
-        assert_eq!(calls[0].1, vec!["list", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type"]);
+        assert_eq!(
+            calls[0].1,
+            vec!["list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type"]
+        );
+    }
+
+    #[test]
+    fn parses_dataset_list_line_with_dash_numeric_fields() {
+        let datasets = parse_dataset_list("tank/broken\t-\t-\t-\t-\tfilesystem\n").unwrap();
+        assert_eq!(
+            datasets,
+            vec![Dataset {
+                name: "tank/broken".to_string(),
+                kind: DatasetKind::Filesystem,
+                used: 0,
+                available: 0,
+                referenced: 0,
+                mountpoint: None,
+            }]
+        );
     }
 
     #[test]

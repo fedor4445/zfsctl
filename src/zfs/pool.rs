@@ -52,15 +52,12 @@ pub fn parse_pool_list(output: &str) -> Result<Vec<Pool>> {
             }
             Ok(Pool {
                 name: fields[0].to_string(),
-                size: fields[1]
-                    .parse()
-                    .map_err(|_| AppError::Parse(format!("bad size in: {line:?}")))?,
-                allocated: fields[2]
-                    .parse()
-                    .map_err(|_| AppError::Parse(format!("bad alloc in: {line:?}")))?,
-                free: fields[3]
-                    .parse()
-                    .map_err(|_| AppError::Parse(format!("bad free in: {line:?}")))?,
+                size: super::parse_numeric_or_dash(fields[1])
+                    .ok_or_else(|| AppError::Parse(format!("bad size in: {line:?}")))?,
+                allocated: super::parse_numeric_or_dash(fields[2])
+                    .ok_or_else(|| AppError::Parse(format!("bad alloc in: {line:?}")))?,
+                free: super::parse_numeric_or_dash(fields[3])
+                    .ok_or_else(|| AppError::Parse(format!("bad free in: {line:?}")))?,
                 health: PoolHealth::parse(fields[4]),
             })
         })
@@ -259,6 +256,21 @@ errors: No known data errors
     fn rejects_malformed_pool_list_line() {
         let result = parse_pool_list("tank\tonly-two-fields\n");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_pool_list_line_with_dash_numeric_fields() {
+        let pools = parse_pool_list("scratch\t-\t-\t-\tUNAVAIL\n").unwrap();
+        assert_eq!(
+            pools,
+            vec![Pool {
+                name: "scratch".to_string(),
+                size: 0,
+                allocated: 0,
+                free: 0,
+                health: PoolHealth::Unavail,
+            }]
+        );
     }
 
     #[test]
