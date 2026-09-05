@@ -239,6 +239,30 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), false);
             }
+            KeyCode::Char('n') if self.current_section() == Section::Datasets => {
+                self.modal = Some(Modal::Form {
+                    title: "Create Dataset".to_string(),
+                    fields: vec![FormField { label: "Name".to_string(), value: String::new() }],
+                    focused: 0,
+                    kind: FormKind::CreateDataset { host: self.selected_host },
+                });
+            }
+            KeyCode::Char('d') if self.current_section() == Section::Datasets => {
+                if let Some(i) = self.datasets_table.selected() {
+                    if let Some(ds) = self.datasets.get(i) {
+                        self.modal = Some(Modal::ConfirmTyped {
+                            prompt: format!("Type the dataset name to destroy '{}':", ds.name),
+                            expected: ds.name.clone(),
+                            input: String::new(),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::Datasets,
+                                call: MutationCall::DestroyDataset { name: ds.name.clone() },
+                            },
+                        });
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Snapshots => {
                 move_table_selection(&mut self.snapshots_table, self.snapshots.len(), true);
             }
@@ -554,6 +578,17 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                     old_disk: old_disk.clone(),
                     new_disk: new_disk.to_string(),
                 },
+            })
+        }
+        FormKind::CreateDataset { host } => {
+            let name = fields[0].value.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(PendingAction {
+                host: *host,
+                section: Section::Datasets,
+                call: MutationCall::CreateDataset { name: name.to_string() },
             })
         }
     }
@@ -1231,6 +1266,65 @@ mod tests {
                 assert_eq!(*focused, 0);
             }
             other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_n_on_datasets_opens_create_dataset_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right); // Hosts -> Pools -> Datasets
+        app.handle_key(KeyCode::Char('n'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(*kind, crate::ui::modal::FormKind::CreateDataset { host: 0 });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_create_dataset_form_submits() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "tank/newds".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(
+            result,
+            Some(crate::ui::modal::PendingAction {
+                host: 0,
+                section: Section::Datasets,
+                call: crate::ui::modal::MutationCall::CreateDataset { name: "tank/newds".to_string() },
+            })
+        );
+    }
+
+    #[test]
+    fn handle_key_d_on_datasets_opens_destroy_confirm_typed_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![crate::zfs::dataset::Dataset {
+            name: "tank/olds".to_string(),
+            kind: crate::zfs::dataset::DatasetKind::Filesystem,
+            used: 0,
+            available: 0,
+            referenced: 0,
+            mountpoint: None,
+        }];
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right);
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        match app.modal {
+            Some(crate::ui::modal::Modal::ConfirmTyped { expected, action, .. }) => {
+                assert_eq!(expected, "tank/olds");
+                assert_eq!(action.call, crate::ui::modal::MutationCall::DestroyDataset { name: "tank/olds".to_string() });
+            }
+            other => panic!("expected ConfirmTyped modal, got {other:?}"),
         }
     }
 

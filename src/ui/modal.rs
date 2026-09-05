@@ -15,6 +15,8 @@ pub enum MutationCall {
     OfflineDisk { pool: String, disk: String },
     OnlineDisk { pool: String, disk: String },
     ReplaceDisk { pool: String, old_disk: String, new_disk: String },
+    CreateDataset { name: String },
+    DestroyDataset { name: String },
 }
 
 impl MutationCall {
@@ -33,6 +35,8 @@ impl MutationCall {
             MutationCall::ReplaceDisk { pool, old_disk, new_disk } => {
                 crate::zfs::pool::replace_disk(runner, pool, old_disk, new_disk)
             }
+            MutationCall::CreateDataset { name } => crate::zfs::dataset::create_dataset(runner, name),
+            MutationCall::DestroyDataset { name } => crate::zfs::dataset::destroy_dataset(runner, name),
         }
     }
 }
@@ -65,6 +69,8 @@ pub enum FormKind {
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.
     ReplaceDisk { host: usize, pool: String, old_disk: String },
+    /// Fields: `[name]`.
+    CreateDataset { host: usize },
 }
 
 /// A modal dialog awaiting user input before a mutation runs.
@@ -165,5 +171,23 @@ mod tests {
             calls[0],
             ("zpool".to_string(), vec!["replace".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string(), "da2".to_string()])
         );
+    }
+
+    #[test]
+    fn create_dataset_call_runs_create_dataset() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::CreateDataset { name: "tank/newds".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["create".to_string(), "--".to_string(), "tank/newds".to_string()]));
+    }
+
+    #[test]
+    fn destroy_dataset_call_runs_destroy_dataset() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::DestroyDataset { name: "tank/olds".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
     }
 }
