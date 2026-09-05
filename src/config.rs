@@ -57,6 +57,15 @@ mod tests {
     }
 
     #[test]
+    fn load_malformed_toml_returns_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "this is not valid toml [[[").unwrap();
+        let result = Config::load(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn save_then_load_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("config.toml");
