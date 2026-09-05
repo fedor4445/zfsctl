@@ -113,6 +113,18 @@ pub fn parse_pool_status_vdevs(output: &str) -> Vec<VdevLine> {
     result
 }
 
+/// True unless `name` matches ZFS's group-vdev naming shape
+/// (`mirror-N`, `raidz1-N`, `raidz2-N`, `raidz3-N`) — those are
+/// intermediate tree nodes, not physical disks, and don't make sense
+/// as an offline/online/replace target.
+pub fn is_leaf_disk(name: &str) -> bool {
+    const GROUP_PREFIXES: &[&str] = &["mirror-", "raidz1-", "raidz2-", "raidz3-"];
+    !GROUP_PREFIXES.iter().any(|prefix| {
+        name.strip_prefix(prefix)
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
 pub fn list_pools(runner: &dyn CommandRunner) -> Result<Vec<Pool>> {
     let output = super::run_checked(runner, "zpool", POOL_LIST_ARGS, "zpool list")?;
     parse_pool_list(&output.stdout)
@@ -376,6 +388,21 @@ errors: No known data errors
         let runner = FakeRunner::failing("device busy", 1);
         let result = replace_disk(&runner, "tank", "da1", "da2");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_leaf_disk_true_for_physical_device_names() {
+        assert!(is_leaf_disk("da0"));
+        assert!(is_leaf_disk("nvd1"));
+        assert!(is_leaf_disk("tank")); // top-level pool name itself, if ever selected
+    }
+
+    #[test]
+    fn is_leaf_disk_false_for_group_vdev_names() {
+        assert!(!is_leaf_disk("mirror-0"));
+        assert!(!is_leaf_disk("raidz1-2"));
+        assert!(!is_leaf_disk("raidz2-0"));
+        assert!(!is_leaf_disk("raidz3-10"));
     }
 
     #[test]

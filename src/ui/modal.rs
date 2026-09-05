@@ -12,6 +12,8 @@ pub enum MutationCall {
     ScrubPool { pool: String },
     DestroyPool { pool: String },
     CreatePool { name: String, vdev_spec: Vec<String> },
+    OfflineDisk { pool: String, disk: String },
+    OnlineDisk { pool: String, disk: String },
 }
 
 impl MutationCall {
@@ -25,6 +27,8 @@ impl MutationCall {
                 let spec: Vec<&str> = vdev_spec.iter().map(String::as_str).collect();
                 crate::zfs::pool::create_pool(runner, name, &spec)
             }
+            MutationCall::OfflineDisk { pool, disk } => crate::zfs::pool::offline_disk(runner, pool, disk),
+            MutationCall::OnlineDisk { pool, disk } => crate::zfs::pool::online_disk(runner, pool, disk),
         }
     }
 }
@@ -125,5 +129,23 @@ mod tests {
                 vec!["create".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()]
             )
         );
+    }
+
+    #[test]
+    fn offline_disk_call_runs_offline_disk() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::OfflineDisk { pool: "tank".to_string(), disk: "da1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["offline".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string()]));
+    }
+
+    #[test]
+    fn online_disk_call_runs_online_disk() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::OnlineDisk { pool: "tank".to_string(), disk: "da1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["online".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string()]));
     }
 }

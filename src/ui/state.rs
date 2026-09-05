@@ -163,6 +163,12 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 move_table_selection(&mut self.vdevs_table, self.vdevs.len(), false);
             }
+            KeyCode::Char('o') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                self.open_vdev_confirm(false);
+            }
+            KeyCode::Char('O') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                self.open_vdev_confirm(true);
+            }
             KeyCode::Down if self.current_section() == Section::Pools => {
                 move_table_selection(&mut self.pools_table, self.pools.len(), true);
             }
@@ -224,6 +230,30 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Shared by the offline/online disk action keys: looks up the
+    /// selected vdev row, and — only if it's a leaf disk, not a
+    /// mirror/raidz group node — opens the matching `Confirm` modal.
+    /// `online` selects which of the two operations to build.
+    fn open_vdev_confirm(&mut self, online: bool) {
+        let Some(i) = self.vdevs_table.selected() else { return };
+        let Some(vdev) = self.vdevs.get(i) else { return };
+        if !crate::zfs::pool::is_leaf_disk(&vdev.name) {
+            self.status_message = Some("select a disk (not a mirror/raidz group) to offline/online it".to_string());
+            return;
+        }
+        let pool = self.drilled_pool.clone().unwrap();
+        let disk = vdev.name.clone();
+        let (verb, call) = if online {
+            ("Online", MutationCall::OnlineDisk { pool: pool.clone(), disk: disk.clone() })
+        } else {
+            ("Offline", MutationCall::OfflineDisk { pool: pool.clone(), disk: disk.clone() })
+        };
+        self.modal = Some(Modal::Confirm {
+            prompt: format!("{verb} disk '{disk}' in pool '{pool}'? (y/n)"),
+            action: PendingAction { host: self.selected_host, section: Section::Vdevs, call },
+        });
     }
 
     /// Routes a key press to the currently open modal. Returns
@@ -1278,5 +1308,78 @@ mod tests {
             Some(crate::ui::modal::Modal::Form { fields, .. }) => assert_eq!(fields[0].value, "t"),
             other => panic!("expected Form modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_key_o_on_leaf_disk_opens_offline_confirm_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "da1".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('o'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+                assert_eq!(action.section, Section::Vdevs);
+                assert_eq!(action.call, crate::ui::modal::MutationCall::OfflineDisk { pool: "tank".to_string(), disk: "da1".to_string() });
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_o_on_group_vdev_row_does_not_open_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "mirror-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('o'));
+        assert!(app.modal.is_none());
+        assert!(app.status_message.is_some(), "selecting a group row should hint that a disk must be selected instead");
+    }
+
+    #[test]
+    fn handle_key_shift_o_on_leaf_disk_opens_online_confirm_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "da1".to_string(), health: crate::zfs::pool::PoolHealth::Offline }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('O'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+                assert_eq!(action.call, crate::ui::modal::MutationCall::OnlineDisk { pool: "tank".to_string(), disk: "da1".to_string() });
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_mutation_on_vdev_section_queues_both_vdevs_and_pools_refresh() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Vdevs,
+            call: crate::ui::modal::MutationCall::OfflineDisk { pool: "tank".to_string(), disk: "da1".to_string() },
+        };
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(""));
+        app.dispatch_mutation(action, runner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let refreshes = loop {
+            let r = app.drain_worker_messages();
+            if !r.is_empty() || Instant::now() > deadline {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(refreshes, vec![Section::Vdevs, Section::Pools]);
     }
 }
