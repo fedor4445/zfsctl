@@ -46,7 +46,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(label).style(style)
         })
         .collect();
-    let title = if app.loading { "zfsctl (refreshing...)" } else { "zfsctl" };
+    let title = if app.is_loading() { "zfsctl (refreshing...)" } else { "zfsctl" };
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(list, area);
 }
@@ -95,9 +95,10 @@ fn draw_pools(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(14),
         Constraint::Length(10),
     ];
+    let title = format!("Pools — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Size", "Alloc", "Free", "Health"]))
-        .block(Block::default().borders(Borders::ALL).title("Pools ('r' to refresh)"));
+        .block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(table, area);
 }
 
@@ -116,9 +117,10 @@ fn draw_datasets(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(14),
         Constraint::Length(12),
     ];
+    let title = format!("Datasets — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Used", "Avail", "Kind"]))
-        .block(Block::default().borders(Borders::ALL).title("Datasets ('r' to refresh)"));
+        .block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(table, area);
 }
 
@@ -128,8 +130,9 @@ fn draw_snapshots(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), s.used.to_string()]));
     let widths = [Constraint::Length(34), Constraint::Length(14)];
+    let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Snapshot", "Used"]))
-        .block(Block::default().borders(Borders::ALL).title("Snapshots ('r' to refresh)"));
+        .block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(table, area);
 }
