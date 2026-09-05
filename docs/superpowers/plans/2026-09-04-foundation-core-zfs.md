@@ -691,10 +691,10 @@ git commit -m "feat: host inventory built from config"
 
 - [ ] **Step 1: Create `src/zfs/mod.rs`**
 
+Only `pool` exists yet — `dataset` and `snapshot` are added by Tasks 7 and 8, which each append their own `pub mod` line to this file.
+
 ```rust
-pub mod dataset;
 pub mod pool;
-pub mod snapshot;
 ```
 
 - [ ] **Step 2: Write `src/zfs/pool.rs` structs, parsing, and their fixture-based tests**
@@ -1075,6 +1075,7 @@ git commit -m "feat: ZFS pool domain model, parsing, and operations"
 
 **Files:**
 - Create: `src/zfs/dataset.rs`
+- Modify: `src/zfs/mod.rs` (add `pub mod dataset;`)
 
 **Interfaces:**
 - Consumes: `AppError`, `Result` from Task 1; `CommandRunner`, `test_support::FakeRunner` from Task 2.
@@ -1257,15 +1258,22 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
 }
 ```
 
-- [ ] **Step 2: Run the tests**
+- [ ] **Step 2: Add `pub mod dataset;` to `src/zfs/mod.rs`**
+
+```rust
+pub mod dataset;
+pub mod pool;
+```
+
+- [ ] **Step 3: Run the tests**
 
 Run: `cargo test zfs::dataset`
 Expected: PASS (5 tests)
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/zfs/dataset.rs
+git add src/zfs/dataset.rs src/zfs/mod.rs
 git commit -m "feat: ZFS dataset domain model, parsing, and operations"
 ```
 
@@ -1275,6 +1283,7 @@ git commit -m "feat: ZFS dataset domain model, parsing, and operations"
 
 **Files:**
 - Create: `src/zfs/snapshot.rs`
+- Modify: `src/zfs/mod.rs` (add `pub mod snapshot;`)
 
 **Interfaces:**
 - Consumes: `AppError`, `Result` from Task 1; `CommandRunner`, `test_support::FakeRunner` from Task 2.
@@ -1487,15 +1496,23 @@ tank/data@2026-09-04\t2000
 }
 ```
 
-- [ ] **Step 2: Run the tests**
+- [ ] **Step 2: Add `pub mod snapshot;` to `src/zfs/mod.rs`**
+
+```rust
+pub mod dataset;
+pub mod pool;
+pub mod snapshot;
+```
+
+- [ ] **Step 3: Run the tests**
 
 Run: `cargo test zfs::snapshot`
 Expected: PASS (8 tests)
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/zfs/snapshot.rs
+git add src/zfs/snapshot.rs src/zfs/mod.rs
 git commit -m "feat: ZFS snapshot domain model, parsing, operations, and replication"
 ```
 
@@ -1768,17 +1785,29 @@ git commit -m "feat: ratatui App state, navigation, and worker-thread refresh"
 use super::state::{App, Section};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, Row, Table};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &App) {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(f.area());
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
-        .split(f.area());
+        .split(outer[0]);
 
     draw_sidebar(f, app, chunks[0]);
     draw_main(f, app, chunks[1]);
+    draw_status_bar(f, app, outer[1]);
+}
+
+fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    let text = app.status_message.as_deref().unwrap_or("");
+    let status = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Status"));
+    f.render_widget(status, area);
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -1801,7 +1830,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(label).style(style)
         })
         .collect();
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("zfsctl"));
+    let title = if app.loading { "zfsctl (refreshing...)" } else { "zfsctl" };
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(list, area);
 }
 
