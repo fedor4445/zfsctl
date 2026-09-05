@@ -2,6 +2,7 @@ mod config;
 mod error;
 mod exec;
 mod hosts;
+mod zfs;
 
 fn main() {
     if let Err(e) = run() {
