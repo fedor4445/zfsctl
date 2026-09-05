@@ -62,6 +62,7 @@ impl App {
     pub fn handle_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => self.status_message = None,
             KeyCode::Right | KeyCode::Tab => {
                 self.selected_section = (self.selected_section + 1) % self.sections.len();
             }
@@ -117,11 +118,20 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             self.loading = false;
             match msg {
-                WorkerMsg::Pools(Ok(pools)) => self.pools = pools,
+                WorkerMsg::Pools(Ok(pools)) => {
+                    self.pools = pools;
+                    self.status_message = None;
+                }
                 WorkerMsg::Pools(Err(e)) => self.status_message = Some(e.to_string()),
-                WorkerMsg::Datasets(Ok(datasets)) => self.datasets = datasets,
+                WorkerMsg::Datasets(Ok(datasets)) => {
+                    self.datasets = datasets;
+                    self.status_message = None;
+                }
                 WorkerMsg::Datasets(Err(e)) => self.status_message = Some(e.to_string()),
-                WorkerMsg::Snapshots(Ok(snapshots)) => self.snapshots = snapshots,
+                WorkerMsg::Snapshots(Ok(snapshots)) => {
+                    self.snapshots = snapshots;
+                    self.status_message = None;
+                }
                 WorkerMsg::Snapshots(Err(e)) => self.status_message = Some(e.to_string()),
             }
         }
@@ -189,6 +199,23 @@ mod tests {
             .unwrap();
         app.drain_worker_messages();
         assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn esc_clears_existing_status_message() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.status_message = Some("something went wrong".to_string());
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.status_message, None);
+    }
+
+    #[test]
+    fn drain_worker_messages_clears_status_message_on_subsequent_success() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.status_message = Some("stale error".to_string());
+        app.tx.send(WorkerMsg::Pools(Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.status_message, None);
     }
 
     #[test]

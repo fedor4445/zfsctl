@@ -21,6 +21,16 @@ use std::time::Duration;
 pub fn run_app(inventory: HostInventory) -> Result<()> {
     enable_raw_mode().map_err(|e| AppError::Config(format!("enabling raw mode: {e}")))?;
 
+    // Ensure a panic anywhere in the event loop still restores the
+    // terminal — otherwise the operator's shell is left in raw mode
+    // with the alternate screen active and the panic message lost.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        previous_hook(panic_info);
+    }));
+
     let result = execute!(std::io::stdout(), EnterAlternateScreen)
         .map_err(|e| AppError::Config(format!("entering alternate screen: {e}")))
         .and_then(|_| {

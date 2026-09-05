@@ -32,4 +32,5 @@ The local machine is always available as the "local" host and does not need a co
 - `Tab` / `Left` / `Right`: switch sections (Hosts, Pools, Datasets, Snapshots)
 - `Up` / `Down` (in Hosts section): select the active host
 - `r`: refresh the current section for the selected host
+- `Esc`: dismiss the status message
 - `q`: quit
