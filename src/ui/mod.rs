@@ -73,11 +73,22 @@ fn event_loop(
                 app.handle_key(key.code);
                 if key.code == KeyCode::Char('r') {
                     if let Some(host) = inventory.hosts.get(app.selected_host) {
-                        match app.current_section() {
-                            Section::Pools => app.refresh_pools(host.runner.clone()),
-                            Section::Datasets => app.refresh_datasets(host.runner.clone()),
-                            Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
-                            Section::Hosts => {}
+                        if let Some(pool) = app.drilled_pool.clone() {
+                            app.refresh_vdevs(host.runner.clone(), pool);
+                        } else {
+                            match app.current_section() {
+                                Section::Pools => app.refresh_pools(host.runner.clone()),
+                                Section::Datasets => app.refresh_datasets(host.runner.clone()),
+                                Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
+                                Section::Hosts | Section::Vdevs => {}
+                            }
+                        }
+                    }
+                }
+                if key.code == KeyCode::Enter {
+                    if let Some(pool) = app.drilled_pool.clone() {
+                        if let Some(host) = inventory.hosts.get(app.selected_host) {
+                            app.refresh_vdevs(host.runner.clone(), pool);
                         }
                     }
                 }

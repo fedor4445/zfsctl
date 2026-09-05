@@ -37,6 +37,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Pools => "Pools",
                 Section::Datasets => "Datasets",
                 Section::Snapshots => "Snapshots",
+                Section::Vdevs => "Vdevs",
             };
             let style = if i == app.selected_section {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -52,11 +53,16 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.drilled_pool.is_some() {
+        draw_vdevs(f, app, area);
+        return;
+    }
     match app.sections[app.selected_section] {
         Section::Hosts => draw_hosts(f, app, area),
         Section::Pools => draw_pools(f, app, area),
         Section::Datasets => draw_datasets(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
+        Section::Vdevs => unreachable!("Vdevs is never in App::sections"),
     }
 }
 
@@ -101,6 +107,21 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.pools_table);
+}
+
+fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = app.vdevs.iter().map(|v| {
+        let indented = format!("{}{}", "  ".repeat(v.depth), v.name);
+        Row::new(vec![indented, format!("{:?}", v.health)])
+    });
+    let widths = [Constraint::Length(30), Constraint::Length(12)];
+    let pool = app.drilled_pool.as_deref().unwrap_or("?");
+    let title = format!("Vdevs — {pool} ('r' refresh, Esc/Backspace back)");
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["Device", "Health"]))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.vdevs_table);
 }
 
 fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {

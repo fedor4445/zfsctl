@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::exec::CommandRunner;
 use crate::zfs::dataset::Dataset;
-use crate::zfs::pool::Pool;
+use crate::zfs::pool::{Pool, VdevLine};
 use crate::zfs::snapshot::Snapshot;
 use crossterm::event::KeyCode;
 use ratatui::widgets::TableState;
@@ -15,6 +15,7 @@ pub enum Section {
     Pools,
     Datasets,
     Snapshots,
+    Vdevs,
 }
 
 /// Each variant carries the index (into `App::hosts`) of the host the
@@ -25,6 +26,7 @@ pub enum WorkerMsg {
     Pools(usize, Result<Vec<Pool>>),
     Datasets(usize, Result<Vec<Dataset>>),
     Snapshots(usize, Result<Vec<Snapshot>>),
+    Vdevs(usize, Result<Vec<VdevLine>>),
 }
 
 pub struct App {
@@ -38,6 +40,9 @@ pub struct App {
     pub pools_table: TableState,
     pub datasets_table: TableState,
     pub snapshots_table: TableState,
+    pub vdevs: Vec<VdevLine>,
+    pub vdevs_table: TableState,
+    pub drilled_pool: Option<String>,
     pub status_message: Option<String>,
     pub should_quit: bool,
     in_flight: HashSet<(Section, usize)>,
@@ -59,6 +64,9 @@ impl App {
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
             snapshots_table: TableState::default(),
+            vdevs: Vec::new(),
+            vdevs_table: TableState::default(),
+            drilled_pool: None,
             status_message: None,
             should_quit: false,
             in_flight: HashSet::new(),
@@ -108,28 +116,48 @@ impl App {
     pub fn handle_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc | KeyCode::Backspace if self.drilled_pool.is_some() => {
+                self.drilled_pool = None;
+                self.vdevs.clear();
+                self.vdevs_table.select(None);
+            }
             KeyCode::Esc => self.status_message = None,
-            KeyCode::Right | KeyCode::Tab => {
+            KeyCode::Enter if self.current_section() == Section::Pools && self.drilled_pool.is_none() => {
+                if let Some(i) = self.pools_table.selected() {
+                    if let Some(pool) = self.pools.get(i) {
+                        self.drilled_pool = Some(pool.name.clone());
+                        self.vdevs.clear();
+                        self.vdevs_table.select(None);
+                    }
+                }
+            }
+            KeyCode::Right | KeyCode::Tab if self.drilled_pool.is_none() => {
                 self.selected_section = (self.selected_section + 1) % self.sections.len();
             }
-            KeyCode::Left => {
+            KeyCode::Left if self.drilled_pool.is_none() => {
                 self.selected_section = if self.selected_section == 0 {
                     self.sections.len() - 1
                 } else {
                     self.selected_section - 1
                 };
             }
-            KeyCode::Down if self.current_section() == Section::Hosts && !self.hosts.is_empty() => {
+            KeyCode::Down if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
                 self.selected_host = (self.selected_host + 1) % self.hosts.len();
                 self.clear_host_data();
             }
-            KeyCode::Up if self.current_section() == Section::Hosts && !self.hosts.is_empty() => {
+            KeyCode::Up if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
                 self.selected_host = if self.selected_host == 0 {
                     self.hosts.len() - 1
                 } else {
                     self.selected_host - 1
                 };
                 self.clear_host_data();
+            }
+            KeyCode::Down if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                move_table_selection(&mut self.vdevs_table, self.vdevs.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                move_table_selection(&mut self.vdevs_table, self.vdevs.len(), false);
             }
             KeyCode::Down if self.current_section() == Section::Pools => {
                 move_table_selection(&mut self.pools_table, self.pools.len(), true);
@@ -199,6 +227,21 @@ impl App {
         });
     }
 
+    /// See `refresh_pools` for why this no-ops while already in flight.
+    /// `pool` is the name of the currently drilled-into pool.
+    pub fn refresh_vdevs(&mut self, runner: Arc<dyn CommandRunner>, pool: String) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::Vdevs, host) {
+            return;
+        }
+        self.begin_refresh(Section::Vdevs, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::pool::get_pool_vdevs(runner.as_ref(), &pool);
+            let _ = tx.send(WorkerMsg::Vdevs(host, result));
+        });
+    }
+
     pub fn drain_worker_messages(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
@@ -241,6 +284,20 @@ impl App {
                         Ok(snapshots) => {
                             self.snapshots = snapshots;
                             clamp_table_selection(&mut self.snapshots_table, self.snapshots.len());
+                            self.status_message = None;
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
+                WorkerMsg::Vdevs(host, result) => {
+                    self.end_refresh(Section::Vdevs, host);
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    match result {
+                        Ok(vdevs) => {
+                            self.vdevs = vdevs;
+                            clamp_table_selection(&mut self.vdevs_table, self.vdevs.len());
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -581,6 +638,81 @@ mod tests {
             1,
             "second refresh_pools call while one is in flight must not spawn another thread"
         );
+    }
+
+    #[test]
+    fn enter_on_selected_pool_drills_into_vdevs() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right); // Hosts -> Pools
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.drilled_pool, Some("tank".to_string()));
+    }
+
+    #[test]
+    fn enter_with_no_row_selected_does_not_drill_in() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.drilled_pool, None);
+    }
+
+    #[test]
+    fn esc_backs_out_of_vdev_drill_down() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 0, name: "tank".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.drilled_pool, None);
+        assert!(app.vdevs.is_empty());
+        assert_eq!(app.vdevs_table.selected(), None);
+    }
+
+    #[test]
+    fn esc_with_no_drill_down_active_clears_status_message_as_before() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.status_message = Some("stale".to_string());
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.status_message, None);
+    }
+
+    #[test]
+    fn up_down_while_drilled_in_navigate_vdev_rows_not_pool_rows() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![
+            VdevLine { depth: 0, name: "tank".to_string(), health: crate::zfs::pool::PoolHealth::Online },
+            VdevLine { depth: 1, name: "da0".to_string(), health: crate::zfs::pool::PoolHealth::Online },
+        ];
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.vdevs_table.selected(), Some(0));
+        assert_eq!(app.pools_table.selected(), Some(0), "pool row selection must be untouched while drilled in");
+    }
+
+    #[test]
+    fn refresh_vdevs_populates_vdevs_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(
+            "  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME  STATE     READ WRITE CKSUM\n\ttank  ONLINE       0     0     0\n\nerrors: No known data errors\n",
+        ));
+        app.refresh_vdevs(runner, "tank".to_string());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.vdevs.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.vdevs.len(), 1);
+        assert_eq!(app.vdevs[0].name, "tank");
     }
 
     #[test]
