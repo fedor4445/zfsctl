@@ -14,6 +14,7 @@ pub enum MutationCall {
     CreatePool { name: String, vdev_spec: Vec<String> },
     OfflineDisk { pool: String, disk: String },
     OnlineDisk { pool: String, disk: String },
+    ReplaceDisk { pool: String, old_disk: String, new_disk: String },
 }
 
 impl MutationCall {
@@ -29,6 +30,9 @@ impl MutationCall {
             }
             MutationCall::OfflineDisk { pool, disk } => crate::zfs::pool::offline_disk(runner, pool, disk),
             MutationCall::OnlineDisk { pool, disk } => crate::zfs::pool::online_disk(runner, pool, disk),
+            MutationCall::ReplaceDisk { pool, old_disk, new_disk } => {
+                crate::zfs::pool::replace_disk(runner, pool, old_disk, new_disk)
+            }
         }
     }
 }
@@ -59,6 +63,8 @@ pub struct FormField {
 pub enum FormKind {
     /// Fields: `[name, vdev_spec]`.
     CreatePool { host: usize },
+    /// Fields: `[new_disk]`.
+    ReplaceDisk { host: usize, pool: String, old_disk: String },
 }
 
 /// A modal dialog awaiting user input before a mutation runs.
@@ -147,5 +153,17 @@ mod tests {
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("zpool".to_string(), vec!["online".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string()]));
+    }
+
+    #[test]
+    fn replace_disk_call_runs_replace_disk() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::ReplaceDisk { pool: "tank".to_string(), old_disk: "da1".to_string(), new_disk: "da2".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zpool".to_string(), vec!["replace".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string(), "da2".to_string()])
+        );
     }
 }

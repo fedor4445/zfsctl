@@ -169,6 +169,23 @@ impl App {
             KeyCode::Char('O') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 self.open_vdev_confirm(true);
             }
+            KeyCode::Char('x') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                if let Some(i) = self.vdevs_table.selected() {
+                    if let Some(vdev) = self.vdevs.get(i) {
+                        if crate::zfs::pool::is_leaf_disk(&vdev.name) {
+                            let pool = self.drilled_pool.clone().unwrap();
+                            self.modal = Some(Modal::Form {
+                                title: format!("Replace disk '{}' in pool '{pool}'", vdev.name),
+                                fields: vec![FormField { label: "New device".to_string(), value: String::new() }],
+                                focused: 0,
+                                kind: FormKind::ReplaceDisk { host: self.selected_host, pool, old_disk: vdev.name.clone() },
+                            });
+                        } else {
+                            self.status_message = Some("select a disk (not a mirror/raidz group) to replace it".to_string());
+                        }
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Pools => {
                 move_table_selection(&mut self.pools_table, self.pools.len(), true);
             }
@@ -522,6 +539,21 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 host: *host,
                 section: Section::Pools,
                 call: MutationCall::CreatePool { name: name.to_string(), vdev_spec },
+            })
+        }
+        FormKind::ReplaceDisk { host, pool, old_disk } => {
+            let new_disk = fields[0].value.trim();
+            if new_disk.is_empty() {
+                return None;
+            }
+            Some(PendingAction {
+                host: *host,
+                section: Section::Vdevs,
+                call: MutationCall::ReplaceDisk {
+                    pool: pool.clone(),
+                    old_disk: old_disk.clone(),
+                    new_disk: new_disk.to_string(),
+                },
             })
         }
     }
@@ -1359,6 +1391,70 @@ mod tests {
             }
             other => panic!("expected Confirm modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_key_x_on_leaf_disk_opens_replace_disk_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "da1".to_string(), health: crate::zfs::pool::PoolHealth::Faulted }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('x'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(
+                    *kind,
+                    crate::ui::modal::FormKind::ReplaceDisk { host: 0, pool: "tank".to_string(), old_disk: "da1".to_string() }
+                );
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_x_on_group_vdev_row_does_not_open_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "raidz1-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('x'));
+        assert!(app.modal.is_none());
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn handle_modal_key_replace_disk_form_submits_with_correct_pool_and_disks() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "da1".to_string(), health: crate::zfs::pool::PoolHealth::Faulted }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('x'));
+        for c in "da2".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(
+            result,
+            Some(crate::ui::modal::PendingAction {
+                host: 0,
+                section: Section::Vdevs,
+                call: crate::ui::modal::MutationCall::ReplaceDisk {
+                    pool: "tank".to_string(),
+                    old_disk: "da1".to_string(),
+                    new_disk: "da2".to_string(),
+                },
+            })
+        );
     }
 
     #[test]
