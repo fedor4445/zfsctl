@@ -65,40 +65,19 @@ pub fn parse_dataset_list(output: &str) -> Result<Vec<Dataset>> {
 }
 
 pub fn list_datasets(runner: &dyn CommandRunner) -> Result<Vec<Dataset>> {
-    let output = runner.run("zfs", DATASET_LIST_ARGS)?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: "zfs list".to_string(),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    let output = super::run_checked(runner, "zfs", DATASET_LIST_ARGS, "zfs list")?;
     parse_dataset_list(&output.stdout)
 }
 
 /// The `--` before `name` stops `zfs` from treating a dataset name that
 /// starts with `-` as an option flag (argument injection).
 pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
-    let output = runner.run("zfs", &["create", "--", name])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zfs create {name}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "zfs", &["create", "--", name], &format!("zfs create {name}"))?;
     Ok(())
 }
 
 pub fn destroy_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
-    let output = runner.run("zfs", &["destroy", "--", name])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zfs destroy {name}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "zfs", &["destroy", "--", name], &format!("zfs destroy {name}"))?;
     Ok(())
 }
 

@@ -38,14 +38,7 @@ pub fn parse_snapshot_list(output: &str) -> Result<Vec<Snapshot>> {
 }
 
 pub fn list_snapshots(runner: &dyn CommandRunner) -> Result<Vec<Snapshot>> {
-    let output = runner.run("zfs", SNAPSHOT_LIST_ARGS)?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: "zfs list -t snapshot".to_string(),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    let output = super::run_checked(runner, "zfs", SNAPSHOT_LIST_ARGS, "zfs list -t snapshot")?;
     parse_snapshot_list(&output.stdout)
 }
 
@@ -53,40 +46,19 @@ pub fn list_snapshots(runner: &dyn CommandRunner) -> Result<Vec<Snapshot>> {
 /// that starts with `-` as an option flag (argument injection).
 pub fn create_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["snapshot", "--", &target])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zfs snapshot {target}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "zfs", &["snapshot", "--", &target], &format!("zfs snapshot {target}"))?;
     Ok(())
 }
 
 pub fn destroy_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["destroy", "--", &target])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zfs destroy {target}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "zfs", &["destroy", "--", &target], &format!("zfs destroy {target}"))?;
     Ok(())
 }
 
 pub fn rollback_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["rollback", "--", &target])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zfs rollback {target}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "zfs", &["rollback", "--", &target], &format!("zfs rollback {target}"))?;
     Ok(())
 }
 
@@ -141,14 +113,7 @@ pub fn replicate_snapshot(
         None => format!("zfs send -- {source} | zfs receive -- {dest_dataset}"),
         Some(host) => format!("zfs send -- {source} | ssh -- {host} zfs receive -- {dest_dataset}"),
     };
-    let output = runner.run("sh", &["-c", &pipeline])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: pipeline,
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "sh", &["-c", &pipeline], &pipeline)?;
     Ok(())
 }
 

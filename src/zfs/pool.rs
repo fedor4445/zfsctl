@@ -114,107 +114,76 @@ pub fn parse_pool_status_vdevs(output: &str) -> Vec<VdevLine> {
 }
 
 pub fn list_pools(runner: &dyn CommandRunner) -> Result<Vec<Pool>> {
-    let output = runner.run("zpool", POOL_LIST_ARGS)?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: "zpool list".to_string(),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    let output = super::run_checked(runner, "zpool", POOL_LIST_ARGS, "zpool list")?;
     parse_pool_list(&output.stdout)
 }
 
 /// Runs `zpool status <pool>` and parses its vdev tree. Separate from
 /// `list_pools` because `zpool status` has no tabular `-H -p -o` form.
 pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<VdevLine>> {
-    let output = runner.run("zpool", &["status", "--", pool])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zpool status {pool}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    let output = super::run_checked(
+        runner,
+        "zpool",
+        &["status", "--", pool],
+        &format!("zpool status {pool}"),
+    )?;
     Ok(parse_pool_status_vdevs(&output.stdout))
 }
 
 /// Creates a pool from a raw vdev spec, e.g. `&["mirror", "da0", "da1"]`
 /// or `&["raidz1", "da0", "da1", "da2"]`. Guided vdev-spec construction
-/// (picking disks/redundancy from a UI wizard) depends on the disk
-/// inventory built in Plan 5, so it is out of scope here — this function
-/// takes an already-built spec.
+/// (picking disks/redundancy from a UI wizard) depends on a disk
+/// inventory feature not built yet, so it is out of scope here — this
+/// function takes an already-built spec.
 pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -> Result<()> {
     let mut args = vec!["create", "--", name];
     args.extend_from_slice(vdev_spec);
-    let output = runner.run("zpool", &args)?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zpool create {name} {}", vdev_spec.join(" ")),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(
+        runner,
+        "zpool",
+        &args,
+        &format!("zpool create {name} {}", vdev_spec.join(" ")),
+    )?;
     Ok(())
 }
 
 pub fn scrub_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
-    let output = runner.run("zpool", &["scrub", "--", pool])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zpool scrub {pool}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "zpool", &["scrub", "--", pool], &format!("zpool scrub {pool}"))?;
     Ok(())
 }
 
 pub fn destroy_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
-    let output = runner.run("zpool", &["destroy", "--", pool])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zpool destroy {pool}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(runner, "zpool", &["destroy", "--", pool], &format!("zpool destroy {pool}"))?;
     Ok(())
 }
 
 pub fn offline_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["offline", "--", pool, disk])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zpool offline {pool} {disk}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(
+        runner,
+        "zpool",
+        &["offline", "--", pool, disk],
+        &format!("zpool offline {pool} {disk}"),
+    )?;
     Ok(())
 }
 
 pub fn online_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["online", "--", pool, disk])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zpool online {pool} {disk}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(
+        runner,
+        "zpool",
+        &["online", "--", pool, disk],
+        &format!("zpool online {pool} {disk}"),
+    )?;
     Ok(())
 }
 
 pub fn replace_disk(runner: &dyn CommandRunner, pool: &str, old_disk: &str, new_disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["replace", "--", pool, old_disk, new_disk])?;
-    if !output.success() {
-        return Err(AppError::CommandFailed {
-            cmd: format!("zpool replace {pool} {old_disk} {new_disk}"),
-            status: output.status,
-            stderr: output.stderr,
-        });
-    }
+    super::run_checked(
+        runner,
+        "zpool",
+        &["replace", "--", pool, old_disk, new_disk],
+        &format!("zpool replace {pool} {old_disk} {new_disk}"),
+    )?;
     Ok(())
 }
 
