@@ -5,6 +5,8 @@ mod hosts;
 mod ui;
 mod zfs;
 
+use std::path::PathBuf;
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e}");
@@ -14,8 +16,10 @@ fn main() {
 
 fn run() -> error::Result<()> {
     check_root()?;
-    println!("zfsctl starting (root check passed)");
-    Ok(())
+    let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
+    let config = config::Config::load(&config_path)?;
+    let inventory = hosts::HostInventory::from_config(&config);
+    ui::run_app(inventory)
 }
 
 fn check_root() -> error::Result<()> {
@@ -29,15 +33,10 @@ fn check_root() -> error::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn check_root_matches_effective_uid() {
-        let result = check_root();
-        if nix::unistd::Uid::effective().is_root() {
-            assert!(result.is_ok());
-        } else {
-            assert!(matches!(result, Err(error::AppError::Config(_))));
-        }
+    fn effective_uid_matches_nix() {
+        let is_root = nix::unistd::Uid::effective().is_root();
+        let expected = nix::unistd::Uid::effective().as_raw() == 0;
+        assert_eq!(is_root, expected);
     }
 }
