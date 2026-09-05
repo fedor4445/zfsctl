@@ -1,6 +1,7 @@
 mod config;
 mod error;
 mod exec;
+mod hosts;
 
 fn main() {
     if let Err(e) = run() {
