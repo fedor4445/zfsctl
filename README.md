@@ -2,6 +2,16 @@
 
 A napp-it-like terminal UI for managing ZFS storage on FreeBSD.
 
+## Status
+
+This is v1, and it is browse/refresh only. From the TUI you can view pools,
+datasets, and snapshots (locally or on a configured remote host over SSH)
+and refresh any of those panes on demand. There is currently **no way to
+create, destroy, scrub, replace a disk, roll back, or replicate anything
+from the UI** — those mutating operations exist as tested library functions
+(`zfs::pool`, `zfs::dataset`, `zfs::snapshot`) but are not yet wired up to
+any key or action. Wiring them into the UI is planned as a follow-up.
+
 ## Requirements
 
 - FreeBSD (uses `zpool`/`zfs`; no Linux/illumos support)
