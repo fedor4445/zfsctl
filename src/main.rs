@@ -2,6 +2,7 @@ mod config;
 mod error;
 mod exec;
 mod hosts;
+mod ui;
 mod zfs;
 
 fn main() {
