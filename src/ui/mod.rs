@@ -13,25 +13,32 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::time::Duration;
 
+/// Runs the TUI. Terminal teardown (`disable_raw_mode`/`LeaveAlternateScreen`)
+/// is always attempted before returning, regardless of which setup step
+/// failed — otherwise a failure between `enable_raw_mode()` and a fully
+/// constructed `Terminal` would leave the user's shell in raw mode with
+/// no way to recover except closing the terminal window.
 pub fn run_app(inventory: HostInventory) -> Result<()> {
     enable_raw_mode().map_err(|e| AppError::Config(format!("enabling raw mode: {e}")))?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)
-        .map_err(|e| AppError::Config(format!("entering alternate screen: {e}")))?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal =
-        Terminal::new(backend).map_err(|e| AppError::Config(format!("creating terminal: {e}")))?;
 
-    let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
-    let mut app = App::new(host_names);
-    if let Some(first_host) = inventory.hosts.first() {
-        app.refresh_pools(first_host.runner.clone());
-    }
+    let result = execute!(std::io::stdout(), EnterAlternateScreen)
+        .map_err(|e| AppError::Config(format!("entering alternate screen: {e}")))
+        .and_then(|_| {
+            let backend = CrosstermBackend::new(std::io::stdout());
+            let mut terminal = Terminal::new(backend)
+                .map_err(|e| AppError::Config(format!("creating terminal: {e}")))?;
 
-    let result = event_loop(&mut terminal, &mut app, &inventory);
+            let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
+            let mut app = App::new(host_names);
+            if let Some(first_host) = inventory.hosts.first() {
+                app.refresh_pools(first_host.runner.clone());
+            }
+
+            event_loop(&mut terminal, &mut app, &inventory)
+        });
 
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
 
     result
 }
