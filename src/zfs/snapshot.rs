@@ -223,6 +223,34 @@ tank/data@2026-09-04\t2000
     }
 
     #[test]
+    fn create_snapshot_surfaces_command_failure() {
+        let runner = FakeRunner::failing("snapshot already exists", 1);
+        let result = create_snapshot(&runner, "tank/data", "manual-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn destroy_snapshot_surfaces_command_failure() {
+        let runner = FakeRunner::failing("dataset is busy", 1);
+        let result = destroy_snapshot(&runner, "tank/data", "old-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rollback_snapshot_surfaces_command_failure() {
+        let runner = FakeRunner::failing("cannot rollback, more recent snapshots exist", 1);
+        let result = rollback_snapshot(&runner, "tank/data", "2026-09-01");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn replicate_snapshot_surfaces_command_failure() {
+        let runner = FakeRunner::failing("broken pipe", 1);
+        let result = replicate_snapshot(&runner, "tank/data@snap1", None, "backup/data");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn guards_against_dataset_names_that_look_like_flags() {
         let runner = FakeRunner::new("");
         destroy_snapshot(&runner, "-r", "snap1").unwrap();

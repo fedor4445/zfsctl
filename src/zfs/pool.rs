@@ -368,6 +368,48 @@ errors: No known data errors
     }
 
     #[test]
+    fn create_pool_surfaces_command_failure() {
+        let runner = FakeRunner::failing("no such geom", 1);
+        let result = create_pool(&runner, "tank", &["mirror", "da0", "da1"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn scrub_pool_surfaces_command_failure() {
+        let runner = FakeRunner::failing("pool is busy", 1);
+        let result = scrub_pool(&runner, "tank");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn destroy_pool_surfaces_command_failure() {
+        let runner = FakeRunner::failing("pool is busy", 1);
+        let result = destroy_pool(&runner, "scratch");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn offline_disk_surfaces_command_failure() {
+        let runner = FakeRunner::failing("no valid replicas", 1);
+        let result = offline_disk(&runner, "tank", "da1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn online_disk_surfaces_command_failure() {
+        let runner = FakeRunner::failing("no such device", 1);
+        let result = online_disk(&runner, "tank", "da1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn replace_disk_surfaces_command_failure() {
+        let runner = FakeRunner::failing("device busy", 1);
+        let result = replace_disk(&runner, "tank", "da1", "da2");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn guards_against_pool_names_that_look_like_flags() {
         let runner = FakeRunner::new("");
         destroy_pool(&runner, "-f").unwrap();
