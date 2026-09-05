@@ -1184,8 +1184,10 @@ pub fn list_datasets(runner: &dyn CommandRunner) -> Result<Vec<Dataset>> {
     parse_dataset_list(&output.stdout)
 }
 
+/// The `--` before `name` stops `zfs` from treating a dataset name that
+/// starts with `-` as an option flag (argument injection).
 pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
-    let output = runner.run("zfs", &["create", name])?;
+    let output = runner.run("zfs", &["create", "--", name])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs create {name}"),
@@ -1197,7 +1199,7 @@ pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
 }
 
 pub fn destroy_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
-    let output = runner.run("zfs", &["destroy", name])?;
+    let output = runner.run("zfs", &["destroy", "--", name])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs destroy {name}"),
@@ -1265,7 +1267,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
         let runner = FakeRunner::new("");
         create_dataset(&runner, "tank/newds").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["create".to_string(), "tank/newds".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["create".to_string(), "--".to_string(), "tank/newds".to_string()]));
     }
 
     #[test]
@@ -1273,7 +1275,15 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
         let runner = FakeRunner::new("");
         destroy_dataset(&runner, "tank/olds").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "tank/olds".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
+    }
+
+    #[test]
+    fn guards_against_dataset_names_that_look_like_flags() {
+        let runner = FakeRunner::new("");
+        destroy_dataset(&runner, "-r").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the dataset name so zfs cannot parse it as an option");
     }
 }
 ```
@@ -1288,7 +1298,7 @@ pub mod pool;
 - [ ] **Step 3: Run the tests**
 
 Run: `cargo test zfs::dataset`
-Expected: PASS (5 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 4: Commit**
 
@@ -1363,9 +1373,11 @@ pub fn list_snapshots(runner: &dyn CommandRunner) -> Result<Vec<Snapshot>> {
     parse_snapshot_list(&output.stdout)
 }
 
+/// The `--` before `target` stops `zfs` from treating a dataset name
+/// that starts with `-` as an option flag (argument injection).
 pub fn create_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["snapshot", &target])?;
+    let output = runner.run("zfs", &["snapshot", "--", &target])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs snapshot {target}"),
@@ -1378,7 +1390,7 @@ pub fn create_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) ->
 
 pub fn destroy_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["destroy", &target])?;
+    let output = runner.run("zfs", &["destroy", "--", &target])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs destroy {target}"),
@@ -1391,7 +1403,7 @@ pub fn destroy_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -
 
 pub fn rollback_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["rollback", &target])?;
+    let output = runner.run("zfs", &["rollback", "--", &target])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs rollback {target}"),
@@ -1413,9 +1425,13 @@ pub fn replicate_snapshot(
     dest_host: Option<&str>,
     dest_dataset: &str,
 ) -> Result<()> {
+    // `--` before each caller-supplied value stops the receiving command
+    // from treating a value that starts with `-` as an option flag
+    // (argument injection) — applies to `zfs send`/`zfs receive` and, for
+    // the remote leg, to `ssh` itself.
     let pipeline = match dest_host {
-        None => format!("zfs send {source} | zfs receive {dest_dataset}"),
-        Some(host) => format!("zfs send {source} | ssh {host} zfs receive {dest_dataset}"),
+        None => format!("zfs send -- {source} | zfs receive -- {dest_dataset}"),
+        Some(host) => format!("zfs send -- {source} | ssh -- {host} zfs receive -- {dest_dataset}"),
     };
     let output = runner.run("sh", &["-c", &pipeline])?;
     if !output.success() {
@@ -1470,7 +1486,7 @@ tank/data@2026-09-04\t2000
         let runner = FakeRunner::new("");
         create_snapshot(&runner, "tank/data", "manual-1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["snapshot".to_string(), "tank/data@manual-1".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["snapshot".to_string(), "--".to_string(), "tank/data@manual-1".to_string()]));
     }
 
     #[test]
@@ -1478,7 +1494,7 @@ tank/data@2026-09-04\t2000
         let runner = FakeRunner::new("");
         destroy_snapshot(&runner, "tank/data", "old-1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "tank/data@old-1".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
     }
 
     #[test]
@@ -1486,7 +1502,15 @@ tank/data@2026-09-04\t2000
         let runner = FakeRunner::new("");
         rollback_snapshot(&runner, "tank/data", "2026-09-01").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["rollback".to_string(), "tank/data@2026-09-01".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["rollback".to_string(), "--".to_string(), "tank/data@2026-09-01".to_string()]));
+    }
+
+    #[test]
+    fn guards_against_dataset_names_that_look_like_flags() {
+        let runner = FakeRunner::new("");
+        destroy_snapshot(&runner, "-r", "snap1").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the target so zfs cannot parse it as an option");
     }
 
     #[test]
@@ -1496,7 +1520,7 @@ tank/data@2026-09-04\t2000
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("sh".to_string(), vec!["-c".to_string(), "zfs send tank/data@snap1 | zfs receive backup/data".to_string()])
+            ("sh".to_string(), vec!["-c".to_string(), "zfs send -- tank/data@snap1 | zfs receive -- backup/data".to_string()])
         );
     }
 
@@ -1509,7 +1533,7 @@ tank/data@2026-09-04\t2000
             calls[0],
             (
                 "sh".to_string(),
-                vec!["-c".to_string(), "zfs send tank/data@snap1 | ssh backup-host zfs receive backup/data".to_string()]
+                vec!["-c".to_string(), "zfs send -- tank/data@snap1 | ssh -- backup-host zfs receive -- backup/data".to_string()]
             )
         );
     }
@@ -1527,7 +1551,7 @@ pub mod snapshot;
 - [ ] **Step 3: Run the tests**
 
 Run: `cargo test zfs::snapshot`
-Expected: PASS (8 tests)
+Expected: PASS (9 tests)
 
 - [ ] **Step 4: Commit**
 
