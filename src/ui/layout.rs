@@ -1,7 +1,8 @@
 use super::state::{App, Section};
+use crate::ui::modal::Modal;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -18,6 +19,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_sidebar(f, app, chunks[0]);
     draw_main(f, app, chunks[1]);
     draw_status_bar(f, app, outer[1]);
+
+    if let Some(modal) = app.modal.clone() {
+        let area = f.area();
+        draw_modal(f, &modal, area);
+    }
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -159,4 +165,44 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
+}
+
+fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
+    let popup_area = centered_rect(60, 20, area);
+    f.render_widget(Clear, popup_area);
+    match modal {
+        Modal::Confirm { prompt, .. } => {
+            let p = Paragraph::new(prompt.as_str())
+                .block(Block::default().borders(Borders::ALL).title("Confirm (y/n)"));
+            f.render_widget(p, popup_area);
+        }
+        Modal::ConfirmTyped { prompt, input, .. } => {
+            let text = format!("{prompt}\n\n> {input}");
+            let p = Paragraph::new(text)
+                .block(Block::default().borders(Borders::ALL).title("Type to confirm (Enter/Esc)"));
+            f.render_widget(p, popup_area);
+        }
+    }
+}
+
+/// Carves a centered rectangle out of `area`, `percent_x`/`percent_y`
+/// wide/tall as a percentage of `area` itself. Standard ratatui popup
+/// pattern.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }

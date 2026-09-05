@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::exec::CommandRunner;
+use crate::ui::modal::{Modal, MutationCall, PendingAction};
 use crate::zfs::dataset::Dataset;
 use crate::zfs::pool::{Pool, VdevLine};
 use crate::zfs::snapshot::Snapshot;
@@ -27,6 +28,7 @@ pub enum WorkerMsg {
     Datasets(usize, Result<Vec<Dataset>>),
     Snapshots(usize, Result<Vec<Snapshot>>),
     Vdevs(usize, Result<Vec<VdevLine>>),
+    MutationDone(usize, Section, Result<()>),
 }
 
 pub struct App {
@@ -43,6 +45,7 @@ pub struct App {
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
     pub drilled_pool: Option<String>,
+    pub modal: Option<Modal>,
     pub status_message: Option<String>,
     pub should_quit: bool,
     in_flight: HashSet<(Section, usize)>,
@@ -67,6 +70,7 @@ impl App {
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             drilled_pool: None,
+            modal: None,
             status_message: None,
             should_quit: false,
             in_flight: HashSet::new(),
@@ -165,6 +169,20 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Pools => {
                 move_table_selection(&mut self.pools_table, self.pools.len(), false);
             }
+            KeyCode::Char('s') if self.current_section() == Section::Pools && self.drilled_pool.is_none() => {
+                if let Some(i) = self.pools_table.selected() {
+                    if let Some(pool) = self.pools.get(i) {
+                        self.modal = Some(Modal::Confirm {
+                            prompt: format!("Scrub pool '{}'? (y/n)", pool.name),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::Pools,
+                                call: MutationCall::ScrubPool { pool: pool.name.clone() },
+                            },
+                        });
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
             }
@@ -179,6 +197,65 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Routes a key press to the currently open modal. Returns
+    /// `Some(action)` when the modal was submitted/confirmed — the
+    /// caller (event loop) is responsible for looking up the target
+    /// host's runner and calling `dispatch_mutation`. Returns `None`
+    /// for a cancel, an in-progress edit, or an unrecognized key (which
+    /// leaves the modal open rather than silently dismissing it).
+    /// No-ops (returns `None`, does nothing) if no modal is open.
+    pub fn handle_modal_key(&mut self, key: KeyCode) -> Option<PendingAction> {
+        let modal = self.modal.take()?;
+        match modal {
+            Modal::Confirm { prompt, action } => match key {
+                KeyCode::Char('y') | KeyCode::Enter => Some(action),
+                KeyCode::Char('n') | KeyCode::Esc => None,
+                _ => {
+                    self.modal = Some(Modal::Confirm { prompt, action });
+                    None
+                }
+            },
+            Modal::ConfirmTyped { prompt, expected, mut input, action } => match key {
+                KeyCode::Esc => None,
+                KeyCode::Enter => {
+                    if input == expected {
+                        Some(action)
+                    } else {
+                        self.modal = Some(Modal::ConfirmTyped { prompt, expected, input, action });
+                        None
+                    }
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                    self.modal = Some(Modal::ConfirmTyped { prompt, expected, input, action });
+                    None
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                    self.modal = Some(Modal::ConfirmTyped { prompt, expected, input, action });
+                    None
+                }
+                _ => {
+                    self.modal = Some(Modal::ConfirmTyped { prompt, expected, input, action });
+                    None
+                }
+            },
+        }
+    }
+
+    /// Runs `action.call` on a worker thread against `runner` and
+    /// reports the outcome as `WorkerMsg::MutationDone`. The modal is
+    /// already closed by the time this is called (`handle_modal_key`
+    /// clears it on submit) — this only executes the mutation itself.
+    pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
+        let PendingAction { host, section, call } = action;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = call.run(runner.as_ref());
+            let _ = tx.send(WorkerMsg::MutationDone(host, section, result));
+        });
     }
 
     /// No-ops if a Pools refresh for the current host is already in
@@ -242,7 +319,14 @@ impl App {
         });
     }
 
-    pub fn drain_worker_messages(&mut self) {
+    /// Drains all pending worker messages, applying each to `self`.
+    /// Returns the list of sections that need re-listing because a
+    /// mutation targeting the currently-selected host just succeeded —
+    /// the caller (event loop) looks up the right runner and triggers
+    /// the actual refresh, since `App` has no way to resolve a host
+    /// index to a runner on its own.
+    pub fn drain_worker_messages(&mut self) -> Vec<Section> {
+        let mut refreshes_needed = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 WorkerMsg::Pools(host, result) => {
@@ -303,8 +387,27 @@ impl App {
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
                 }
+                WorkerMsg::MutationDone(host, section, result) => {
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    match result {
+                        Ok(()) => {
+                            self.status_message = None;
+                            refreshes_needed.push(section);
+                            if section == Section::Vdevs {
+                                // A disk going offline/online/being replaced
+                                // changes the parent pool's health too —
+                                // the one deliberate two-section exception.
+                                refreshes_needed.push(Section::Pools);
+                            }
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
             }
         }
+        refreshes_needed
     }
 }
 
@@ -352,6 +455,214 @@ mod tests {
     use super::*;
     use crate::exec::test_support::FakeRunner;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn handle_key_s_on_pools_opens_scrub_confirm_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right); // Hosts -> Pools
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Char('s'));
+        match app.modal {
+            Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+                assert_eq!(action.host, 0);
+                assert_eq!(action.section, Section::Pools);
+                assert_eq!(action.call, crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() });
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_s_with_no_row_selected_does_not_open_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('s'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_modal_key_confirm_yes_returns_action_and_clears_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action: action.clone() });
+        let result = app.handle_modal_key(KeyCode::Char('y'));
+        assert_eq!(result, Some(action));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_modal_key_confirm_enter_also_submits() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn handle_modal_key_confirm_no_cancels_and_clears_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
+        let result = app.handle_modal_key(KeyCode::Char('n'));
+        assert_eq!(result, None);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_modal_key_confirm_unrecognized_key_keeps_modal_open() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
+        let result = app.handle_modal_key(KeyCode::Char('x'));
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "an unrecognized key must not silently dismiss the confirmation");
+    }
+
+    #[test]
+    fn handle_modal_key_confirm_typed_requires_exact_match() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        app.modal = Some(crate::ui::modal::Modal::ConfirmTyped {
+            prompt: "Type the pool name:".to_string(),
+            expected: "tank".to_string(),
+            input: "tan".to_string(),
+            action: action.clone(),
+        });
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None, "submitting with a mismatched confirmation must not run the action");
+        match &app.modal {
+            Some(crate::ui::modal::Modal::ConfirmTyped { input, .. }) => assert_eq!(input, "tan"),
+            other => panic!("expected the modal to stay open, got {other:?}"),
+        }
+
+        // Type the missing character, then submit again.
+        let result = app.handle_modal_key(KeyCode::Char('k'));
+        assert_eq!(result, None);
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, Some(action));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_modal_key_confirm_typed_backspace_edits_input() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        app.modal = Some(crate::ui::modal::Modal::ConfirmTyped {
+            prompt: "Type the pool name:".to_string(),
+            expected: "tank".to_string(),
+            input: "tanx".to_string(),
+            action,
+        });
+        app.handle_modal_key(KeyCode::Backspace);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::ConfirmTyped { input, .. }) => assert_eq!(input, "tan"),
+            other => panic!("expected the modal to stay open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_confirm_typed_esc_cancels() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        app.modal = Some(crate::ui::modal::Modal::ConfirmTyped {
+            prompt: "Type the pool name:".to_string(),
+            expected: "tank".to_string(),
+            input: "tank".to_string(),
+            action,
+        });
+        let result = app.handle_modal_key(KeyCode::Esc);
+        assert_eq!(result, None);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn dispatch_mutation_success_queues_refresh_for_its_section() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(""));
+        app.dispatch_mutation(action, runner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let refreshes = loop {
+            let r = app.drain_worker_messages();
+            if !r.is_empty() || Instant::now() > deadline {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(refreshes, vec![Section::Pools]);
+        assert_eq!(app.status_message, None);
+    }
+
+    #[test]
+    fn dispatch_mutation_failure_sets_status_message_and_queues_no_refresh() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = crate::ui::modal::PendingAction {
+            host: 0,
+            section: Section::Pools,
+            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
+        };
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::failing("pool is busy", 1));
+        app.dispatch_mutation(action, runner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let refreshes = loop {
+            let r = app.drain_worker_messages();
+            if app.status_message.is_some() || Instant::now() > deadline {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(refreshes.is_empty());
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn dispatch_mutation_result_for_stale_host_is_discarded() {
+        // Simulates: a mutation was dispatched against host 0, the user
+        // switched to host 1, and only then did host 0's result arrive.
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Pools, Ok(()))).unwrap();
+        app.selected_host = 1; // navigated away before the result arrived
+        let refreshes = app.drain_worker_messages();
+        assert!(refreshes.is_empty(), "a mutation result for a host we've navigated away from must not queue a refresh");
+        assert_eq!(app.status_message, None);
+    }
 
     #[test]
     fn handle_key_navigates_sections_and_wraps() {

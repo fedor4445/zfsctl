@@ -1,4 +1,5 @@
 pub mod layout;
+pub mod modal;
 pub mod state;
 
 pub use state::App;
@@ -59,7 +60,23 @@ fn event_loop(
     inventory: &HostInventory,
 ) -> Result<()> {
     loop {
-        app.drain_worker_messages();
+        let refreshes = app.drain_worker_messages();
+        for section in refreshes {
+            if let Some(host) = inventory.hosts.get(app.selected_host) {
+                match section {
+                    Section::Pools => app.refresh_pools(host.runner.clone()),
+                    Section::Datasets => app.refresh_datasets(host.runner.clone()),
+                    Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
+                    Section::Vdevs => {
+                        if let Some(pool) = app.drilled_pool.clone() {
+                            app.refresh_vdevs(host.runner.clone(), pool);
+                        }
+                    }
+                    Section::Hosts => {}
+                }
+            }
+        }
+
         terminal
             .draw(|f| layout::draw(f, app))
             .map_err(|e| AppError::Config(format!("drawing frame: {e}")))?;
@@ -70,25 +87,33 @@ fn event_loop(
             if let Event::Key(key) =
                 event::read().map_err(|e| AppError::Config(format!("reading event: {e}")))?
             {
-                app.handle_key(key.code);
-                if key.code == KeyCode::Char('r') {
-                    if let Some(host) = inventory.hosts.get(app.selected_host) {
-                        if let Some(pool) = app.drilled_pool.clone() {
-                            app.refresh_vdevs(host.runner.clone(), pool);
-                        } else {
-                            match app.current_section() {
-                                Section::Pools => app.refresh_pools(host.runner.clone()),
-                                Section::Datasets => app.refresh_datasets(host.runner.clone()),
-                                Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
-                                Section::Hosts | Section::Vdevs => {}
+                if app.modal.is_some() {
+                    if let Some(action) = app.handle_modal_key(key.code) {
+                        if let Some(host) = inventory.hosts.get(action.host) {
+                            app.dispatch_mutation(action, host.runner.clone());
+                        }
+                    }
+                } else {
+                    app.handle_key(key.code);
+                    if key.code == KeyCode::Char('r') {
+                        if let Some(host) = inventory.hosts.get(app.selected_host) {
+                            if let Some(pool) = app.drilled_pool.clone() {
+                                app.refresh_vdevs(host.runner.clone(), pool);
+                            } else {
+                                match app.current_section() {
+                                    Section::Pools => app.refresh_pools(host.runner.clone()),
+                                    Section::Datasets => app.refresh_datasets(host.runner.clone()),
+                                    Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
+                                    Section::Hosts | Section::Vdevs => {}
+                                }
                             }
                         }
                     }
-                }
-                if key.code == KeyCode::Enter {
-                    if let Some(pool) = app.drilled_pool.clone() {
-                        if let Some(host) = inventory.hosts.get(app.selected_host) {
-                            app.refresh_vdevs(host.runner.clone(), pool);
+                    if key.code == KeyCode::Enter {
+                        if let Some(pool) = app.drilled_pool.clone() {
+                            if let Some(host) = inventory.hosts.get(app.selected_host) {
+                                app.refresh_vdevs(host.runner.clone(), pool);
+                            }
                         }
                     }
                 }
