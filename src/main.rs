@@ -1,4 +1,5 @@
 mod error;
+mod exec;
 
 fn main() {
     if let Err(e) = run() {
