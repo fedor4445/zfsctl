@@ -4,10 +4,11 @@ use crate::zfs::dataset::Dataset;
 use crate::zfs::pool::Pool;
 use crate::zfs::snapshot::Snapshot;
 use crossterm::event::KeyCode;
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
     Hosts,
     Pools,
@@ -35,9 +36,7 @@ pub struct App {
     pub snapshots: Vec<Snapshot>,
     pub status_message: Option<String>,
     pub should_quit: bool,
-    pub pools_loading: bool,
-    pub datasets_loading: bool,
-    pub snapshots_loading: bool,
+    in_flight: HashSet<(Section, usize)>,
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
 }
@@ -55,9 +54,7 @@ impl App {
             snapshots: Vec::new(),
             status_message: None,
             should_quit: false,
-            pools_loading: false,
-            datasets_loading: false,
-            snapshots_loading: false,
+            in_flight: HashSet::new(),
             tx,
             rx,
         }
@@ -67,10 +64,22 @@ impl App {
         self.sections[self.selected_section]
     }
 
-    /// True while any section has a refresh in flight. Used only for the
-    /// coarse "refreshing..." indicator in the sidebar title.
+    /// True while any (section, host) refresh is in flight. Used only
+    /// for the coarse "refreshing..." indicator in the sidebar title.
     pub fn is_loading(&self) -> bool {
-        self.pools_loading || self.datasets_loading || self.snapshots_loading
+        !self.in_flight.is_empty()
+    }
+
+    fn is_refreshing(&self, section: Section, host: usize) -> bool {
+        self.in_flight.contains(&(section, host))
+    }
+
+    fn begin_refresh(&mut self, section: Section, host: usize) {
+        self.in_flight.insert((section, host));
+    }
+
+    fn end_refresh(&mut self, section: Section, host: usize) {
+        self.in_flight.remove(&(section, host));
     }
 
     /// Name of the currently-selected host, for pane titles.
@@ -116,15 +125,17 @@ impl App {
         }
     }
 
-    /// No-ops if a pools refresh is already in flight — otherwise holding
-    /// 'r' against an unreachable host would spawn an unbounded number of
-    /// blocking threads/subprocesses, one per key-repeat tick.
+    /// No-ops if a Pools refresh for the current host is already in
+    /// flight — otherwise holding 'r' against an unreachable host would
+    /// spawn an unbounded number of blocking threads/subprocesses, one
+    /// per key-repeat tick. Keyed by host too, so a hung refresh for one
+    /// host never blocks refreshing a different host.
     pub fn refresh_pools(&mut self, runner: Arc<dyn CommandRunner>) {
-        if self.pools_loading {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::Pools, host) {
             return;
         }
-        self.pools_loading = true;
-        let host = self.selected_host;
+        self.begin_refresh(Section::Pools, host);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = crate::zfs::pool::list_pools(runner.as_ref());
@@ -134,11 +145,11 @@ impl App {
 
     /// See `refresh_pools` for why this no-ops while already in flight.
     pub fn refresh_datasets(&mut self, runner: Arc<dyn CommandRunner>) {
-        if self.datasets_loading {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::Datasets, host) {
             return;
         }
-        self.datasets_loading = true;
-        let host = self.selected_host;
+        self.begin_refresh(Section::Datasets, host);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = crate::zfs::dataset::list_datasets(runner.as_ref());
@@ -148,11 +159,11 @@ impl App {
 
     /// See `refresh_pools` for why this no-ops while already in flight.
     pub fn refresh_snapshots(&mut self, runner: Arc<dyn CommandRunner>) {
-        if self.snapshots_loading {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::Snapshots, host) {
             return;
         }
-        self.snapshots_loading = true;
-        let host = self.selected_host;
+        self.begin_refresh(Section::Snapshots, host);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = crate::zfs::snapshot::list_snapshots(runner.as_ref());
@@ -164,7 +175,7 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 WorkerMsg::Pools(host, result) => {
-                    self.pools_loading = false;
+                    self.end_refresh(Section::Pools, host);
                     if host != self.selected_host {
                         // Late result for a host we've since navigated
                         // away from — discard silently, it's not an error.
@@ -179,7 +190,7 @@ impl App {
                     }
                 }
                 WorkerMsg::Datasets(host, result) => {
-                    self.datasets_loading = false;
+                    self.end_refresh(Section::Datasets, host);
                     if host != self.selected_host {
                         continue;
                     }
@@ -192,7 +203,7 @@ impl App {
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => {
-                    self.snapshots_loading = false;
+                    self.end_refresh(Section::Snapshots, host);
                     if host != self.selected_host {
                         continue;
                     }
@@ -259,7 +270,7 @@ mod tests {
         app.tx.send(WorkerMsg::Pools(0, Ok(vec![pool.clone()]))).unwrap();
         app.drain_worker_messages();
         assert_eq!(app.pools, vec![pool]);
-        assert!(!app.pools_loading);
+        assert!(!app.is_refreshing(Section::Pools, 0));
     }
 
     #[test]
@@ -320,12 +331,12 @@ mod tests {
             free: 90,
             health: crate::zfs::pool::PoolHealth::Online,
         };
-        app.pools_loading = true;
+        app.begin_refresh(Section::Pools, 0);
         app.tx.send(WorkerMsg::Pools(0, Ok(vec![pool]))).unwrap();
         app.drain_worker_messages();
 
         assert!(app.pools.is_empty(), "stale result for host 0 must not overwrite the pane while host 1 is selected");
-        assert!(!app.pools_loading, "the in-flight flag must still clear even though the result was discarded");
+        assert!(!app.is_refreshing(Section::Pools, 0), "the in-flight flag must still clear even though the result was discarded");
         assert_eq!(app.status_message, None, "a discarded stale result is not an error");
     }
 
@@ -363,7 +374,7 @@ mod tests {
         let runner: Arc<dyn CommandRunner> = fake.clone();
 
         app.refresh_pools(runner.clone());
-        assert!(app.pools_loading);
+        assert!(app.is_refreshing(Section::Pools, 0));
         // A second refresh while the first is still in flight must be a
         // no-op — otherwise holding 'r' spawns unbounded threads/processes.
         app.refresh_pools(runner.clone());
@@ -382,5 +393,35 @@ mod tests {
             1,
             "second refresh_pools call while one is in flight must not spawn another thread"
         );
+    }
+
+    #[test]
+    fn refresh_pools_for_one_host_does_not_block_refresh_for_another_host() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        let fake_a = Arc::new(FakeRunner::new("tank\t100\t10\t90\tONLINE\n"));
+        let runner_a: Arc<dyn CommandRunner> = fake_a.clone();
+
+        // Host 0's refresh is "in flight" (never drained in this test, so it
+        // stays in flight for the duration).
+        app.refresh_pools(runner_a.clone());
+        assert!(app.is_refreshing(Section::Pools, 0));
+
+        // Switching to host 1 and refreshing must not be blocked by host 0's
+        // still-in-flight refresh.
+        app.selected_host = 1;
+        let fake_b = Arc::new(FakeRunner::new("scratch\t50\t5\t45\tONLINE\n"));
+        let runner_b: Arc<dyn CommandRunner> = fake_b.clone();
+        app.refresh_pools(runner_b.clone());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.pools.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.pools.len(), 1);
+        assert_eq!(app.pools[0].name, "scratch", "host 1's refresh must have run, not been blocked by host 0's in-flight one");
     }
 }
