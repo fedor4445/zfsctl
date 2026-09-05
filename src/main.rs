@@ -33,10 +33,15 @@ fn check_root() -> error::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn effective_uid_matches_nix() {
-        let is_root = nix::unistd::Uid::effective().is_root();
-        let expected = nix::unistd::Uid::effective().as_raw() == 0;
-        assert_eq!(is_root, expected);
+    fn check_root_matches_effective_uid() {
+        let result = check_root();
+        if nix::unistd::Uid::effective().is_root() {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(result, Err(error::AppError::Config(_))));
+        }
     }
 }
