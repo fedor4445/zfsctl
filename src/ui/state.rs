@@ -281,6 +281,40 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Snapshots => {
                 move_table_selection(&mut self.snapshots_table, self.snapshots.len(), false);
             }
+            KeyCode::Char('d') if self.current_section() == Section::Snapshots => {
+                if let Some(i) = self.snapshots_table.selected() {
+                    if let Some(snap) = self.snapshots.get(i) {
+                        let target = format!("{}@{}", snap.dataset, snap.name);
+                        self.modal = Some(Modal::ConfirmTyped {
+                            prompt: format!("Type the snapshot name to destroy '{target}':"),
+                            expected: target,
+                            input: String::new(),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::Snapshots,
+                                call: MutationCall::DestroySnapshot { dataset: snap.dataset.clone(), name: snap.name.clone() },
+                            },
+                        });
+                    }
+                }
+            }
+            KeyCode::Char('b') if self.current_section() == Section::Snapshots => {
+                if let Some(i) = self.snapshots_table.selected() {
+                    if let Some(snap) = self.snapshots.get(i) {
+                        let target = format!("{}@{}", snap.dataset, snap.name);
+                        self.modal = Some(Modal::ConfirmTyped {
+                            prompt: format!("Type the snapshot name to roll back to '{target}':"),
+                            expected: target,
+                            input: String::new(),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::Snapshots,
+                                call: MutationCall::RollbackSnapshot { dataset: snap.dataset.clone(), name: snap.name.clone() },
+                            },
+                        });
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1405,6 +1439,44 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0 }];
+        app.handle_key(KeyCode::Left); // Hosts -> Snapshots
+        app.snapshots_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        match app.modal {
+            Some(crate::ui::modal::Modal::ConfirmTyped { expected, action, .. }) => {
+                assert_eq!(expected, "tank/data@old-1");
+                assert_eq!(
+                    action.call,
+                    crate::ui::modal::MutationCall::DestroySnapshot { dataset: "tank/data".to_string(), name: "old-1".to_string() }
+                );
+            }
+            other => panic!("expected ConfirmTyped modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_b_on_snapshots_opens_rollback_confirm_typed_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0 }];
+        app.handle_key(KeyCode::Left);
+        app.snapshots_table.select(Some(0));
+        app.handle_key(KeyCode::Char('b'));
+        match app.modal {
+            Some(crate::ui::modal::Modal::ConfirmTyped { expected, action, .. }) => {
+                assert_eq!(expected, "tank/data@2026-09-01");
+                assert_eq!(
+                    action.call,
+                    crate::ui::modal::MutationCall::RollbackSnapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string() }
+                );
+            }
+            other => panic!("expected ConfirmTyped modal, got {other:?}"),
+        }
     }
 
     #[test]

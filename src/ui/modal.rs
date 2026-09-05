@@ -18,6 +18,8 @@ pub enum MutationCall {
     CreateDataset { name: String },
     DestroyDataset { name: String },
     CreateSnapshot { dataset: String, name: String },
+    DestroySnapshot { dataset: String, name: String },
+    RollbackSnapshot { dataset: String, name: String },
 }
 
 impl MutationCall {
@@ -39,6 +41,8 @@ impl MutationCall {
             MutationCall::CreateDataset { name } => crate::zfs::dataset::create_dataset(runner, name),
             MutationCall::DestroyDataset { name } => crate::zfs::dataset::destroy_dataset(runner, name),
             MutationCall::CreateSnapshot { dataset, name } => crate::zfs::snapshot::create_snapshot(runner, dataset, name),
+            MutationCall::DestroySnapshot { dataset, name } => crate::zfs::snapshot::destroy_snapshot(runner, dataset, name),
+            MutationCall::RollbackSnapshot { dataset, name } => crate::zfs::snapshot::rollback_snapshot(runner, dataset, name),
         }
     }
 }
@@ -203,5 +207,23 @@ mod tests {
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("zfs".to_string(), vec!["snapshot".to_string(), "--".to_string(), "tank/data@manual-1".to_string()]));
+    }
+
+    #[test]
+    fn destroy_snapshot_call_runs_destroy_snapshot() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::DestroySnapshot { dataset: "tank/data".to_string(), name: "old-1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+    }
+
+    #[test]
+    fn rollback_snapshot_call_runs_rollback_snapshot() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::RollbackSnapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["rollback".to_string(), "--".to_string(), "tank/data@2026-09-01".to_string()]));
     }
 }
