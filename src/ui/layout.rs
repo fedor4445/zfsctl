@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(3)])
@@ -51,7 +51,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
-fn draw_main(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
     match app.sections[app.selected_section] {
         Section::Hosts => draw_hosts(f, app, area),
         Section::Pools => draw_pools(f, app, area),
@@ -78,7 +78,7 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
-fn draw_pools(f: &mut Frame, app: &App, area: Rect) {
+fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app.pools.iter().map(|p| {
         Row::new(vec![
             p.name.clone(),
@@ -98,11 +98,12 @@ fn draw_pools(f: &mut Frame, app: &App, area: Rect) {
     let title = format!("Pools — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Size", "Alloc", "Free", "Health"]))
-        .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(table, area);
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.pools_table);
 }
 
-fn draw_datasets(f: &mut Frame, app: &App, area: Rect) {
+fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app.datasets.iter().map(|d| {
         Row::new(vec![
             d.name.clone(),
@@ -120,11 +121,12 @@ fn draw_datasets(f: &mut Frame, app: &App, area: Rect) {
     let title = format!("Datasets — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Used", "Avail", "Kind"]))
-        .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(table, area);
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.datasets_table);
 }
 
-fn draw_snapshots(f: &mut Frame, app: &App, area: Rect) {
+fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .snapshots
         .iter()
@@ -133,6 +135,7 @@ fn draw_snapshots(f: &mut Frame, app: &App, area: Rect) {
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Snapshot", "Used"]))
-        .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(table, area);
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.snapshots_table);
 }

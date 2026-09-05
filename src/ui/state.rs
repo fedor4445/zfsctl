@@ -4,6 +4,7 @@ use crate::zfs::dataset::Dataset;
 use crate::zfs::pool::Pool;
 use crate::zfs::snapshot::Snapshot;
 use crossterm::event::KeyCode;
+use ratatui::widgets::TableState;
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -34,6 +35,9 @@ pub struct App {
     pub pools: Vec<Pool>,
     pub datasets: Vec<Dataset>,
     pub snapshots: Vec<Snapshot>,
+    pub pools_table: TableState,
+    pub datasets_table: TableState,
+    pub snapshots_table: TableState,
     pub status_message: Option<String>,
     pub should_quit: bool,
     in_flight: HashSet<(Section, usize)>,
@@ -52,6 +56,9 @@ impl App {
             pools: Vec::new(),
             datasets: Vec::new(),
             snapshots: Vec::new(),
+            pools_table: TableState::default(),
+            datasets_table: TableState::default(),
+            snapshots_table: TableState::default(),
             status_message: None,
             should_quit: false,
             in_flight: HashSet::new(),
@@ -93,6 +100,9 @@ impl App {
         self.pools.clear();
         self.datasets.clear();
         self.snapshots.clear();
+        self.pools_table.select(None);
+        self.datasets_table.select(None);
+        self.snapshots_table.select(None);
     }
 
     pub fn handle_key(&mut self, key: KeyCode) {
@@ -120,6 +130,24 @@ impl App {
                     self.selected_host - 1
                 };
                 self.clear_host_data();
+            }
+            KeyCode::Down if self.current_section() == Section::Pools => {
+                move_table_selection(&mut self.pools_table, self.pools.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Pools => {
+                move_table_selection(&mut self.pools_table, self.pools.len(), false);
+            }
+            KeyCode::Down if self.current_section() == Section::Datasets => {
+                move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Datasets => {
+                move_table_selection(&mut self.datasets_table, self.datasets.len(), false);
+            }
+            KeyCode::Down if self.current_section() == Section::Snapshots => {
+                move_table_selection(&mut self.snapshots_table, self.snapshots.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Snapshots => {
+                move_table_selection(&mut self.snapshots_table, self.snapshots.len(), false);
             }
             _ => {}
         }
@@ -184,6 +212,7 @@ impl App {
                     match result {
                         Ok(pools) => {
                             self.pools = pools;
+                            clamp_table_selection(&mut self.pools_table, self.pools.len());
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -197,6 +226,7 @@ impl App {
                     match result {
                         Ok(datasets) => {
                             self.datasets = datasets;
+                            clamp_table_selection(&mut self.datasets_table, self.datasets.len());
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -210,12 +240,52 @@ impl App {
                     match result {
                         Ok(snapshots) => {
                             self.snapshots = snapshots;
+                            clamp_table_selection(&mut self.snapshots_table, self.snapshots.len());
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
                 }
             }
+        }
+    }
+}
+
+/// Moves a `TableState`'s selection by one row within `[0, len)`,
+/// wrapping at either end (consistent with the Hosts/section navigation
+/// style elsewhere in `App`). No-ops (selection stays `None`) when
+/// `len == 0` — there's nothing to select in an empty list.
+fn move_table_selection(state: &mut TableState, len: usize, forward: bool) {
+    if len == 0 {
+        state.select(None);
+        return;
+    }
+    let next = match (state.selected(), forward) {
+        (None, true) => 0,
+        (None, false) => len - 1,
+        (Some(i), true) => (i + 1) % len,
+        (Some(i), false) => {
+            if i == 0 {
+                len - 1
+            } else {
+                i - 1
+            }
+        }
+    };
+    state.select(Some(next));
+}
+
+/// Pulls a `TableState`'s selection back into range after the
+/// underlying list shrinks (e.g. a refresh returns fewer rows than
+/// before). Selects `None` if the list is now empty.
+fn clamp_table_selection(state: &mut TableState, len: usize) {
+    if len == 0 {
+        state.select(None);
+        return;
+    }
+    if let Some(i) = state.selected() {
+        if i >= len {
+            state.select(Some(len - 1));
         }
     }
 }
@@ -359,12 +429,130 @@ mod tests {
             mountpoint: None,
         }];
         app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "snap1".to_string(), used: 1 }];
+        app.pools_table.select(Some(0));
+        app.datasets_table.select(Some(0));
+        app.snapshots_table.select(Some(0));
 
         app.handle_key(KeyCode::Down); // still on Hosts section by default; switches host
 
         assert!(app.pools.is_empty());
         assert!(app.datasets.is_empty());
         assert!(app.snapshots.is_empty());
+        assert_eq!(app.pools_table.selected(), None);
+        assert_eq!(app.datasets_table.selected(), None);
+        assert_eq!(app.snapshots_table.selected(), None);
+    }
+
+    #[test]
+    fn handle_key_navigates_pool_rows_and_wraps() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![
+            Pool { name: "a".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online },
+            Pool { name: "b".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online },
+        ];
+        app.handle_key(KeyCode::Right); // Hosts -> Pools
+        assert_eq!(app.current_section(), Section::Pools);
+        assert_eq!(app.pools_table.selected(), None);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.pools_table.selected(), Some(0));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.pools_table.selected(), Some(1));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.pools_table.selected(), Some(0), "must wrap back to the first row");
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.pools_table.selected(), Some(1), "must wrap back to the last row");
+    }
+
+    #[test]
+    fn handle_key_pool_row_navigation_is_noop_on_empty_list() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.pools_table.selected(), None);
+    }
+
+    #[test]
+    fn drain_worker_messages_clamps_selected_pool_row_when_list_shrinks() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools_table.select(Some(2));
+        app.begin_refresh(Section::Pools, 0);
+        app.tx
+            .send(WorkerMsg::Pools(0, Ok(vec![Pool {
+                name: "only".to_string(),
+                size: 0,
+                allocated: 0,
+                free: 0,
+                health: crate::zfs::pool::PoolHealth::Online,
+            }])))
+            .unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.pools_table.selected(), Some(0));
+    }
+
+    #[test]
+    fn handle_key_navigates_dataset_rows_and_wraps() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![
+            Dataset { name: "a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+            Dataset { name: "b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+        ];
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right); // Hosts -> Pools -> Datasets
+        assert_eq!(app.current_section(), Section::Datasets);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.datasets_table.selected(), Some(0));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.datasets_table.selected(), Some(1), "must wrap back to the last row");
+    }
+
+    #[test]
+    fn drain_worker_messages_clamps_selected_dataset_row_when_list_shrinks() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets_table.select(Some(2));
+        app.begin_refresh(Section::Datasets, 0);
+        app.tx
+            .send(WorkerMsg::Datasets(0, Ok(vec![Dataset {
+                name: "only".to_string(),
+                kind: crate::zfs::dataset::DatasetKind::Filesystem,
+                used: 0,
+                available: 0,
+                referenced: 0,
+                mountpoint: None,
+            }])))
+            .unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.datasets_table.selected(), Some(0));
+    }
+
+    #[test]
+    fn handle_key_navigates_snapshot_rows_and_wraps() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.snapshots = vec![
+            Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0 },
+            Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0 },
+        ];
+        app.handle_key(KeyCode::Left); // Hosts -> Snapshots (wraps backward)
+        assert_eq!(app.current_section(), Section::Snapshots);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.snapshots_table.selected(), Some(0));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.snapshots_table.selected(), Some(1), "must wrap back to the last row");
+    }
+
+    #[test]
+    fn drain_worker_messages_clamps_selected_snapshot_row_when_list_shrinks() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.snapshots_table.select(Some(2));
+        app.begin_refresh(Section::Snapshots, 0);
+        app.tx
+            .send(WorkerMsg::Snapshots(0, Ok(vec![Snapshot {
+                dataset: "tank/data".to_string(),
+                name: "only".to_string(),
+                used: 0,
+            }])))
+            .unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.snapshots_table.selected(), Some(0));
     }
 
     #[test]
