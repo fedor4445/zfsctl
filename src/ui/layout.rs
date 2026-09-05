@@ -182,6 +182,16 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
                 .block(Block::default().borders(Borders::ALL).title("Type to confirm (Enter/Esc)"));
             f.render_widget(p, popup_area);
         }
+        Modal::Form { title, fields, focused, .. } => {
+            let mut lines = Vec::new();
+            for (i, field) in fields.iter().enumerate() {
+                let marker = if i == *focused { ">" } else { " " };
+                lines.push(format!("{marker} {}: {}", field.label, field.value));
+            }
+            let p = Paragraph::new(lines.join("\n"))
+                .block(Block::default().borders(Borders::ALL).title(title.as_str()));
+            f.render_widget(p, popup_area);
+        }
     }
 }
 

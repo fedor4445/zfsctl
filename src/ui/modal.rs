@@ -11,6 +11,7 @@ use crate::ui::state::Section;
 pub enum MutationCall {
     ScrubPool { pool: String },
     DestroyPool { pool: String },
+    CreatePool { name: String, vdev_spec: Vec<String> },
 }
 
 impl MutationCall {
@@ -20,6 +21,10 @@ impl MutationCall {
         match self {
             MutationCall::ScrubPool { pool } => crate::zfs::pool::scrub_pool(runner, pool),
             MutationCall::DestroyPool { pool } => crate::zfs::pool::destroy_pool(runner, pool),
+            MutationCall::CreatePool { name, vdev_spec } => {
+                let spec: Vec<&str> = vdev_spec.iter().map(String::as_str).collect();
+                crate::zfs::pool::create_pool(runner, name, &spec)
+            }
         }
     }
 }
@@ -41,6 +46,17 @@ pub struct FormField {
     pub value: String,
 }
 
+/// Which mutation a `Modal::Form` is collecting input for, plus the
+/// context (host, and any row data fixed at modal-open time) that
+/// doesn't come from the form's fields themselves. Field values are
+/// read positionally in `build_pending_action` — the order here must
+/// match the order the modal's `fields` were constructed in.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FormKind {
+    /// Fields: `[name, vdev_spec]`.
+    CreatePool { host: usize },
+}
+
 /// A modal dialog awaiting user input before a mutation runs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
@@ -52,6 +68,14 @@ pub enum Modal {
         expected: String,
         input: String,
         action: PendingAction,
+    },
+    /// Labeled text-field input for creation operations. No
+    /// confirmation beyond submitting the form itself.
+    Form {
+        title: String,
+        fields: Vec<FormField>,
+        focused: usize,
+        kind: FormKind,
     },
 }
 
@@ -83,5 +107,23 @@ mod tests {
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("zpool".to_string(), vec!["destroy".to_string(), "--".to_string(), "scratch".to_string()]));
+    }
+
+    #[test]
+    fn create_pool_call_splits_vdev_spec_and_runs_create_pool() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::CreatePool {
+            name: "tank".to_string(),
+            vdev_spec: vec!["mirror".to_string(), "da0".to_string(), "da1".to_string()],
+        };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            (
+                "zpool".to_string(),
+                vec!["create".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()]
+            )
+        );
     }
 }

@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::exec::CommandRunner;
-use crate::ui::modal::{Modal, MutationCall, PendingAction};
+use crate::ui::modal::{FormField, FormKind, Modal, MutationCall, PendingAction};
 use crate::zfs::dataset::Dataset;
 use crate::zfs::pool::{Pool, VdevLine};
 use crate::zfs::snapshot::Snapshot;
@@ -199,6 +199,17 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('n') if self.current_section() == Section::Pools && self.drilled_pool.is_none() => {
+                self.modal = Some(Modal::Form {
+                    title: "Create Pool".to_string(),
+                    fields: vec![
+                        FormField { label: "Name".to_string(), value: String::new() },
+                        FormField { label: "Vdev spec (e.g. mirror da0 da1)".to_string(), value: String::new() },
+                    ],
+                    focused: 0,
+                    kind: FormKind::CreatePool { host: self.selected_host },
+                });
+            }
             KeyCode::Down if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
             }
@@ -255,6 +266,43 @@ impl App {
                 }
                 _ => {
                     self.modal = Some(Modal::ConfirmTyped { prompt, expected, input, action });
+                    None
+                }
+            },
+            Modal::Form { title, mut fields, mut focused, kind } => match key {
+                KeyCode::Esc => None,
+                KeyCode::Tab => {
+                    focused = (focused + 1) % fields.len();
+                    self.modal = Some(Modal::Form { title, fields, focused, kind });
+                    None
+                }
+                KeyCode::Enter => {
+                    if focused + 1 < fields.len() {
+                        focused += 1;
+                        self.modal = Some(Modal::Form { title, fields, focused, kind });
+                        None
+                    } else {
+                        match build_pending_action(&kind, &fields) {
+                            Some(action) => Some(action),
+                            None => {
+                                self.modal = Some(Modal::Form { title, fields, focused, kind });
+                                None
+                            }
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    fields[focused].value.pop();
+                    self.modal = Some(Modal::Form { title, fields, focused, kind });
+                    None
+                }
+                KeyCode::Char(c) => {
+                    fields[focused].value.push(c);
+                    self.modal = Some(Modal::Form { title, fields, focused, kind });
+                    None
+                }
+                _ => {
+                    self.modal = Some(Modal::Form { title, fields, focused, kind });
                     None
                 }
             },
@@ -424,6 +472,28 @@ impl App {
             }
         }
         refreshes_needed
+    }
+}
+
+/// Builds the `PendingAction` for a submitted form, mapping its fields
+/// positionally per `FormKind`'s documented field order. Returns `None`
+/// if a required field is empty — the caller keeps the form modal open
+/// in that case rather than losing the user's input.
+fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<PendingAction> {
+    match kind {
+        FormKind::CreatePool { host } => {
+            let name = fields[0].value.trim();
+            let vdev_spec_raw = fields[1].value.trim();
+            if name.is_empty() || vdev_spec_raw.is_empty() {
+                return None;
+            }
+            let vdev_spec: Vec<String> = vdev_spec_raw.split_whitespace().map(String::from).collect();
+            Some(PendingAction {
+                host: *host,
+                section: Section::Pools,
+                call: MutationCall::CreatePool { name: name.to_string(), vdev_spec },
+            })
+        }
     }
 }
 
@@ -1086,5 +1156,127 @@ mod tests {
         }
         assert_eq!(app.pools.len(), 1);
         assert_eq!(app.pools[0].name, "scratch", "host 1's refresh must have run, not been blocked by host 0's in-flight one");
+    }
+
+    #[test]
+    fn handle_key_n_on_pools_opens_create_pool_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right); // Hosts -> Pools
+        app.handle_key(KeyCode::Char('n'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, focused, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(*focused, 0);
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_form_char_edits_focused_field() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Char('t'));
+        app.handle_modal_key(KeyCode::Char('a'));
+        app.handle_modal_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Char('k'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, .. }) => assert_eq!(fields[0].value, "tank"),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_form_tab_moves_focus_and_wraps() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Tab);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 1),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 0, "must wrap back to the first field"),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_form_enter_on_non_last_field_advances_focus() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 1),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_form_enter_on_last_field_with_empty_required_value_keeps_form_open() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Char('t')); // name = "t"
+        app.handle_modal_key(KeyCode::Tab); // move to vdev spec field, leave it empty
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None, "an empty required field must block submission");
+        assert!(app.modal.is_some(), "the form must stay open so the user can fill in the missing field");
+    }
+
+    #[test]
+    fn handle_modal_key_form_enter_on_last_field_with_valid_values_submits() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "tank".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "mirror da0 da1".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(
+            result,
+            Some(crate::ui::modal::PendingAction {
+                host: 0,
+                section: Section::Pools,
+                call: crate::ui::modal::MutationCall::CreatePool {
+                    name: "tank".to_string(),
+                    vdev_spec: vec!["mirror".to_string(), "da0".to_string(), "da1".to_string()],
+                },
+            })
+        );
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_modal_key_form_esc_cancels() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        let result = app.handle_modal_key(KeyCode::Esc);
+        assert_eq!(result, None);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_modal_key_form_backspace_edits_focused_field() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Char('t'));
+        app.handle_modal_key(KeyCode::Char('x'));
+        app.handle_modal_key(KeyCode::Backspace);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, .. }) => assert_eq!(fields[0].value, "t"),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
     }
 }
