@@ -27,7 +27,11 @@ pub enum WorkerMsg {
     Pools(usize, Result<Vec<Pool>>),
     Datasets(usize, Result<Vec<Dataset>>),
     Snapshots(usize, Result<Vec<Snapshot>>),
-    Vdevs(usize, Result<Vec<VdevLine>>),
+    /// The `String` is the name of the pool this vdev refresh was for —
+    /// needed so a slow result can be told apart from one for a
+    /// different pool the user has since drilled into (see the
+    /// stale-pool check in `drain_worker_messages`).
+    Vdevs(usize, String, Result<Vec<VdevLine>>),
     MutationDone(usize, Section, Result<()>),
 }
 
@@ -49,6 +53,13 @@ pub struct App {
     pub status_message: Option<String>,
     pub should_quit: bool,
     in_flight: HashSet<(Section, usize)>,
+    /// Refresh requests for a `(section, host)` that arrived while a
+    /// refresh for that same key was already in flight. Recorded here
+    /// instead of being silently dropped, and re-dispatched (via the
+    /// `Vec<Section>` returned from `drain_worker_messages`) once the
+    /// in-flight one completes — see `refresh_pools` et al. and the
+    /// pending-refresh handling in `drain_worker_messages`.
+    pending_refresh: HashSet<(Section, usize)>,
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
 }
@@ -74,6 +85,7 @@ impl App {
             status_message: None,
             should_quit: false,
             in_flight: HashSet::new(),
+            pending_refresh: HashSet::new(),
             tx,
             rx,
         }
@@ -439,14 +451,19 @@ impl App {
         });
     }
 
-    /// No-ops if a Pools refresh for the current host is already in
-    /// flight — otherwise holding 'r' against an unreachable host would
-    /// spawn an unbounded number of blocking threads/subprocesses, one
-    /// per key-repeat tick. Keyed by host too, so a hung refresh for one
-    /// host never blocks refreshing a different host.
+    /// Does not spawn a second refresh if one for the current host is
+    /// already in flight — otherwise holding 'r' against an unreachable
+    /// host would spawn an unbounded number of blocking threads/subprocesses,
+    /// one per key-repeat tick. Keyed by host too, so a hung refresh for
+    /// one host never blocks refreshing a different host. The request is
+    /// not simply dropped, though: it's recorded in `pending_refresh` and
+    /// re-dispatched (see `drain_worker_messages`) once the in-flight one
+    /// completes, so a manual 'r' press (or a post-mutation refresh) that
+    /// arrives mid-flight is never silently lost.
     pub fn refresh_pools(&mut self, runner: Arc<dyn CommandRunner>) {
         let host = self.selected_host;
         if self.is_refreshing(Section::Pools, host) {
+            self.pending_refresh.insert((Section::Pools, host));
             return;
         }
         self.begin_refresh(Section::Pools, host);
@@ -457,10 +474,12 @@ impl App {
         });
     }
 
-    /// See `refresh_pools` for why this no-ops while already in flight.
+    /// See `refresh_pools` for why this queues rather than drops a
+    /// request while already in flight.
     pub fn refresh_datasets(&mut self, runner: Arc<dyn CommandRunner>) {
         let host = self.selected_host;
         if self.is_refreshing(Section::Datasets, host) {
+            self.pending_refresh.insert((Section::Datasets, host));
             return;
         }
         self.begin_refresh(Section::Datasets, host);
@@ -471,10 +490,12 @@ impl App {
         });
     }
 
-    /// See `refresh_pools` for why this no-ops while already in flight.
+    /// See `refresh_pools` for why this queues rather than drops a
+    /// request while already in flight.
     pub fn refresh_snapshots(&mut self, runner: Arc<dyn CommandRunner>) {
         let host = self.selected_host;
         if self.is_refreshing(Section::Snapshots, host) {
+            self.pending_refresh.insert((Section::Snapshots, host));
             return;
         }
         self.begin_refresh(Section::Snapshots, host);
@@ -485,37 +506,59 @@ impl App {
         });
     }
 
-    /// See `refresh_pools` for why this no-ops while already in flight.
-    /// `pool` is the name of the currently drilled-into pool.
+    /// See `refresh_pools` for why this queues rather than drops a
+    /// request while already in flight. `pool` is the name of the
+    /// currently drilled-into pool.
+    ///
+    /// The in-flight key is `(Section::Vdevs, host)` — it does not
+    /// include the pool name. This means drilling into a *different*
+    /// pool while a previous pool's vdev refresh for the same host is
+    /// still in flight will queue the new request as pending rather than
+    /// starting it immediately; the user can press 'r' again once the
+    /// stale one clears. This is intentionally simple: correctness (never
+    /// showing one pool's disks under another pool's title) is fully
+    /// handled by the stale-pool check in `drain_worker_messages`, so the
+    /// in-flight key doesn't need to be pool-aware too.
     pub fn refresh_vdevs(&mut self, runner: Arc<dyn CommandRunner>, pool: String) {
         let host = self.selected_host;
         if self.is_refreshing(Section::Vdevs, host) {
+            self.pending_refresh.insert((Section::Vdevs, host));
             return;
         }
         self.begin_refresh(Section::Vdevs, host);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = crate::zfs::pool::get_pool_vdevs(runner.as_ref(), &pool);
-            let _ = tx.send(WorkerMsg::Vdevs(host, result));
+            let _ = tx.send(WorkerMsg::Vdevs(host, pool, result));
         });
     }
 
     /// Drains all pending worker messages, applying each to `self`.
-    /// Returns the list of sections that need re-listing because a
-    /// mutation targeting the currently-selected host just succeeded —
-    /// the caller (event loop) looks up the right runner and triggers
-    /// the actual refresh, since `App` has no way to resolve a host
-    /// index to a runner on its own.
+    /// Returns the list of sections that need re-listing, either because
+    /// a mutation targeting the currently-selected host just succeeded,
+    /// or because a refresh request for that section arrived while a
+    /// same-section refresh was already in flight and got queued in
+    /// `pending_refresh` (see `refresh_pools` et al.) instead of being
+    /// dropped — the caller (event loop) looks up the right runner and
+    /// triggers the actual refresh in both cases, since `App` has no way
+    /// to resolve a host index to a runner on its own.
     pub fn drain_worker_messages(&mut self) -> Vec<Section> {
         let mut refreshes_needed = Vec::new();
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 WorkerMsg::Pools(host, result) => {
                     self.end_refresh(Section::Pools, host);
+                    // A refresh request that arrived while this one was in
+                    // flight (see `refresh_pools`) is fulfilled by queuing a
+                    // fresh one now, rather than staying lost forever.
+                    let had_pending = self.pending_refresh.remove(&(Section::Pools, host));
                     if host != self.selected_host {
                         // Late result for a host we've since navigated
                         // away from — discard silently, it's not an error.
                         continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::Pools);
                     }
                     match result {
                         Ok(pools) => {
@@ -528,8 +571,12 @@ impl App {
                 }
                 WorkerMsg::Datasets(host, result) => {
                     self.end_refresh(Section::Datasets, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::Datasets, host));
                     if host != self.selected_host {
                         continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::Datasets);
                     }
                     match result {
                         Ok(datasets) => {
@@ -542,8 +589,12 @@ impl App {
                 }
                 WorkerMsg::Snapshots(host, result) => {
                     self.end_refresh(Section::Snapshots, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::Snapshots, host));
                     if host != self.selected_host {
                         continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::Snapshots);
                     }
                     match result {
                         Ok(snapshots) => {
@@ -554,9 +605,20 @@ impl App {
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
                 }
-                WorkerMsg::Vdevs(host, result) => {
+                WorkerMsg::Vdevs(host, pool, result) => {
                     self.end_refresh(Section::Vdevs, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::Vdevs, host));
                     if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::Vdevs);
+                    }
+                    // Stale-pool check: a slow refresh for a pool the user
+                    // has since backed out of (or replaced with a different
+                    // drill-down) must not overwrite the vdev pane with the
+                    // wrong pool's disks under the current pool's title.
+                    if Some(&pool) != self.drilled_pool.as_ref() {
                         continue;
                     }
                     match result {
@@ -1265,6 +1327,10 @@ mod tests {
     #[test]
     fn refresh_vdevs_populates_vdevs_from_fake_runner() {
         let mut app = App::new(vec!["local".to_string()]);
+        // In the real event loop, `refresh_vdevs` is only ever called while
+        // drilled into the pool being refreshed — the stale-pool check in
+        // `drain_worker_messages` requires this to accept the result.
+        app.drilled_pool = Some("tank".to_string());
         let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(
             "  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME  STATE     READ WRITE CKSUM\n\ttank  ONLINE       0     0     0\n\nerrors: No known data errors\n",
         ));
@@ -1280,6 +1346,84 @@ mod tests {
         }
         assert_eq!(app.vdevs.len(), 1);
         assert_eq!(app.vdevs[0].name, "tank");
+    }
+
+    #[test]
+    fn vdevs_result_for_a_different_pool_than_currently_drilled_is_discarded() {
+        // Simulates: the user drilled into "tank" (slow refresh in flight),
+        // backed out, drilled into "scratch" instead — "tank"'s result then
+        // arrives late and must not be shown under "scratch"'s title.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.drilled_pool = Some("scratch".to_string());
+        app.status_message = Some("stale but unrelated".to_string());
+        app.vdevs = vec![VdevLine { depth: 0, name: "scratch".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+
+        app.tx
+            .send(WorkerMsg::Vdevs(
+                0,
+                "tank".to_string(),
+                Ok(vec![VdevLine { depth: 0, name: "tank".to_string(), health: crate::zfs::pool::PoolHealth::Online }]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+
+        assert_eq!(app.vdevs.len(), 1);
+        assert_eq!(app.vdevs[0].name, "scratch", "a vdev result for a pool other than the currently drilled-into one must not overwrite the pane");
+        assert_eq!(
+            app.status_message,
+            Some("stale but unrelated".to_string()),
+            "a discarded stale-pool result must not clear an unrelated status message"
+        );
+    }
+
+    #[test]
+    fn refresh_request_while_in_flight_is_queued_and_redispatched_on_completion() {
+        // Simulates: the user presses 'r' while a refresh for the same
+        // (section, host) is already in flight (e.g. a slow SSH call, or a
+        // post-mutation auto-refresh landing mid-flight). The second
+        // request must not be silently dropped — it must run once the
+        // first one completes.
+        let mut app = App::new(vec!["local".to_string()]);
+        let fake = Arc::new(FakeRunner::new("tank\t100\t10\t90\tONLINE\n"));
+        let runner: Arc<dyn CommandRunner> = fake.clone();
+
+        app.refresh_pools(runner.clone());
+        assert!(app.is_refreshing(Section::Pools, 0));
+
+        // Second request while the first is still in flight.
+        app.refresh_pools(runner.clone());
+        assert!(
+            app.pending_refresh.contains(&(Section::Pools, 0)),
+            "the second request must be remembered rather than dropped"
+        );
+
+        // Let the first refresh complete and drain its result.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let refreshes = loop {
+            let r = app.drain_worker_messages();
+            if !r.is_empty() || Instant::now() > deadline {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(refreshes, vec![Section::Pools], "the queued request must surface for the event loop to redispatch");
+        assert!(
+            !app.pending_refresh.contains(&(Section::Pools, 0)),
+            "the pending flag must be cleared once it has been surfaced for redispatch"
+        );
+
+        // Simulate the event loop redispatching the queued request.
+        app.refresh_pools(runner.clone());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if fake.calls.lock().unwrap().len() >= 2 || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fake.calls.lock().unwrap().len(), 2, "the redispatched refresh must actually run against the runner");
     }
 
     #[test]
