@@ -10,6 +10,7 @@ use crate::ui::state::Section;
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutationCall {
     ScrubPool { pool: String },
+    DestroyPool { pool: String },
 }
 
 impl MutationCall {
@@ -18,6 +19,7 @@ impl MutationCall {
     pub fn run(&self, runner: &dyn CommandRunner) -> Result<()> {
         match self {
             MutationCall::ScrubPool { pool } => crate::zfs::pool::scrub_pool(runner, pool),
+            MutationCall::DestroyPool { pool } => crate::zfs::pool::destroy_pool(runner, pool),
         }
     }
 }
@@ -72,5 +74,14 @@ mod tests {
         let runner = FakeRunner::failing("pool is busy", 1);
         let call = MutationCall::ScrubPool { pool: "tank".to_string() };
         assert!(call.run(&runner).is_err());
+    }
+
+    #[test]
+    fn destroy_pool_call_runs_destroy_pool() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::DestroyPool { pool: "scratch".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["destroy".to_string(), "--".to_string(), "scratch".to_string()]));
     }
 }

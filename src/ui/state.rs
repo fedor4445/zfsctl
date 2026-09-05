@@ -183,6 +183,22 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('d') if self.current_section() == Section::Pools && self.drilled_pool.is_none() => {
+                if let Some(i) = self.pools_table.selected() {
+                    if let Some(pool) = self.pools.get(i) {
+                        self.modal = Some(Modal::ConfirmTyped {
+                            prompt: format!("Type the pool name to destroy '{}':", pool.name),
+                            expected: pool.name.clone(),
+                            input: String::new(),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::Pools,
+                                call: MutationCall::DestroyPool { pool: pool.name.clone() },
+                            },
+                        });
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
             }
@@ -480,6 +496,22 @@ mod tests {
         app.handle_key(KeyCode::Right);
         app.handle_key(KeyCode::Char('s'));
         assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_key_d_on_pools_opens_destroy_confirm_typed_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "scratch".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Right);
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        match app.modal {
+            Some(crate::ui::modal::Modal::ConfirmTyped { expected, action, .. }) => {
+                assert_eq!(expected, "scratch");
+                assert_eq!(action.call, crate::ui::modal::MutationCall::DestroyPool { pool: "scratch".to_string() });
+            }
+            other => panic!("expected ConfirmTyped modal, got {other:?}"),
+        }
     }
 
     #[test]
