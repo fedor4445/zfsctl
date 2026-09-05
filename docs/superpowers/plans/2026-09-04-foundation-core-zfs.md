@@ -837,8 +837,10 @@ pub fn list_pools(runner: &dyn CommandRunner) -> Result<Vec<Pool>> {
 
 /// Runs `zpool status <pool>` and parses its vdev tree. Separate from
 /// `list_pools` because `zpool status` has no tabular `-H -p -o` form.
+/// The `--` before `pool` stops `zpool` from treating a pool name that
+/// starts with `-` as an option flag (argument injection).
 pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<VdevLine>> {
-    let output = runner.run("zpool", &["status", pool])?;
+    let output = runner.run("zpool", &["status", "--", pool])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool status {pool}"),
@@ -853,9 +855,10 @@ pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<Vdev
 /// or `&["raidz1", "da0", "da1", "da2"]`. Guided vdev-spec construction
 /// (picking disks/redundancy from a UI wizard) depends on the disk
 /// inventory built in Plan 5, so it is out of scope here — this function
-/// takes an already-built spec.
+/// takes an already-built spec. The `--` before `name` stops `zpool`
+/// from treating a name that starts with `-` as an option flag.
 pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -> Result<()> {
-    let mut args = vec!["create", name];
+    let mut args = vec!["create", "--", name];
     args.extend_from_slice(vdev_spec);
     let output = runner.run("zpool", &args)?;
     if !output.success() {
@@ -869,7 +872,7 @@ pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -
 }
 
 pub fn scrub_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
-    let output = runner.run("zpool", &["scrub", pool])?;
+    let output = runner.run("zpool", &["scrub", "--", pool])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool scrub {pool}"),
@@ -881,7 +884,7 @@ pub fn scrub_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
 }
 
 pub fn destroy_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
-    let output = runner.run("zpool", &["destroy", pool])?;
+    let output = runner.run("zpool", &["destroy", "--", pool])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool destroy {pool}"),
@@ -893,7 +896,7 @@ pub fn destroy_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
 }
 
 pub fn offline_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["offline", pool, disk])?;
+    let output = runner.run("zpool", &["offline", "--", pool, disk])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool offline {pool} {disk}"),
@@ -905,7 +908,7 @@ pub fn offline_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Resul
 }
 
 pub fn online_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["online", pool, disk])?;
+    let output = runner.run("zpool", &["online", "--", pool, disk])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool online {pool} {disk}"),
@@ -917,7 +920,7 @@ pub fn online_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result
 }
 
 pub fn replace_disk(runner: &dyn CommandRunner, pool: &str, old_disk: &str, new_disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["replace", pool, old_disk, new_disk])?;
+    let output = runner.run("zpool", &["replace", "--", pool, old_disk, new_disk])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool replace {pool} {old_disk} {new_disk}"),
@@ -1005,7 +1008,7 @@ errors: No known data errors
         let vdevs = get_pool_vdevs(&runner, "tank").unwrap();
         assert_eq!(vdevs.len(), 4);
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["status".to_string(), "tank".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["status".to_string(), "--".to_string(), "tank".to_string()]));
     }
 
     #[test]
@@ -1015,7 +1018,7 @@ errors: No known data errors
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zpool".to_string(), vec!["create".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()])
+            ("zpool".to_string(), vec!["create".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()])
         );
     }
 
@@ -1024,7 +1027,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         scrub_pool(&runner, "tank").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["scrub".to_string(), "tank".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["scrub".to_string(), "--".to_string(), "tank".to_string()]));
     }
 
     #[test]
@@ -1032,7 +1035,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         destroy_pool(&runner, "scratch").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["destroy".to_string(), "scratch".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["destroy".to_string(), "--".to_string(), "scratch".to_string()]));
     }
 
     #[test]
@@ -1040,7 +1043,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         offline_disk(&runner, "tank", "da1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["offline".to_string(), "tank".to_string(), "da1".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["offline".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string()]));
     }
 
     #[test]
@@ -1048,7 +1051,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         online_disk(&runner, "tank", "da1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["online".to_string(), "tank".to_string(), "da1".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["online".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string()]));
     }
 
     #[test]
@@ -1058,8 +1061,16 @@ errors: No known data errors
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zpool".to_string(), vec!["replace".to_string(), "tank".to_string(), "da1".to_string(), "da2".to_string()])
+            ("zpool".to_string(), vec!["replace".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string(), "da2".to_string()])
         );
+    }
+
+    #[test]
+    fn guards_against_pool_names_that_look_like_flags() {
+        let runner = FakeRunner::new("");
+        destroy_pool(&runner, "-f").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
     }
 }
 ```
@@ -1069,7 +1080,7 @@ errors: No known data errors
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test zfs::pool`
-Expected: PASS (12 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Commit**
 
