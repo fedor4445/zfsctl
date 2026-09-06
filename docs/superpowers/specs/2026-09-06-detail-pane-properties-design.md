@@ -1,11 +1,13 @@
-# zfsctl: Persistent Detail Pane + Pool/Dataset Property Editing — Design
+# zfsctl: Detail Pane + Pool/Dataset Property Editing — Design
 
 ## Summary
 
-Restructures the TUI from sidebar + single main pane into a persistent
-3-pane layout: sidebar (unchanged) | middle pane (today's per-section
-list) | right pane (new, per-row detail). This spec proves the layout
-and focus-switching mechanism using the lowest-risk content available —
+Adds a third pane — sidebar (unchanged) | middle pane (today's
+per-section list) | right pane (new, per-row detail) — but only for
+sections where it earns its keep: Pools and Datasets. Every other
+section (Hosts, Snapshots, the Vdevs drill-down) keeps today's
+two-region layout unchanged. This spec proves the layout and
+focus-switching mechanism using the lowest-risk content available —
 editable `zpool`/`zfs` properties, which parse via the same clean
 `-H -p` tabular format every other data source in this app already
 uses. Two follow-up specs build on this mechanism for riskier content:
@@ -14,17 +16,19 @@ and bhyve zvol association — both deliberately out of scope here.
 
 ## Goals
 
-- A right-hand detail pane, always visible, showing information about
-  whatever row is selected in the middle pane.
-- For Pools and Datasets specifically, that detail pane is editable:
-  `zpool`/`zfs` properties can be viewed and changed from it.
-- For Hosts, Snapshots, and the Vdevs drill-down, the detail pane shows
-  simple, read-only information — no new library code, just a
-  different view of data already in memory.
+- A right-hand detail pane, shown only for sections where it's
+  editable — Pools and Datasets — displaying and letting you change
+  `zpool`/`zfs` properties for whatever row is selected in the middle
+  pane.
+- Hosts, Snapshots, and the Vdevs drill-down stay exactly as they are
+  today (middle pane at full width, no third pane) — there's nothing
+  genuinely editable or worth showing for those that a static
+  info-only pane would add, so no pane is built for them at all rather
+  than building one with contrived content.
 - A focus model (`Left`/`Right` arrows move focus between the middle
-  and right panes) that reuses the app's existing "same key, different
-  meaning depending on state" convention rather than inventing a new
-  interaction paradigm.
+  and right panes, where the right pane exists) that reuses the app's
+  existing "same key, different meaning depending on state" convention
+  rather than inventing a new interaction paradigm.
 
 ## Non-goals (this spec)
 
@@ -48,27 +52,40 @@ and bhyve zvol association — both deliberately out of scope here.
 
 ### Layout
 
+Two layouts, chosen per section:
+
 ```
+Hosts / Snapshots / Vdevs drill-down (unchanged):
++----------+---------------------------------------------+
+| sidebar  | middle pane (today's list/table)             |
+| (24 col) |                                               |
++----------+---------------------------------------------+
+|                  status bar                              |
++-------------------------------------------------------+
+
+Pools / Datasets (new):
 +----------+------------------------+------------------+
 | sidebar  | middle pane            | right pane       |
-| (24 col) | (today's list/table    | (new: per-row    |
-|          |  per section)          |  detail)         |
+| (24 col) | (today's list/table)   | (new: editable   |
+|          |                        |  properties)     |
 +----------+------------------------+------------------+
 |                  status bar                          |
 +-------------------------------------------------------+
 ```
 
-The right pane is a third `Constraint` in the existing horizontal
-`Layout` in `draw()` — always rendered, regardless of focus. What it
-shows depends on the current section and, for Pools/Datasets, the
-currently-selected middle-pane row.
+`draw_main`'s horizontal `Layout` gains a third `Constraint` only when
+`app.sections[app.selected_section]` is `Pools` or `Datasets` — every
+other section keeps today's two-region split, full width for the
+middle pane. This also means: no static/read-only detail content is
+built for Hosts, Snapshots, or the Vdevs drill-down at all (see
+Goals) — not "a pane with placeholder text," no pane.
 
 ### Focus model
 
-A new `PaneFocus` enum on `App`: `Middle` | `Right`. Only Pools and
-Datasets support `Right` — for Hosts, Snapshots, and the Vdevs
-drill-down, `Left`/`Right` are no-ops (nothing interactive to focus
-into; the pane still renders its static content unconditionally).
+A new `PaneFocus` enum on `App`: `Middle` | `Right`, meaningful only
+while the current section is Pools or Datasets. Outside those two
+sections there is no right pane to focus, so `Left`/`Right` are
+straightforward no-ops there (there's nothing to toggle into).
 
 - **`Left`/`Right` arrows**: toggle `PaneFocus` between `Middle` and
   `Right`, for sections where the right pane is interactive. Moving
@@ -171,18 +188,19 @@ natural touch, not a hard requirement), since parsing it once now means
 the follow-up specs and any later "reset to default" feature don't
 need to re-derive it.
 
-### Right-pane content per section
+### Right-pane content
 
-- **Hosts**: static text — host name and `ssh_target` (or `"local"`
-  for the synthetic local host).
-- **Snapshots**: static text — dataset, name, used.
-- **Vdevs** (drill-down): static text — the selected device's name,
-  health, depth.
+Only two sections have one:
+
 - **Pools**: `Vec<Property>` from `get_pool_properties`, rendered as a
   `Table` with its own `TableState` (`pool_properties_table`), same
   selection/highlight pattern as every other table in this app.
 - **Datasets**: `Vec<Property>` from `get_dataset_properties`, same
   shape (`dataset_properties_table`).
+
+Hosts, Snapshots, and the Vdevs drill-down are unchanged from today —
+no new rendering, no new state, no new library code for them in this
+spec.
 
 ### Library layer (`src/zfs/pool.rs`, `src/zfs/dataset.rs`)
 
