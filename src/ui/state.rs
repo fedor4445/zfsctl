@@ -69,8 +69,17 @@ pub struct App {
     pub pane_focus: PaneFocus,
     pub pool_properties: Vec<Property>,
     pub pool_properties_table: TableState,
+    /// The name of the pool `pool_properties` was actually fetched for —
+    /// used to detect when the middle-pane `pools` list is replaced (e.g.
+    /// by a fresh `WorkerMsg::Pools`) in a way that re-points the still
+    /// selected index at a *different* pool than the one these properties
+    /// belong to. See the stale-identity check in `drain_worker_messages`'s
+    /// `WorkerMsg::Pools` arm.
+    pub pool_properties_for: Option<String>,
     pub dataset_properties: Vec<Property>,
     pub dataset_properties_table: TableState,
+    /// See `pool_properties_for`.
+    pub dataset_properties_for: Option<String>,
     pub modal: Option<Modal>,
     pub status_message: Option<String>,
     pub should_quit: bool,
@@ -106,8 +115,10 @@ impl App {
             pane_focus: PaneFocus::Middle,
             pool_properties: Vec::new(),
             pool_properties_table: TableState::default(),
+            pool_properties_for: None,
             dataset_properties: Vec::new(),
             dataset_properties_table: TableState::default(),
+            dataset_properties_for: None,
             modal: None,
             status_message: None,
             should_quit: false,
@@ -170,8 +181,10 @@ impl App {
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
+        self.pool_properties_for = None;
         self.dataset_properties.clear();
         self.dataset_properties_table.select(None);
+        self.dataset_properties_for = None;
     }
 
     pub fn handle_key(&mut self, key: KeyCode) {
@@ -241,10 +254,12 @@ impl App {
                     Section::Pools => {
                         self.pool_properties.clear();
                         self.pool_properties_table.select(None);
+                        self.pool_properties_for = None;
                     }
                     Section::Datasets => {
                         self.dataset_properties.clear();
                         self.dataset_properties_table.select(None);
+                        self.dataset_properties_for = None;
                     }
                     _ => {}
                 }
@@ -303,13 +318,15 @@ impl App {
                 move_table_selection(&mut self.pools_table, self.pools.len(), true);
                 self.pool_properties.clear();
                 self.pool_properties_table.select(None);
+                self.pool_properties_for = None;
             }
             KeyCode::Up if self.current_section() == Section::Pools => {
                 move_table_selection(&mut self.pools_table, self.pools.len(), false);
                 self.pool_properties.clear();
                 self.pool_properties_table.select(None);
+                self.pool_properties_for = None;
             }
-            KeyCode::Char('s') if self.current_section() == Section::Pools && self.drilled_pool.is_none() => {
+            KeyCode::Char('s') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
                         self.modal = Some(Modal::Confirm {
@@ -323,7 +340,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('d') if self.current_section() == Section::Pools && self.drilled_pool.is_none() => {
+            KeyCode::Char('d') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
                         self.modal = Some(Modal::ConfirmTyped {
@@ -339,7 +356,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('n') if self.current_section() == Section::Pools && self.drilled_pool.is_none() => {
+            KeyCode::Char('n') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 self.modal = Some(Modal::Form {
                     title: "Create Pool".to_string(),
                     fields: vec![
@@ -360,13 +377,15 @@ impl App {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
                 self.dataset_properties.clear();
                 self.dataset_properties_table.select(None);
+                self.dataset_properties_for = None;
             }
             KeyCode::Up if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), false);
                 self.dataset_properties.clear();
                 self.dataset_properties_table.select(None);
+                self.dataset_properties_for = None;
             }
-            KeyCode::Char('n') if self.current_section() == Section::Datasets => {
+            KeyCode::Char('n') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 self.modal = Some(Modal::Form {
                     title: "Create Dataset".to_string(),
                     fields: vec![FormField { label: "Name".to_string(), value: String::new() }],
@@ -374,7 +393,7 @@ impl App {
                     kind: FormKind::CreateDataset { host: self.selected_host },
                 });
             }
-            KeyCode::Char('d') if self.current_section() == Section::Datasets => {
+            KeyCode::Char('d') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.datasets_table.selected() {
                     if let Some(ds) = self.datasets.get(i) {
                         self.modal = Some(Modal::ConfirmTyped {
@@ -390,7 +409,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('s') if self.current_section() == Section::Datasets => {
+            KeyCode::Char('s') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.datasets_table.selected() {
                     if let Some(ds) = self.datasets.get(i) {
                         self.modal = Some(Modal::Form {
@@ -714,6 +733,20 @@ impl App {
                             self.pools = pools;
                             clamp_table_selection(&mut self.pools_table, self.pools.len());
                             self.status_message = None;
+                            // The list may have been reordered/resized in a
+                            // way that re-points the still-selected index at
+                            // a different pool than the one `pool_properties`
+                            // was fetched for — if so, the cached properties
+                            // are now stale and would render under the
+                            // wrong pool's title (see Finding 1). Only
+                            // invalidate on an actual mismatch; the common
+                            // case (never viewed, or still the same pool)
+                            // must be left untouched.
+                            if self.pool_properties_for.is_some() && self.pool_properties_for != self.selected_pool_name() {
+                                self.pool_properties.clear();
+                                self.pool_properties_table.select(None);
+                                self.pool_properties_for = None;
+                            }
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
@@ -732,6 +765,12 @@ impl App {
                             self.datasets = datasets;
                             clamp_table_selection(&mut self.datasets_table, self.datasets.len());
                             self.status_message = None;
+                            // See the matching comment in the `Pools` arm.
+                            if self.dataset_properties_for.is_some() && self.dataset_properties_for != self.selected_dataset_name() {
+                                self.dataset_properties.clear();
+                                self.dataset_properties_table.select(None);
+                                self.dataset_properties_for = None;
+                            }
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
@@ -795,6 +834,7 @@ impl App {
                         Ok(props) => {
                             self.pool_properties = props;
                             clamp_table_selection(&mut self.pool_properties_table, self.pool_properties.len());
+                            self.pool_properties_for = Some(pool);
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -816,6 +856,7 @@ impl App {
                         Ok(props) => {
                             self.dataset_properties = props;
                             clamp_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len());
+                            self.dataset_properties_for = Some(dataset);
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -981,6 +1022,76 @@ mod tests {
             }
             other => panic!("expected Confirm modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_key_s_on_pools_is_noop_while_right_focused() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab); // Hosts -> Pools
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right); // focus properties pane
+        assert_eq!(app.pane_focus, PaneFocus::Right);
+        app.handle_key(KeyCode::Char('s'));
+        assert!(app.modal.is_none(), "scrub key must be a no-op while the properties pane is focused");
+    }
+
+    #[test]
+    fn handle_key_d_on_pools_is_noop_while_right_focused() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab);
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none(), "destroy key must be a no-op while the properties pane is focused");
+    }
+
+    #[test]
+    fn handle_key_n_on_pools_is_noop_while_right_focused() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab);
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none(), "create-pool key must be a no-op while the properties pane is focused");
+    }
+
+    #[test]
+    fn handle_key_n_on_datasets_is_noop_while_right_focused() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none(), "create-dataset key must be a no-op while the properties pane is focused");
+    }
+
+    #[test]
+    fn handle_key_d_on_datasets_is_noop_while_right_focused() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none(), "destroy-dataset key must be a no-op while the properties pane is focused");
+    }
+
+    #[test]
+    fn handle_key_s_on_datasets_is_noop_while_right_focused() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('s'));
+        assert!(app.modal.is_none(), "create-snapshot key must be a no-op while the properties pane is focused");
     }
 
     #[test]
@@ -2317,6 +2428,133 @@ mod tests {
         app.datasets_table.select(Some(0));
         assert_eq!(app.selected_dataset_name(), Some("tank/data".to_string()));
         assert_eq!(App::new(vec!["local".to_string()]).selected_pool_name(), None);
+    }
+
+    #[test]
+    fn pools_list_replacement_that_re_points_selected_index_at_a_different_pool_clears_stale_properties() {
+        // Reviewer's repro: view "tank/b"'s properties (index N), then a
+        // list-changing mutation reorders/replaces the list so index N now
+        // points at a different pool. The stale properties (and their
+        // selection) must be cleared rather than silently kept and shown
+        // under the new pool's title.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![
+            Pool { name: "aa".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online },
+            Pool { name: "b".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online },
+        ];
+        app.handle_key(KeyCode::Tab); // Hosts -> Pools
+        app.pools_table.select(Some(1)); // "b" selected at index 1
+        app.handle_key(KeyCode::Right); // enter Right focus
+        assert_eq!(app.selected_pool_name(), Some("b".to_string()));
+
+        // Simulate the successful fetch of "b"'s properties landing.
+        app.tx
+            .send(WorkerMsg::PoolProperties(
+                0,
+                "b".to_string(),
+                Ok(vec![Property { name: "comment".to_string(), value: "b's value".to_string(), source: PropertySource::Local }]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.pool_properties.len(), 1);
+        app.pool_properties_table.select(Some(0));
+
+        // Now a list refresh lands whose new list re-sorts "aa" before "b" —
+        // index 1 (still selected) now points at a pool named "different",
+        // not "b" at all.
+        app.tx
+            .send(WorkerMsg::Pools(
+                0,
+                Ok(vec![
+                    Pool { name: "aaa".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online },
+                    Pool { name: "different".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online },
+                ]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+
+        assert_eq!(app.selected_pool_name(), Some("different".to_string()), "index 1 now points at a different pool");
+        assert!(
+            app.pool_properties.is_empty(),
+            "stale properties for the old pool must be cleared once the list no longer matches what they were fetched for"
+        );
+        assert_eq!(app.pool_properties_table.selected(), None);
+    }
+
+    #[test]
+    fn datasets_list_replacement_that_re_points_selected_index_at_a_different_dataset_clears_stale_properties() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![
+            Dataset { name: "tank/aa".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+            Dataset { name: "tank/b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+        ];
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets_table.select(Some(1)); // "tank/b"
+        app.handle_key(KeyCode::Right);
+        assert_eq!(app.selected_dataset_name(), Some("tank/b".to_string()));
+
+        app.tx
+            .send(WorkerMsg::DatasetProperties(
+                0,
+                "tank/b".to_string(),
+                Ok(vec![Property { name: "compression".to_string(), value: "lz4".to_string(), source: PropertySource::Local }]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.dataset_properties.len(), 1);
+        app.dataset_properties_table.select(Some(0));
+
+        app.tx
+            .send(WorkerMsg::Datasets(
+                0,
+                Ok(vec![
+                    Dataset { name: "tank/aaa".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+                    Dataset { name: "tank/different".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+                ]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+
+        assert_eq!(app.selected_dataset_name(), Some("tank/different".to_string()));
+        assert!(
+            app.dataset_properties.is_empty(),
+            "stale properties for the old dataset must be cleared once the list no longer matches what they were fetched for"
+        );
+        assert_eq!(app.dataset_properties_table.selected(), None);
+    }
+
+    #[test]
+    fn pools_list_replacement_that_keeps_same_pool_at_same_index_does_not_clear_properties() {
+        // The common, correct case: a refresh lands but the selected pool's
+        // identity at the selected index is unchanged — properties must
+        // survive.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab);
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.tx
+            .send(WorkerMsg::PoolProperties(
+                0,
+                "tank".to_string(),
+                Ok(vec![Property { name: "comment".to_string(), value: "v".to_string(), source: PropertySource::Local }]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+        app.pool_properties_table.select(Some(0));
+
+        // Refresh returns the same pool (e.g. updated size) at the same index.
+        app.tx
+            .send(WorkerMsg::Pools(
+                0,
+                Ok(vec![Pool { name: "tank".to_string(), size: 999, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+
+        assert_eq!(app.pool_properties.len(), 1, "properties must survive a refresh that still points at the same pool");
+        assert_eq!(app.pool_properties_table.selected(), Some(0));
     }
 
     #[test]
