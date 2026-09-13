@@ -44,8 +44,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Datasets => "Datasets",
                 Section::Snapshots => "Snapshots",
                 Section::Vdevs => "Vdevs",
-                Section::PoolProperties => "PoolProperties",
-                Section::DatasetProperties => "DatasetProperties",
+                Section::PoolProperties => "Pool Properties",
+                Section::DatasetProperties => "Dataset Properties",
             };
             let style = if i == app.selected_section {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -65,14 +65,32 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         draw_vdevs(f, app, area);
         return;
     }
-    match app.sections[app.selected_section] {
+    let section = app.sections[app.selected_section];
+    if section == Section::Pools || section == Section::Datasets {
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        match section {
+            Section::Pools => {
+                draw_pools(f, app, panes[0]);
+                draw_pool_properties(f, app, panes[1]);
+            }
+            Section::Datasets => {
+                draw_datasets(f, app, panes[0]);
+                draw_dataset_properties(f, app, panes[1]);
+            }
+            _ => unreachable!("only Pools/Datasets reach this branch"),
+        }
+        return;
+    }
+    match section {
         Section::Hosts => draw_hosts(f, app, area),
-        Section::Pools => draw_pools(f, app, area),
-        Section::Datasets => draw_datasets(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
-        Section::Vdevs => unreachable!("Vdevs is never in App::sections"),
-        Section::PoolProperties => unreachable!("PoolProperties is never in App::sections"),
-        Section::DatasetProperties => unreachable!("DatasetProperties is never in App::sections"),
+        Section::Pools | Section::Datasets => unreachable!("handled above"),
+        Section::Vdevs | Section::PoolProperties | Section::DatasetProperties => {
+            unreachable!("never in App::sections")
+        }
     }
 }
 
@@ -111,12 +129,27 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(14),
         Constraint::Length(10),
     ];
-    let title = format!("Pools — {} ('r' to refresh)", app.active_host_name());
+    let title = format!("Pools — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Size", "Alloc", "Free", "Health"]))
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.pools_table);
+}
+
+fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = app
+        .pool_properties
+        .iter()
+        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), format!("{:?}", p.source)]));
+    let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
+    let pool = app.selected_pool_name().unwrap_or_else(|| "?".to_string());
+    let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["Property", "Value", "Source"]))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.pool_properties_table);
 }
 
 fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
@@ -149,12 +182,27 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(14),
         Constraint::Length(12),
     ];
-    let title = format!("Datasets — {} ('r' to refresh)", app.active_host_name());
+    let title = format!("Datasets — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Used", "Avail", "Kind"]))
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.datasets_table);
+}
+
+fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = app
+        .dataset_properties
+        .iter()
+        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), format!("{:?}", p.source)]));
+    let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
+    let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
+    let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, ← back)");
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["Property", "Value", "Source"]))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.dataset_properties_table);
 }
 
 fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
