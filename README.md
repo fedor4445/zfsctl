@@ -29,19 +29,28 @@ The local machine is always available as the "local" host and does not need a co
 
 ## Keys
 
-- `Tab` / `Left` / `Right`: switch sections (Hosts, Pools, Datasets, Snapshots)
+- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `Up` / `Down` (in Hosts section): select the active host
-- `Up` / `Down` (in Pools/Datasets/Snapshots): select a row
-- `r`: refresh the current section (or, while drilled into a pool's vdevs, the vdev view) for the selected host
+- `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
+- `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
 - `q`: quit
-- `Esc`: dismiss the current status message, or (while a modal is open) cancel it
+- `Esc`: dismiss the current status message, back out of a focused properties pane, or (while a modal is open) cancel it
 
 ### Pools
 
 - `Enter` on a selected pool: drill into its vdev/disk tree
+- `Right`: move focus to the properties pane on the right (fetches the selected pool's `zpool` properties)
+- `Left` (while the properties pane is focused): move focus back to the pool list
 - `n`: create a new pool (prompts for name and vdev spec, e.g. `mirror da0 da1`)
 - `d`: destroy the selected pool (type the pool's name to confirm)
 - `s`: scrub the selected pool (y/n confirm)
+
+### Pool/Dataset properties pane (right pane, `Right` to focus)
+
+- `Up` / `Down`: select a property
+- `Enter`: edit the selected property's value (prompts pre-filled with the current value; submitting runs `zpool set`/`zfs set`)
+- `r`: re-fetch properties for the currently-selected pool/dataset
+- `Esc` / `Left`: back out to the middle pane
 
 ### Vdevs (inside a drilled-into pool)
 
@@ -52,6 +61,7 @@ The local machine is always available as the "local" host and does not need a co
 
 ### Datasets
 
+- `Right` / `Left`: move focus to/from the properties pane (same as Pools, above)
 - `n`: create a new dataset (prompts for name)
 - `d`: destroy the selected dataset (type the dataset's name to confirm)
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
@@ -63,4 +73,4 @@ The local machine is always available as the "local" host and does not need a co
 
 ## Status
 
-v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up.
+v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated permissions (`zfs allow`), file ACLs (`getfacl`/`setfacl`), and bhyve zvol association are still not implemented — planned as follow-up work.
