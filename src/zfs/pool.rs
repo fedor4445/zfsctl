@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
+use crate::zfs::property::Property;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PoolHealth {
@@ -195,6 +196,30 @@ pub fn replace_disk(runner: &dyn CommandRunner, pool: &str, old_disk: &str, new_
         "zpool",
         &["replace", "--", pool, old_disk, new_disk],
         &format!("zpool replace {pool} {old_disk} {new_disk}"),
+    )?;
+    Ok(())
+}
+
+/// Runs `zpool get all -H -p <pool>` and parses every property into a
+/// flat list. There is no `-o` column-selection equivalent that would
+/// narrow this down usefully — `all` is the standard way to fetch every
+/// property at once, same as `zfs get all` in `dataset.rs`.
+pub fn get_pool_properties(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<Property>> {
+    let output = super::run_checked(
+        runner,
+        "zpool",
+        &["get", "all", "-H", "-p", "--", pool],
+        &format!("zpool get all {pool}"),
+    )?;
+    crate::zfs::property::parse_property_list(&output.stdout)
+}
+
+pub fn set_pool_property(runner: &dyn CommandRunner, pool: &str, key: &str, value: &str) -> Result<()> {
+    super::run_checked(
+        runner,
+        "zpool",
+        &["set", &format!("{key}={value}"), "--", pool],
+        &format!("zpool set {key}={value} {pool}"),
     )?;
     Ok(())
 }
@@ -411,5 +436,56 @@ errors: No known data errors
         destroy_pool(&runner, "-f").unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
+    }
+
+    const ZPOOL_GET_PROPERTIES_FIXTURE: &str = "\
+tank\tautoexpand\toff\tdefault
+tank\tcomment\tmy pool\tlocal
+";
+
+    #[test]
+    fn get_pool_properties_uses_correct_command_and_parses_result() {
+        let runner = FakeRunner::new(ZPOOL_GET_PROPERTIES_FIXTURE);
+        let props = get_pool_properties(&runner, "tank").unwrap();
+        assert_eq!(props.len(), 2);
+        assert_eq!(props[0].name, "autoexpand");
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zpool".to_string(), vec!["get".to_string(), "all".to_string(), "-H".to_string(), "-p".to_string(), "--".to_string(), "tank".to_string()])
+        );
+    }
+
+    #[test]
+    fn get_pool_properties_surfaces_command_failure() {
+        let runner = FakeRunner::failing("no such pool", 1);
+        let result = get_pool_properties(&runner, "tank");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_pool_property_runs_expected_command() {
+        let runner = FakeRunner::new("");
+        set_pool_property(&runner, "tank", "comment", "my pool").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zpool".to_string(), vec!["set".to_string(), "comment=my pool".to_string(), "--".to_string(), "tank".to_string()])
+        );
+    }
+
+    #[test]
+    fn set_pool_property_surfaces_command_failure() {
+        let runner = FakeRunner::failing("invalid property", 1);
+        let result = set_pool_property(&runner, "tank", "bogus", "x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn guards_against_pool_names_that_look_like_flags_in_get_properties() {
+        let runner = FakeRunner::new("");
+        get_pool_properties(&runner, "-f").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[4], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
     }
 }
