@@ -211,24 +211,32 @@ impl App {
             KeyCode::Enter if self.pane_focus == PaneFocus::Right && self.current_section() == Section::Pools => {
                 if let (Some(pool), Some(i)) = (self.selected_pool_name(), self.pool_properties_table.selected()) {
                     if let Some(prop) = self.pool_properties.get(i) {
-                        self.modal = Some(Modal::Form {
-                            title: format!("Edit '{}' on pool '{pool}'", prop.name),
-                            fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
-                            focused: 0,
-                            kind: FormKind::EditPoolProperty { host: self.selected_host, pool, key: prop.name.clone() },
-                        });
+                        if !prop.source.is_editable() {
+                            self.status_message = Some(format!("'{}' is a read-only property", prop.name));
+                        } else {
+                            self.modal = Some(Modal::Form {
+                                title: format!("Edit '{}' on pool '{pool}'", prop.name),
+                                fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
+                                focused: 0,
+                                kind: FormKind::EditPoolProperty { host: self.selected_host, pool, key: prop.name.clone() },
+                            });
+                        }
                     }
                 }
             }
             KeyCode::Enter if self.pane_focus == PaneFocus::Right && self.current_section() == Section::Datasets => {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
-                        self.modal = Some(Modal::Form {
-                            title: format!("Edit '{}' on dataset '{dataset}'", prop.name),
-                            fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
-                            focused: 0,
-                            kind: FormKind::EditDatasetProperty { host: self.selected_host, dataset, key: prop.name.clone() },
-                        });
+                        if !prop.source.is_editable() {
+                            self.status_message = Some(format!("'{}' is a read-only property", prop.name));
+                        } else {
+                            self.modal = Some(Modal::Form {
+                                title: format!("Edit '{}' on dataset '{dataset}'", prop.name),
+                                fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
+                                focused: 0,
+                                kind: FormKind::EditDatasetProperty { host: self.selected_host, dataset, key: prop.name.clone() },
+                            });
+                        }
                     }
                 }
             }
@@ -2578,6 +2586,20 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_right_focused_read_only_pool_property_does_not_open_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.pool_properties = vec![Property { name: "size".to_string(), value: "4000000000000".to_string(), source: PropertySource::Other("-".to_string()) }];
+        app.pool_properties_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message, Some("'size' is a read-only property".to_string()));
+    }
+
+    #[test]
     fn enter_on_right_focused_pool_property_with_none_selected_does_not_open_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         app.handle_key(KeyCode::Tab);
@@ -2638,6 +2660,21 @@ mod tests {
             }
             other => panic!("expected Form modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn enter_on_right_focused_read_only_dataset_property_does_not_open_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.dataset_properties = vec![Property { name: "used".to_string(), value: "1234567".to_string(), source: PropertySource::Other("-".to_string()) }];
+        app.dataset_properties_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message, Some("'used' is a read-only property".to_string()));
     }
 
     #[test]

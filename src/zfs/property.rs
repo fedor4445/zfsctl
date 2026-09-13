@@ -43,6 +43,18 @@ impl PropertySource {
             other => PropertySource::Other(other.to_string()),
         }
     }
+
+    /// False only for `-` — the source `zpool`/`zfs get` reports for
+    /// computed, read-only properties (`size`, `used`, `guid`,
+    /// `creation`, `health`, ...), which have no settable concept at
+    /// all and always fail `set` with "is readonly". Every other
+    /// source (`local`, `default`, `inherited from <dataset>`, and the
+    /// other `Other` values like `temporary`/`received`) names a
+    /// property that genuinely can be set — `inherited` in particular
+    /// just means "not overridden here yet," not "can't be."
+    pub fn is_editable(&self) -> bool {
+        !matches!(self, PropertySource::Other(s) if s == "-")
+    }
 }
 
 /// Parses `zpool get all -H -p <pool>` or `zfs get all -H -p <dataset>`
@@ -124,6 +136,16 @@ tank/data\treadonly\toff\tinherited from tank
     fn rejects_malformed_property_line() {
         let result = parse_property_list("tank\tonly-two-fields\n");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_editable_false_only_for_dash_source() {
+        assert!(!PropertySource::Other("-".to_string()).is_editable());
+        assert!(PropertySource::Local.is_editable());
+        assert!(PropertySource::Default.is_editable());
+        assert!(PropertySource::Inherited("tank".to_string()).is_editable());
+        assert!(PropertySource::Other("temporary".to_string()).is_editable());
+        assert!(PropertySource::Other("received".to_string()).is_editable());
     }
 
     #[test]
