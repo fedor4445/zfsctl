@@ -1,5 +1,6 @@
 pub mod dataset;
 pub mod pool;
+pub mod property;
 pub mod snapshot;
 
 use crate::error::{AppError, Result};
