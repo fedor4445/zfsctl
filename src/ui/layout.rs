@@ -141,7 +141,7 @@ fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .pool_properties
         .iter()
-        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), format!("{:?}", p.source)]));
+        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]));
     let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
     let pool = app.selected_pool_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
@@ -194,7 +194,7 @@ fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .dataset_properties
         .iter()
-        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), format!("{:?}", p.source)]));
+        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]));
     let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, ← back)");

@@ -21,6 +21,17 @@ pub enum PropertySource {
     Other(String),
 }
 
+impl std::fmt::Display for PropertySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropertySource::Local => write!(f, "local"),
+            PropertySource::Default => write!(f, "default"),
+            PropertySource::Inherited(dataset) => write!(f, "inherited from {dataset}"),
+            PropertySource::Other(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 impl PropertySource {
     fn parse(s: &str) -> PropertySource {
         if let Some(dataset) = s.strip_prefix("inherited from ") {
@@ -113,5 +124,13 @@ tank/data\treadonly\toff\tinherited from tank
     fn rejects_malformed_property_line() {
         let result = parse_property_list("tank\tonly-two-fields\n");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn property_source_display_renders_clean_text_not_debug_syntax() {
+        assert_eq!(PropertySource::Local.to_string(), "local");
+        assert_eq!(PropertySource::Default.to_string(), "default");
+        assert_eq!(PropertySource::Inherited("tank".to_string()).to_string(), "inherited from tank");
+        assert_eq!(PropertySource::Other("-".to_string()).to_string(), "-");
     }
 }
