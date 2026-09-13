@@ -15,8 +15,10 @@ pub enum MutationCall {
     OfflineDisk { pool: String, disk: String },
     OnlineDisk { pool: String, disk: String },
     ReplaceDisk { pool: String, old_disk: String, new_disk: String },
+    SetPoolProperty { pool: String, key: String, value: String },
     CreateDataset { name: String },
     DestroyDataset { name: String },
+    SetDatasetProperty { dataset: String, key: String, value: String },
     CreateSnapshot { dataset: String, name: String },
     DestroySnapshot { dataset: String, name: String },
     RollbackSnapshot { dataset: String, name: String },
@@ -38,8 +40,12 @@ impl MutationCall {
             MutationCall::ReplaceDisk { pool, old_disk, new_disk } => {
                 crate::zfs::pool::replace_disk(runner, pool, old_disk, new_disk)
             }
+            MutationCall::SetPoolProperty { pool, key, value } => crate::zfs::pool::set_pool_property(runner, pool, key, value),
             MutationCall::CreateDataset { name } => crate::zfs::dataset::create_dataset(runner, name),
             MutationCall::DestroyDataset { name } => crate::zfs::dataset::destroy_dataset(runner, name),
+            MutationCall::SetDatasetProperty { dataset, key, value } => {
+                crate::zfs::dataset::set_dataset_property(runner, dataset, key, value)
+            }
             MutationCall::CreateSnapshot { dataset, name } => crate::zfs::snapshot::create_snapshot(runner, dataset, name),
             MutationCall::DestroySnapshot { dataset, name } => crate::zfs::snapshot::destroy_snapshot(runner, dataset, name),
             MutationCall::RollbackSnapshot { dataset, name } => crate::zfs::snapshot::rollback_snapshot(runner, dataset, name),
@@ -75,8 +81,12 @@ pub enum FormKind {
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.
     ReplaceDisk { host: usize, pool: String, old_disk: String },
+    /// Fields: `[value]` — pre-filled with the property's current value.
+    EditPoolProperty { host: usize, pool: String, key: String },
     /// Fields: `[name]`.
     CreateDataset { host: usize },
+    /// Fields: `[value]` — pre-filled with the property's current value.
+    EditDatasetProperty { host: usize, dataset: String, key: String },
     /// Fields: `[name]` — the snapshot's name; the dataset is fixed at
     /// modal-open time from the selected Datasets row.
     CreateSnapshot { host: usize, dataset: String },
@@ -225,5 +235,29 @@ mod tests {
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("zfs".to_string(), vec!["rollback".to_string(), "--".to_string(), "tank/data@2026-09-01".to_string()]));
+    }
+
+    #[test]
+    fn set_pool_property_call_runs_set_pool_property() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::SetPoolProperty { pool: "tank".to_string(), key: "comment".to_string(), value: "my pool".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zpool".to_string(), vec!["set".to_string(), "comment=my pool".to_string(), "--".to_string(), "tank".to_string()])
+        );
+    }
+
+    #[test]
+    fn set_dataset_property_call_runs_set_dataset_property() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "compression".to_string(), value: "zstd".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zfs".to_string(), vec!["set".to_string(), "compression=zstd".to_string(), "--".to_string(), "tank/data".to_string()])
+        );
     }
 }

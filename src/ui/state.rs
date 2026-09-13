@@ -195,6 +195,30 @@ impl App {
                     }
                 }
             }
+            KeyCode::Enter if self.pane_focus == PaneFocus::Right && self.current_section() == Section::Pools => {
+                if let (Some(pool), Some(i)) = (self.selected_pool_name(), self.pool_properties_table.selected()) {
+                    if let Some(prop) = self.pool_properties.get(i) {
+                        self.modal = Some(Modal::Form {
+                            title: format!("Edit '{}' on pool '{pool}'", prop.name),
+                            fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
+                            focused: 0,
+                            kind: FormKind::EditPoolProperty { host: self.selected_host, pool, key: prop.name.clone() },
+                        });
+                    }
+                }
+            }
+            KeyCode::Enter if self.pane_focus == PaneFocus::Right && self.current_section() == Section::Datasets => {
+                if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
+                    if let Some(prop) = self.dataset_properties.get(i) {
+                        self.modal = Some(Modal::Form {
+                            title: format!("Edit '{}' on dataset '{dataset}'", prop.name),
+                            fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
+                            focused: 0,
+                            kind: FormKind::EditDatasetProperty { host: self.selected_host, dataset, key: prop.name.clone() },
+                        });
+                    }
+                }
+            }
             KeyCode::Tab if self.drilled_pool.is_none() => {
                 self.selected_section = (self.selected_section + 1) % self.sections.len();
                 self.pane_focus = PaneFocus::Middle;
@@ -855,6 +879,14 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 },
             })
         }
+        FormKind::EditPoolProperty { host, pool, key } => {
+            let value = fields[0].value.clone();
+            Some(PendingAction {
+                host: *host,
+                section: Section::PoolProperties,
+                call: MutationCall::SetPoolProperty { pool: pool.clone(), key: key.clone(), value },
+            })
+        }
         FormKind::CreateDataset { host } => {
             let name = fields[0].value.trim();
             if name.is_empty() {
@@ -864,6 +896,14 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 host: *host,
                 section: Section::Datasets,
                 call: MutationCall::CreateDataset { name: name.to_string() },
+            })
+        }
+        FormKind::EditDatasetProperty { host, dataset, key } => {
+            let value = fields[0].value.clone();
+            Some(PendingAction {
+                host: *host,
+                section: Section::DatasetProperties,
+                call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: key.clone(), value },
             })
         }
         FormKind::CreateSnapshot { host, dataset } => {
@@ -2277,5 +2317,120 @@ mod tests {
         app.datasets_table.select(Some(0));
         assert_eq!(app.selected_dataset_name(), Some("tank/data".to_string()));
         assert_eq!(App::new(vec!["local".to_string()]).selected_pool_name(), None);
+    }
+
+    #[test]
+    fn enter_on_right_focused_pool_property_opens_prefilled_edit_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.pool_properties = vec![Property { name: "comment".to_string(), value: "old comment".to_string(), source: PropertySource::Local }];
+        app.pool_properties_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].value, "old comment", "the form must be pre-filled with the property's current value");
+                assert_eq!(*kind, crate::ui::modal::FormKind::EditPoolProperty { host: 0, pool: "tank".to_string(), key: "comment".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_right_focused_pool_property_with_none_selected_does_not_open_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Enter);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_modal_key_edit_pool_property_form_submits_with_new_value() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.pool_properties = vec![Property { name: "comment".to_string(), value: "old".to_string(), source: PropertySource::Local }];
+        app.pool_properties_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        // clear the pre-filled value, then type a new one
+        for _ in 0.."old".len() {
+            app.handle_modal_key(KeyCode::Backspace);
+        }
+        for c in "new comment".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(
+            result,
+            Some(crate::ui::modal::PendingAction {
+                host: 0,
+                section: Section::PoolProperties,
+                call: crate::ui::modal::MutationCall::SetPoolProperty {
+                    pool: "tank".to_string(),
+                    key: "comment".to_string(),
+                    value: "new comment".to_string(),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn enter_on_right_focused_dataset_property_opens_prefilled_edit_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.dataset_properties = vec![Property { name: "compression".to_string(), value: "lz4".to_string(), source: PropertySource::Local }];
+        app.dataset_properties_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields[0].value, "lz4");
+                assert_eq!(*kind, crate::ui::modal::FormKind::EditDatasetProperty { host: 0, dataset: "tank/data".to_string(), key: "compression".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_edit_dataset_property_form_submits_with_new_value() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.dataset_properties = vec![Property { name: "compression".to_string(), value: "lz4".to_string(), source: PropertySource::Local }];
+        app.dataset_properties_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        for _ in 0.."lz4".len() {
+            app.handle_modal_key(KeyCode::Backspace);
+        }
+        for c in "zstd".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(
+            result,
+            Some(crate::ui::modal::PendingAction {
+                host: 0,
+                section: Section::DatasetProperties,
+                call: crate::ui::modal::MutationCall::SetDatasetProperty {
+                    dataset: "tank/data".to_string(),
+                    key: "compression".to_string(),
+                    value: "zstd".to_string(),
+                },
+            })
+        );
     }
 }
