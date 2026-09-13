@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
+use crate::zfs::property::Property;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DatasetKind {
@@ -78,6 +79,28 @@ pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
 
 pub fn destroy_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
     super::run_checked(runner, "zfs", &["destroy", "--", name], &format!("zfs destroy {name}"))?;
+    Ok(())
+}
+
+/// Runs `zfs get all -H -p <dataset>` and parses every property into a
+/// flat list.
+pub fn get_dataset_properties(runner: &dyn CommandRunner, dataset: &str) -> Result<Vec<Property>> {
+    let output = super::run_checked(
+        runner,
+        "zfs",
+        &["get", "all", "-H", "-p", "--", dataset],
+        &format!("zfs get all {dataset}"),
+    )?;
+    crate::zfs::property::parse_property_list(&output.stdout)
+}
+
+pub fn set_dataset_property(runner: &dyn CommandRunner, dataset: &str, key: &str, value: &str) -> Result<()> {
+    super::run_checked(
+        runner,
+        "zfs",
+        &["set", &format!("{key}={value}"), "--", dataset],
+        &format!("zfs set {key}={value} {dataset}"),
+    )?;
     Ok(())
 }
 
@@ -188,5 +211,56 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
         destroy_dataset(&runner, "-r").unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the dataset name so zfs cannot parse it as an option");
+    }
+
+    const ZFS_GET_PROPERTIES_FIXTURE: &str = "\
+tank/data\tcompression\tlz4\tlocal
+tank/data\tquota\t0\tdefault
+";
+
+    #[test]
+    fn get_dataset_properties_uses_correct_command_and_parses_result() {
+        let runner = FakeRunner::new(ZFS_GET_PROPERTIES_FIXTURE);
+        let props = get_dataset_properties(&runner, "tank/data").unwrap();
+        assert_eq!(props.len(), 2);
+        assert_eq!(props[0].name, "compression");
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zfs".to_string(), vec!["get".to_string(), "all".to_string(), "-H".to_string(), "-p".to_string(), "--".to_string(), "tank/data".to_string()])
+        );
+    }
+
+    #[test]
+    fn get_dataset_properties_surfaces_command_failure() {
+        let runner = FakeRunner::failing("dataset does not exist", 1);
+        let result = get_dataset_properties(&runner, "tank/data");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_dataset_property_runs_expected_command() {
+        let runner = FakeRunner::new("");
+        set_dataset_property(&runner, "tank/data", "compression", "zstd").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zfs".to_string(), vec!["set".to_string(), "compression=zstd".to_string(), "--".to_string(), "tank/data".to_string()])
+        );
+    }
+
+    #[test]
+    fn set_dataset_property_surfaces_command_failure() {
+        let runner = FakeRunner::failing("invalid property", 1);
+        let result = set_dataset_property(&runner, "tank/data", "bogus", "x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn guards_against_dataset_names_that_look_like_flags_in_get_properties() {
+        let runner = FakeRunner::new("");
+        get_dataset_properties(&runner, "-r").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[4], "--", "a leading '--' must precede the dataset name so zfs cannot parse it as an option");
     }
 }
