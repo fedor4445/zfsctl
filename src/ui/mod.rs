@@ -72,7 +72,7 @@ fn event_loop(
                             app.refresh_vdevs(host.runner.clone(), pool);
                         }
                     }
-                    Section::Hosts => {}
+                    Section::Hosts | Section::PoolProperties | Section::DatasetProperties => {}
                 }
             }
         }
@@ -104,7 +104,7 @@ fn event_loop(
                                     Section::Pools => app.refresh_pools(host.runner.clone()),
                                     Section::Datasets => app.refresh_datasets(host.runner.clone()),
                                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
-                                    Section::Hosts | Section::Vdevs => {}
+                                    Section::Hosts | Section::Vdevs | Section::PoolProperties | Section::DatasetProperties => {}
                                 }
                             }
                         }

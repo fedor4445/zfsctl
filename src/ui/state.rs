@@ -18,6 +18,8 @@ pub enum Section {
     Datasets,
     Snapshots,
     Vdevs,
+    PoolProperties,
+    DatasetProperties,
 }
 
 /// Which pane currently receives navigation keys. Meaningful only while
@@ -42,6 +44,11 @@ pub enum WorkerMsg {
     /// different pool the user has since drilled into (see the
     /// stale-pool check in `drain_worker_messages`).
     Vdevs(usize, String, Result<Vec<VdevLine>>),
+    /// The `String` is the pool name this fetch was for — same
+    /// stale-identity discard rationale as `Vdevs`.
+    PoolProperties(usize, String, Result<Vec<Property>>),
+    /// The `String` is the dataset name this fetch was for.
+    DatasetProperties(usize, String, Result<Vec<Property>>),
     MutationDone(usize, Section, Result<()>),
 }
 
@@ -617,6 +624,40 @@ impl App {
         });
     }
 
+    /// See `refresh_pools` for the in-flight/pending-refresh behavior.
+    /// Not pool-aware in its in-flight key, same simplifying tradeoff
+    /// `refresh_vdevs` makes for pools — correctness (never showing one
+    /// pool's properties under another's) is fully handled by the
+    /// stale-identity discard in `drain_worker_messages`.
+    pub fn refresh_pool_properties(&mut self, runner: Arc<dyn CommandRunner>, pool: String) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::PoolProperties, host) {
+            self.pending_refresh.insert((Section::PoolProperties, host));
+            return;
+        }
+        self.begin_refresh(Section::PoolProperties, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::pool::get_pool_properties(runner.as_ref(), &pool);
+            let _ = tx.send(WorkerMsg::PoolProperties(host, pool, result));
+        });
+    }
+
+    /// See `refresh_pool_properties`.
+    pub fn refresh_dataset_properties(&mut self, runner: Arc<dyn CommandRunner>, dataset: String) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::DatasetProperties, host) {
+            self.pending_refresh.insert((Section::DatasetProperties, host));
+            return;
+        }
+        self.begin_refresh(Section::DatasetProperties, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::dataset::get_dataset_properties(runner.as_ref(), &dataset);
+            let _ = tx.send(WorkerMsg::DatasetProperties(host, dataset, result));
+        });
+    }
+
     /// Drains all pending worker messages, applying each to `self`.
     /// Returns the list of sections that need re-listing, either because
     /// a mutation targeting the currently-selected host just succeeded,
@@ -709,6 +750,48 @@ impl App {
                         Ok(vdevs) => {
                             self.vdevs = vdevs;
                             clamp_table_selection(&mut self.vdevs_table, self.vdevs.len());
+                            self.status_message = None;
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
+                WorkerMsg::PoolProperties(host, pool, result) => {
+                    self.end_refresh(Section::PoolProperties, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::PoolProperties, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::PoolProperties);
+                    }
+                    if Some(&pool) != self.selected_pool_name().as_ref() {
+                        continue;
+                    }
+                    match result {
+                        Ok(props) => {
+                            self.pool_properties = props;
+                            clamp_table_selection(&mut self.pool_properties_table, self.pool_properties.len());
+                            self.status_message = None;
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
+                WorkerMsg::DatasetProperties(host, dataset, result) => {
+                    self.end_refresh(Section::DatasetProperties, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::DatasetProperties, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::DatasetProperties);
+                    }
+                    if Some(&dataset) != self.selected_dataset_name().as_ref() {
+                        continue;
+                    }
+                    match result {
+                        Ok(props) => {
+                            self.dataset_properties = props;
+                            clamp_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len());
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1460,6 +1543,90 @@ mod tests {
             Some("stale but unrelated".to_string()),
             "a discarded stale-pool result must not clear an unrelated status message"
         );
+    }
+
+    #[test]
+    fn refresh_pool_properties_populates_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0));
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank\tautoexpand\toff\tdefault\n"));
+        app.refresh_pool_properties(runner, "tank".to_string());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.pool_properties.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.pool_properties.len(), 1);
+        assert_eq!(app.pool_properties[0].name, "autoexpand");
+    }
+
+    #[test]
+    fn pool_properties_result_for_a_different_pool_than_selected_is_discarded() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "scratch".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0)); // selected pool is "scratch"
+        app.tx
+            .send(WorkerMsg::PoolProperties(0, "tank".to_string(), Ok(vec![Property { name: "x".to_string(), value: "y".to_string(), source: PropertySource::Local }])))
+            .unwrap();
+        app.drain_worker_messages();
+        assert!(app.pool_properties.is_empty(), "a result for a pool that's no longer selected must not overwrite the pane");
+        assert_eq!(app.status_message, None);
+    }
+
+    #[test]
+    fn refresh_dataset_properties_populates_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data\tcompression\tlz4\tlocal\n"));
+        app.refresh_dataset_properties(runner, "tank/data".to_string());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.dataset_properties.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.dataset_properties.len(), 1);
+        assert_eq!(app.dataset_properties[0].name, "compression");
+    }
+
+    #[test]
+    fn dataset_properties_result_for_a_different_dataset_than_selected_is_discarded() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/other".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.tx
+            .send(WorkerMsg::DatasetProperties(0, "tank/data".to_string(), Ok(vec![Property { name: "x".to_string(), value: "y".to_string(), source: PropertySource::Local }])))
+            .unwrap();
+        app.drain_worker_messages();
+        assert!(app.dataset_properties.is_empty());
+    }
+
+    #[test]
+    fn refresh_pool_properties_does_not_spawn_second_thread_while_in_flight() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let fake = Arc::new(FakeRunner::new("tank\tautoexpand\toff\tdefault\n"));
+        let runner: Arc<dyn CommandRunner> = fake.clone();
+        app.refresh_pool_properties(runner.clone(), "tank".to_string());
+        app.refresh_pool_properties(runner.clone(), "tank".to_string());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.pool_properties.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fake.calls.lock().unwrap().len(), 1);
     }
 
     #[test]

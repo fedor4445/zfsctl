@@ -44,6 +44,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Datasets => "Datasets",
                 Section::Snapshots => "Snapshots",
                 Section::Vdevs => "Vdevs",
+                Section::PoolProperties => "PoolProperties",
+                Section::DatasetProperties => "DatasetProperties",
             };
             let style = if i == app.selected_section {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -69,6 +71,8 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Datasets => draw_datasets(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
         Section::Vdevs => unreachable!("Vdevs is never in App::sections"),
+        Section::PoolProperties => unreachable!("PoolProperties is never in App::sections"),
+        Section::DatasetProperties => unreachable!("DatasetProperties is never in App::sections"),
     }
 }
 
