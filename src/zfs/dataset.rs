@@ -94,11 +94,20 @@ pub fn get_dataset_properties(runner: &dyn CommandRunner, dataset: &str) -> Resu
     crate::zfs::property::parse_property_list(&output.stdout)
 }
 
+/// No `--` guard here, unlike every other mutating function in this
+/// file: `zfs set` doesn't recognize `--` as an end-of-options marker
+/// at all — it tries to open a dataset literally named `--` and fails
+/// (confirmed against a real `zfs` binary: `cannot open '--': dataset
+/// does not exist`). `set` takes no flags of its own, so there is no
+/// flag-injection surface for `--` to guard against here in the first
+/// place: `key`/`value` are joined into one argv token before
+/// `dataset`, which is never scanned for a leading `-` in this
+/// subcommand's argument parsing.
 pub fn set_dataset_property(runner: &dyn CommandRunner, dataset: &str, key: &str, value: &str) -> Result<()> {
     super::run_checked(
         runner,
         "zfs",
-        &["set", &format!("{key}={value}"), "--", dataset],
+        &["set", &format!("{key}={value}"), dataset],
         &format!("zfs set {key}={value} {dataset}"),
     )?;
     Ok(())
@@ -245,7 +254,7 @@ tank/data\tquota\t0\tdefault
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zfs".to_string(), vec!["set".to_string(), "compression=zstd".to_string(), "--".to_string(), "tank/data".to_string()])
+            ("zfs".to_string(), vec!["set".to_string(), "compression=zstd".to_string(), "tank/data".to_string()])
         );
     }
 

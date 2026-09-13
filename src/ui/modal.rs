@@ -245,7 +245,7 @@ mod tests {
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zpool".to_string(), vec!["set".to_string(), "comment=my pool".to_string(), "--".to_string(), "tank".to_string()])
+            ("zpool".to_string(), vec!["set".to_string(), "comment=my pool".to_string(), "tank".to_string()])
         );
     }
 
@@ -257,7 +257,7 @@ mod tests {
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zfs".to_string(), vec!["set".to_string(), "compression=zstd".to_string(), "--".to_string(), "tank/data".to_string()])
+            ("zfs".to_string(), vec!["set".to_string(), "compression=zstd".to_string(), "tank/data".to_string()])
         );
     }
 }

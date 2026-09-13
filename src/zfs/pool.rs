@@ -214,11 +214,20 @@ pub fn get_pool_properties(runner: &dyn CommandRunner, pool: &str) -> Result<Vec
     crate::zfs::property::parse_property_list(&output.stdout)
 }
 
+/// No `--` guard here, unlike every other mutating function in this
+/// file: `zpool set` doesn't recognize `--` as an end-of-options marker
+/// at all — it tries to open a pool literally named `--` and fails
+/// (confirmed against a real `zpool` binary: `cannot open '--': is not
+/// a pool`). `set` takes no flags of its own, so there is no
+/// flag-injection surface for `--` to guard against here in the first
+/// place: `key`/`value` are joined into one argv token before `pool`,
+/// which is never scanned for a leading `-` in this subcommand's
+/// argument parsing.
 pub fn set_pool_property(runner: &dyn CommandRunner, pool: &str, key: &str, value: &str) -> Result<()> {
     super::run_checked(
         runner,
         "zpool",
-        &["set", &format!("{key}={value}"), "--", pool],
+        &["set", &format!("{key}={value}"), pool],
         &format!("zpool set {key}={value} {pool}"),
     )?;
     Ok(())
@@ -470,7 +479,7 @@ tank\tcomment\tmy pool\tlocal
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zpool".to_string(), vec!["set".to_string(), "comment=my pool".to_string(), "--".to_string(), "tank".to_string()])
+            ("zpool".to_string(), vec!["set".to_string(), "comment=my pool".to_string(), "tank".to_string()])
         );
     }
 
