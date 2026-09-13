@@ -6,6 +6,7 @@ pub use state::App;
 
 use crate::error::{AppError, Result};
 use crate::hosts::HostInventory;
+use crate::ui::state::PaneFocus;
 use crate::ui::state::Section;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -72,7 +73,17 @@ fn event_loop(
                             app.refresh_vdevs(host.runner.clone(), pool);
                         }
                     }
-                    Section::Hosts | Section::PoolProperties | Section::DatasetProperties => {}
+                    Section::PoolProperties => {
+                        if let Some(pool) = app.selected_pool_name() {
+                            app.refresh_pool_properties(host.runner.clone(), pool);
+                        }
+                    }
+                    Section::DatasetProperties => {
+                        if let Some(dataset) = app.selected_dataset_name() {
+                            app.refresh_dataset_properties(host.runner.clone(), dataset);
+                        }
+                    }
+                    Section::Hosts => {}
                 }
             }
         }
@@ -99,12 +110,29 @@ fn event_loop(
                         if let Some(host) = inventory.hosts.get(app.selected_host) {
                             if let Some(pool) = app.drilled_pool.clone() {
                                 app.refresh_vdevs(host.runner.clone(), pool);
+                            } else if app.pane_focus == PaneFocus::Right {
+                                match app.current_section() {
+                                    Section::Pools => {
+                                        if let Some(pool) = app.selected_pool_name() {
+                                            app.refresh_pool_properties(host.runner.clone(), pool);
+                                        }
+                                    }
+                                    Section::Datasets => {
+                                        if let Some(dataset) = app.selected_dataset_name() {
+                                            app.refresh_dataset_properties(host.runner.clone(), dataset);
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             } else {
                                 match app.current_section() {
                                     Section::Pools => app.refresh_pools(host.runner.clone()),
                                     Section::Datasets => app.refresh_datasets(host.runner.clone()),
                                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
-                                    Section::Hosts | Section::Vdevs | Section::PoolProperties | Section::DatasetProperties => {}
+                                    Section::Hosts
+                                    | Section::Vdevs
+                                    | Section::PoolProperties
+                                    | Section::DatasetProperties => {}
                                 }
                             }
                         }
@@ -113,6 +141,23 @@ fn event_loop(
                         if let Some(pool) = app.drilled_pool.clone() {
                             if let Some(host) = inventory.hosts.get(app.selected_host) {
                                 app.refresh_vdevs(host.runner.clone(), pool);
+                            }
+                        }
+                    }
+                    if key.code == KeyCode::Right && app.pane_focus == PaneFocus::Right {
+                        if let Some(host) = inventory.hosts.get(app.selected_host) {
+                            match app.current_section() {
+                                Section::Pools => {
+                                    if let Some(pool) = app.selected_pool_name() {
+                                        app.refresh_pool_properties(host.runner.clone(), pool);
+                                    }
+                                }
+                                Section::Datasets => {
+                                    if let Some(dataset) = app.selected_dataset_name() {
+                                        app.refresh_dataset_properties(host.runner.clone(), dataset);
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
