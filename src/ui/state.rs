@@ -652,12 +652,7 @@ impl App {
                         None
                     } else {
                         match build_pending_action(&kind, &fields) {
-                            Some(action) => {
-                                if matches!(kind, FormKind::CreatePoolFromDisks { .. } | FormKind::AddVdevFromDisks { .. }) {
-                                    self.selected_disks.clear();
-                                }
-                                Some(action)
-                            }
+                            Some(action) => Some(action),
                             None => {
                                 self.modal = Some(Modal::Form { title, fields, focused, kind });
                                 None
@@ -1036,8 +1031,11 @@ impl App {
                                 // Both changing a pool's vdev tree
                                 // (add/replace vdev) and creating/destroying
                                 // a pool outright change which disks are
-                                // claimed — the Disks section must catch up.
+                                // claimed — the Disks section must catch up,
+                                // and any selection made against the
+                                // pre-mutation disk list is stale now.
                                 refreshes_needed.push(Section::Disks);
+                                self.selected_disks.clear();
                             }
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -2752,6 +2750,28 @@ mod tests {
     }
 
     #[test]
+    fn stale_disk_selection_is_dropped_when_refresh_shows_it_claimed_or_gone() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_disks.insert("da0".to_string());
+        app.selected_disks.insert("da1".to_string());
+        app.tx
+            .send(WorkerMsg::Disks(
+                0,
+                Ok(vec![
+                    crate::zfs::disk::DiskInfo {
+                        name: "da0".to_string(),
+                        size: 0,
+                        membership: crate::zfs::disk::DiskMembership::InPool { pool: "tank".to_string(), vdev: "da0".to_string() },
+                    },
+                    // da1 is missing entirely from this refresh (e.g. unplugged)
+                ]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+        assert!(app.selected_disks.is_empty(), "da0 became claimed and da1 disappeared — both must be dropped from the stale selection");
+    }
+
+    #[test]
     fn selected_pool_name_and_selected_dataset_name_helpers() {
         let mut app = App::new(vec!["local".to_string()]);
         app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
@@ -3197,6 +3217,16 @@ mod tests {
     }
 
     #[test]
+    fn build_pending_action_add_vdev_from_disks_rejects_empty_pool_name() {
+        let kind = FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".to_string()] };
+        let fields = vec![
+            FormField { label: "Target pool name".to_string(), value: "   ".to_string() },
+            FormField { label: "Redundancy".to_string(), value: String::new() },
+        ];
+        assert_eq!(build_pending_action(&kind, &fields), None);
+    }
+
+    #[test]
     fn build_pending_action_add_vdev_from_disks() {
         let kind = FormKind::AddVdevFromDisks { host: 0, disks: vec!["da2".to_string(), "da3".to_string()] };
         let fields = vec![
@@ -3215,7 +3245,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_disks_cleared_after_create_pool_from_disks_submit() {
+    fn selected_disks_survives_a_failed_create_pool_from_disks_submission() {
         let mut app = App::new(vec!["local".to_string()]);
         for _ in 0..4 {
             app.handle_key(KeyCode::Tab);
@@ -3227,7 +3257,19 @@ mod tests {
         }
         app.handle_modal_key(KeyCode::Tab); // move to the Redundancy field
         let result = app.handle_modal_key(KeyCode::Enter);
-        assert!(result.is_some());
+        assert!(result.is_some(), "the form still submits and returns a PendingAction");
+        assert!(
+            app.selected_disks.contains("da0"),
+            "the selection must survive the form submit itself — it's only cleared once the mutation actually succeeds"
+        );
+    }
+
+    #[test]
+    fn selected_disks_cleared_once_the_resulting_mutation_succeeds() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_disks.insert("da0".to_string());
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Pools, Ok(()))).unwrap();
+        app.drain_worker_messages();
         assert!(app.selected_disks.is_empty());
     }
 

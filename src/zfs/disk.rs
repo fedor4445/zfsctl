@@ -76,10 +76,40 @@ pub fn annotate_membership(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine
         } else {
             current_group.clone().unwrap_or_else(|| vdev.name.clone())
         };
-        if let Some(disk) = disks.iter_mut().find(|d| d.name == vdev.name) {
+        if let Some(disk) = disks.iter_mut().find(|d| disk_matches_vdev(&d.name, &vdev.name)) {
             disk.membership = DiskMembership::InPool { pool: pool.to_string(), vdev: vdev_name };
         }
     }
+}
+
+/// True if `vdev_name` refers to `disk_name` itself, or to a GPT
+/// partition (`ada0p4`) or BSD slice+partition (`da0s1a`) on it —
+/// `zpool status` reports the actual device `zfs`/`zpool` opened, which
+/// on any partitioned disk (the default `bsdinstall` layout) is never
+/// the bare whole-disk name `geom disk list` uses. Does not resolve
+/// GEOM labels (`gpt/zfs0`, `diskid/...`) back to a physical disk —
+/// those don't share a name prefix with any whole-disk name at all, so
+/// there's nothing to pattern-match against; out of scope for this fix.
+fn disk_matches_vdev(disk_name: &str, vdev_name: &str) -> bool {
+    if disk_name == vdev_name {
+        return true;
+    }
+    let Some(suffix) = vdev_name.strip_prefix(disk_name) else { return false };
+    if let Some(rest) = suffix.strip_prefix('p') {
+        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+    }
+    if let Some(rest) = suffix.strip_prefix('s') {
+        // Split at the first non-digit by index — not `take_while` on a
+        // shared iterator, which would silently consume and discard the
+        // first non-digit char (letting `da0s1-` / `da0s1ab` match).
+        let digits_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        if digits_end == 0 {
+            return false;
+        }
+        let remainder = &rest[digits_end..];
+        return remainder.is_empty() || (remainder.len() == 1 && remainder.chars().all(|c| c.is_ascii_alphabetic()));
+    }
+    false
 }
 
 /// Fetches every disk on the host and annotates each with its pool/vdev
@@ -210,6 +240,37 @@ Providers:
         ];
         annotate_membership(&mut disks, "tank", &vdevs);
         assert_eq!(disks[0].membership, DiskMembership::InPool { pool: "tank".to_string(), vdev: "da0".to_string() });
+    }
+
+    #[test]
+    fn annotate_membership_resolves_partition_vdev_to_its_parent_disk() {
+        let mut disks = vec![DiskInfo { name: "ada0".to_string(), size: 0, membership: DiskMembership::Available }];
+        let vdevs = vec![
+            VdevLine { depth: 0, name: "zroot".to_string(), health: PoolHealth::Online },
+            VdevLine { depth: 1, name: "ada0p4".to_string(), health: PoolHealth::Online },
+        ];
+        annotate_membership(&mut disks, "zroot", &vdevs);
+        assert_eq!(
+            disks[0].membership,
+            DiskMembership::InPool { pool: "zroot".to_string(), vdev: "ada0p4".to_string() },
+            "a disk whose only vdev entry is a GPT partition on it (the default bsdinstall layout) must still resolve to that disk, not stay Available"
+        );
+    }
+
+    #[test]
+    fn disk_matches_vdev_recognizes_partitions_and_slices() {
+        assert!(disk_matches_vdev("ada0", "ada0"));
+        assert!(disk_matches_vdev("ada0", "ada0p4"));
+        assert!(disk_matches_vdev("ada0", "ada0p12"));
+        assert!(disk_matches_vdev("da0", "da0s1a"));
+        assert!(disk_matches_vdev("da0", "da0s1"));
+        assert!(!disk_matches_vdev("ada0", "da0p4"), "must not match a different disk's partition");
+        assert!(!disk_matches_vdev("ada0", "ada0xyz"), "must not match garbage suffixes");
+        assert!(!disk_matches_vdev("ada0", "ada01"), "a bare trailing digit with no p/s marker is a different whole disk, not a partition of ada0");
+        assert!(!disk_matches_vdev("da0", "da0s1ab"), "a slice may carry at most one partition letter");
+        assert!(!disk_matches_vdev("da0", "da0s1-"), "a non-letter after the slice number must not match");
+        assert!(!disk_matches_vdev("da0", "da0s"), "a slice marker needs a slice number");
+        assert!(!disk_matches_vdev("ada0", "ada0p"), "a partition marker needs a partition number");
     }
 
     const ZPOOL_LIST_TANK_FIXTURE: &str = "tank\t4000000000000\t1200000000000\t2800000000000\tONLINE\n";
