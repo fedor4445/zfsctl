@@ -29,7 +29,7 @@ The local machine is always available as the "local" host and does not need a co
 
 ## Keys
 
-- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
@@ -44,6 +44,7 @@ The local machine is always available as the "local" host and does not need a co
 - `n`: create a new pool (prompts for name and vdev spec, e.g. `mirror da0 da1`)
 - `d`: destroy the selected pool (type the pool's name to confirm)
 - `s`: scrub the selected pool (y/n confirm)
+- `R`: resilver the selected pool (y/n confirm)
 
 ### Pool/Dataset properties pane (right pane, `Right` to focus)
 
@@ -58,6 +59,7 @@ The local machine is always available as the "local" host and does not need a co
 - `o`: offline the selected disk (y/n confirm) — no-op on a mirror/raidz group row, not a physical disk
 - `O`: online the selected disk (y/n confirm) — same restriction as `o`
 - `x`: replace the selected disk (prompts for the new device name) — same restriction as `o`
+- `a`: add a new vdev/mirror/raidz group to this pool (prompts for a vdev spec, e.g. `mirror da2 da3`)
 
 ### Datasets
 
@@ -71,6 +73,15 @@ The local machine is always available as the "local" host and does not need a co
 - `d`: destroy the selected snapshot (type `dataset@name` to confirm)
 - `b`: roll back to the selected snapshot (type `dataset@name` to confirm) — discards any writes made since
 
+### Disks
+
+- `Up` / `Down`: select a disk
+- `Space`: toggle-select the highlighted disk (only if it's not already claimed by a pool)
+- `n`: create a new pool from the selected disk(s) (prompts for name and redundancy — blank for a stripe, or `mirror`/`raidz1`/`raidz2`/`raidz3`)
+- `a`: add a vdev to an existing pool from the selected disk(s) (prompts for the target pool name and redundancy, same as above)
+- `Esc`: clear the current selection
+- `r`: refresh the disk list
+
 ## Status
 
-v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated permissions (`zfs allow`), file ACLs (`getfacl`/`setfacl`), and bhyve zvol association are still not implemented — planned as follow-up work.
+v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated permissions (`zfs allow`), file ACLs (`getfacl`/`setfacl`), and bhyve zvol association are still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section.
