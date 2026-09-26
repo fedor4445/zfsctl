@@ -216,6 +216,9 @@ impl App {
             KeyCode::Esc if self.pane_focus == PaneFocus::Right => {
                 self.pane_focus = PaneFocus::Middle;
             }
+            KeyCode::Esc if self.current_section() == Section::Disks && !self.selected_disks.is_empty() => {
+                self.selected_disks.clear();
+            }
             KeyCode::Esc => self.status_message = None,
             KeyCode::Enter if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
@@ -375,6 +378,20 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('R') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
+                if let Some(i) = self.pools_table.selected() {
+                    if let Some(pool) = self.pools.get(i) {
+                        self.modal = Some(Modal::Confirm {
+                            prompt: format!("Resilver pool '{}'? (y/n)", pool.name),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::Pools,
+                                call: MutationCall::ResilverPool { pool: pool.name.clone() },
+                            },
+                        });
+                    }
+                }
+            }
             KeyCode::Char('d') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
@@ -496,6 +513,60 @@ impl App {
                     }
                 }
             }
+            KeyCode::Down if self.current_section() == Section::Disks => {
+                move_table_selection(&mut self.disks_table, self.disks.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Disks => {
+                move_table_selection(&mut self.disks_table, self.disks.len(), false);
+            }
+            KeyCode::Char(' ') if self.current_section() == Section::Disks => {
+                if let Some(i) = self.disks_table.selected() {
+                    if let Some(disk) = self.disks.get(i) {
+                        match &disk.membership {
+                            crate::zfs::disk::DiskMembership::Available => {
+                                if !self.selected_disks.remove(&disk.name) {
+                                    self.selected_disks.insert(disk.name.clone());
+                                }
+                            }
+                            crate::zfs::disk::DiskMembership::InPool { pool, .. } => {
+                                self.status_message = Some(format!("disk '{}' already in pool '{pool}'", disk.name));
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('n') if self.current_section() == Section::Disks && !self.selected_disks.is_empty() => {
+                let mut disks: Vec<String> = self.selected_disks.iter().cloned().collect();
+                disks.sort();
+                self.modal = Some(Modal::Form {
+                    title: format!("Create Pool from {} selected disk(s)", disks.len()),
+                    fields: vec![
+                        FormField { label: "Name".to_string(), value: String::new() },
+                        FormField { label: "Redundancy (blank=stripe, or mirror/raidz1/raidz2/raidz3)".to_string(), value: String::new() },
+                    ],
+                    focused: 0,
+                    kind: FormKind::CreatePoolFromDisks { host: self.selected_host, disks },
+                });
+            }
+            KeyCode::Char('n') if self.current_section() == Section::Disks => {
+                self.status_message = Some("select at least one disk with Space first".to_string());
+            }
+            KeyCode::Char('a') if self.current_section() == Section::Disks && !self.selected_disks.is_empty() => {
+                let mut disks: Vec<String> = self.selected_disks.iter().cloned().collect();
+                disks.sort();
+                self.modal = Some(Modal::Form {
+                    title: format!("Add vdev from {} selected disk(s)", disks.len()),
+                    fields: vec![
+                        FormField { label: "Target pool name".to_string(), value: String::new() },
+                        FormField { label: "Redundancy (blank=stripe, or mirror/raidz1/raidz2/raidz3)".to_string(), value: String::new() },
+                    ],
+                    focused: 0,
+                    kind: FormKind::AddVdevFromDisks { host: self.selected_host, disks },
+                });
+            }
+            KeyCode::Char('a') if self.current_section() == Section::Disks => {
+                self.status_message = Some("select at least one disk with Space first".to_string());
+            }
             _ => {}
         }
     }
@@ -581,7 +652,12 @@ impl App {
                         None
                     } else {
                         match build_pending_action(&kind, &fields) {
-                            Some(action) => Some(action),
+                            Some(action) => {
+                                if matches!(kind, FormKind::CreatePoolFromDisks { .. } | FormKind::AddVdevFromDisks { .. }) {
+                                    self.selected_disks.clear();
+                                }
+                                Some(action)
+                            }
                             None => {
                                 self.modal = Some(Modal::Form { title, fields, focused, kind });
                                 None
@@ -956,6 +1032,13 @@ impl App {
                                 // the one deliberate two-section exception.
                                 refreshes_needed.push(Section::Pools);
                             }
+                            if section == Section::Vdevs || section == Section::Pools {
+                                // Both changing a pool's vdev tree
+                                // (add/replace vdev) and creating/destroying
+                                // a pool outright change which disks are
+                                // claimed — the Disks section must catch up.
+                                refreshes_needed.push(Section::Disks);
+                            }
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
@@ -963,6 +1046,18 @@ impl App {
             }
         }
         refreshes_needed
+    }
+}
+
+/// Builds a `zpool create`/`zpool add` vdev spec from a Disks-section
+/// selection: `disks` verbatim (each disk becomes its own top-level
+/// vdev — a stripe) when `redundancy` is blank, or `[redundancy] +
+/// disks` (one mirror/raidz group over every selected disk) otherwise.
+fn build_vdev_spec_from_selection(redundancy: &str, disks: &[String]) -> Vec<String> {
+    if redundancy.is_empty() {
+        disks.to_vec()
+    } else {
+        std::iter::once(redundancy.to_string()).chain(disks.iter().cloned()).collect()
     }
 }
 
@@ -985,6 +1080,18 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 call: MutationCall::CreatePool { name: name.to_string(), vdev_spec },
             })
         }
+        FormKind::CreatePoolFromDisks { host, disks } => {
+            let name = fields[0].value.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let redundancy = fields[1].value.trim();
+            Some(PendingAction {
+                host: *host,
+                section: Section::Pools,
+                call: MutationCall::CreatePool { name: name.to_string(), vdev_spec: build_vdev_spec_from_selection(redundancy, disks) },
+            })
+        }
         FormKind::AddVdev { host, pool } => {
             let vdev_spec_raw = fields[0].value.trim();
             if vdev_spec_raw.is_empty() {
@@ -995,6 +1102,18 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 host: *host,
                 section: Section::Vdevs,
                 call: MutationCall::AddVdev { pool: pool.clone(), vdev_spec },
+            })
+        }
+        FormKind::AddVdevFromDisks { host, disks } => {
+            let pool = fields[0].value.trim();
+            if pool.is_empty() {
+                return None;
+            }
+            let redundancy = fields[1].value.trim();
+            Some(PendingAction {
+                host: *host,
+                section: Section::Vdevs,
+                call: MutationCall::AddVdev { pool: pool.to_string(), vdev_spec: build_vdev_spec_from_selection(redundancy, disks) },
             })
         }
         FormKind::ReplaceDisk { host, pool, old_disk } => {
@@ -1354,7 +1473,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        assert_eq!(refreshes, vec![Section::Pools]);
+        assert_eq!(refreshes, vec![Section::Pools, Section::Disks]);
         assert_eq!(app.status_message, None);
     }
 
@@ -2409,7 +2528,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        assert_eq!(refreshes, vec![Section::Vdevs, Section::Pools]);
+        assert_eq!(refreshes, vec![Section::Vdevs, Section::Pools, Section::Disks]);
     }
 
     #[test]
@@ -2913,5 +3032,226 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn space_toggles_selection_on_available_disk() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.handle_key(KeyCode::Tab); // -> Snapshots
+        app.handle_key(KeyCode::Tab); // -> Disks
+        app.disks = vec![crate::zfs::disk::DiskInfo { name: "da0".to_string(), size: 0, membership: crate::zfs::disk::DiskMembership::Available }];
+        app.disks_table.select(Some(0));
+        app.handle_key(KeyCode::Char(' '));
+        assert!(app.selected_disks.contains("da0"));
+        app.handle_key(KeyCode::Char(' '));
+        assert!(!app.selected_disks.contains("da0"), "pressing Space again deselects it");
+    }
+
+    #[test]
+    fn space_on_claimed_disk_sets_hint_and_does_not_select() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.disks = vec![crate::zfs::disk::DiskInfo {
+            name: "da0".to_string(),
+            size: 0,
+            membership: crate::zfs::disk::DiskMembership::InPool { pool: "tank".to_string(), vdev: "mirror-0".to_string() },
+        }];
+        app.disks_table.select(Some(0));
+        app.handle_key(KeyCode::Char(' '));
+        assert!(app.selected_disks.is_empty());
+        assert_eq!(app.status_message, Some("disk 'da0' already in pool 'tank'".to_string()));
+    }
+
+    #[test]
+    fn esc_clears_disk_selection_in_disks_section() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.selected_disks.insert("da0".to_string());
+        app.handle_key(KeyCode::Esc);
+        assert!(app.selected_disks.is_empty());
+    }
+
+    #[test]
+    fn up_down_in_disks_section_moves_disks_table_selection() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.disks = vec![
+            crate::zfs::disk::DiskInfo { name: "da0".to_string(), size: 0, membership: crate::zfs::disk::DiskMembership::Available },
+            crate::zfs::disk::DiskInfo { name: "da1".to_string(), size: 0, membership: crate::zfs::disk::DiskMembership::Available },
+        ];
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.disks_table.selected(), Some(0));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.disks_table.selected(), Some(1));
+    }
+
+    #[test]
+    fn handle_key_n_in_disks_with_selection_opens_create_pool_from_disks_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.selected_disks.insert("da1".to_string());
+        app.selected_disks.insert("da0".to_string());
+        app.handle_key(KeyCode::Char('n'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(
+                    *kind,
+                    FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string(), "da1".to_string()] },
+                    "disks must be sorted for a deterministic snapshot"
+                );
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_n_in_disks_without_selection_sets_hint() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message, Some("select at least one disk with Space first".to_string()));
+    }
+
+    #[test]
+    fn handle_key_a_in_disks_with_selection_opens_add_vdev_from_disks_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.selected_disks.insert("da0".to_string());
+        app.handle_key(KeyCode::Char('a'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(*kind, FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".to_string()] });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_a_in_disks_without_selection_sets_hint() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.handle_key(KeyCode::Char('a'));
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message, Some("select at least one disk with Space first".to_string()));
+    }
+
+    #[test]
+    fn build_pending_action_create_pool_from_disks_blank_redundancy_stripes_each_disk() {
+        let kind = FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string(), "da1".to_string()] };
+        let fields = vec![
+            FormField { label: "Name".to_string(), value: "tank".to_string() },
+            FormField { label: "Redundancy".to_string(), value: String::new() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::Pools,
+                call: MutationCall::CreatePool { name: "tank".to_string(), vdev_spec: vec!["da0".to_string(), "da1".to_string()] },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_create_pool_from_disks_with_redundancy_groups_all_disks() {
+        let kind = FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string(), "da1".to_string()] };
+        let fields = vec![
+            FormField { label: "Name".to_string(), value: "tank".to_string() },
+            FormField { label: "Redundancy".to_string(), value: "mirror".to_string() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action.call,
+            MutationCall::CreatePool { name: "tank".to_string(), vdev_spec: vec!["mirror".to_string(), "da0".to_string(), "da1".to_string()] }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_create_pool_from_disks_rejects_empty_name() {
+        let kind = FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string()] };
+        let fields = vec![
+            FormField { label: "Name".to_string(), value: "  ".to_string() },
+            FormField { label: "Redundancy".to_string(), value: String::new() },
+        ];
+        assert_eq!(build_pending_action(&kind, &fields), None);
+    }
+
+    #[test]
+    fn build_pending_action_add_vdev_from_disks() {
+        let kind = FormKind::AddVdevFromDisks { host: 0, disks: vec!["da2".to_string(), "da3".to_string()] };
+        let fields = vec![
+            FormField { label: "Target pool name".to_string(), value: "tank".to_string() },
+            FormField { label: "Redundancy".to_string(), value: "mirror".to_string() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::Vdevs,
+                call: MutationCall::AddVdev { pool: "tank".to_string(), vdev_spec: vec!["mirror".to_string(), "da2".to_string(), "da3".to_string()] },
+            }
+        );
+    }
+
+    #[test]
+    fn selected_disks_cleared_after_create_pool_from_disks_submit() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        app.selected_disks.insert("da0".to_string());
+        app.handle_key(KeyCode::Char('n'));
+        for c in "tank".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab); // move to the Redundancy field
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert!(result.is_some());
+        assert!(app.selected_disks.is_empty());
+    }
+
+    #[test]
+    fn handle_key_shift_r_on_pools_opens_resilver_confirm_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Char('R'));
+        match &app.modal {
+            Some(Modal::Confirm { action, .. }) => {
+                assert_eq!(action.call, MutationCall::ResilverPool { pool: "tank".to_string() });
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutation_done_for_pools_section_also_queues_disks_refresh() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Pools, Ok(()))).unwrap();
+        let refreshes = app.drain_worker_messages();
+        assert!(refreshes.contains(&Section::Pools));
+        assert!(refreshes.contains(&Section::Disks), "a Pools-section mutation (create/destroy pool) changes disk membership too");
     }
 }

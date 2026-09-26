@@ -88,6 +88,13 @@ pub enum FormKind {
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.
     ReplaceDisk { host: usize, pool: String, old_disk: String },
+    /// Fields: `[name, redundancy]` — `redundancy` blank means a stripe
+    /// (each disk its own top-level vdev); `disks` is fixed at
+    /// modal-open time from the Disks section's current selection.
+    CreatePoolFromDisks { host: usize, disks: Vec<String> },
+    /// Fields: `[pool, redundancy]` — same `redundancy` convention as
+    /// `CreatePoolFromDisks`.
+    AddVdevFromDisks { host: usize, disks: Vec<String> },
     /// Fields: `[vdev_spec]`.
     AddVdev { host: usize, pool: String },
     /// Fields: `[value]` — pre-filled with the property's current value.
