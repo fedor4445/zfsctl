@@ -160,6 +160,21 @@ pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -
     Ok(())
 }
 
+/// Adds a new top-level vdev/mirror/raidz group to an existing pool,
+/// e.g. `&["mirror", "da2", "da3"]`. Same raw-vdev-spec shape as
+/// `create_pool` — no guided wizard, this takes an already-built spec.
+pub fn add_vdev(runner: &dyn CommandRunner, pool: &str, vdev_spec: &[&str]) -> Result<()> {
+    let mut args = vec!["add", "--", pool];
+    args.extend_from_slice(vdev_spec);
+    super::run_checked(
+        runner,
+        "zpool",
+        &args,
+        &format!("zpool add {pool} {}", vdev_spec.join(" ")),
+    )?;
+    Ok(())
+}
+
 pub fn scrub_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
     super::run_checked(runner, "zpool", &["scrub", "--", pool], &format!("zpool scrub {pool}"))?;
     Ok(())
@@ -337,6 +352,32 @@ errors: No known data errors
             calls[0],
             ("zpool".to_string(), vec!["create".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()])
         );
+    }
+
+    #[test]
+    fn add_vdev_joins_pool_and_vdev_spec() {
+        let runner = FakeRunner::new("");
+        add_vdev(&runner, "tank", &["mirror", "da2", "da3"]).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ("zpool".to_string(), vec!["add".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da2".to_string(), "da3".to_string()])
+        );
+    }
+
+    #[test]
+    fn add_vdev_surfaces_command_failure() {
+        let runner = FakeRunner::failing("no such geom", 1);
+        let result = add_vdev(&runner, "tank", &["mirror", "da2", "da3"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn guards_against_pool_names_that_look_like_flags_in_add_vdev() {
+        let runner = FakeRunner::new("");
+        add_vdev(&runner, "-f", &["da2"]).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
     }
 
     #[test]

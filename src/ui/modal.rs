@@ -12,6 +12,7 @@ pub enum MutationCall {
     ScrubPool { pool: String },
     DestroyPool { pool: String },
     CreatePool { name: String, vdev_spec: Vec<String> },
+    AddVdev { pool: String, vdev_spec: Vec<String> },
     OfflineDisk { pool: String, disk: String },
     OnlineDisk { pool: String, disk: String },
     ReplaceDisk { pool: String, old_disk: String, new_disk: String },
@@ -34,6 +35,10 @@ impl MutationCall {
             MutationCall::CreatePool { name, vdev_spec } => {
                 let spec: Vec<&str> = vdev_spec.iter().map(String::as_str).collect();
                 crate::zfs::pool::create_pool(runner, name, &spec)
+            }
+            MutationCall::AddVdev { pool, vdev_spec } => {
+                let spec: Vec<&str> = vdev_spec.iter().map(String::as_str).collect();
+                crate::zfs::pool::add_vdev(runner, pool, &spec)
             }
             MutationCall::OfflineDisk { pool, disk } => crate::zfs::pool::offline_disk(runner, pool, disk),
             MutationCall::OnlineDisk { pool, disk } => crate::zfs::pool::online_disk(runner, pool, disk),
@@ -81,6 +86,8 @@ pub enum FormKind {
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.
     ReplaceDisk { host: usize, pool: String, old_disk: String },
+    /// Fields: `[vdev_spec]`.
+    AddVdev { host: usize, pool: String },
     /// Fields: `[value]` — pre-filled with the property's current value.
     EditPoolProperty { host: usize, pool: String, key: String },
     /// Fields: `[name]`.
@@ -158,6 +165,24 @@ mod tests {
             (
                 "zpool".to_string(),
                 vec!["create".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn add_vdev_call_splits_vdev_spec_and_runs_add_vdev() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::AddVdev {
+            pool: "tank".to_string(),
+            vdev_spec: vec!["mirror".to_string(), "da2".to_string(), "da3".to_string()],
+        };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            (
+                "zpool".to_string(),
+                vec!["add".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da2".to_string(), "da3".to_string()]
             )
         );
     }

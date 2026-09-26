@@ -316,6 +316,15 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('a') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                let pool = self.drilled_pool.clone().unwrap();
+                self.modal = Some(Modal::Form {
+                    title: format!("Add vdev to pool '{pool}'"),
+                    fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3)".to_string(), value: String::new() }],
+                    focused: 0,
+                    kind: FormKind::AddVdev { host: self.selected_host, pool },
+                });
+            }
             KeyCode::Down if self.current_section() == Section::Pools && self.pane_focus == PaneFocus::Right => {
                 move_table_selection(&mut self.pool_properties_table, self.pool_properties.len(), true);
             }
@@ -911,6 +920,18 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 host: *host,
                 section: Section::Pools,
                 call: MutationCall::CreatePool { name: name.to_string(), vdev_spec },
+            })
+        }
+        FormKind::AddVdev { host, pool } => {
+            let vdev_spec_raw = fields[0].value.trim();
+            if vdev_spec_raw.is_empty() {
+                return None;
+            }
+            let vdev_spec: Vec<String> = vdev_spec_raw.split_whitespace().map(String::from).collect();
+            Some(PendingAction {
+                host: *host,
+                section: Section::Vdevs,
+                call: MutationCall::AddVdev { pool: pool.clone(), vdev_spec },
             })
         }
         FormKind::ReplaceDisk { host, pool, old_disk } => {
@@ -2213,6 +2234,52 @@ mod tests {
             }
             other => panic!("expected Form modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_key_a_in_vdev_drilldown_opens_add_vdev_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "mirror-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('a'));
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(*kind, crate::ui::modal::FormKind::AddVdev { host: 0, pool: "tank".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_add_vdev_form_submits_with_correct_pool_and_vdev_spec() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![VdevLine { depth: 1, name: "mirror-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('a'));
+        for c in "mirror da2 da3".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(
+            result,
+            Some(crate::ui::modal::PendingAction {
+                host: 0,
+                section: Section::Vdevs,
+                call: crate::ui::modal::MutationCall::AddVdev {
+                    pool: "tank".to_string(),
+                    vdev_spec: vec!["mirror".to_string(), "da2".to_string(), "da3".to_string()],
+                },
+            })
+        );
     }
 
     #[test]
