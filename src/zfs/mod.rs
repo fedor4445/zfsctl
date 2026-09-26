@@ -1,4 +1,5 @@
 pub mod dataset;
+pub mod disk;
 pub mod pool;
 pub mod property;
 pub mod snapshot;
