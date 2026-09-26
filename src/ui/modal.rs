@@ -10,6 +10,7 @@ use crate::ui::state::Section;
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutationCall {
     ScrubPool { pool: String },
+    ResilverPool { pool: String },
     DestroyPool { pool: String },
     CreatePool { name: String, vdev_spec: Vec<String> },
     AddVdev { pool: String, vdev_spec: Vec<String> },
@@ -31,6 +32,7 @@ impl MutationCall {
     pub fn run(&self, runner: &dyn CommandRunner) -> Result<()> {
         match self {
             MutationCall::ScrubPool { pool } => crate::zfs::pool::scrub_pool(runner, pool),
+            MutationCall::ResilverPool { pool } => crate::zfs::pool::resilver_pool(runner, pool),
             MutationCall::DestroyPool { pool } => crate::zfs::pool::destroy_pool(runner, pool),
             MutationCall::CreatePool { name, vdev_spec } => {
                 let spec: Vec<&str> = vdev_spec.iter().map(String::as_str).collect();
@@ -133,6 +135,15 @@ mod tests {
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("zpool".to_string(), vec!["scrub".to_string(), "--".to_string(), "tank".to_string()]));
+    }
+
+    #[test]
+    fn resilver_pool_call_runs_resilver_pool() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::ResilverPool { pool: "tank".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["resilver".to_string(), "--".to_string(), "tank".to_string()]));
     }
 
     #[test]
