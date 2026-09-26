@@ -47,7 +47,7 @@ pub enum WorkerMsg {
     /// needed so a slow result can be told apart from one for a
     /// different pool the user has since drilled into (see the
     /// stale-pool check in `drain_worker_messages`).
-    Vdevs(usize, String, Result<Vec<VdevLine>>),
+    Vdevs(usize, String, Result<(Vec<VdevLine>, Option<crate::zfs::pool::ScanStatus>)>),
     /// The `String` is the pool name this fetch was for — same
     /// stale-identity discard rationale as `Vdevs`.
     PoolProperties(usize, String, Result<Vec<Property>>),
@@ -77,6 +77,10 @@ pub struct App {
     pub selected_disks: HashSet<String>,
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
+    /// The drilled-into pool's most recent scrub/resilver, refreshed
+    /// alongside `vdevs` (same `zpool status` call). `None` while
+    /// `vdevs` is empty/stale, or if the pool has no scan history.
+    pub pool_scan_status: Option<crate::zfs::pool::ScanStatus>,
     pub drilled_pool: Option<String>,
     pub pane_focus: PaneFocus,
     pub pool_properties: Vec<Property>,
@@ -126,6 +130,7 @@ impl App {
             selected_disks: HashSet::new(),
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
+            pool_scan_status: None,
             drilled_pool: None,
             pane_focus: PaneFocus::Middle,
             pool_properties: Vec::new(),
@@ -212,6 +217,7 @@ impl App {
                 self.drilled_pool = None;
                 self.vdevs.clear();
                 self.vdevs_table.select(None);
+                self.pool_scan_status = None;
             }
             KeyCode::Esc if self.pane_focus == PaneFocus::Right => {
                 self.pane_focus = PaneFocus::Middle;
@@ -226,6 +232,7 @@ impl App {
                         self.drilled_pool = Some(pool.name.clone());
                         self.vdevs.clear();
                         self.vdevs_table.select(None);
+                        self.pool_scan_status = None;
                     }
                 }
             }
@@ -961,9 +968,10 @@ impl App {
                         continue;
                     }
                     match result {
-                        Ok(vdevs) => {
+                        Ok((vdevs, scan_status)) => {
                             self.vdevs = vdevs;
                             clamp_table_selection(&mut self.vdevs_table, self.vdevs.len());
+                            self.pool_scan_status = scan_status;
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1878,6 +1886,49 @@ mod tests {
     }
 
     #[test]
+    fn refresh_vdevs_populates_pool_scan_status_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.drilled_pool = Some("tpool".to_string());
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(
+            "  pool: tpool\n state: ONLINE\n  scan: resilver in progress since Sat Sep 26 12:09:06 2026\nconfig:\n\n\tNAME   STATE     READ WRITE CKSUM\n\ttpool  ONLINE       0     0     0\n\nerrors: No known data errors\n",
+        ));
+        app.refresh_vdevs(runner, "tpool".to_string());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if app.pool_scan_status.is_some() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            app.pool_scan_status,
+            Some(crate::zfs::pool::ScanStatus::InProgress { summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string() })
+        );
+    }
+
+    #[test]
+    fn pool_scan_status_is_cleared_on_backing_out_of_drilldown() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.drilled_pool = Some("tank".to_string());
+        app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::InProgress { summary: "resilver in progress".to_string() });
+        app.handle_key(KeyCode::Esc);
+        assert!(app.pool_scan_status.is_none());
+    }
+
+    #[test]
+    fn pool_scan_status_is_cleared_on_drilling_into_a_pool() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.pools_table.select(Some(0));
+        app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::Completed { summary: "stale from a previous drilldown".to_string(), errors: false });
+        app.handle_key(KeyCode::Enter);
+        assert!(app.pool_scan_status.is_none());
+    }
+
+    #[test]
     fn vdevs_result_for_a_different_pool_than_currently_drilled_is_discarded() {
         // Simulates: the user drilled into "tank" (slow refresh in flight),
         // backed out, drilled into "scratch" instead — "tank"'s result then
@@ -1892,7 +1943,7 @@ mod tests {
             .send(WorkerMsg::Vdevs(
                 0,
                 "tank".to_string(),
-                Ok(vec![VdevLine { depth: 0, name: "tank".to_string(), health: crate::zfs::pool::PoolHealth::Online }]),
+                Ok((vec![VdevLine { depth: 0, name: "tank".to_string(), health: crate::zfs::pool::PoolHealth::Online }], None)),
             ))
             .unwrap();
         app.drain_worker_messages();

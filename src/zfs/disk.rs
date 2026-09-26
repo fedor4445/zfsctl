@@ -120,7 +120,7 @@ pub fn list_disks_with_membership(runner: &dyn CommandRunner) -> Result<Vec<Disk
     let mut disks = list_disks(runner)?;
     let pools = pool::list_pools(runner)?;
     for p in &pools {
-        let vdevs = pool::get_pool_vdevs(runner, &p.name)?;
+        let (vdevs, _scan_status) = pool::get_pool_vdevs(runner, &p.name)?;
         annotate_membership(&mut disks, &p.name, &vdevs);
     }
     Ok(disks)

@@ -1,22 +1,23 @@
 use super::state::{App, Section};
 use crate::ui::modal::Modal;
 use crate::zfs::disk::DiskMembership;
+use crate::zfs::pool::ScanStatus;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    let (status_text, status_style) = status_bar_content(app);
     // Sized from content, not a flat constant — a multi-line command
     // failure (e.g. `zpool add`'s "invalid vdev specification\nuse
     // '-f' to override...\nmismatched replication level...") must not
     // be silently clipped to its first line, the same lesson already
     // learned for the modal popup (see `draw_modal`). Capped at 8 so a
     // pathologically long message can't swallow the whole screen.
-    let status_text = app.status_message.as_deref().unwrap_or("");
     let status_inner_width = area.width.saturating_sub(2).max(1);
-    let status_height = (wrapped_line_count(status_text, status_inner_width) + 2).clamp(3, 8);
+    let status_height = (wrapped_line_count(&status_text, status_inner_width) + 2).clamp(3, 8);
 
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -30,16 +31,40 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_sidebar(f, app, chunks[0]);
     draw_main(f, app, chunks[1]);
-    draw_status_bar(f, app, outer[1]);
+    draw_status_bar(f, &status_text, status_style, outer[1]);
 
     if let Some(modal) = app.modal.clone() {
         draw_modal(f, &modal, area);
     }
 }
 
-fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let text = app.status_message.as_deref().unwrap_or("");
+/// Builds the status bar's text and color: the transient action-result
+/// message (if any), followed by the drilled-into pool's scrub/resilver
+/// status (if any) on its own line. Colored yellow while a
+/// resilver/scrub is running, red if the most recent one completed
+/// with errors — a clean or absent scan status leaves the default
+/// color, since it isn't worth drawing attention to.
+fn status_bar_content(app: &App) -> (String, Style) {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(msg) = &app.status_message {
+        lines.push(msg.clone());
+    }
+    let mut style = Style::default();
+    if let Some(scan) = &app.pool_scan_status {
+        let (summary, scan_style) = match scan {
+            ScanStatus::InProgress { summary } => (summary, Style::default().fg(Color::Yellow)),
+            ScanStatus::Completed { summary, errors: true } => (summary, Style::default().fg(Color::Red)),
+            ScanStatus::Completed { summary, errors: false } => (summary, Style::default()),
+        };
+        lines.push(summary.clone());
+        style = scan_style;
+    }
+    (lines.join("\n"), style)
+}
+
+fn draw_status_bar(f: &mut Frame, text: &str, style: Style, area: Rect) {
     let status = Paragraph::new(text)
+        .style(style)
         .wrap(Wrap { trim: false })
         .block(Block::default().borders(Borders::ALL).title("Status"));
     f.render_widget(status, area);

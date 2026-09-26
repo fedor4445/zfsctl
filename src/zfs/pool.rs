@@ -131,16 +131,68 @@ pub fn list_pools(runner: &dyn CommandRunner) -> Result<Vec<Pool>> {
     parse_pool_list(&output.stdout)
 }
 
-/// Runs `zpool status <pool>` and parses its vdev tree. Separate from
-/// `list_pools` because `zpool status` has no tabular `-H -p -o` form.
-pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<VdevLine>> {
+/// The pool's most recent scrub/resilver, parsed from `zpool status`'s
+/// `scan:` line. `None` (from `parse_pool_scan_status`) means the pool
+/// has no scan history at all (e.g. freshly created).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScanStatus {
+    /// A resilver or scrub is currently running. `summary` is the raw
+    /// `scan:` line text, e.g. "resilver in progress since ...".
+    InProgress { summary: String },
+    /// The most recent scrub/resilver finished. `summary` is the raw
+    /// `scan:` line text; `errors` is true if it reported a nonzero
+    /// error count.
+    Completed { summary: String, errors: bool },
+}
+
+/// True if `line` (a scan-summary line) reports a nonzero error count,
+/// e.g. "resilvered 1002M in 00:02:40 with 3 errors on ...". Looks for
+/// a number immediately before the word "error(s)" rather than
+/// searching for a fixed substring, so it isn't tripped up by exact
+/// wording differences between resilver/scrub/cancel summaries.
+fn scan_summary_reports_errors(line: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        if (*word == "errors" || *word == "error") && i > 0 {
+            if let Ok(count) = words[i - 1].parse::<u64>() {
+                return count > 0;
+            }
+        }
+    }
+    false
+}
+
+/// Parses the `scan:` line from `zpool status` output. Returns `None`
+/// when the pool has never been scrubbed/resilvered (no `scan:` line
+/// at all — the case for a freshly created pool) or reports "none
+/// requested" (older `zpool` wording for the same thing).
+pub fn parse_pool_scan_status(output: &str) -> Option<ScanStatus> {
+    let scan_line = output.lines().find(|l| l.trim_start().starts_with("scan:"))?;
+    let summary = scan_line.trim_start().strip_prefix("scan:")?.trim().to_string();
+    if summary.is_empty() || summary == "none requested" {
+        return None;
+    }
+    if summary.contains("in progress") {
+        Some(ScanStatus::InProgress { summary })
+    } else {
+        let errors = scan_summary_reports_errors(&summary);
+        Some(ScanStatus::Completed { summary, errors })
+    }
+}
+
+/// Runs `zpool status <pool>` and parses both its vdev tree and its
+/// most recent scrub/resilver status from the same output — `zpool
+/// status` has no tabular `-H -p -o` form, and fetching both from one
+/// call avoids a second round-trip for a second `zpool status` call
+/// that would return the very same text.
+pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<(Vec<VdevLine>, Option<ScanStatus>)> {
     let output = super::run_checked(
         runner,
         "zpool",
         &["status", "--", pool],
         &format!("zpool status {pool}"),
     )?;
-    Ok(parse_pool_status_vdevs(&output.stdout))
+    Ok((parse_pool_status_vdevs(&output.stdout), parse_pool_scan_status(&output.stdout)))
 }
 
 /// Creates a pool from a raw vdev spec, e.g. `&["mirror", "da0", "da1"]`
@@ -348,10 +400,97 @@ errors: No known data errors
     #[test]
     fn get_pool_vdevs_runs_status_and_parses_result() {
         let runner = FakeRunner::new(ZPOOL_STATUS_FIXTURE);
-        let vdevs = get_pool_vdevs(&runner, "tank").unwrap();
+        let (vdevs, scan_status) = get_pool_vdevs(&runner, "tank").unwrap();
         assert_eq!(vdevs.len(), 4);
+        assert_eq!(scan_status, None, "the fixture has no scan: line at all — a freshly created pool");
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("zpool".to_string(), vec!["status".to_string(), "--".to_string(), "tank".to_string()]));
+    }
+
+    const ZPOOL_STATUS_RESILVER_IN_PROGRESS_FIXTURE: &str = "\
+  pool: tpool
+ state: ONLINE
+status: One or more devices is currently being resilvered.  The pool will
+	continue to function, possibly in a degraded state.
+action: Wait for the resilver to complete.
+  scan: resilver in progress since Sat Sep 26 12:09:06 2026
+	4.03G / 4.04G scanned, 4.03G / 4.04G issued at 258M/s
+	1002M resilvered, 99.93% done, 00:00:00 to go
+config:
+
+\tNAME        STATE     READ WRITE CKSUM
+\ttpool       ONLINE       0     0     0
+\t  ada1      ONLINE       0     0     0  (resilvering)
+
+errors: No known data errors
+";
+
+    const ZPOOL_STATUS_RESILVER_COMPLETED_CLEAN_FIXTURE: &str = "\
+  pool: tpool
+ state: ONLINE
+  scan: resilvered 1002M in 00:02:40 with 0 errors on Sat Sep 26 12:11:46 2026
+config:
+
+\tNAME   STATE     READ WRITE CKSUM
+\ttpool  ONLINE       0     0     0
+\t  ada1 ONLINE       0     0     0
+
+errors: No known data errors
+";
+
+    const ZPOOL_STATUS_RESILVER_COMPLETED_WITH_ERRORS_FIXTURE: &str = "\
+  pool: tpool
+ state: ONLINE
+  scan: resilvered 500M in 00:01:00 with 2 errors on Sat Sep 26 12:11:46 2026
+config:
+
+\tNAME   STATE     READ WRITE CKSUM
+\ttpool  ONLINE       0     0     0
+\t  ada1 ONLINE       0     0     0
+
+errors: 2 data errors, use '-v' for a list
+";
+
+    #[test]
+    fn parse_pool_scan_status_none_when_pool_has_never_been_scanned() {
+        assert_eq!(parse_pool_scan_status(ZPOOL_STATUS_FIXTURE), None);
+    }
+
+    #[test]
+    fn parse_pool_scan_status_in_progress() {
+        assert_eq!(
+            parse_pool_scan_status(ZPOOL_STATUS_RESILVER_IN_PROGRESS_FIXTURE),
+            Some(ScanStatus::InProgress { summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string() })
+        );
+    }
+
+    #[test]
+    fn parse_pool_scan_status_completed_clean() {
+        assert_eq!(
+            parse_pool_scan_status(ZPOOL_STATUS_RESILVER_COMPLETED_CLEAN_FIXTURE),
+            Some(ScanStatus::Completed {
+                summary: "resilvered 1002M in 00:02:40 with 0 errors on Sat Sep 26 12:11:46 2026".to_string(),
+                errors: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_pool_scan_status_completed_with_errors() {
+        assert_eq!(
+            parse_pool_scan_status(ZPOOL_STATUS_RESILVER_COMPLETED_WITH_ERRORS_FIXTURE),
+            Some(ScanStatus::Completed {
+                summary: "resilvered 500M in 00:01:00 with 2 errors on Sat Sep 26 12:11:46 2026".to_string(),
+                errors: true,
+            })
+        );
+    }
+
+    #[test]
+    fn get_pool_vdevs_includes_in_progress_scan_status() {
+        let runner = FakeRunner::new(ZPOOL_STATUS_RESILVER_IN_PROGRESS_FIXTURE);
+        let (_, scan_status) = get_pool_vdevs(&runner, "tpool").unwrap();
+        assert_eq!(scan_status, Some(ScanStatus::InProgress { summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string() }));
     }
 
     #[test]
