@@ -138,7 +138,12 @@ pub fn list_pools(runner: &dyn CommandRunner) -> Result<Vec<Pool>> {
 pub enum ScanStatus {
     /// A resilver or scrub is currently running. `summary` is the raw
     /// `scan:` line text, e.g. "resilver in progress since ...".
-    InProgress { summary: String },
+    /// `percent_done`/`eta` come from the continuation line `zpool
+    /// status` prints under `scan:` once it has enough data to
+    /// estimate progress (e.g. "1002M resilvered, 99.93% done,
+    /// 00:00:00 to go") — both are `None` in the brief window right
+    /// after a resilver/scrub starts, before that line appears.
+    InProgress { summary: String, percent_done: Option<f64>, eta: Option<String> },
     /// The most recent scrub/resilver finished. `summary` is the raw
     /// `scan:` line text; `errors` is true if it reported a nonzero
     /// error count.
@@ -162,18 +167,63 @@ fn scan_summary_reports_errors(line: &str) -> bool {
     false
 }
 
-/// Parses the `scan:` line from `zpool status` output. Returns `None`
-/// when the pool has never been scrubbed/resilvered (no `scan:` line
-/// at all — the case for a freshly created pool) or reports "none
-/// requested" (older `zpool` wording for the same thing).
+/// Extracts the percent-done and ETA from a `zpool status` progress
+/// line, e.g. "1002M resilvered, 99.93% done, 00:00:00 to go" ->
+/// `(99.93, Some("00:00:00"))`. Returns `None` if `line` doesn't
+/// contain the "% done" marker at all (not a progress line).
+fn parse_percent_and_eta(line: &str) -> Option<(f64, Option<String>)> {
+    let percent_marker = line.find("% done")?;
+    let before_percent = &line[..percent_marker];
+    let percent_str: String = before_percent
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let percent: f64 = percent_str.parse().ok()?;
+    let eta = line.rfind("to go").and_then(|to_go_idx| {
+        let before_to_go = line[..to_go_idx].trim_end();
+        before_to_go.rsplit(", ").next().map(|s| s.trim().to_string())
+    });
+    Some((percent, eta))
+}
+
+/// Parses the `scan:` line (and, for an in-progress scan, the
+/// percent/ETA progress line beneath it) from `zpool status` output.
+/// Returns `None` when the pool has never been scrubbed/resilvered (no
+/// `scan:` line at all — the case for a freshly created pool) or
+/// reports "none requested" (older `zpool` wording for the same
+/// thing).
 pub fn parse_pool_scan_status(output: &str) -> Option<ScanStatus> {
-    let scan_line = output.lines().find(|l| l.trim_start().starts_with("scan:"))?;
-    let summary = scan_line.trim_start().strip_prefix("scan:")?.trim().to_string();
+    let lines: Vec<&str> = output.lines().collect();
+    let scan_idx = lines.iter().position(|l| l.trim_start().starts_with("scan:"))?;
+    let summary = lines[scan_idx].trim_start().strip_prefix("scan:")?.trim().to_string();
     if summary.is_empty() || summary == "none requested" {
         return None;
     }
     if summary.contains("in progress") {
-        Some(ScanStatus::InProgress { summary })
+        // The percent/ETA progress line comes some number of lines
+        // after `scan:`, ending at the first blank line (the boundary
+        // `zpool status` puts before the `config:` section) — stop
+        // there rather than scanning the whole remaining output, so an
+        // unrelated later line can never be mistaken for this pool's
+        // progress line.
+        let mut percent_done = None;
+        let mut eta = None;
+        for line in &lines[scan_idx + 1..] {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                break;
+            }
+            if let Some((p, e)) = parse_percent_and_eta(trimmed) {
+                percent_done = Some(p);
+                eta = e;
+                break;
+            }
+        }
+        Some(ScanStatus::InProgress { summary, percent_done, eta })
     } else {
         let errors = scan_summary_reports_errors(&summary);
         Some(ScanStatus::Completed { summary, errors })
@@ -460,7 +510,45 @@ errors: 2 data errors, use '-v' for a list
     fn parse_pool_scan_status_in_progress() {
         assert_eq!(
             parse_pool_scan_status(ZPOOL_STATUS_RESILVER_IN_PROGRESS_FIXTURE),
-            Some(ScanStatus::InProgress { summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string() })
+            Some(ScanStatus::InProgress {
+                summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string(),
+                percent_done: Some(99.93),
+                eta: Some("00:00:00".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_percent_and_eta_extracts_both_values() {
+        assert_eq!(parse_percent_and_eta("1002M resilvered, 99.93% done, 00:00:00 to go"), Some((99.93, Some("00:00:00".to_string()))));
+    }
+
+    #[test]
+    fn parse_percent_and_eta_none_for_a_line_with_no_percent_done_marker() {
+        assert_eq!(parse_percent_and_eta("4.03G / 4.04G scanned, 4.03G / 4.04G issued at 258M/s"), None);
+    }
+
+    #[test]
+    fn parse_pool_scan_status_in_progress_with_no_percent_line_yet() {
+        let fixture = "\
+  pool: tpool
+ state: ONLINE
+  scan: resilver in progress since Sat Sep 26 12:09:06 2026
+config:
+
+\tNAME   STATE     READ WRITE CKSUM
+\ttpool  ONLINE       0     0     0
+
+errors: No known data errors
+";
+        assert_eq!(
+            parse_pool_scan_status(fixture),
+            Some(ScanStatus::InProgress {
+                summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string(),
+                percent_done: None,
+                eta: None,
+            }),
+            "a resilver that just started may not have a percent/ETA line yet"
         );
     }
 
@@ -490,7 +578,14 @@ errors: 2 data errors, use '-v' for a list
     fn get_pool_vdevs_includes_in_progress_scan_status() {
         let runner = FakeRunner::new(ZPOOL_STATUS_RESILVER_IN_PROGRESS_FIXTURE);
         let (_, scan_status) = get_pool_vdevs(&runner, "tpool").unwrap();
-        assert_eq!(scan_status, Some(ScanStatus::InProgress { summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string() }));
+        assert_eq!(
+            scan_status,
+            Some(ScanStatus::InProgress {
+                summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string(),
+                percent_done: Some(99.93),
+                eta: Some("00:00:00".to_string()),
+            })
+        );
     }
 
     #[test]

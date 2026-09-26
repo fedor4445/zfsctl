@@ -1904,7 +1904,11 @@ mod tests {
         }
         assert_eq!(
             app.pool_scan_status,
-            Some(crate::zfs::pool::ScanStatus::InProgress { summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string() })
+            Some(crate::zfs::pool::ScanStatus::InProgress {
+                summary: "resilver in progress since Sat Sep 26 12:09:06 2026".to_string(),
+                percent_done: None,
+                eta: None,
+            })
         );
     }
 
@@ -1912,7 +1916,7 @@ mod tests {
     fn pool_scan_status_is_cleared_on_backing_out_of_drilldown() {
         let mut app = App::new(vec!["local".to_string()]);
         app.drilled_pool = Some("tank".to_string());
-        app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::InProgress { summary: "resilver in progress".to_string() });
+        app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::InProgress { summary: "resilver in progress".to_string(), percent_done: None, eta: None });
         app.handle_key(KeyCode::Esc);
         assert!(app.pool_scan_status.is_none());
     }
