@@ -180,6 +180,17 @@ pub fn scrub_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
     Ok(())
 }
 
+/// Runs `zpool resilver <pool>` — restarts an in-progress resilver from
+/// the beginning (or starts one, if a device needs it and none is
+/// running). Confirmed via `man zpool-resilver` and empirically against
+/// a real `zpool` binary that `--` is accepted as an end-of-options
+/// marker here, same as `scrub_pool` — no disk argument, this is
+/// pool-scoped.
+pub fn resilver_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
+    super::run_checked(runner, "zpool", &["resilver", "--", pool], &format!("zpool resilver {pool}"))?;
+    Ok(())
+}
+
 pub fn destroy_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
     super::run_checked(runner, "zpool", &["destroy", "--", pool], &format!("zpool destroy {pool}"))?;
     Ok(())
@@ -435,6 +446,29 @@ errors: No known data errors
         let runner = FakeRunner::failing("pool is busy", 1);
         let result = scrub_pool(&runner, "tank");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resilver_pool_runs_expected_command() {
+        let runner = FakeRunner::new("");
+        resilver_pool(&runner, "tank").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["resilver".to_string(), "--".to_string(), "tank".to_string()]));
+    }
+
+    #[test]
+    fn resilver_pool_surfaces_command_failure() {
+        let runner = FakeRunner::failing("no valid replicas", 1);
+        let result = resilver_pool(&runner, "tank");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn guards_against_pool_names_that_look_like_flags_in_resilver() {
+        let runner = FakeRunner::new("");
+        resilver_pool(&runner, "-f").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
     }
 
     #[test]
