@@ -7,10 +7,21 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Ta
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    // Sized from content, not a flat constant — a multi-line command
+    // failure (e.g. `zpool add`'s "invalid vdev specification\nuse
+    // '-f' to override...\nmismatched replication level...") must not
+    // be silently clipped to its first line, the same lesson already
+    // learned for the modal popup (see `draw_modal`). Capped at 8 so a
+    // pathologically long message can't swallow the whole screen.
+    let status_text = app.status_message.as_deref().unwrap_or("");
+    let status_inner_width = area.width.saturating_sub(2).max(1);
+    let status_height = (wrapped_line_count(status_text, status_inner_width) + 2).clamp(3, 8);
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
-        .split(f.area());
+        .constraints([Constraint::Min(0), Constraint::Length(status_height)])
+        .split(area);
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -22,14 +33,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_status_bar(f, app, outer[1]);
 
     if let Some(modal) = app.modal.clone() {
-        let area = f.area();
         draw_modal(f, &modal, area);
     }
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = app.status_message.as_deref().unwrap_or("");
-    let status = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Status"));
+    let status = Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title("Status"));
     f.render_widget(status, area);
 }
 
