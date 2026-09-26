@@ -8,12 +8,23 @@ use crate::error::{AppError, Result};
 use crate::hosts::HostInventory;
 use crate::ui::state::PaneFocus;
 use crate::ui::state::Section;
+use crate::zfs::pool::ScanStatus;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// How often to auto-refresh a drilled-into pool's vdevs while a
+/// resilver/scrub is running, so the status bar's gauge actually
+/// advances on its own instead of only updating on a manual `r` press
+/// or after a mutation. The event loop already wakes roughly every
+/// `event::poll` timeout even with no key pressed, but refreshing that
+/// often would hammer the connection (especially over SSH) for no
+/// visible benefit — this throttles actual refreshes to a human-visible
+/// cadence.
+const RESILVER_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Runs the TUI. Terminal teardown (`disable_raw_mode`/`LeaveAlternateScreen`)
 /// is always attempted before returning, regardless of which setup step
@@ -60,8 +71,18 @@ fn event_loop(
     app: &mut App,
     inventory: &HostInventory,
 ) -> Result<()> {
+    let mut last_resilver_auto_refresh = Instant::now() - RESILVER_AUTO_REFRESH_INTERVAL;
     loop {
         let refreshes = app.drain_worker_messages();
+
+        if matches!(app.pool_scan_status, Some(ScanStatus::InProgress { .. }))
+            && last_resilver_auto_refresh.elapsed() >= RESILVER_AUTO_REFRESH_INTERVAL
+        {
+            if let (Some(pool), Some(host)) = (app.drilled_pool.clone(), inventory.hosts.get(app.selected_host)) {
+                app.refresh_vdevs(host.runner.clone(), pool);
+                last_resilver_auto_refresh = Instant::now();
+            }
+        }
         for section in refreshes {
             if let Some(host) = inventory.hosts.get(app.selected_host) {
                 match section {
