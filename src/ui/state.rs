@@ -2,6 +2,8 @@ use crate::error::Result;
 use crate::exec::CommandRunner;
 use crate::ui::modal::{FormField, FormKind, Modal, MutationCall, PendingAction};
 use crate::zfs::dataset::Dataset;
+use crate::zfs::disk::DiskInfo;
+use crate::zfs::disk::DiskMembership;
 use crate::zfs::pool::{Pool, VdevLine};
 use crate::zfs::property::Property;
 use crate::zfs::snapshot::Snapshot;
@@ -17,6 +19,7 @@ pub enum Section {
     Pools,
     Datasets,
     Snapshots,
+    Disks,
     Vdevs,
     PoolProperties,
     DatasetProperties,
@@ -39,6 +42,7 @@ pub enum WorkerMsg {
     Pools(usize, Result<Vec<Pool>>),
     Datasets(usize, Result<Vec<Dataset>>),
     Snapshots(usize, Result<Vec<Snapshot>>),
+    Disks(usize, Result<Vec<DiskInfo>>),
     /// The `String` is the name of the pool this vdev refresh was for —
     /// needed so a slow result can be told apart from one for a
     /// different pool the user has since drilled into (see the
@@ -63,6 +67,14 @@ pub struct App {
     pub pools_table: TableState,
     pub datasets_table: TableState,
     pub snapshots_table: TableState,
+    pub disks: Vec<DiskInfo>,
+    pub disks_table: TableState,
+    /// Names of disks currently selected (via Space, in the Disks
+    /// section) to build a pool or vdev from. Only ever contains names
+    /// of disks whose membership is `Available` — see `drain_worker_messages`'s
+    /// `WorkerMsg::Disks` arm for how a disk that stops being available
+    /// (or disappears) is dropped from this set.
+    pub selected_disks: HashSet<String>,
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
     pub drilled_pool: Option<String>,
@@ -99,7 +111,7 @@ impl App {
     pub fn new(hosts: Vec<String>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots],
+            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks],
             selected_section: 0,
             hosts,
             selected_host: 0,
@@ -109,6 +121,9 @@ impl App {
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
             snapshots_table: TableState::default(),
+            disks: Vec::new(),
+            disks_table: TableState::default(),
+            selected_disks: HashSet::new(),
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             drilled_pool: None,
@@ -178,6 +193,9 @@ impl App {
         self.pools_table.select(None);
         self.datasets_table.select(None);
         self.snapshots_table.select(None);
+        self.disks.clear();
+        self.disks_table.select(None);
+        self.selected_disks.clear();
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
@@ -658,6 +676,24 @@ impl App {
     }
 
     /// See `refresh_pools` for why this queues rather than drops a
+    /// request while already in flight. Fetches every disk on the host
+    /// and its pool/vdev membership in one call — see
+    /// `zfs::disk::list_disks_with_membership`.
+    pub fn refresh_disks(&mut self, runner: Arc<dyn CommandRunner>) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::Disks, host) {
+            self.pending_refresh.insert((Section::Disks, host));
+            return;
+        }
+        self.begin_refresh(Section::Disks, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::disk::list_disks_with_membership(runner.as_ref());
+            let _ = tx.send(WorkerMsg::Disks(host, result));
+        });
+    }
+
+    /// See `refresh_pools` for why this queues rather than drops a
     /// request while already in flight. `pool` is the name of the
     /// currently drilled-into pool.
     ///
@@ -805,6 +841,33 @@ impl App {
                         Ok(snapshots) => {
                             self.snapshots = snapshots;
                             clamp_table_selection(&mut self.snapshots_table, self.snapshots.len());
+                            self.status_message = None;
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
+                WorkerMsg::Disks(host, result) => {
+                    self.end_refresh(Section::Disks, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::Disks, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::Disks);
+                    }
+                    match result {
+                        Ok(disks) => {
+                            // Drop any selected disk that no longer
+                            // exists, or has stopped being Available
+                            // (claimed by a concurrent operation, or a
+                            // slow refresh landing late) — a stale
+                            // selection must not be submittable against
+                            // a device that's no longer free.
+                            self.selected_disks.retain(|name| {
+                                disks.iter().any(|d| &d.name == name && d.membership == DiskMembership::Available)
+                            });
+                            self.disks = disks;
+                            clamp_table_selection(&mut self.disks_table, self.disks.len());
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1339,7 +1402,7 @@ mod tests {
         app.handle_key(KeyCode::BackTab);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Snapshots);
+        assert_eq!(app.current_section(), Section::Disks);
     }
 
     #[test]
@@ -1565,7 +1628,8 @@ mod tests {
             Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0 },
             Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0 },
         ];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Snapshots (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Hosts -> Disks (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
         assert_eq!(app.current_section(), Section::Snapshots);
         app.handle_key(KeyCode::Down);
         assert_eq!(app.snapshots_table.selected(), Some(0));
@@ -2021,7 +2085,8 @@ mod tests {
     fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0 }];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Snapshots
+        app.handle_key(KeyCode::BackTab); // Hosts -> Disks (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
         app.snapshots_table.select(Some(0));
         app.handle_key(KeyCode::Char('d'));
         match app.modal {
@@ -2040,7 +2105,8 @@ mod tests {
     fn handle_key_b_on_snapshots_opens_rollback_confirm_typed_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0 }];
-        app.handle_key(KeyCode::BackTab);
+        app.handle_key(KeyCode::BackTab); // Hosts -> Disks (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
         app.snapshots_table.select(Some(0));
         app.handle_key(KeyCode::Char('b'));
         match app.modal {
@@ -2412,7 +2478,7 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Snapshots, "must wrap backward from the first section to the last");
+        assert_eq!(app.current_section(), Section::Disks, "must wrap backward from the first section to the last");
     }
 
     #[test]
@@ -2482,6 +2548,8 @@ mod tests {
         app.handle_key(KeyCode::Tab); // -> Pools
         app.handle_key(KeyCode::Right);
         app.pool_properties = vec![Property { name: "x".to_string(), value: "y".to_string(), source: PropertySource::Local }];
+        app.disks = vec![crate::zfs::disk::DiskInfo { name: "da0".to_string(), size: 0, membership: crate::zfs::disk::DiskMembership::Available }];
+        app.selected_disks.insert("da0".to_string());
         app.handle_key(KeyCode::Tab); // -> Datasets, resets pane_focus to Middle first
         app.handle_key(KeyCode::BackTab); // -> Pools again
         app.handle_key(KeyCode::BackTab); // -> Hosts
@@ -2491,6 +2559,77 @@ mod tests {
         assert_eq!(app.pool_properties_table.selected(), None);
         assert!(app.dataset_properties.is_empty());
         assert_eq!(app.dataset_properties_table.selected(), None);
+        assert!(app.disks.is_empty());
+        assert_eq!(app.disks_table.selected(), None);
+        assert!(app.selected_disks.is_empty());
+    }
+
+    #[test]
+    fn refresh_disks_populates_disks_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner: Arc<dyn CommandRunner> = Arc::new(
+            FakeRunner::new("")
+                .route("geom", "disk", "Geom name: da0\nProviders:\n1. Name: da0\n   Mediasize: 268435456 (256M)\n")
+                .route("zpool", "list", "tank\t0\t0\t0\tONLINE\n")
+                .route(
+                    "zpool",
+                    "status",
+                    "  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME  STATE     READ WRITE CKSUM\n\ttank  ONLINE       0     0     0\n\t  da0 ONLINE       0     0     0\n\nerrors: No known data errors\n",
+                ),
+        );
+        app.refresh_disks(runner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.disks.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.disks.len(), 1);
+        assert_eq!(
+            app.disks[0].membership,
+            crate::zfs::disk::DiskMembership::InPool { pool: "tank".to_string(), vdev: "da0".to_string() }
+        );
+    }
+
+    #[test]
+    fn refresh_disks_does_not_spawn_second_thread_while_in_flight() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let fake = Arc::new(
+            FakeRunner::new("")
+                .route("geom", "disk", "Geom name: da0\nProviders:\n1. Name: da0\n   Mediasize: 268435456 (256M)\n")
+                .route("zpool", "list", "")
+                .route("zpool", "status", ""),
+        );
+        let runner: Arc<dyn CommandRunner> = fake.clone();
+        app.refresh_disks(runner.clone());
+        app.refresh_disks(runner.clone());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.disks.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fake.calls.lock().unwrap().len(), 2, "geom disk list + zpool list; zpool status is skipped since the empty zpool list fixture has no pools");
+    }
+
+    #[test]
+    fn disks_result_for_a_stale_host_is_discarded() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.tx
+            .send(WorkerMsg::Disks(1, Ok(vec![crate::zfs::disk::DiskInfo {
+                name: "da0".to_string(),
+                size: 0,
+                membership: crate::zfs::disk::DiskMembership::Available,
+            }])))
+            .unwrap();
+        app.drain_worker_messages();
+        assert!(app.disks.is_empty(), "a result for a host that isn't selected must not populate the pane");
     }
 
     #[test]

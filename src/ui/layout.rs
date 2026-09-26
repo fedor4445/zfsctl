@@ -1,5 +1,6 @@
 use super::state::{App, Section};
 use crate::ui::modal::Modal;
+use crate::zfs::disk::DiskMembership;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
@@ -43,6 +44,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Pools => "Pools",
                 Section::Datasets => "Datasets",
                 Section::Snapshots => "Snapshots",
+                Section::Disks => "Disks",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
@@ -87,6 +89,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
     match section {
         Section::Hosts => draw_hosts(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
+        Section::Disks => draw_disks(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties => {
             unreachable!("never in App::sections")
@@ -217,6 +220,27 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
+}
+
+fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = app.disks.iter().map(|d| {
+        let marker = if app.selected_disks.contains(&d.name) { "[x]" } else { "[ ]" };
+        let status = match &d.membership {
+            DiskMembership::Available => "available".to_string(),
+            DiskMembership::InPool { pool, vdev } => format!("in {pool} ({vdev})"),
+        };
+        Row::new(vec![format!("{marker} {}", d.name), d.size.to_string(), status])
+    });
+    let widths = [Constraint::Length(18), Constraint::Length(14), Constraint::Min(20)];
+    let title = format!(
+        "Disks — {} ('r' refresh, Space select, 'n' create pool, 'a' add vdev, Esc clear selection)",
+        app.active_host_name()
+    );
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["Name", "Size", "Status"]))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.disks_table);
 }
 
 /// Percentage width the modal popup uses — held constant; only the
