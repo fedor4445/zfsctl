@@ -82,6 +82,7 @@ fn event_loop(
     let mut last_vdevs_auto_refresh = Instant::now() - VDEVS_AUTO_REFRESH_INTERVAL;
     loop {
         let refreshes = app.drain_worker_messages();
+        app.clear_stale_scan_status();
 
         if last_vdevs_auto_refresh.elapsed() >= VDEVS_AUTO_REFRESH_INTERVAL {
             if let (Some(pool), Some(host)) = (app.drilled_pool.clone(), inventory.hosts.get(app.selected_host)) {

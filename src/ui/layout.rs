@@ -2,6 +2,7 @@ use super::state::{App, Section};
 use crate::ui::modal::Modal;
 use crate::zfs::disk::DiskMembership;
 use crate::zfs::pool::ScanStatus;
+use crate::zfs::property::Property;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Wrap};
@@ -205,11 +206,22 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(table, area, &mut app.pools_table);
 }
 
+/// Dims a read-only property row so it's visually obvious at a glance
+/// that it can't be edited — separate from the existing "read-only
+/// property" status-message hint, which only appears after you've
+/// already tried.
+fn read_only_property_style(prop: &Property) -> Style {
+    if prop.source.is_editable() {
+        Style::default()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
 fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
-    let rows = app
-        .pool_properties
-        .iter()
-        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]));
+    let rows = app.pool_properties.iter().map(|p| {
+        Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(p))
+    });
     let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
     let pool = app.selected_pool_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
@@ -259,10 +271,9 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
-    let rows = app
-        .dataset_properties
-        .iter()
-        .map(|p| Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]));
+    let rows = app.dataset_properties.iter().map(|p| {
+        Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(p))
+    });
     let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, ← back)");
@@ -294,7 +305,11 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
             DiskMembership::Available => "available".to_string(),
             DiskMembership::InPool { pool, vdev } => format!("in {pool} ({vdev})"),
         };
-        Row::new(vec![format!("{marker} {}", d.name), d.size.to_string(), status])
+        let style = match &d.membership {
+            DiskMembership::Available => Style::default(),
+            DiskMembership::InPool { .. } => Style::default().fg(Color::DarkGray),
+        };
+        Row::new(vec![format!("{marker} {}", d.name), d.size.to_string(), status]).style(style)
     });
     let widths = [Constraint::Length(18), Constraint::Length(14), Constraint::Min(20)];
     let title = format!(
@@ -326,10 +341,17 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
         Modal::ConfirmTyped { prompt, input, .. } => {
             wrapped_line_count(&format!("{prompt}\n\n> {input}"), inner_width)
         }
-        Modal::Form { fields, .. } => fields
-            .iter()
-            .map(|field| wrapped_line_count(&format!("  {}: {}", field.label, field.value), inner_width))
-            .sum(),
+        Modal::Form { fields, description, .. } => {
+            let fields_lines: u16 = fields
+                .iter()
+                .map(|field| wrapped_line_count(&format!("  {}: {}", field.label, field.value), inner_width))
+                .sum();
+            match description {
+                // +1 blank separator line between the description and the fields.
+                Some(desc) => wrapped_line_count(desc, inner_width) + 1 + fields_lines,
+                None => fields_lines,
+            }
+        }
     };
     // +2 for the top/bottom border; floor of 5 so a one-line prompt
     // doesn't render a cramped, near-invisible box.
@@ -351,8 +373,12 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
                 .block(Block::default().borders(Borders::ALL).title("Type to confirm (Enter/Esc)"));
             f.render_widget(p, popup_area);
         }
-        Modal::Form { title, fields, focused, .. } => {
+        Modal::Form { title, fields, focused, description, .. } => {
             let mut lines = Vec::new();
+            if let Some(desc) = description {
+                lines.push(desc.clone());
+                lines.push(String::new());
+            }
             for (i, field) in fields.iter().enumerate() {
                 let marker = if i == *focused { ">" } else { " " };
                 lines.push(format!("{marker} {}: {}", field.label, field.value));

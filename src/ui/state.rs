@@ -12,6 +12,11 @@ use ratatui::widgets::TableState;
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How long a completed scrub/resilver's status stays visible in the
+/// status bar before `clear_stale_scan_status` clears it.
+const POOL_SCAN_STATUS_DISPLAY_DURATION: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
@@ -81,6 +86,11 @@ pub struct App {
     /// alongside `vdevs` (same `zpool status` call). `None` while
     /// `vdevs` is empty/stale, or if the pool has no scan history.
     pub pool_scan_status: Option<crate::zfs::pool::ScanStatus>,
+    /// When `pool_scan_status` was last set from a fresh refresh result
+    /// — used by `clear_stale_scan_status` to expire a `Completed`
+    /// status after it's been shown for a while, so a finished
+    /// resilver/scrub doesn't linger in the status bar forever.
+    pool_scan_status_shown_at: Option<Instant>,
     pub drilled_pool: Option<String>,
     pub pane_focus: PaneFocus,
     pub pool_properties: Vec<Property>,
@@ -131,6 +141,7 @@ impl App {
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             pool_scan_status: None,
+            pool_scan_status_shown_at: None,
             drilled_pool: None,
             pane_focus: PaneFocus::Middle,
             pool_properties: Vec::new(),
@@ -153,10 +164,31 @@ impl App {
         self.sections[self.selected_section]
     }
 
-    /// True while any (section, host) refresh is in flight. Used only
-    /// for the coarse "refreshing..." indicator in the sidebar title.
+    /// Clears a completed scrub/resilver status once it's been shown
+    /// for `POOL_SCAN_STATUS_DISPLAY_DURATION` — called once per event
+    /// loop tick so a finished resilver/scrub doesn't linger in the
+    /// status bar forever. A no-op while `pool_scan_status` is
+    /// `InProgress` (that one's supposed to stay until it finishes) or
+    /// already `None`.
+    pub fn clear_stale_scan_status(&mut self) {
+        let Some(crate::zfs::pool::ScanStatus::Completed { .. }) = &self.pool_scan_status else {
+            return;
+        };
+        if self.pool_scan_status_shown_at.is_some_and(|t| t.elapsed() >= POOL_SCAN_STATUS_DISPLAY_DURATION) {
+            self.pool_scan_status = None;
+            self.pool_scan_status_shown_at = None;
+        }
+    }
+
+    /// True while any (section, host) refresh is in flight, excluding
+    /// `Section::Vdevs` — the only section under passive/periodic
+    /// auto-refresh (see `VDEVS_AUTO_REFRESH_INTERVAL` in `ui/mod.rs`),
+    /// which would otherwise make this indicator flicker on/off every
+    /// couple of seconds while just sitting in a pool's Vdevs view.
+    /// Used only for the coarse "refreshing..." indicator in the
+    /// sidebar title.
     pub fn is_loading(&self) -> bool {
-        !self.in_flight.is_empty()
+        self.in_flight.iter().any(|(section, _)| *section != Section::Vdevs)
     }
 
     fn is_refreshing(&self, section: Section, host: usize) -> bool {
@@ -218,6 +250,7 @@ impl App {
                 self.vdevs.clear();
                 self.vdevs_table.select(None);
                 self.pool_scan_status = None;
+                self.pool_scan_status_shown_at = None;
             }
             KeyCode::Esc if self.pane_focus == PaneFocus::Right => {
                 self.pane_focus = PaneFocus::Middle;
@@ -233,6 +266,7 @@ impl App {
                         self.vdevs.clear();
                         self.vdevs_table.select(None);
                         self.pool_scan_status = None;
+                        self.pool_scan_status_shown_at = None;
                     }
                 }
             }
@@ -246,6 +280,7 @@ impl App {
                                 title: format!("Edit '{}' on pool '{pool}'", prop.name),
                                 fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
                                 focused: 0,
+                                description: crate::zfs::property::describe(&prop.name).map(str::to_string),
                                 kind: FormKind::EditPoolProperty { host: self.selected_host, pool, key: prop.name.clone() },
                             });
                         }
@@ -262,6 +297,7 @@ impl App {
                                 title: format!("Edit '{}' on dataset '{dataset}'", prop.name),
                                 fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
                                 focused: 0,
+                                description: crate::zfs::property::describe(&prop.name).map(str::to_string),
                                 kind: FormKind::EditDatasetProperty { host: self.selected_host, dataset, key: prop.name.clone() },
                             });
                         }
@@ -336,6 +372,7 @@ impl App {
                                 title: format!("Replace disk '{}' in pool '{pool}'", vdev.name),
                                 fields: vec![FormField { label: "New device".to_string(), value: String::new() }],
                                 focused: 0,
+                                description: None,
                                 kind: FormKind::ReplaceDisk { host: self.selected_host, pool, old_disk: vdev.name.clone() },
                             });
                         } else {
@@ -350,6 +387,7 @@ impl App {
                     title: format!("Add vdev to pool '{pool}'"),
                     fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3)".to_string(), value: String::new() }],
                     focused: 0,
+                    description: None,
                     kind: FormKind::AddVdev { host: self.selected_host, pool },
                 });
             }
@@ -423,6 +461,7 @@ impl App {
                         FormField { label: "Vdev spec (e.g. mirror da0 da1)".to_string(), value: String::new() },
                     ],
                     focused: 0,
+                    description: None,
                     kind: FormKind::CreatePool { host: self.selected_host },
                 });
             }
@@ -449,6 +488,7 @@ impl App {
                     title: "Create Dataset".to_string(),
                     fields: vec![FormField { label: "Name".to_string(), value: String::new() }],
                     focused: 0,
+                    description: None,
                     kind: FormKind::CreateDataset { host: self.selected_host },
                 });
             }
@@ -475,6 +515,7 @@ impl App {
                             title: format!("Snapshot dataset '{}'", ds.name),
                             fields: vec![FormField { label: "Snapshot name".to_string(), value: String::new() }],
                             focused: 0,
+                            description: None,
                             kind: FormKind::CreateSnapshot { host: self.selected_host, dataset: ds.name.clone() },
                         });
                     }
@@ -552,6 +593,7 @@ impl App {
                         FormField { label: "Redundancy (blank=stripe, or mirror/raidz1/raidz2/raidz3)".to_string(), value: String::new() },
                     ],
                     focused: 0,
+                    description: None,
                     kind: FormKind::CreatePoolFromDisks { host: self.selected_host, disks },
                 });
             }
@@ -568,6 +610,7 @@ impl App {
                         FormField { label: "Redundancy (blank=stripe, or mirror/raidz1/raidz2/raidz3)".to_string(), value: String::new() },
                     ],
                     focused: 0,
+                    description: None,
                     kind: FormKind::AddVdevFromDisks { host: self.selected_host, disks },
                 });
             }
@@ -645,23 +688,23 @@ impl App {
                     None
                 }
             },
-            Modal::Form { title, mut fields, mut focused, kind } => match key {
+            Modal::Form { title, mut fields, mut focused, description, kind } => match key {
                 KeyCode::Esc => None,
                 KeyCode::Tab => {
                     focused = (focused + 1) % fields.len();
-                    self.modal = Some(Modal::Form { title, fields, focused, kind });
+                    self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
                 KeyCode::Enter => {
                     if focused + 1 < fields.len() {
                         focused += 1;
-                        self.modal = Some(Modal::Form { title, fields, focused, kind });
+                        self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                         None
                     } else {
                         match build_pending_action(&kind, &fields) {
                             Some(action) => Some(action),
                             None => {
-                                self.modal = Some(Modal::Form { title, fields, focused, kind });
+                                self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                                 None
                             }
                         }
@@ -669,16 +712,16 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     fields[focused].value.pop();
-                    self.modal = Some(Modal::Form { title, fields, focused, kind });
+                    self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
                 KeyCode::Char(c) => {
                     fields[focused].value.push(c);
-                    self.modal = Some(Modal::Form { title, fields, focused, kind });
+                    self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
                 _ => {
-                    self.modal = Some(Modal::Form { title, fields, focused, kind });
+                    self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
             },
@@ -972,6 +1015,7 @@ impl App {
                             self.vdevs = vdevs;
                             clamp_table_selection(&mut self.vdevs_table, self.vdevs.len());
                             self.pool_scan_status = scan_status;
+                            self.pool_scan_status_shown_at = Some(Instant::now());
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1222,7 +1266,6 @@ mod tests {
     use super::*;
     use crate::exec::test_support::FakeRunner;
     use crate::zfs::property::PropertySource;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn handle_key_s_on_pools_opens_scrub_confirm_modal() {
@@ -1930,6 +1973,33 @@ mod tests {
         app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::Completed { summary: "stale from a previous drilldown".to_string(), errors: false });
         app.handle_key(KeyCode::Enter);
         assert!(app.pool_scan_status.is_none());
+    }
+
+    #[test]
+    fn clear_stale_scan_status_clears_completed_status_after_the_display_duration() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::Completed { summary: "resilvered 501M in 00:00:32 with 0 errors".to_string(), errors: false });
+        app.pool_scan_status_shown_at = Some(Instant::now() - Duration::from_secs(7));
+        app.clear_stale_scan_status();
+        assert!(app.pool_scan_status.is_none());
+    }
+
+    #[test]
+    fn clear_stale_scan_status_leaves_a_recently_shown_completed_status_alone() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::Completed { summary: "resilvered 501M in 00:00:32 with 0 errors".to_string(), errors: false });
+        app.pool_scan_status_shown_at = Some(Instant::now());
+        app.clear_stale_scan_status();
+        assert!(app.pool_scan_status.is_some(), "must not clear before it's been shown for the full display duration");
+    }
+
+    #[test]
+    fn clear_stale_scan_status_never_clears_an_in_progress_status() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::InProgress { summary: "resilver in progress".to_string(), percent_done: Some(50.0), eta: None });
+        app.pool_scan_status_shown_at = Some(Instant::now() - Duration::from_secs(999));
+        app.clear_stale_scan_status();
+        assert!(app.pool_scan_status.is_some(), "an in-progress resilver/scrub must stay visible regardless of how long it's been running");
     }
 
     #[test]
@@ -2976,11 +3046,28 @@ mod tests {
         app.pool_properties_table.select(Some(0));
         app.handle_key(KeyCode::Enter);
         match &app.modal {
-            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+            Some(crate::ui::modal::Modal::Form { fields, kind, description, .. }) => {
                 assert_eq!(fields.len(), 1);
                 assert_eq!(fields[0].value, "old comment", "the form must be pre-filled with the property's current value");
                 assert_eq!(*kind, crate::ui::modal::FormKind::EditPoolProperty { host: 0, pool: "tank".to_string(), key: "comment".to_string() });
+                assert_eq!(description.as_deref(), Some("A free-form text comment attached to this pool"));
             }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_right_focused_property_with_no_known_description_leaves_it_none() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0));
+        app.handle_key(KeyCode::Right);
+        app.pool_properties = vec![Property { name: "some_future_property".to_string(), value: "x".to_string(), source: PropertySource::Local }];
+        app.pool_properties_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { description, .. }) => assert_eq!(*description, None),
             other => panic!("expected Form modal, got {other:?}"),
         }
     }
@@ -3054,9 +3141,13 @@ mod tests {
         app.dataset_properties_table.select(Some(0));
         app.handle_key(KeyCode::Enter);
         match &app.modal {
-            Some(crate::ui::modal::Modal::Form { fields, kind, .. }) => {
+            Some(crate::ui::modal::Modal::Form { fields, kind, description, .. }) => {
                 assert_eq!(fields[0].value, "lz4");
                 assert_eq!(*kind, crate::ui::modal::FormKind::EditDatasetProperty { host: 0, dataset: "tank/data".to_string(), key: "compression".to_string() });
+                assert_eq!(
+                    description.as_deref(),
+                    Some("Compression algorithm applied to data written to this dataset (e.g. off, lz4, zstd, gzip)")
+                );
             }
             other => panic!("expected Form modal, got {other:?}"),
         }

@@ -126,6 +126,11 @@ pub enum Modal {
         title: String,
         fields: Vec<FormField>,
         focused: usize,
+        /// A one-line synopsis of what's being edited, shown above the
+        /// fields — currently only populated for property edits (via
+        /// `zfs::property::describe`); every other form leaves this
+        /// `None`.
+        description: Option<String>,
         kind: FormKind,
     },
 }

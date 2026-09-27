@@ -57,6 +57,90 @@ impl PropertySource {
     }
 }
 
+/// A one-line synopsis of a `zpool`/`zfs` property, for display in the
+/// edit popup — purely a UX nicety, not derived from `get`/`set`
+/// output (neither exposes descriptions). Covers the properties most
+/// commonly seen in `zpool get all`/`zfs get all` output; returns
+/// `None` for anything not in this table rather than guessing.
+pub fn describe(name: &str) -> Option<&'static str> {
+    match name {
+        // zfs dataset/volume properties
+        "available" => Some("Space available to this dataset and its children, not including reservations"),
+        "atime" => Some("Whether access time is updated on read"),
+        "relatime" => Some("Whether access time updates are relaxed, only updated periodically instead of on every read"),
+        "canmount" => Some("Whether this dataset can be mounted, and whether 'zfs mount -a' mounts it automatically"),
+        "casesensitivity" => Some("Whether file/directory name lookups are case-sensitive (fixed at creation)"),
+        "checksum" => Some("Checksum algorithm used to verify data integrity"),
+        "compression" => Some("Compression algorithm applied to data written to this dataset (e.g. off, lz4, zstd, gzip)"),
+        "compressratio" => Some("Compression ratio achieved for this dataset's data"),
+        "copies" => Some("Number of copies of user data to store per block, for extra redundancy without a redundant vdev"),
+        "creation" => Some("Time this dataset was created"),
+        "dedup" => Some("Whether deduplication is enabled for blocks written to this dataset"),
+        "devices" => Some("Whether device nodes can be opened on this dataset"),
+        "encryption" => Some("Encryption algorithm used for this dataset, if any"),
+        "exec" => Some("Whether processes can be executed from files in this dataset"),
+        "filesystem_count" => Some("Number of filesystems/volumes currently under this dataset (with a filesystem_limit set)"),
+        "filesystem_limit" => Some("Maximum number of filesystems/volumes that can exist under this dataset"),
+        "guid" => Some("Unique identifier for this dataset/pool"),
+        "logbias" => Some("Hint for how to handle synchronous writes: 'latency' (default) or 'throughput'"),
+        "mounted" => Some("Whether this dataset is currently mounted"),
+        "mountpoint" => Some("Filesystem path where this dataset is mounted"),
+        "nbmand" => Some("Whether to use non-blocking mandatory locks (relevant for CIFS/SMB clients)"),
+        "normalization" => Some("Unicode normalization form applied to file/directory names (fixed at creation)"),
+        "origin" => Some("The snapshot this dataset was cloned from, if any"),
+        "overlay" => Some("Whether a non-empty directory can be used as a mountpoint"),
+        "primarycache" => Some("What kind of data ('all', 'none', or 'metadata') is cached in the ARC (RAM cache)"),
+        "quota" => Some("Maximum amount of space this dataset and its descendants can consume"),
+        "readonly" => Some("Whether this dataset (or pool) can be written to"),
+        "recordsize" => Some("Suggested block size for files in this dataset"),
+        "redundant_metadata" => Some("How much extra redundant metadata is stored: 'all' or 'most'"),
+        "refquota" => Some("Maximum amount of space this dataset itself can consume, not counting descendants"),
+        "refreservation" => Some("Minimum amount of space guaranteed to this dataset itself, not counting descendants"),
+        "reservation" => Some("Minimum amount of space guaranteed to this dataset and its descendants"),
+        "secondarycache" => Some("What kind of data ('all', 'none', or 'metadata') is cached on an L2ARC device"),
+        "setuid" => Some("Whether the setuid/setgid bits are honored on this dataset"),
+        "sharenfs" => Some("Whether and how this dataset is shared via NFS"),
+        "sharesmb" => Some("Whether and how this dataset is shared via SMB"),
+        "snapdir" => Some("Whether the hidden .zfs/snapshot directory is visible"),
+        "snapshot_count" => Some("Number of snapshots currently under this dataset (with a snapshot_limit set)"),
+        "snapshot_limit" => Some("Maximum number of snapshots that can exist under this dataset"),
+        "special_small_blocks" => Some("Size below which blocks are written to a 'special' allocation-class vdev instead"),
+        "sync" => Some("Behavior for synchronous requests: 'standard', 'always', or 'disabled'"),
+        "type" => Some("Whether this dataset is a filesystem, volume, or snapshot"),
+        "used" => Some("Space consumed by this dataset and all its descendants"),
+        "utf8only" => Some("Whether only valid UTF-8 file/directory names are accepted (fixed at creation)"),
+        "version" => Some("On-disk format version of this dataset/pool"),
+        "volblocksize" => Some("Block size for a volume (zvol), fixed at creation"),
+        "volsize" => Some("Logical size of a volume (zvol)"),
+        "xattr" => Some("How extended attributes are stored: 'on', 'off', or 'sa' (in a hidden directory)"),
+        "zoned" => Some("Whether this dataset is managed from a non-global jail/zone"),
+        // zpool properties
+        "allocated" => Some("Space currently allocated in the pool"),
+        "altroot" => Some("Alternate root directory the pool is mounted under, if any"),
+        "ashift" => Some("Alignment shift (block size, as a power of two) used for this pool's vdevs"),
+        "autoexpand" => Some("Whether the pool automatically expands to use the full size of enlarged/replaced devices"),
+        "autoreplace" => Some("Whether ZFS automatically replaces a failed device with an available spare or matching device"),
+        "autotrim" => Some("Whether ZFS automatically issues TRIM/UNMAP for freed space on devices that support it"),
+        "bootfs" => Some("Dataset used as the default boot filesystem for this pool"),
+        "cachefile" => Some("Location of the cache file used to import this pool automatically at boot"),
+        "capacity" => Some("Percentage of pool space currently used"),
+        "comment" => Some("A free-form text comment attached to this pool"),
+        "dedupratio" => Some("Deduplication ratio achieved across the whole pool"),
+        "delegation" => Some("Whether delegated administration ('zfs allow') is enabled for this pool"),
+        "expandsize" => Some("Amount of space available for the pool to expand into"),
+        "failmode" => Some("Pool behavior when all redundancy for a device is lost: 'wait', 'continue', or 'panic'"),
+        "fragmentation" => Some("Estimated fragmentation of the pool's free space"),
+        "free" => Some("Unallocated space in the pool"),
+        "freeing" => Some("Space still being reclaimed from recently destroyed datasets"),
+        "health" => Some("Current health state of the pool"),
+        "leaked" => Some("Space leaked due to a bug, since fixed, that hasn't been reclaimed"),
+        "listsnapshots" => Some("Whether 'zfs list' shows snapshots by default for this pool"),
+        "multihost" => Some("Whether multihost protection (MMP) is enabled, to detect concurrent import by another host"),
+        "size" => Some("Total raw capacity of the pool"),
+        _ => None,
+    }
+}
+
 /// Parses `zpool get all -H -p <pool>` or `zfs get all -H -p <dataset>`
 /// output — both emit the identical tab-separated
 /// `name  property  value  source` shape, one property per line. The
@@ -85,6 +169,17 @@ pub fn parse_property_list(output: &str) -> Result<Vec<Property>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_known_dataset_and_pool_properties() {
+        assert_eq!(describe("compression"), Some("Compression algorithm applied to data written to this dataset (e.g. off, lz4, zstd, gzip)"));
+        assert_eq!(describe("autoexpand"), Some("Whether the pool automatically expands to use the full size of enlarged/replaced devices"));
+    }
+
+    #[test]
+    fn describe_unknown_property_returns_none() {
+        assert_eq!(describe("some_future_property_not_in_the_table"), None);
+    }
 
     const ZPOOL_GET_FIXTURE: &str = "\
 tank\tsize\t4000000000000\t-
