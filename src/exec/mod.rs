@@ -80,6 +80,18 @@ pub mod test_support {
             );
             self
         }
+
+        /// Overrides the default response's exit status while keeping
+        /// its stdout — needed for tests simulating "a nonzero exit
+        /// with meaningful stdout" (e.g. a status check whose text
+        /// still reports useful state despite a nonzero overall exit),
+        /// which neither `new` (always status 0) nor `failing` (always
+        /// empty stdout) can express together. Builder-style, like
+        /// `route`.
+        pub fn with_status(mut self, status: i32) -> Self {
+            self.response.status = status;
+            self
+        }
     }
 
     impl CommandRunner for FakeRunner {
@@ -114,5 +126,13 @@ mod tests {
             "default",
             "an unrouted call falls back to the default response"
         );
+    }
+
+    #[test]
+    fn fake_runner_with_status_keeps_custom_stdout_with_a_nonzero_status() {
+        let runner = FakeRunner::new("smbd is running as pid 1.\nwinbindd is not running.\n").with_status(1);
+        let output = runner.run("service", &["samba_server", "onestatus"]).unwrap();
+        assert_eq!(output.stdout, "smbd is running as pid 1.\nwinbindd is not running.\n");
+        assert_eq!(output.status, 1);
     }
 }

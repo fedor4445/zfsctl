@@ -2,6 +2,7 @@ pub mod dataset;
 pub mod disk;
 pub mod pool;
 pub mod property;
+pub mod share;
 pub mod snapshot;
 
 use crate::error::{AppError, Result};
