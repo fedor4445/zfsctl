@@ -24,8 +24,8 @@ when they aren't, rather than erroring.
   pre-filled from the dataset's current share state if it's already
   shared — one form pair serves both creation and editing.
 - NFS gets a full structured form now: Networks, Hosts, read-only vs
-  read-write, maproot user, mapall user — assembled into a real
-  `exports(5)`-syntax `sharenfs` value.
+  read-write, and root-user mapping — assembled into a real
+  OpenZFS-native `sharenfs` value (confirmed syntax, see Architecture).
 - SMB gets on/off + an optional share name only, for this feature —
   genuine Samba permission control lives in `smb4.conf`, a file ZFS
   never touches, and is explicitly out of scope here (see Non-goals).
@@ -47,12 +47,15 @@ when they aren't, rather than erroring.
   outside of ZFS's `sharenfs` mechanism (e.g. hand-written NFS exports
   for non-ZFS paths) — out of scope, this feature only manages shares
   through ZFS dataset properties.
-- Full `exports(5)` syntax coverage in the structured NFS form — the
-  common fields (networks, hosts, ro/rw, maproot, mapall) are
-  supported; anything the parser doesn't recognize in an existing
-  `sharenfs` value still displays (via a kept raw fallback) rather than
-  failing, and remains editable through the existing generic
-  property-edit form as a raw-text escape hatch.
+- Full raw `exports(5)` syntax coverage in the structured NFS form —
+  `sharenfs` actually accepts OpenZFS's own simpler cross-platform
+  mini-language (confirmed live: `rw=@172.16.10.0/24,root=nobody`,
+  matching `zfs(8)`'s own documented example), not literal
+  dash-prefixed `exports(5)` flags; the common fields (networks, hosts,
+  ro/rw, root mapping) are supported, anything the parser doesn't
+  recognize in an existing value still displays (via a kept raw
+  fallback) rather than failing, and remains editable through the
+  existing generic property-edit form as a raw-text escape hatch.
 
 ## Architecture
 
@@ -66,8 +69,7 @@ pub enum Share {
         networks: Vec<String>,
         hosts: Vec<String>,
         read_only: bool,
-        maproot: Option<String>,
-        mapall: Option<String>,
+        root: Option<String>,
     },
     Smb {
         dataset: String,
@@ -99,6 +101,25 @@ structured fields; `raw` is always kept alongside so a value the
 parser doesn't fully recognize still displays (unparsed) instead of
 the row disappearing or an error surfacing. `sharesmb`'s value is
 either `off`, `on`, or a custom share name — no parsing ambiguity.
+
+**`sharenfs` syntax, confirmed live** (not the raw dash-prefixed
+`exports(5)` flag syntax — OpenZFS's own simpler cross-platform
+mini-language, matching `zfs(8)`'s own documented example):
+comma-separated clauses, no dashes. `rw=<list>` or `ro=<list>` restrict
+access to specific networks/hosts (`@` prefixes a network/CIDR, e.g.
+`@172.16.10.0/24`; a bare name/IP is a specific host; multiple entries
+in one clause are colon-joined, e.g. `rw=@172.16.10.0/24:somehost`); a
+bare `rw`/`ro` with no `=list` applies to everyone. `root=<user>` maps
+root's remote credential to `<user>` (confirmed: `zfs set
+sharenfs='rw=@172.16.10.0/24,root=nobody' scratch/data` round-tripped
+through `zfs get` unchanged and produced the expected
+`/scratch/data rw=@172.16.10.0/24 root=nobody` line in
+`/etc/zfs/exports`, which ZFS manages automatically — the app never
+touches that file or runs `zfs share`/`exportfs` itself, only `zfs
+set`). No `mapall=`-equivalent keyword is documented anywhere in
+`zfs(8)`/`zfsprops(5)` for this syntax (unlike raw `exports(5)`, which
+has both `-maproot=`/`-mapall=`) — so the structured form has exactly
+one root-mapping field (`root=`), not two.
 
 `nfs_server_available` runs `service nfsd onestatus` — exit code alone
 is reliable (confirmed against the real test box: exit 0 while
@@ -163,7 +184,7 @@ has no drill-down):
 
 - `'N'` — share the selected dataset via NFS. Opens
   `FormKind::ShareNfs { host, dataset }`, fields `[Networks, Hosts,
-  Read-only (y/n), Maproot user, Mapall user]`, pre-filled from the
+  Read-only (y/n), Root user mapping]`, pre-filled from the
   dataset's current `sharenfs` value's parsed fields if already shared,
   blank otherwise.
 - `'M'` — share the selected dataset via SMB. Opens `FormKind::ShareSmb
@@ -185,16 +206,19 @@ No new `MutationCall` variants — every share mutation is a
 reusing the existing library function and its `--`-guard entirely
 unchanged.
 
-- `FormKind::ShareNfs`'s fields assemble into a `sharenfs` value per
-  `exports(5)` syntax. Every field left blank assembles to plain
-  `"on"` (share to everyone, read-write, no root-mapping restriction —
-  the same meaning as `sharenfs`'s own bare `on` value), matching
-  `sharesmb`'s all-blank convention. The exact flag formatting once any
-  field is non-blank (how networks/hosts/maproot/mapall are expressed
-  together in one value string) will be verified against the real
-  `zpool`/`zfs` binary on the test box during implementation, per this
-  project's established "don't assume CLI syntax, check it live"
-  practice — not asserted here as a fixed string template.
+- `FormKind::ShareNfs`'s fields assemble into a `sharenfs` value using
+  the confirmed syntax above. Every field left blank assembles to plain
+  `"on"` (share to everyone, read-write, no root-mapping restriction),
+  matching `sharesmb`'s all-blank convention. Otherwise: the
+  read-only/read-write clause is a bare `rw`/`ro` if both Networks and
+  Hosts are blank (restriction-free, matching the confirmed bare-`rw`
+  default), or `rw=<list>`/`ro=<list>` with each network prefixed `@`
+  and colon-joined together with any hosts if either field is filled
+  in; `,root=<user>` is appended if the Root user mapping field is
+  filled in. E.g. Networks=`172.16.10.0/24`, Hosts=blank,
+  Read-only=no, Root=`nobody` assembles to
+  `rw=@172.16.10.0/24,root=nobody` — the exact value confirmed live
+  above.
 - `FormKind::ShareSmb`'s single field assembles into a `sharesmb`
   value: blank → `"on"`, otherwise the given name.
 - Removing a share (`'d'` in the Shares section) reuses the existing
@@ -211,7 +235,7 @@ unchanged.
 
 - New: `src/zfs/share.rs` (`Share`, `SharesSnapshot`, `list_shares`,
   `nfs_server_available`, `samba_available`,
-  `list_shares_with_availability`, the `exports(5)` mini
+  `list_shares_with_availability`, the `sharenfs`-syntax mini
   parser/assembler).
 - `src/zfs/mod.rs`: register the new module.
 - `src/ui/modal.rs`: `FormKind::ShareNfs`, `FormKind::ShareSmb`.
@@ -240,7 +264,7 @@ unchanged.
   `list_disks_with_membership`'s precedent. A parse→assemble round-trip
   test: parsing an existing `sharenfs` value into structured fields and
   reassembling it must stay semantically consistent — the whole point
-  of editing an opaque `exports(5)` string through friendly fields.
+  of editing an opaque `sharenfs` value through friendly fields.
 - `state.rs`: `build_pending_action` tests for both new `FormKind`s
   (assembly correctness only — no empty-field-rejection test needed,
   since every field is optional for both forms); `'N'`/`'M'` from
