@@ -541,6 +541,35 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                if self.nfs_available == Some(false) {
+                    self.status_message = Some("NFS server not available on this host".to_string());
+                } else if let Some(i) = self.datasets_table.selected() {
+                    if let Some(ds) = self.datasets.get(i) {
+                        let existing = self.shares.iter().find(|s| matches!(s, crate::zfs::share::Share::Nfs { dataset, .. } if dataset == &ds.name));
+                        let placeholder = crate::zfs::share::Share::Nfs {
+                            dataset: ds.name.clone(),
+                            raw: "off".to_string(),
+                            networks: vec![],
+                            hosts: vec![],
+                            read_only: false,
+                            root: None,
+                        };
+                        self.modal = Some(share_edit_modal(existing.unwrap_or(&placeholder), self.selected_host));
+                    }
+                }
+            }
+            KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                if self.samba_available == Some(false) {
+                    self.status_message = Some("Samba not available on this host".to_string());
+                } else if let Some(i) = self.datasets_table.selected() {
+                    if let Some(ds) = self.datasets.get(i) {
+                        let existing = self.shares.iter().find(|s| matches!(s, crate::zfs::share::Share::Smb { dataset, .. } if dataset == &ds.name));
+                        let placeholder = crate::zfs::share::Share::Smb { dataset: ds.name.clone(), name: None };
+                        self.modal = Some(share_edit_modal(existing.unwrap_or(&placeholder), self.selected_host));
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Snapshots => {
                 move_table_selection(&mut self.snapshots_table, self.snapshots.len(), true);
             }
@@ -592,6 +621,31 @@ impl App {
             }
             KeyCode::Up if self.current_section() == Section::Shares => {
                 move_table_selection(&mut self.shares_table, self.shares.len(), false);
+            }
+            KeyCode::Enter if self.current_section() == Section::Shares => {
+                if let Some(i) = self.shares_table.selected() {
+                    if let Some(share) = self.shares.get(i) {
+                        self.modal = Some(share_edit_modal(share, self.selected_host));
+                    }
+                }
+            }
+            KeyCode::Char('d') if self.current_section() == Section::Shares => {
+                if let Some(i) = self.shares_table.selected() {
+                    if let Some(share) = self.shares.get(i) {
+                        let (dataset, key, protocol) = match share {
+                            crate::zfs::share::Share::Nfs { dataset, .. } => (dataset.clone(), "sharenfs", "NFS"),
+                            crate::zfs::share::Share::Smb { dataset, .. } => (dataset.clone(), "sharesmb", "SMB"),
+                        };
+                        self.modal = Some(Modal::Confirm {
+                            prompt: format!("Remove {protocol} share for '{dataset}'? (y/n)"),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::Shares,
+                                call: MutationCall::SetDatasetProperty { dataset, key: key.to_string(), value: "off".to_string() },
+                            },
+                        });
+                    }
+                }
             }
             KeyCode::Char(' ') if self.current_section() == Section::Disks => {
                 if let Some(i) = self.disks_table.selected() {
@@ -1177,6 +1231,38 @@ fn build_vdev_spec_from_selection(redundancy: &str, disks: &[String]) -> Vec<Str
 /// positionally per `FormKind`'s documented field order. Returns `None`
 /// if a required field is empty — the caller keeps the form modal open
 /// in that case rather than losing the user's input.
+/// Builds the `Modal::Form` for editing (or, for a not-yet-shared
+/// placeholder `Share` with `off`/`None` fields, creating) the given
+/// share — used by the Shares section's `Enter` and the Datasets
+/// section's `'N'`/`'M'` keys alike, so there's exactly one place that
+/// builds either form. `host` is the index of the currently-selected
+/// host (`self.selected_host` at every call site), threaded through
+/// into the resulting `FormKind` so the eventual mutation runs against
+/// the right host.
+fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
+    match share {
+        crate::zfs::share::Share::Nfs { dataset, networks, hosts, read_only, root, .. } => Modal::Form {
+            title: format!("NFS share: '{dataset}'"),
+            fields: vec![
+                FormField { label: "Networks".to_string(), value: networks.join(",") },
+                FormField { label: "Hosts".to_string(), value: hosts.join(",") },
+                FormField { label: "Read-only (y/n)".to_string(), value: if *read_only { "y".to_string() } else { "n".to_string() } },
+                FormField { label: "Root user mapping".to_string(), value: root.clone().unwrap_or_default() },
+            ],
+            focused: 0,
+            description: None,
+            kind: FormKind::ShareNfs { host, dataset: dataset.clone() },
+        },
+        crate::zfs::share::Share::Smb { dataset, name } => Modal::Form {
+            title: format!("SMB share: '{dataset}'"),
+            fields: vec![FormField { label: "Share name".to_string(), value: name.clone().unwrap_or_default() }],
+            focused: 0,
+            description: None,
+            kind: FormKind::ShareSmb { host, dataset: dataset.clone() },
+        },
+    }
+}
+
 fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<PendingAction> {
     match kind {
         FormKind::CreatePool { host } => {
@@ -1279,6 +1365,28 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 host: *host,
                 section: Section::Snapshots,
                 call: MutationCall::CreateSnapshot { dataset: dataset.clone(), name: name.to_string() },
+            })
+        }
+        FormKind::ShareNfs { host, dataset } => {
+            let networks: Vec<String> = fields[0].value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let hosts: Vec<String> = fields[1].value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let read_only = fields[2].value.trim().to_lowercase().starts_with('y');
+            let root = fields[3].value.trim();
+            let root = if root.is_empty() { None } else { Some(root) };
+            let value = crate::zfs::share::assemble_sharenfs(&networks, &hosts, read_only, root);
+            Some(PendingAction {
+                host: *host,
+                section: Section::Shares,
+                call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: "sharenfs".to_string(), value },
+            })
+        }
+        FormKind::ShareSmb { host, dataset } => {
+            let name = fields[0].value.trim();
+            let value = if name.is_empty() { "on".to_string() } else { name.to_string() };
+            Some(PendingAction {
+                host: *host,
+                section: Section::Shares,
+                call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: "sharesmb".to_string(), value },
             })
         }
     }
@@ -3563,5 +3671,230 @@ mod tests {
         assert_eq!(app.shares_table.selected(), None);
         assert_eq!(app.nfs_available, None);
         assert_eq!(app.samba_available, None);
+    }
+
+    #[test]
+    fn enter_on_nfs_share_row_opens_prefilled_edit_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Shares
+        app.shares = vec![crate::zfs::share::Share::Nfs {
+            dataset: "tank/data".to_string(),
+            raw: "rw=@172.16.10.0/24,root=nobody".to_string(),
+            networks: vec!["172.16.10.0/24".to_string()],
+            hosts: vec![],
+            read_only: false,
+            root: Some("nobody".to_string()),
+        }];
+        app.shares_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 4);
+                assert_eq!(fields[0].value, "172.16.10.0/24");
+                assert_eq!(fields[1].value, "");
+                assert_eq!(fields[2].value, "n");
+                assert_eq!(fields[3].value, "nobody");
+                assert_eq!(*kind, FormKind::ShareNfs { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_smb_share_row_opens_prefilled_edit_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Shares
+        app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: Some("myshare".to_string()) }];
+        app.shares_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields[0].value, "myshare");
+                assert_eq!(*kind, FormKind::ShareSmb { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_d_on_nfs_share_row_opens_remove_confirm_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Shares
+        app.shares = vec![crate::zfs::share::Share::Nfs {
+            dataset: "tank/data".to_string(),
+            raw: "on".to_string(),
+            networks: vec![],
+            hosts: vec![],
+            read_only: false,
+            root: None,
+        }];
+        app.shares_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        match &app.modal {
+            Some(Modal::Confirm { action, .. }) => {
+                assert_eq!(
+                    action.call,
+                    MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharenfs".to_string(), value: "off".to_string() }
+                );
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_d_on_smb_share_row_opens_remove_confirm_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Shares
+        app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: None }];
+        app.shares_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        match &app.modal {
+            Some(Modal::Confirm { action, .. }) => {
+                assert_eq!(
+                    action.call,
+                    MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharesmb".to_string(), value: "off".to_string() }
+                );
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_shift_n_on_datasets_opens_blank_share_nfs_form_when_not_yet_shared() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.nfs_available = Some(true);
+        app.handle_key(KeyCode::Char('N'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                // read_only renders as "n" (not blank) for a false placeholder,
+                // consistent with `share_edit_modal`'s handling of real shares
+                // (see `enter_on_nfs_share_row_opens_prefilled_edit_form`) —
+                // it still assembles to the same "on" value downstream.
+                assert_eq!(fields[0].value, "");
+                assert_eq!(fields[1].value, "");
+                assert_eq!(fields[2].value, "n");
+                assert_eq!(fields[3].value, "");
+                assert_eq!(*kind, FormKind::ShareNfs { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_shift_n_on_datasets_sets_hint_when_nfs_unavailable() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.nfs_available = Some(false);
+        app.handle_key(KeyCode::Char('N'));
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message, Some("NFS server not available on this host".to_string()));
+    }
+
+    #[test]
+    fn handle_key_shift_m_on_datasets_opens_blank_share_smb_form_when_not_yet_shared() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.samba_available = Some(true);
+        app.handle_key(KeyCode::Char('M'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields[0].value, "");
+                assert_eq!(*kind, FormKind::ShareSmb { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_shift_m_on_datasets_sets_hint_when_samba_unavailable() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.samba_available = Some(false);
+        app.handle_key(KeyCode::Char('M'));
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message, Some("Samba not available on this host".to_string()));
+    }
+
+    #[test]
+    fn build_pending_action_share_nfs_blank_fields_assembles_to_on() {
+        let kind = FormKind::ShareNfs { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![
+            FormField { label: "Networks".to_string(), value: String::new() },
+            FormField { label: "Hosts".to_string(), value: String::new() },
+            FormField { label: "Read-only (y/n)".to_string(), value: String::new() },
+            FormField { label: "Root user mapping".to_string(), value: String::new() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::Shares,
+                call: MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharenfs".to_string(), value: "on".to_string() },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_share_nfs_assembles_filled_fields() {
+        let kind = FormKind::ShareNfs { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![
+            FormField { label: "Networks".to_string(), value: "172.16.10.0/24".to_string() },
+            FormField { label: "Hosts".to_string(), value: String::new() },
+            FormField { label: "Read-only (y/n)".to_string(), value: "n".to_string() },
+            FormField { label: "Root user mapping".to_string(), value: "nobody".to_string() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action.call,
+            MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharenfs".to_string(), value: "rw=@172.16.10.0/24,root=nobody".to_string() }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_share_smb_blank_name_assembles_to_on() {
+        let kind = FormKind::ShareSmb { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![FormField { label: "Share name".to_string(), value: String::new() }];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::Shares,
+                call: MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharesmb".to_string(), value: "on".to_string() },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_share_smb_assembles_custom_name() {
+        let kind = FormKind::ShareSmb { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![FormField { label: "Share name".to_string(), value: "myshare".to_string() }];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action.call,
+            MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharesmb".to_string(), value: "myshare".to_string() }
+        );
     }
 }

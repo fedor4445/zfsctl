@@ -106,6 +106,12 @@ pub enum FormKind {
     /// Fields: `[name]` — the snapshot's name; the dataset is fixed at
     /// modal-open time from the selected Datasets row.
     CreateSnapshot { host: usize, dataset: String },
+    /// Fields: `[networks, hosts, read_only, root]` — `networks`/
+    /// `hosts` are comma-separated lists, `read_only` is `"y"`/`"n"`
+    /// text, `root` is a username; every field may be blank.
+    ShareNfs { host: usize, dataset: String },
+    /// Fields: `[name]` — blank means the default share name.
+    ShareSmb { host: usize, dataset: String },
 }
 
 /// A modal dialog awaiting user input before a mutation runs.
