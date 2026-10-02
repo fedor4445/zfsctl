@@ -97,6 +97,7 @@ fn event_loop(
                     Section::Datasets => app.refresh_datasets(host.runner.clone()),
                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
                     Section::Disks => app.refresh_disks(host.runner.clone()),
+                    Section::Shares => app.refresh_shares(host.runner.clone()),
                     Section::Vdevs => {
                         if let Some(pool) = app.drilled_pool.clone() {
                             app.refresh_vdevs(host.runner.clone(), pool);
@@ -159,6 +160,7 @@ fn event_loop(
                                     Section::Datasets => app.refresh_datasets(host.runner.clone()),
                                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
                                     Section::Disks => app.refresh_disks(host.runner.clone()),
+                                    Section::Shares => app.refresh_shares(host.runner.clone()),
                                     Section::Hosts
                                     | Section::Vdevs
                                     | Section::PoolProperties

@@ -6,6 +6,7 @@ use crate::zfs::disk::DiskInfo;
 use crate::zfs::disk::DiskMembership;
 use crate::zfs::pool::{Pool, VdevLine};
 use crate::zfs::property::Property;
+use crate::zfs::share::SharesSnapshot;
 use crate::zfs::snapshot::Snapshot;
 use crossterm::event::KeyCode;
 use ratatui::widgets::TableState;
@@ -25,6 +26,7 @@ pub enum Section {
     Datasets,
     Snapshots,
     Disks,
+    Shares,
     Vdevs,
     PoolProperties,
     DatasetProperties,
@@ -48,6 +50,7 @@ pub enum WorkerMsg {
     Datasets(usize, Result<Vec<Dataset>>),
     Snapshots(usize, Result<Vec<Snapshot>>),
     Disks(usize, Result<Vec<DiskInfo>>),
+    Shares(usize, Result<SharesSnapshot>),
     /// The `String` is the name of the pool this vdev refresh was for —
     /// needed so a slow result can be told apart from one for a
     /// different pool the user has since drilled into (see the
@@ -80,6 +83,15 @@ pub struct App {
     /// `WorkerMsg::Disks` arm for how a disk that stops being available
     /// (or disappears) is dropped from this set.
     pub selected_disks: HashSet<String>,
+    pub shares: Vec<crate::zfs::share::Share>,
+    pub shares_table: TableState,
+    /// `None` means "not yet checked" — kept distinct from `Some(false)`
+    /// so the Shares title doesn't flash a false "unavailable" hint
+    /// before the first refresh, consistent with every other section
+    /// staying quiet (an empty list) rather than asserting a default
+    /// before it's actually fetched anything.
+    pub nfs_available: Option<bool>,
+    pub samba_available: Option<bool>,
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
     /// The drilled-into pool's most recent scrub/resilver, refreshed
@@ -125,7 +137,7 @@ impl App {
     pub fn new(hosts: Vec<String>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks],
+            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares],
             selected_section: 0,
             hosts,
             selected_host: 0,
@@ -138,6 +150,10 @@ impl App {
             disks: Vec::new(),
             disks_table: TableState::default(),
             selected_disks: HashSet::new(),
+            shares: Vec::new(),
+            shares_table: TableState::default(),
+            nfs_available: None,
+            samba_available: None,
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             pool_scan_status: None,
@@ -233,6 +249,10 @@ impl App {
         self.disks.clear();
         self.disks_table.select(None);
         self.selected_disks.clear();
+        self.shares.clear();
+        self.shares_table.select(None);
+        self.nfs_available = None;
+        self.samba_available = None;
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
@@ -567,6 +587,12 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Disks => {
                 move_table_selection(&mut self.disks_table, self.disks.len(), false);
             }
+            KeyCode::Down if self.current_section() == Section::Shares => {
+                move_table_selection(&mut self.shares_table, self.shares.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Shares => {
+                move_table_selection(&mut self.shares_table, self.shares.len(), false);
+            }
             KeyCode::Char(' ') if self.current_section() == Section::Disks => {
                 if let Some(i) = self.disks_table.selected() {
                     if let Some(disk) = self.disks.get(i) {
@@ -815,6 +841,22 @@ impl App {
     }
 
     /// See `refresh_pools` for why this queues rather than drops a
+    /// request while already in flight.
+    pub fn refresh_shares(&mut self, runner: Arc<dyn CommandRunner>) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::Shares, host) {
+            self.pending_refresh.insert((Section::Shares, host));
+            return;
+        }
+        self.begin_refresh(Section::Shares, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::share::list_shares_with_availability(runner.as_ref());
+            let _ = tx.send(WorkerMsg::Shares(host, result));
+        });
+    }
+
+    /// See `refresh_pools` for why this queues rather than drops a
     /// request while already in flight. `pool` is the name of the
     /// currently drilled-into pool.
     ///
@@ -989,6 +1031,26 @@ impl App {
                             });
                             self.disks = disks;
                             clamp_table_selection(&mut self.disks_table, self.disks.len());
+                            self.status_message = None;
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
+                WorkerMsg::Shares(host, result) => {
+                    self.end_refresh(Section::Shares, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::Shares, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::Shares);
+                    }
+                    match result {
+                        Ok(snapshot) => {
+                            self.shares = snapshot.shares;
+                            clamp_table_selection(&mut self.shares_table, self.shares.len());
+                            self.nfs_available = Some(snapshot.nfs_available);
+                            self.samba_available = Some(snapshot.samba_available);
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1570,7 +1632,7 @@ mod tests {
         app.handle_key(KeyCode::BackTab);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Disks);
+        assert_eq!(app.current_section(), Section::Shares);
     }
 
     #[test]
@@ -1796,7 +1858,8 @@ mod tests {
             Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0 },
             Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0 },
         ];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Disks (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Hosts -> Shares (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Shares -> Disks
         app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
         assert_eq!(app.current_section(), Section::Snapshots);
         app.handle_key(KeyCode::Down);
@@ -2327,7 +2390,8 @@ mod tests {
     fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0 }];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Disks (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Hosts -> Shares (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Shares -> Disks
         app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
         app.snapshots_table.select(Some(0));
         app.handle_key(KeyCode::Char('d'));
@@ -2347,7 +2411,8 @@ mod tests {
     fn handle_key_b_on_snapshots_opens_rollback_confirm_typed_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0 }];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Disks (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Hosts -> Shares (wraps backward)
+        app.handle_key(KeyCode::BackTab); // Shares -> Disks
         app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
         app.snapshots_table.select(Some(0));
         app.handle_key(KeyCode::Char('b'));
@@ -2720,7 +2785,7 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Disks, "must wrap backward from the first section to the last");
+        assert_eq!(app.current_section(), Section::Shares, "must wrap backward from the first section to the last");
     }
 
     #[test]
@@ -3441,5 +3506,62 @@ mod tests {
         let refreshes = app.drain_worker_messages();
         assert!(refreshes.contains(&Section::Pools));
         assert!(refreshes.contains(&Section::Disks), "a Pools-section mutation (create/destroy pool) changes disk membership too");
+    }
+
+    #[test]
+    fn refresh_shares_populates_app_state_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner: Arc<dyn CommandRunner> = Arc::new(
+            FakeRunner::new("")
+                .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\ntank/data\tsharesmb\toff\tdefault\n")
+                .route("service", "nfsd", "nfsd is running as pid 1234.\n")
+                .route("service", "samba_server", "smbd is not running.\n"),
+        );
+        app.refresh_shares(runner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.shares.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.shares.len(), 1);
+        assert_eq!(app.nfs_available, Some(true));
+        assert_eq!(app.samba_available, Some(false));
+    }
+
+    #[test]
+    fn shares_result_for_a_stale_host_is_discarded() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.tx
+            .send(WorkerMsg::Shares(
+                1,
+                Ok(crate::zfs::share::SharesSnapshot {
+                    shares: vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: None }],
+                    nfs_available: true,
+                    samba_available: true,
+                }),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+        assert!(app.shares.is_empty(), "a result for a host that isn't selected must not populate the pane");
+    }
+
+    #[test]
+    fn switching_host_clears_shares_state() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: None }];
+        app.shares_table.select(Some(0));
+        app.nfs_available = Some(true);
+        app.samba_available = Some(false);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::BackTab); // -> Hosts
+        app.handle_key(KeyCode::Down); // switch host, triggers clear_host_data
+        assert!(app.shares.is_empty());
+        assert_eq!(app.shares_table.selected(), None);
+        assert_eq!(app.nfs_available, None);
+        assert_eq!(app.samba_available, None);
     }
 }

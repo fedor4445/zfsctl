@@ -3,6 +3,7 @@ use crate::ui::modal::Modal;
 use crate::zfs::disk::DiskMembership;
 use crate::zfs::pool::ScanStatus;
 use crate::zfs::property::Property;
+use crate::zfs::share::Share;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Wrap};
@@ -111,6 +112,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Datasets => "Datasets",
                 Section::Snapshots => "Snapshots",
                 Section::Disks => "Disks",
+                Section::Shares => "Shares",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
@@ -156,6 +158,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Hosts => draw_hosts(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
         Section::Disks => draw_disks(f, app, area),
+        Section::Shares => draw_shares(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties => {
             unreachable!("never in App::sections")
@@ -321,6 +324,42 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.disks_table);
+}
+
+fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = app.shares.iter().map(|s| match s {
+        Share::Nfs { dataset, networks, hosts, read_only, root, .. } => {
+            let mut details = vec![if *read_only { "ro".to_string() } else { "rw".to_string() }];
+            if !networks.is_empty() {
+                details.push(format!("networks={}", networks.join(",")));
+            }
+            if !hosts.is_empty() {
+                details.push(format!("hosts={}", hosts.join(",")));
+            }
+            if let Some(user) = root {
+                details.push(format!("root={user}"));
+            }
+            Row::new(vec![dataset.clone(), "NFS".to_string(), details.join(", ")])
+        }
+        Share::Smb { dataset, name } => {
+            Row::new(vec![dataset.clone(), "SMB".to_string(), name.clone().unwrap_or_else(|| "(default name)".to_string())])
+        }
+    });
+    let widths = [Constraint::Length(24), Constraint::Length(8), Constraint::Min(20)];
+    let mut hints = Vec::new();
+    if app.nfs_available == Some(false) {
+        hints.push("NFS unavailable: nfsd not running");
+    }
+    if app.samba_available == Some(false) {
+        hints.push("SMB unavailable: Samba not running");
+    }
+    let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
+    let title = format!("Shares — {} ('r' refresh, Enter edit, 'd' remove){hint_suffix}", app.active_host_name());
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["Dataset", "Protocol", "Details"]))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.shares_table);
 }
 
 /// Percentage width the modal popup uses — held constant; only the
