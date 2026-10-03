@@ -328,19 +328,7 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app.shares.iter().map(|s| match s {
-        Share::Nfs { dataset, networks, hosts, read_only, root, .. } => {
-            let mut details = vec![if *read_only { "ro".to_string() } else { "rw".to_string() }];
-            if !networks.is_empty() {
-                details.push(format!("networks={}", networks.join(",")));
-            }
-            if !hosts.is_empty() {
-                details.push(format!("hosts={}", hosts.join(",")));
-            }
-            if let Some(user) = root {
-                details.push(format!("root={user}"));
-            }
-            Row::new(vec![dataset.clone(), "NFS".to_string(), details.join(", ")])
-        }
+        Share::Nfs { dataset, raw, .. } => Row::new(vec![dataset.clone(), "NFS".to_string(), raw.clone()]),
         Share::Smb { dataset, name } => {
             Row::new(vec![dataset.clone(), "SMB".to_string(), name.clone().unwrap_or_else(|| "(default name)".to_string())])
         }
@@ -349,9 +337,6 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     let mut hints = Vec::new();
     if app.nfs_available == Some(false) {
         hints.push("NFS unavailable: nfsd not running");
-    }
-    if app.samba_available == Some(false) {
-        hints.push("SMB unavailable: Samba not running");
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
     let title = format!("Shares — {} ('r' refresh, Enter edit, 'd' remove){hint_suffix}", app.active_host_name());

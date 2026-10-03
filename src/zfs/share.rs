@@ -121,13 +121,13 @@ fn parse_shares(output: &str) -> Vec<Share> {
     let mut shares = Vec::new();
     for (dataset, (sharenfs, sharesmb)) in by_dataset {
         if let Some(raw) = sharenfs.as_deref() {
-            if raw != "off" {
+            if raw != "off" && raw != "-" {
                 let (networks, hosts, read_only, root) = parse_sharenfs_fields(raw);
                 shares.push(Share::Nfs { dataset: dataset.clone(), raw: raw.to_string(), networks, hosts, read_only, root });
             }
         }
         if let Some(name) = sharesmb.as_deref() {
-            if name != "off" {
+            if name != "off" && name != "-" {
                 let name = if name == "on" { None } else { Some(name.to_string()) };
                 shares.push(Share::Smb { dataset: dataset.clone(), name });
             }
@@ -136,8 +136,22 @@ fn parse_shares(output: &str) -> Vec<Share> {
     shares
 }
 
+/// Whether `raw` can be round-tripped losslessly through the structured
+/// Networks/Hosts/Read-only/Root form — i.e. editing and resubmitting it
+/// through that form won't silently drop information. `"on"`/`"off"` are
+/// always losslessly representable. Anything using a clause
+/// `parse_sharenfs_fields` doesn't recognize (`sec=`, `crossmnt`, etc.)
+/// fails the round-trip and must be flagged to the user before they edit it.
+pub fn sharenfs_editable_losslessly(raw: &str) -> bool {
+    if raw == "on" || raw == "off" {
+        return true;
+    }
+    let (networks, hosts, read_only, root) = parse_sharenfs_fields(raw);
+    assemble_sharenfs(&networks, &hosts, read_only, root.as_deref()) == raw
+}
+
 pub fn list_shares(runner: &dyn CommandRunner) -> Result<Vec<Share>> {
-    let output = super::run_checked(runner, "zfs", &["get", "-H", "-p", "sharenfs,sharesmb"], "zfs get sharenfs,sharesmb")?;
+    let output = super::run_checked(runner, "zfs", &["get", "-H", "-p", "-t", "filesystem", "sharenfs,sharesmb"], "zfs get sharenfs,sharesmb")?;
     Ok(parse_shares(&output.stdout))
 }
 
@@ -225,6 +239,17 @@ mod tests {
         assert_eq!(assemble_sharenfs(&networks, &hosts, read_only, root.as_deref()), raw);
     }
 
+    #[test]
+    fn sharenfs_editable_losslessly_true_for_canonical_values() {
+        assert!(sharenfs_editable_losslessly("on"));
+        assert!(sharenfs_editable_losslessly("rw=@172.16.10.0/24,root=nobody"));
+    }
+
+    #[test]
+    fn sharenfs_editable_losslessly_false_for_unrecognized_clauses() {
+        assert!(!sharenfs_editable_losslessly("sec=sys,rw,crossmnt,no_subtree_check"));
+    }
+
     const SHARES_FIXTURE: &str = "\
 tank/both\tsharenfs\ton\tlocal
 tank/both\tsharesmb\ton\tlocal
@@ -236,6 +261,8 @@ tank/smbonly\tsharenfs\toff\tdefault
 tank/smbonly\tsharesmb\tmyshare\tlocal
 tank/weird\tsharenfs\tsec=sys,rw,crossmnt,no_subtree_check\tlocal
 tank/weird\tsharesmb\toff\tdefault
+tank/data@snap1\tsharenfs\t-\t-
+tank/data@snap1\tsharesmb\t-\t-
 ";
 
     #[test]
@@ -264,7 +291,7 @@ tank/weird\tsharesmb\toff\tdefault
                     root: None,
                 },
             ],
-            "tank/data (both off) must not appear; tank/weird's unrecognized clauses must not drop the share, raw must be preserved"
+            "tank/data (both off) must not appear; tank/data@snap1 (a snapshot, both '-') must not appear; tank/weird's unrecognized clauses must not drop the share, raw must be preserved"
         );
     }
 
@@ -274,7 +301,7 @@ tank/weird\tsharesmb\toff\tdefault
         let shares = list_shares(&runner).unwrap();
         assert_eq!(shares, vec![Share::Nfs { dataset: "tank/data".to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None }]);
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["get".to_string(), "-H".to_string(), "-p".to_string(), "sharenfs,sharesmb".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["get".to_string(), "-H".to_string(), "-p".to_string(), "-t".to_string(), "filesystem".to_string(), "sharenfs,sharesmb".to_string()]));
     }
 
     #[test]

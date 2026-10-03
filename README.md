@@ -29,7 +29,7 @@ The local machine is always available as the "local" host and does not need a co
 
 ## Keys
 
-- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
@@ -67,6 +67,7 @@ The local machine is always available as the "local" host and does not need a co
 - `n`: create a new dataset (prompts for name)
 - `d`: destroy the selected dataset (type the dataset's name to confirm)
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
+- `N`: create/edit an NFS share for the selected dataset (prompts for networks, hosts, read-only, and root user mapping — all optional; visit the Shares section at least once first, so zfsctl knows the dataset's current share state before offering to change it)
 
 ### Snapshots
 
@@ -82,6 +83,18 @@ The local machine is always available as the "local" host and does not need a co
 - `Esc`: clear the current selection
 - `r`: refresh the disk list
 
+### Shares
+
+- `Up` / `Down`: select a share
+- `Enter`: edit an NFS share's networks/hosts/read-only/root mapping. SMB
+  rows show a hint instead of opening a form — FreeBSD's `sharesmb` ZFS
+  property doesn't actually work (confirmed: `zfs set sharesmb=on` prints
+  "No SMB support in FreeBSD yet." and fails, even though the property gets
+  stored), so zfsctl can only view and remove an existing SMB share, never
+  create or edit one.
+- `d`: remove the selected share (NFS or SMB), y/n confirm
+- `r`: refresh the share list
+
 ## Status
 
-v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated permissions (`zfs allow`), file ACLs (`getfacl`/`setfacl`), and bhyve zvol association are still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section.
+v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated permissions (`zfs allow`), file ACLs (`getfacl`/`setfacl`), and bhyve zvol association are still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares can only be viewed and removed, not created or edited, since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).
