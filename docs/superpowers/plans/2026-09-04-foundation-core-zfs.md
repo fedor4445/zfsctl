@@ -368,15 +368,17 @@ impl SshRunner {
     }
 
     /// Builds the argument list passed to the local `ssh` binary:
-    /// `ssh <host> "<remote command>"`, where the remote command is
-    /// `cmd` and `args` shell-quoted and joined into one string.
+    /// `ssh -- <host> "<remote command>"`, where the remote command is
+    /// `cmd` and `args` shell-quoted and joined into one string. The
+    /// leading `--` stops `ssh` from treating a `host` value that starts
+    /// with `-` as an option flag (argument injection / flag smuggling).
     fn build_args(&self, cmd: &str, args: &[&str]) -> Vec<String> {
         let mut remote = shell_quote(cmd);
         for arg in args {
             remote.push(' ');
             remote.push_str(&shell_quote(arg));
         }
-        vec![self.host.clone(), remote]
+        vec!["--".to_string(), self.host.clone(), remote]
     }
 }
 
@@ -417,14 +419,14 @@ mod tests {
     fn builds_simple_command_unquoted() {
         let runner = SshRunner::new("backup-host");
         let args = runner.build_args("zpool", &["list", "-H", "-p"]);
-        assert_eq!(args, vec!["backup-host".to_string(), "zpool list -H -p".to_string()]);
+        assert_eq!(args, vec!["--".to_string(), "backup-host".to_string(), "zpool list -H -p".to_string()]);
     }
 
     #[test]
     fn quotes_args_containing_spaces() {
         let runner = SshRunner::new("backup-host");
         let args = runner.build_args("echo", &["hello world"]);
-        assert_eq!(args, vec!["backup-host".to_string(), "echo 'hello world'".to_string()]);
+        assert_eq!(args, vec!["--".to_string(), "backup-host".to_string(), "echo 'hello world'".to_string()]);
     }
 
     #[test]
@@ -433,7 +435,7 @@ mod tests {
         let args = runner.build_args("echo", &["it's here"]);
         assert_eq!(
             args,
-            vec!["backup-host".to_string(), r"echo 'it'\''s here'".to_string()]
+            vec!["--".to_string(), "backup-host".to_string(), r"echo 'it'\''s here'".to_string()]
         );
     }
 
@@ -443,8 +445,15 @@ mod tests {
         let args = runner.build_args("zfs", &["snapshot", "tank/data@2026-09-04"]);
         assert_eq!(
             args,
-            vec!["backup-host".to_string(), "zfs snapshot tank/data@2026-09-04".to_string()]
+            vec!["--".to_string(), "backup-host".to_string(), "zfs snapshot tank/data@2026-09-04".to_string()]
         );
+    }
+
+    #[test]
+    fn guards_against_host_values_that_look_like_flags() {
+        let runner = SshRunner::new("-oProxyCommand=touch /tmp/pwned");
+        let args = runner.build_args("zpool", &["list"]);
+        assert_eq!(args[0], "--", "a leading '--' must precede the host so ssh cannot parse it as an option");
     }
 }
 ```
@@ -691,10 +700,10 @@ git commit -m "feat: host inventory built from config"
 
 - [ ] **Step 1: Create `src/zfs/mod.rs`**
 
+Only `pool` exists yet — `dataset` and `snapshot` are added by Tasks 7 and 8, which each append their own `pub mod` line to this file.
+
 ```rust
-pub mod dataset;
 pub mod pool;
-pub mod snapshot;
 ```
 
 - [ ] **Step 2: Write `src/zfs/pool.rs` structs, parsing, and their fixture-based tests**
@@ -828,8 +837,10 @@ pub fn list_pools(runner: &dyn CommandRunner) -> Result<Vec<Pool>> {
 
 /// Runs `zpool status <pool>` and parses its vdev tree. Separate from
 /// `list_pools` because `zpool status` has no tabular `-H -p -o` form.
+/// The `--` before `pool` stops `zpool` from treating a pool name that
+/// starts with `-` as an option flag (argument injection).
 pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<VdevLine>> {
-    let output = runner.run("zpool", &["status", pool])?;
+    let output = runner.run("zpool", &["status", "--", pool])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool status {pool}"),
@@ -844,9 +855,10 @@ pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<Vdev
 /// or `&["raidz1", "da0", "da1", "da2"]`. Guided vdev-spec construction
 /// (picking disks/redundancy from a UI wizard) depends on the disk
 /// inventory built in Plan 5, so it is out of scope here — this function
-/// takes an already-built spec.
+/// takes an already-built spec. The `--` before `name` stops `zpool`
+/// from treating a name that starts with `-` as an option flag.
 pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -> Result<()> {
-    let mut args = vec!["create", name];
+    let mut args = vec!["create", "--", name];
     args.extend_from_slice(vdev_spec);
     let output = runner.run("zpool", &args)?;
     if !output.success() {
@@ -860,7 +872,7 @@ pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -
 }
 
 pub fn scrub_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
-    let output = runner.run("zpool", &["scrub", pool])?;
+    let output = runner.run("zpool", &["scrub", "--", pool])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool scrub {pool}"),
@@ -872,7 +884,7 @@ pub fn scrub_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
 }
 
 pub fn destroy_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
-    let output = runner.run("zpool", &["destroy", pool])?;
+    let output = runner.run("zpool", &["destroy", "--", pool])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool destroy {pool}"),
@@ -884,7 +896,7 @@ pub fn destroy_pool(runner: &dyn CommandRunner, pool: &str) -> Result<()> {
 }
 
 pub fn offline_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["offline", pool, disk])?;
+    let output = runner.run("zpool", &["offline", "--", pool, disk])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool offline {pool} {disk}"),
@@ -896,7 +908,7 @@ pub fn offline_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Resul
 }
 
 pub fn online_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["online", pool, disk])?;
+    let output = runner.run("zpool", &["online", "--", pool, disk])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool online {pool} {disk}"),
@@ -908,7 +920,7 @@ pub fn online_disk(runner: &dyn CommandRunner, pool: &str, disk: &str) -> Result
 }
 
 pub fn replace_disk(runner: &dyn CommandRunner, pool: &str, old_disk: &str, new_disk: &str) -> Result<()> {
-    let output = runner.run("zpool", &["replace", pool, old_disk, new_disk])?;
+    let output = runner.run("zpool", &["replace", "--", pool, old_disk, new_disk])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zpool replace {pool} {old_disk} {new_disk}"),
@@ -996,7 +1008,7 @@ errors: No known data errors
         let vdevs = get_pool_vdevs(&runner, "tank").unwrap();
         assert_eq!(vdevs.len(), 4);
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["status".to_string(), "tank".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["status".to_string(), "--".to_string(), "tank".to_string()]));
     }
 
     #[test]
@@ -1006,7 +1018,7 @@ errors: No known data errors
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zpool".to_string(), vec!["create".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()])
+            ("zpool".to_string(), vec!["create".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()])
         );
     }
 
@@ -1015,7 +1027,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         scrub_pool(&runner, "tank").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["scrub".to_string(), "tank".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["scrub".to_string(), "--".to_string(), "tank".to_string()]));
     }
 
     #[test]
@@ -1023,7 +1035,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         destroy_pool(&runner, "scratch").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["destroy".to_string(), "scratch".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["destroy".to_string(), "--".to_string(), "scratch".to_string()]));
     }
 
     #[test]
@@ -1031,7 +1043,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         offline_disk(&runner, "tank", "da1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["offline".to_string(), "tank".to_string(), "da1".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["offline".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string()]));
     }
 
     #[test]
@@ -1039,7 +1051,7 @@ errors: No known data errors
         let runner = FakeRunner::new("");
         online_disk(&runner, "tank", "da1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zpool".to_string(), vec!["online".to_string(), "tank".to_string(), "da1".to_string()]));
+        assert_eq!(calls[0], ("zpool".to_string(), vec!["online".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string()]));
     }
 
     #[test]
@@ -1049,8 +1061,16 @@ errors: No known data errors
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zpool".to_string(), vec!["replace".to_string(), "tank".to_string(), "da1".to_string(), "da2".to_string()])
+            ("zpool".to_string(), vec!["replace".to_string(), "--".to_string(), "tank".to_string(), "da1".to_string(), "da2".to_string()])
         );
+    }
+
+    #[test]
+    fn guards_against_pool_names_that_look_like_flags() {
+        let runner = FakeRunner::new("");
+        destroy_pool(&runner, "-f").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
     }
 }
 ```
@@ -1075,6 +1095,7 @@ git commit -m "feat: ZFS pool domain model, parsing, and operations"
 
 **Files:**
 - Create: `src/zfs/dataset.rs`
+- Modify: `src/zfs/mod.rs` (add `pub mod dataset;`)
 
 **Interfaces:**
 - Consumes: `AppError`, `Result` from Task 1; `CommandRunner`, `test_support::FakeRunner` from Task 2.
@@ -1163,8 +1184,10 @@ pub fn list_datasets(runner: &dyn CommandRunner) -> Result<Vec<Dataset>> {
     parse_dataset_list(&output.stdout)
 }
 
+/// The `--` before `name` stops `zfs` from treating a dataset name that
+/// starts with `-` as an option flag (argument injection).
 pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
-    let output = runner.run("zfs", &["create", name])?;
+    let output = runner.run("zfs", &["create", "--", name])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs create {name}"),
@@ -1176,7 +1199,7 @@ pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
 }
 
 pub fn destroy_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
-    let output = runner.run("zfs", &["destroy", name])?;
+    let output = runner.run("zfs", &["destroy", "--", name])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs destroy {name}"),
@@ -1244,7 +1267,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
         let runner = FakeRunner::new("");
         create_dataset(&runner, "tank/newds").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["create".to_string(), "tank/newds".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["create".to_string(), "--".to_string(), "tank/newds".to_string()]));
     }
 
     #[test]
@@ -1252,20 +1275,35 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
         let runner = FakeRunner::new("");
         destroy_dataset(&runner, "tank/olds").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "tank/olds".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
+    }
+
+    #[test]
+    fn guards_against_dataset_names_that_look_like_flags() {
+        let runner = FakeRunner::new("");
+        destroy_dataset(&runner, "-r").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the dataset name so zfs cannot parse it as an option");
     }
 }
 ```
 
-- [ ] **Step 2: Run the tests**
+- [ ] **Step 2: Add `pub mod dataset;` to `src/zfs/mod.rs`**
+
+```rust
+pub mod dataset;
+pub mod pool;
+```
+
+- [ ] **Step 3: Run the tests**
 
 Run: `cargo test zfs::dataset`
-Expected: PASS (5 tests)
+Expected: PASS (6 tests)
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/zfs/dataset.rs
+git add src/zfs/dataset.rs src/zfs/mod.rs
 git commit -m "feat: ZFS dataset domain model, parsing, and operations"
 ```
 
@@ -1275,6 +1313,7 @@ git commit -m "feat: ZFS dataset domain model, parsing, and operations"
 
 **Files:**
 - Create: `src/zfs/snapshot.rs`
+- Modify: `src/zfs/mod.rs` (add `pub mod snapshot;`)
 
 **Interfaces:**
 - Consumes: `AppError`, `Result` from Task 1; `CommandRunner`, `test_support::FakeRunner` from Task 2.
@@ -1334,9 +1373,11 @@ pub fn list_snapshots(runner: &dyn CommandRunner) -> Result<Vec<Snapshot>> {
     parse_snapshot_list(&output.stdout)
 }
 
+/// The `--` before `target` stops `zfs` from treating a dataset name
+/// that starts with `-` as an option flag (argument injection).
 pub fn create_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["snapshot", &target])?;
+    let output = runner.run("zfs", &["snapshot", "--", &target])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs snapshot {target}"),
@@ -1349,7 +1390,7 @@ pub fn create_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) ->
 
 pub fn destroy_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["destroy", &target])?;
+    let output = runner.run("zfs", &["destroy", "--", &target])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs destroy {target}"),
@@ -1362,7 +1403,7 @@ pub fn destroy_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -
 
 pub fn rollback_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    let output = runner.run("zfs", &["rollback", &target])?;
+    let output = runner.run("zfs", &["rollback", "--", &target])?;
     if !output.success() {
         return Err(AppError::CommandFailed {
             cmd: format!("zfs rollback {target}"),
@@ -1374,19 +1415,56 @@ pub fn rollback_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) 
 }
 
 /// Replicates `source` (a `dataset@snapshot` name) to `dest_dataset`.
+/// Returns true if `s` contains only characters valid in a ZFS
+/// dataset/snapshot name (alphanumerics, `_-./:@`). This is enforced
+/// here, not merely assumed, because `replicate_snapshot` interpolates
+/// `source`/`dest_dataset` directly into a shell command line — an
+/// unvalidated value containing shell metacharacters (`;`, `` ` ``,
+/// `$(...)`, `|`, etc.) would be a command-injection vector.
+fn is_safe_zfs_target(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.' | '/' | '@'))
+}
+
+/// Returns true if `s` contains only characters valid in an SSH
+/// destination (hostname/IP, optional `user@`, optional `:port`, or a
+/// bracketed IPv6 literal). Same rationale as `is_safe_zfs_target`:
+/// `host` is interpolated into the same shell command line.
+fn is_safe_host(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | ':' | '[' | ']'))
+}
+
 /// `dest_host` is the SSH destination for the receiving side, or `None`
-/// to receive locally on the same host that `runner` targets. ZFS names
-/// are restricted to a safe character set (alphanumerics, `_-./:@`), so
-/// no additional shell-escaping is needed when building the pipeline.
+/// to receive locally on the same host that `runner` targets.
 pub fn replicate_snapshot(
     runner: &dyn CommandRunner,
     source: &str,
     dest_host: Option<&str>,
     dest_dataset: &str,
 ) -> Result<()> {
+    // Reject anything outside the safe character set BEFORE it reaches
+    // the shell command line below — see is_safe_zfs_target/is_safe_host.
+    if !is_safe_zfs_target(source) {
+        return Err(AppError::Parse(format!("invalid snapshot name for replication: {source:?}")));
+    }
+    if !is_safe_zfs_target(dest_dataset) {
+        return Err(AppError::Parse(format!("invalid destination dataset name for replication: {dest_dataset:?}")));
+    }
+    if let Some(host) = dest_host {
+        if !is_safe_host(host) {
+            return Err(AppError::Parse(format!("invalid destination host for replication: {host:?}")));
+        }
+    }
+    // `--` before each caller-supplied value stops the receiving command
+    // from treating a value that starts with `-` as an option flag
+    // (argument injection) — applies to `zfs send`/`zfs receive` and, for
+    // the remote leg, to `ssh` itself.
     let pipeline = match dest_host {
-        None => format!("zfs send {source} | zfs receive {dest_dataset}"),
-        Some(host) => format!("zfs send {source} | ssh {host} zfs receive {dest_dataset}"),
+        None => format!("zfs send -- {source} | zfs receive -- {dest_dataset}"),
+        Some(host) => format!("zfs send -- {source} | ssh -- {host} zfs receive -- {dest_dataset}"),
     };
     let output = runner.run("sh", &["-c", &pipeline])?;
     if !output.success() {
@@ -1441,7 +1519,7 @@ tank/data@2026-09-04\t2000
         let runner = FakeRunner::new("");
         create_snapshot(&runner, "tank/data", "manual-1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["snapshot".to_string(), "tank/data@manual-1".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["snapshot".to_string(), "--".to_string(), "tank/data@manual-1".to_string()]));
     }
 
     #[test]
@@ -1449,7 +1527,7 @@ tank/data@2026-09-04\t2000
         let runner = FakeRunner::new("");
         destroy_snapshot(&runner, "tank/data", "old-1").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "tank/data@old-1".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
     }
 
     #[test]
@@ -1457,7 +1535,15 @@ tank/data@2026-09-04\t2000
         let runner = FakeRunner::new("");
         rollback_snapshot(&runner, "tank/data", "2026-09-01").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["rollback".to_string(), "tank/data@2026-09-01".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["rollback".to_string(), "--".to_string(), "tank/data@2026-09-01".to_string()]));
+    }
+
+    #[test]
+    fn guards_against_dataset_names_that_look_like_flags() {
+        let runner = FakeRunner::new("");
+        destroy_snapshot(&runner, "-r", "snap1").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the target so zfs cannot parse it as an option");
     }
 
     #[test]
@@ -1467,7 +1553,7 @@ tank/data@2026-09-04\t2000
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("sh".to_string(), vec!["-c".to_string(), "zfs send tank/data@snap1 | zfs receive backup/data".to_string()])
+            ("sh".to_string(), vec!["-c".to_string(), "zfs send -- tank/data@snap1 | zfs receive -- backup/data".to_string()])
         );
     }
 
@@ -1480,22 +1566,54 @@ tank/data@2026-09-04\t2000
             calls[0],
             (
                 "sh".to_string(),
-                vec!["-c".to_string(), "zfs send tank/data@snap1 | ssh backup-host zfs receive backup/data".to_string()]
+                vec!["-c".to_string(), "zfs send -- tank/data@snap1 | ssh -- backup-host zfs receive -- backup/data".to_string()]
             )
         );
+    }
+
+    #[test]
+    fn replicate_snapshot_rejects_source_with_shell_metacharacters() {
+        let runner = FakeRunner::new("");
+        let result = replicate_snapshot(&runner, "tank/data@snap1; rm -rf /", None, "backup/data");
+        assert!(result.is_err());
+        assert!(runner.calls.lock().unwrap().is_empty(), "must reject before ever running a command");
+    }
+
+    #[test]
+    fn replicate_snapshot_rejects_dest_dataset_with_shell_metacharacters() {
+        let runner = FakeRunner::new("");
+        let result = replicate_snapshot(&runner, "tank/data@snap1", None, "backup/data`whoami`");
+        assert!(result.is_err());
+        assert!(runner.calls.lock().unwrap().is_empty(), "must reject before ever running a command");
+    }
+
+    #[test]
+    fn replicate_snapshot_rejects_host_with_shell_metacharacters() {
+        let runner = FakeRunner::new("");
+        let result = replicate_snapshot(&runner, "tank/data@snap1", Some("host; rm -rf /"), "backup/data");
+        assert!(result.is_err());
+        assert!(runner.calls.lock().unwrap().is_empty(), "must reject before ever running a command");
     }
 }
 ```
 
-- [ ] **Step 2: Run the tests**
+- [ ] **Step 2: Add `pub mod snapshot;` to `src/zfs/mod.rs`**
+
+```rust
+pub mod dataset;
+pub mod pool;
+pub mod snapshot;
+```
+
+- [ ] **Step 3: Run the tests**
 
 Run: `cargo test zfs::snapshot`
-Expected: PASS (9 tests)
+Expected: PASS (12 tests)
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/zfs/snapshot.rs
+git add src/zfs/snapshot.rs src/zfs/mod.rs
 git commit -m "feat: ZFS snapshot domain model, parsing, operations, and replication"
 ```
 
@@ -1768,17 +1886,29 @@ git commit -m "feat: ratatui App state, navigation, and worker-thread refresh"
 use super::state::{App, Section};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, Row, Table};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &App) {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(f.area());
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
-        .split(f.area());
+        .split(outer[0]);
 
     draw_sidebar(f, app, chunks[0]);
     draw_main(f, app, chunks[1]);
+    draw_status_bar(f, app, outer[1]);
+}
+
+fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    let text = app.status_message.as_deref().unwrap_or("");
+    let status = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Status"));
+    f.render_widget(status, area);
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -1801,7 +1931,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(label).style(style)
         })
         .collect();
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("zfsctl"));
+    let title = if app.loading { "zfsctl (refreshing...)" } else { "zfsctl" };
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(list, area);
 }
 
@@ -1907,25 +2038,32 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::time::Duration;
 
+/// Runs the TUI. Terminal teardown (`disable_raw_mode`/`LeaveAlternateScreen`)
+/// is always attempted before returning, regardless of which setup step
+/// failed — otherwise a failure between `enable_raw_mode()` and a fully
+/// constructed `Terminal` would leave the user's shell in raw mode with
+/// no way to recover except closing the terminal window.
 pub fn run_app(inventory: HostInventory) -> Result<()> {
     enable_raw_mode().map_err(|e| AppError::Config(format!("enabling raw mode: {e}")))?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)
-        .map_err(|e| AppError::Config(format!("entering alternate screen: {e}")))?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal =
-        Terminal::new(backend).map_err(|e| AppError::Config(format!("creating terminal: {e}")))?;
 
-    let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
-    let mut app = App::new(host_names);
-    if let Some(first_host) = inventory.hosts.first() {
-        app.refresh_pools(first_host.runner.clone());
-    }
+    let result = execute!(std::io::stdout(), EnterAlternateScreen)
+        .map_err(|e| AppError::Config(format!("entering alternate screen: {e}")))
+        .and_then(|_| {
+            let backend = CrosstermBackend::new(std::io::stdout());
+            let mut terminal = Terminal::new(backend)
+                .map_err(|e| AppError::Config(format!("creating terminal: {e}")))?;
 
-    let result = event_loop(&mut terminal, &mut app, &inventory);
+            let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
+            let mut app = App::new(host_names);
+            if let Some(first_host) = inventory.hosts.first() {
+                app.refresh_pools(first_host.runner.clone());
+            }
+
+            event_loop(&mut terminal, &mut app, &inventory)
+        });
 
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
 
     result
 }
@@ -2009,10 +2147,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effective_uid_matches_nix() {
-        let is_root = nix::unistd::Uid::effective().is_root();
-        let expected = nix::unistd::Uid::effective().as_raw() == 0;
-        assert_eq!(is_root, expected);
+    fn check_root_matches_effective_uid() {
+        let result = check_root();
+        if nix::unistd::Uid::effective().is_root() {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(result, Err(error::AppError::Config(_))));
+        }
     }
 }
 ```
