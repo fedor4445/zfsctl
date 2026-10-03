@@ -70,18 +70,29 @@ still be viewed and removed from the Shares section.
   outside of ZFS's `sharenfs` mechanism (e.g. hand-written NFS exports
   for non-ZFS paths) — out of scope, this feature only manages shares
   through ZFS dataset properties.
-- Full raw `exports(5)` syntax coverage in the structured NFS form —
-  `sharenfs` actually accepts OpenZFS's own simpler cross-platform
-  mini-language (confirmed live: `rw=@172.16.10.0/24,root=nobody`,
-  matching `zfs(8)`'s own documented example), not literal
-  dash-prefixed `exports(5)` flags; the common fields (networks, hosts,
-  ro/rw, root mapping) are supported. Anything the parser doesn't
-  recognize in an existing value (`sec=`, `crossmnt`, etc.) still
-  displays via the kept raw fallback rather than failing, and a
-  `sharenfs_editable_losslessly` check warns the user before they edit
-  (and potentially silently drop) such a value through the structured
-  form; it remains editable losslessly through the existing generic
-  property-edit form as a raw-text escape hatch.
+- Full `exports(5)` flag coverage in the structured NFS form — the
+  common flags (`-network`, `-ro`, `-maproot=`) are supported; anything
+  the parser doesn't recognize in an existing value (`-alldirs`,
+  `-sec=`, etc.) still displays via the kept raw fallback rather than
+  failing, and a `sharenfs_editable_losslessly` check warns the user
+  before they edit (and potentially silently drop) such a value through
+  the structured form; it remains editable losslessly through the
+  existing generic property-edit form as a raw-text escape hatch.
+  **Correction (2026-10-03):** an earlier revision of this spec claimed
+  `sharenfs` accepts OpenZFS's own cross-platform `rw=@net,root=user`
+  mini-language on FreeBSD, "confirmed live" by a `zfs set`/`zfs get`
+  round-trip. That round-trip only proved the *property* stored and
+  echoed the string back — it never proved a real NFS client could
+  actually mount the result. Debugging a live connectivity report
+  later confirmed, directly from `mountd`'s own log, that FreeBSD's
+  `mountd` does not understand that syntax **at all**: it tries to
+  `getaddrinfo()`-resolve the whole clause as a hostname, fails, and
+  discards the entire export line — every NFS share this feature ever
+  created with a non-blank Networks/Hosts/Root field was silently
+  non-functional — the same class of gap as the `sharesmb` finding
+  below ("the property round-tripped" is not proof the feature actually
+  works), caught a second time in this same feature. The architecture
+  section below reflects the corrected, FreeBSD-native syntax.
 - Filtering snapshots/zvols out of the share list was originally
   missed — `zfs get sharenfs,sharesmb` with no type filter returns every
   dataset *and* snapshot/zvol on the host, and snapshots report `-`/`-`
@@ -141,24 +152,35 @@ always kept alongside so a value the parser doesn't fully recognize
 still displays (unparsed) instead of the row disappearing or an error
 surfacing.
 
-**`sharenfs` syntax, confirmed live** (not the raw dash-prefixed
-`exports(5)` flag syntax — OpenZFS's own simpler cross-platform
-mini-language, matching `zfs(8)`'s own documented example):
-comma-separated clauses, no dashes. `rw=<list>` or `ro=<list>` restrict
-access to specific networks/hosts (`@` prefixes a network/CIDR, e.g.
-`@172.16.10.0/24`; a bare name/IP is a specific host; multiple entries
-in one clause are colon-joined, e.g. `rw=@172.16.10.0/24:somehost`); a
-bare `rw`/`ro` with no `=list` applies to everyone. `root=<user>` maps
-root's remote credential to `<user>` (confirmed: `zfs set
-sharenfs='rw=@172.16.10.0/24,root=nobody' scratch/data` round-tripped
-through `zfs get` unchanged and produced the expected
-`/scratch/data rw=@172.16.10.0/24 root=nobody` line in
-`/etc/zfs/exports`, which ZFS manages automatically — the app never
-touches that file or runs `zfs share`/`exportfs` itself, only `zfs
-set`). No `mapall=`-equivalent keyword is documented anywhere in
-`zfs(8)`/`zfsprops(5)` for this syntax (unlike raw `exports(5)`, which
-has both `-maproot=`/`-mapall=`) — so the structured form has exactly
-one root-mapping field (`root=`), not two.
+**`sharenfs` syntax — FreeBSD's native `exports(5)` flags, confirmed
+live against a real FreeBSD 15.1 box's `mountd`** (NOT OpenZFS's own
+cross-platform `rw=@net,root=user` mini-language — see the Non-goals
+correction above for how that was wrong, and why a `zfs set`/`zfs get`
+round-trip alone doesn't prove a syntax actually works). `mountd`'s own
+log, verbatim, when fed the old mini-language: `"can't get address
+info for host rw=@172.16.10.0/24"` / `"bad host rw=@172.16.10.0/24,
+skipping"` / `"bad exports list line '... rw=@172.16.10.0/24': no
+valid entries"` — it tries to resolve the whole clause as a hostname
+via `getaddrinfo` and discards the line entirely. `exports(5)`'s own
+man page documents only dash-prefixed flags and never mentions
+`rw=`/`ro=`/`root=`.
+
+Confirmed live, space-separated flags, `;`-separated clauses: `-ro`
+(read-only; its absence means read-write, the default) and
+`-maproot=<user>` (maps root's remote credential to `<user>` — the
+direct equivalent of the old `root=<user>` field) apply to whichever
+host-set follows them, either `-network <cidr>` (one clause per
+network — combined CIDR notation, e.g. `172.16.10.0/24`, confirmed
+working with no separate `-mask` needed) or a bare space-separated
+hostname list. Clauses are joined with `;` — confirmed live this
+produces one `exports(5)` line per clause (e.g. the same `-maproot=`
+applied to two different networks for `scratch/data` produced
+`showmount -e`'s `/scratch/data  172.16.10.0 172.16.20.0`, correctly
+exported to both). No `-mapall=`-equivalent field exists in this app's
+structured form (only `-maproot=`), matching the original design's
+one-root-mapping-field decision — `-mapall=` remains available through
+the generic property-edit form as a raw-text escape hatch, same as any
+other flag the structured parser doesn't recognize.
 
 `sharenfs_editable_losslessly(raw)` reports whether re-parsing then
 re-assembling `raw` through the structured fields reproduces it exactly
@@ -268,17 +290,15 @@ reusing the existing library function and its `--`-guard entirely
 unchanged.
 
 - `FormKind::ShareNfs`'s fields assemble into a `sharenfs` value using
-  the confirmed syntax above. Every field left blank assembles to plain
-  `"on"` (share to everyone, read-write, no root-mapping restriction).
-  Otherwise: the read-only/read-write clause is a bare `rw`/`ro` if both
-  Networks and Hosts are blank (restriction-free, matching the
-  confirmed bare-`rw` default), or `rw=<list>`/`ro=<list>` with each
-  network prefixed `@` and colon-joined together with any hosts if
-  either field is filled in; `,root=<user>` is appended if the Root
-  user mapping field is filled in. E.g. Networks=`172.16.10.0/24`,
-  Hosts=blank, Read-only=no, Root=`nobody` assembles to
-  `rw=@172.16.10.0/24,root=nobody` — the exact value confirmed live
-  above.
+  the confirmed FreeBSD-native syntax above. Every field left blank
+  assembles to plain `"on"` (share to everyone, read-write, no
+  root-mapping restriction). Otherwise: `-ro` is added if Read-only is
+  set, `-maproot=<user>` if Root is filled in — these apply to one
+  clause per network (`-network <cidr>`) plus one clause for the host
+  list if Hosts is non-blank, joined with `;`. E.g. Networks=
+  `172.16.10.0/24`, Hosts=blank, Read-only=no, Root=`nobody` assembles
+  to `-maproot=nobody -network 172.16.10.0/24` — the exact value
+  confirmed live above.
 - Removing a share (`'d'` in the Shares section) reuses the existing
   `Modal::Confirm` pattern directly — no new `FormKind` — setting the
   row's relevant property (`sharenfs` or `sharesmb`, whichever that

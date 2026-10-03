@@ -4162,7 +4162,7 @@ mod tests {
         } // -> Shares
         app.shares = vec![crate::zfs::share::Share::Nfs {
             dataset: "tank/data".to_string(),
-            raw: "rw=@172.16.10.0/24,root=nobody".to_string(),
+            raw: "-maproot=nobody -network 172.16.10.0/24".to_string(),
             networks: vec!["172.16.10.0/24".to_string()],
             hosts: vec![],
             read_only: false,
@@ -4634,7 +4634,7 @@ mod tests {
         let action = build_pending_action(&kind, &fields).unwrap();
         assert_eq!(
             action.call,
-            MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharenfs".to_string(), value: "rw=@172.16.10.0/24,root=nobody".to_string() }
+            MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharenfs".to_string(), value: "-maproot=nobody -network 172.16.10.0/24".to_string() }
         );
     }
 

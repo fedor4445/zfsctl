@@ -274,10 +274,9 @@ row, `perms: None` (full revoke).
   error UI, so an invalid token is surfaced the same way a blank required
   field already is: the form just stays open).
 - **`Recipient`** must parse as exactly `everyone`, `user:<name>`, or
-  `group:<name>` (a small mini-language, same spirit as
-  `assemble_sharenfs`'s `rw=@net:host`) — anything else keeps the form
-  open. No bare-name fallback (see "always pass explicit `-u`/`-g`"
-  above).
+  `group:<name>` (a small mini-language, same spirit as Shares'
+  structured-field forms) — anything else keeps the form open. No
+  bare-name fallback (see "always pass explicit `-u`/`-g`" above).
 - **`Scope`** is the one field with a default for blank (`Both`), but is
   otherwise *strict*: only `local`/`descendent`/`both` (case-insensitive)
   are accepted; any other non-blank text keeps the form open rather than

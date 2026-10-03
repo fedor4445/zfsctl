@@ -34,7 +34,26 @@
 > showing a share's raw value (fixed, plus a lossy-edit warning for
 > values the structured form can't fully represent).
 
-## Global Constraints
+> **Second post-implementation amendment (2026-10-03):** debugging a
+> live NFS-connectivity report found that **this plan's `sharenfs`
+> syntax was never actually valid on FreeBSD at all.** The plan's Task
+> 1 (below) implements `parse_sharenfs_fields`/`assemble_sharenfs`
+> using OpenZFS's cross-platform `rw=@net,root=user` mini-language,
+> "confirmed" via a `zfs set`/`zfs get` round-trip — but that round-trip
+> only proves the property stores and echoes the string back, never
+> that a real NFS client can mount the result. `mountd`'s own log
+> settled it: it tries to `getaddrinfo()`-resolve the whole
+> `rw=@172.16.10.0/24` clause as a hostname and discards the entire
+> export line — every NFS share this feature ever created with a
+> non-blank Networks/Hosts/Root field was silently non-functional,
+> exactly the same class of gap as the SMB finding above. Fixed by
+> rewriting both functions to assemble/parse FreeBSD's actual native
+> `exports(5)` syntax (`-ro`, `-maproot=<user>`, `-network <cidr>`,
+> `;`-separated clauses) instead — confirmed live this time, including
+> the multi-network semicolon mechanism. The task bodies below still
+> show the original (wrong) mini-language code verbatim, as the
+> historical record of what was actually built in Task 1; **the spec is
+> the authoritative description of the shipped syntax**, not this plan.
 
 - FreeBSD only, CLI shelling via machine-readable flags where available — `zfs get -H -p sharenfs,sharesmb` (no dataset argument) is exactly as machine-readable as every other `get` call in this app, just grouped by multiple datasets instead of one.
 - **No new `MutationCall` variants** — every share mutation (create, edit, remove) is `MutationCall::SetDatasetProperty { dataset, key, value }`, reusing the existing function and its `--` guard entirely unchanged.

@@ -26,71 +26,113 @@ pub struct SharesSnapshot {
     pub samba_available: bool,
 }
 
-/// Splits a `rw=`/`ro=` clause's list into networks (`@`-prefixed) and
-/// hosts (everything else), colon-separated.
-fn parse_host_list(list: &str, networks: &mut Vec<String>, hosts: &mut Vec<String>) {
-    for item in list.split(':') {
-        if let Some(net) = item.strip_prefix('@') {
-            networks.push(net.to_string());
-        } else if !item.is_empty() {
-            hosts.push(item.to_string());
-        }
-    }
-}
-
-/// Parses a `sharenfs` value's comma-separated clauses into
-/// `(networks, hosts, read_only, root)`. Unrecognized clauses (e.g.
-/// `sec=sys`, `crossmnt`) are silently ignored for these structured
-/// fields — the caller always keeps the original string too (`raw`),
-/// so nothing is lost for display, and the existing generic
-/// property-edit form remains available as a raw-text escape hatch for
-/// values using clauses this structured form doesn't support.
+/// Parses a `sharenfs` value using FreeBSD's **native `exports(5)`**
+/// syntax into `(networks, hosts, read_only, root)`.
+///
+/// **This is not OpenZFS's own cross-platform `sharenfs` mini-language**
+/// (`rw=@net,root=user`, comma-separated) — confirmed live against a
+/// real FreeBSD 15.1 box that `mountd` does not understand that syntax
+/// at all. `mountd`'s own log, verbatim: `"can't get address info for
+/// host rw=@172.16.10.0/24"` / `"bad host rw=@172.16.10.0/24, skipping"`
+/// / `"bad exports list line '... rw=@172.16.10.0/24': no valid
+/// entries"` — it tries to resolve the whole clause as a hostname via
+/// `getaddrinfo` and fails, discarding the entire line. FreeBSD's own
+/// `exports(5)` man page confirms this: it documents only dash-prefixed
+/// options (`-maproot=`, `-ro`, `-network`, etc.) and never mentions
+/// `rw=`/`ro=`/`root=`. The `zfsprops(7)` text describing `sharenfs`'s
+/// default options (`sec=sys,rw,crossmnt,no_subtree_check`) is Linux
+/// `nfs-utils`/`exportfs(8)` terminology copied into the generic
+/// OpenZFS docs — `crossmnt`/`no_subtree_check` aren't FreeBSD concepts
+/// at all, and FreeBSD's `zfs` writes the property value into
+/// `/etc/zfs/exports` essentially as-is, so whatever syntax you set
+/// *is* the `exports(5)` line `mountd` has to parse.
+///
+/// Native syntax, confirmed live: `-ro` (read-only; absence means
+/// read-write, the default), `-maproot=<user>` (root's remote
+/// credential), `-network <cidr>` (one clause per network — combined
+/// CIDR notation, e.g. `172.16.10.0/24`, confirmed working with no
+/// separate `-mask` needed), and bare hostnames for an unrestricted
+/// host list. Per `zfsprops(7)` (the semicolon mechanism itself *was*
+/// independently verified live, unlike the Linux-ism options above):
+/// semicolon-separated clauses each become their own `exports(5)` line,
+/// letting the same options apply to multiple networks/host-sets.
+///
+/// Unrecognized flags (e.g. `-alldirs`, `-sec=krb5i`) are silently
+/// ignored for these structured fields — the caller always keeps the
+/// original string too (`raw`), so nothing is lost for display, and the
+/// existing generic property-edit form remains available as a raw-text
+/// escape hatch for values using flags this structured form doesn't
+/// support.
 fn parse_sharenfs_fields(raw: &str) -> (Vec<String>, Vec<String>, bool, Option<String>) {
     let mut networks = Vec::new();
     let mut hosts = Vec::new();
     let mut read_only = false;
     let mut root = None;
-    for clause in raw.split(',') {
-        let clause = clause.trim();
-        if clause == "rw" {
-            read_only = false;
-        } else if clause == "ro" {
-            read_only = true;
-        } else if let Some(list) = clause.strip_prefix("rw=") {
-            read_only = false;
-            parse_host_list(list, &mut networks, &mut hosts);
-        } else if let Some(list) = clause.strip_prefix("ro=") {
-            read_only = true;
-            parse_host_list(list, &mut networks, &mut hosts);
-        } else if let Some(user) = clause.strip_prefix("root=") {
-            root = Some(user.to_string());
+    for clause in raw.split(';') {
+        let mut tokens = clause.split_whitespace();
+        while let Some(token) = tokens.next() {
+            if token == "-ro" {
+                read_only = true;
+            } else if token == "-rw" {
+                read_only = false;
+            } else if let Some(user) = token.strip_prefix("-maproot=") {
+                root = Some(user.to_string());
+            } else if token == "-network" {
+                if let Some(network) = tokens.next() {
+                    networks.push(network.to_string());
+                }
+            } else if let Some(network) = token.strip_prefix("-network=") {
+                networks.push(network.to_string());
+            } else if token.starts_with('-') {
+                // unrecognized flag (e.g. "-alldirs", "-sec=krb5i", "-mask") — ignored for structured fields.
+            } else if token == "on" {
+                // bare "on" (the whole, unrestricted-share value) — not a hostname.
+            } else {
+                hosts.push(token.to_string());
+            }
         }
-        // else: unrecognized (e.g. "on", "sec=sys", "crossmnt") — ignored for structured fields.
     }
     (networks, hosts, read_only, root)
 }
 
-/// Assembles a `sharenfs` value from structured fields — the inverse
-/// of `parse_sharenfs_fields`. Every argument empty/false/`None`
-/// assembles to plain `"on"` (share to everyone, read-write, no
-/// root-mapping restriction).
+/// Assembles a `sharenfs` value from structured fields using FreeBSD's
+/// native `exports(5)` syntax — the inverse of `parse_sharenfs_fields`
+/// (see its doc comment for why this isn't OpenZFS's cross-platform
+/// mini-language). Every argument empty/false/`None` assembles to plain
+/// `"on"` (share to everyone, read-write, no root-mapping restriction).
+/// One clause per network, plus one clause for the host list if any
+/// hosts are given, each carrying the same `-ro`/`-maproot=` options;
+/// multiple clauses are joined with `;` (confirmed live: each becomes
+/// its own `exports(5)` line). A single network with no hosts produces
+/// one clause with no `;` at all.
 pub fn assemble_sharenfs(networks: &[String], hosts: &[String], read_only: bool, root: Option<&str>) -> String {
     if networks.is_empty() && hosts.is_empty() && root.is_none() && !read_only {
         return "on".to_string();
     }
-    let verb = if read_only { "ro" } else { "rw" };
-    let mut clauses = Vec::new();
-    if networks.is_empty() && hosts.is_empty() {
-        clauses.push(verb.to_string());
-    } else {
-        let mut list: Vec<String> = networks.iter().map(|n| format!("@{n}")).collect();
-        list.extend(hosts.iter().cloned());
-        clauses.push(format!("{verb}={}", list.join(":")));
+    let mut opts: Vec<String> = Vec::new();
+    if read_only {
+        opts.push("-ro".to_string());
     }
     if let Some(user) = root {
-        clauses.push(format!("root={user}"));
+        opts.push(format!("-maproot={user}"));
     }
-    clauses.join(",")
+    let mut clauses: Vec<String> = Vec::new();
+    if !hosts.is_empty() {
+        let mut parts = opts.clone();
+        parts.extend(hosts.iter().cloned());
+        clauses.push(parts.join(" "));
+    }
+    for network in networks {
+        let mut parts = opts.clone();
+        parts.push("-network".to_string());
+        parts.push(network.clone());
+        clauses.push(parts.join(" "));
+    }
+    if clauses.is_empty() {
+        opts.join(" ")
+    } else {
+        clauses.join(";")
+    }
 }
 
 /// Groups `zfs get -H -p sharenfs,sharesmb` output (every dataset on
@@ -197,21 +239,39 @@ mod tests {
     }
 
     #[test]
-    fn parse_sharenfs_fields_rw_with_network_and_root() {
+    fn parse_sharenfs_fields_network_and_maproot() {
+        // FreeBSD-native exports(5) syntax -- confirmed live against the
+        // real test box (see share.rs's module doc comment for the full
+        // story): ZFS's own rw=@net,root=user mini-language is NOT what
+        // FreeBSD's mountd actually understands.
         assert_eq!(
-            parse_sharenfs_fields("rw=@172.16.10.0/24,root=nobody"),
+            parse_sharenfs_fields("-maproot=nobody -network 172.16.10.0/24"),
             (vec!["172.16.10.0/24".to_string()], vec![], false, Some("nobody".to_string()))
         );
     }
 
     #[test]
-    fn parse_sharenfs_fields_ro_with_host() {
-        assert_eq!(parse_sharenfs_fields("ro=somehost"), (vec![], vec!["somehost".to_string()], true, None));
+    fn parse_sharenfs_fields_ro_with_bare_host() {
+        assert_eq!(parse_sharenfs_fields("-ro somehost"), (vec![], vec!["somehost".to_string()], true, None));
     }
 
     #[test]
-    fn parse_sharenfs_fields_ignores_unrecognized_clauses_but_keeps_recognized_ones() {
-        assert_eq!(parse_sharenfs_fields("sec=sys,rw,crossmnt,no_subtree_check"), (vec![], vec![], false, None));
+    fn parse_sharenfs_fields_ignores_unrecognized_flags_but_keeps_recognized_ones() {
+        assert_eq!(
+            parse_sharenfs_fields("-alldirs -ro -network 172.16.10.0/24"),
+            (vec!["172.16.10.0/24".to_string()], vec![], true, None)
+        );
+    }
+
+    #[test]
+    fn parse_sharenfs_fields_semicolon_separates_multiple_network_clauses() {
+        // Confirmed live: each semicolon-separated set becomes its own
+        // exports(5) line, letting the same root mapping apply to
+        // multiple networks.
+        assert_eq!(
+            parse_sharenfs_fields("-maproot=nobody -network 172.16.10.0/24;-maproot=nobody -network 172.16.20.0/24"),
+            (vec!["172.16.10.0/24".to_string(), "172.16.20.0/24".to_string()], vec![], false, Some("nobody".to_string()))
+        );
     }
 
     #[test]
@@ -221,20 +281,33 @@ mod tests {
 
     #[test]
     fn assemble_sharenfs_read_only_with_no_restriction_produces_bare_ro() {
-        assert_eq!(assemble_sharenfs(&[], &[], true, None), "ro");
+        assert_eq!(assemble_sharenfs(&[], &[], true, None), "-ro");
     }
 
     #[test]
-    fn assemble_sharenfs_networks_hosts_and_root_combine_correctly() {
+    fn assemble_sharenfs_single_network_with_root_produces_native_syntax() {
+        assert_eq!(assemble_sharenfs(&["172.16.10.0/24".to_string()], &[], false, Some("nobody")), "-maproot=nobody -network 172.16.10.0/24");
+    }
+
+    #[test]
+    fn assemble_sharenfs_networks_and_hosts_produce_semicolon_separated_clauses() {
         assert_eq!(
             assemble_sharenfs(&["172.16.10.0/24".to_string()], &["somehost".to_string()], false, Some("nobody")),
-            "rw=@172.16.10.0/24:somehost,root=nobody"
+            "-maproot=nobody somehost;-maproot=nobody -network 172.16.10.0/24"
+        );
+    }
+
+    #[test]
+    fn assemble_sharenfs_multiple_networks_produce_one_clause_each() {
+        assert_eq!(
+            assemble_sharenfs(&["172.16.10.0/24".to_string(), "172.16.20.0/24".to_string()], &[], false, Some("nobody")),
+            "-maproot=nobody -network 172.16.10.0/24;-maproot=nobody -network 172.16.20.0/24"
         );
     }
 
     #[test]
     fn parse_then_assemble_sharenfs_round_trips_a_canonical_value() {
-        let raw = "rw=@172.16.10.0/24,root=nobody";
+        let raw = "-maproot=nobody -network 172.16.10.0/24";
         let (networks, hosts, read_only, root) = parse_sharenfs_fields(raw);
         assert_eq!(assemble_sharenfs(&networks, &hosts, read_only, root.as_deref()), raw);
     }
@@ -242,12 +315,12 @@ mod tests {
     #[test]
     fn sharenfs_editable_losslessly_true_for_canonical_values() {
         assert!(sharenfs_editable_losslessly("on"));
-        assert!(sharenfs_editable_losslessly("rw=@172.16.10.0/24,root=nobody"));
+        assert!(sharenfs_editable_losslessly("-maproot=nobody -network 172.16.10.0/24"));
     }
 
     #[test]
-    fn sharenfs_editable_losslessly_false_for_unrecognized_clauses() {
-        assert!(!sharenfs_editable_losslessly("sec=sys,rw,crossmnt,no_subtree_check"));
+    fn sharenfs_editable_losslessly_false_for_unrecognized_flags() {
+        assert!(!sharenfs_editable_losslessly("-alldirs -ro -network 172.16.10.0/24"));
     }
 
     const SHARES_FIXTURE: &str = "\
@@ -255,11 +328,11 @@ tank/both\tsharenfs\ton\tlocal
 tank/both\tsharesmb\ton\tlocal
 tank/data\tsharenfs\toff\tdefault
 tank/data\tsharesmb\toff\tdefault
-tank/nfsonly\tsharenfs\trw=@172.16.10.0/24,root=nobody\tlocal
+tank/nfsonly\tsharenfs\t-maproot=nobody -network 172.16.10.0/24\tlocal
 tank/nfsonly\tsharesmb\toff\tdefault
 tank/smbonly\tsharenfs\toff\tdefault
 tank/smbonly\tsharesmb\tmyshare\tlocal
-tank/weird\tsharenfs\tsec=sys,rw,crossmnt,no_subtree_check\tlocal
+tank/weird\tsharenfs\t-alldirs -ro -network 172.16.10.0/24\tlocal
 tank/weird\tsharesmb\toff\tdefault
 tank/data@snap1\tsharenfs\t-\t-
 tank/data@snap1\tsharesmb\t-\t-
@@ -275,7 +348,7 @@ tank/data@snap1\tsharesmb\t-\t-
                 Share::Smb { dataset: "tank/both".to_string(), name: None },
                 Share::Nfs {
                     dataset: "tank/nfsonly".to_string(),
-                    raw: "rw=@172.16.10.0/24,root=nobody".to_string(),
+                    raw: "-maproot=nobody -network 172.16.10.0/24".to_string(),
                     networks: vec!["172.16.10.0/24".to_string()],
                     hosts: vec![],
                     read_only: false,
@@ -284,14 +357,14 @@ tank/data@snap1\tsharesmb\t-\t-
                 Share::Smb { dataset: "tank/smbonly".to_string(), name: Some("myshare".to_string()) },
                 Share::Nfs {
                     dataset: "tank/weird".to_string(),
-                    raw: "sec=sys,rw,crossmnt,no_subtree_check".to_string(),
-                    networks: vec![],
+                    raw: "-alldirs -ro -network 172.16.10.0/24".to_string(),
+                    networks: vec!["172.16.10.0/24".to_string()],
                     hosts: vec![],
-                    read_only: false,
+                    read_only: true,
                     root: None,
                 },
             ],
-            "tank/data (both off) must not appear; tank/data@snap1 (a snapshot, both '-') must not appear; tank/weird's unrecognized clauses must not drop the share, raw must be preserved"
+            "tank/data (both off) must not appear; tank/data@snap1 (a snapshot, both '-') must not appear; tank/weird's unrecognized -alldirs flag must not drop the share, raw must be preserved"
         );
     }
 
