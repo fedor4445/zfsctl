@@ -579,6 +579,95 @@ impl App {
                     DatasetDetailTab::Permissions => DatasetDetailTab::Properties,
                 };
             }
+            KeyCode::Char('n')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Permissions =>
+            {
+                if let Some(dataset) = self.selected_dataset_name() {
+                    self.modal = Some(Modal::Form {
+                        title: format!("Grant permission on '{dataset}'"),
+                        fields: vec![
+                            FormField { label: "Recipient (everyone / user:<name> / group:<name>)".to_string(), value: String::new() },
+                            FormField { label: "Scope (local/descendent/both, blank=both)".to_string(), value: String::new() },
+                            FormField { label: "Permissions".to_string(), value: String::new() },
+                        ],
+                        focused: 0,
+                        description: None,
+                        kind: FormKind::GrantPermission { host: self.selected_host, dataset },
+                    });
+                }
+            }
+            KeyCode::Char('s')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Permissions =>
+            {
+                if let Some(dataset) = self.selected_dataset_name() {
+                    self.modal = Some(Modal::Form {
+                        title: format!("Grant/add-to permission set on '{dataset}'"),
+                        fields: vec![
+                            FormField { label: "Set name (without @)".to_string(), value: String::new() },
+                            FormField { label: "Permissions".to_string(), value: String::new() },
+                        ],
+                        focused: 0,
+                        description: None,
+                        kind: FormKind::GrantPermissionSet { host: self.selected_host, dataset },
+                    });
+                }
+            }
+            KeyCode::Char('c')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Permissions =>
+            {
+                if let Some(dataset) = self.selected_dataset_name() {
+                    self.modal = Some(Modal::Form {
+                        title: format!("Grant create-time permission on '{dataset}'"),
+                        fields: vec![FormField { label: "Permissions".to_string(), value: String::new() }],
+                        focused: 0,
+                        description: None,
+                        kind: FormKind::GrantCreateTimePermission { host: self.selected_host, dataset },
+                    });
+                }
+            }
+            KeyCode::Char('d')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Permissions =>
+            {
+                if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_permissions_table.selected()) {
+                    if let Some(row) = self.dataset_permissions.get(i) {
+                        let target = permission_target_for_row(row);
+                        self.modal = Some(Modal::Confirm {
+                            prompt: format!("Revoke all permissions for this target on '{dataset}'? (y/n)"),
+                            action: PendingAction {
+                                host: self.selected_host,
+                                section: Section::DatasetPermissions,
+                                call: MutationCall::UnallowPermission { dataset, target, perms: None },
+                            },
+                        });
+                    }
+                }
+            }
+            KeyCode::Char('x')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Permissions =>
+            {
+                if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_permissions_table.selected()) {
+                    if let Some(row) = self.dataset_permissions.get(i) {
+                        let target = permission_target_for_row(row);
+                        self.modal = Some(Modal::Form {
+                            title: format!("Revoke specific permissions on '{dataset}'"),
+                            fields: vec![FormField { label: "Permissions to remove".to_string(), value: String::new() }],
+                            focused: 0,
+                            description: None,
+                            kind: FormKind::RevokePermissions { host: self.selected_host, dataset, target },
+                        });
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
                 self.dataset_properties.clear();
@@ -1520,6 +1609,124 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 section: Section::Shares,
                 call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: "sharenfs".to_string(), value },
             })
+        }
+        FormKind::GrantPermission { host, dataset } => {
+            let recipient = parse_recipient_field(&fields[0].value)?;
+            let scope = parse_scope_field(&fields[1].value)?;
+            let perms = parse_required_perms_field(&fields[2].value)?;
+            Some(PendingAction {
+                host: *host,
+                section: Section::DatasetPermissions,
+                call: MutationCall::AllowPermission {
+                    dataset: dataset.clone(),
+                    target: crate::zfs::permission::PermissionTarget::Grant { recipient, scope },
+                    perms,
+                },
+            })
+        }
+        FormKind::GrantPermissionSet { host, dataset } => {
+            let name = fields[0].value.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let perms = parse_required_perms_field(&fields[1].value)?;
+            Some(PendingAction {
+                host: *host,
+                section: Section::DatasetPermissions,
+                call: MutationCall::AllowPermission {
+                    dataset: dataset.clone(),
+                    target: crate::zfs::permission::PermissionTarget::Set(name.to_string()),
+                    perms,
+                },
+            })
+        }
+        FormKind::GrantCreateTimePermission { host, dataset } => {
+            let perms = parse_required_perms_field(&fields[0].value)?;
+            Some(PendingAction {
+                host: *host,
+                section: Section::DatasetPermissions,
+                call: MutationCall::AllowPermission { dataset: dataset.clone(), target: crate::zfs::permission::PermissionTarget::CreateTime, perms },
+            })
+        }
+        FormKind::RevokePermissions { host, dataset, target } => {
+            let perms = parse_required_perms_field(&fields[0].value)?;
+            Some(PendingAction {
+                host: *host,
+                section: Section::DatasetPermissions,
+                call: MutationCall::UnallowPermission { dataset: dataset.clone(), target: target.clone(), perms: Some(perms) },
+            })
+        }
+    }
+}
+
+/// Parses the `Recipient` field's mini-language: `everyone`,
+/// `user:<name>`, or `group:<name>` — no bare-name fallback, since this
+/// app always passes explicit `-u`/`-g` to `zfs allow` (see the spec).
+fn parse_recipient_field(s: &str) -> Option<crate::zfs::permission::Recipient> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("everyone") {
+        return Some(crate::zfs::permission::Recipient::Everyone);
+    }
+    if let Some(name) = s.strip_prefix("user:") {
+        if !name.is_empty() {
+            return Some(crate::zfs::permission::Recipient::User(name.to_string()));
+        }
+        return None;
+    }
+    if let Some(name) = s.strip_prefix("group:") {
+        if !name.is_empty() {
+            return Some(crate::zfs::permission::Recipient::Group(name.to_string()));
+        }
+        return None;
+    }
+    None
+}
+
+/// Parses the `Scope` field — blank defaults to `Both`, anything else
+/// must be exactly `local`/`descendent`/`both` (case-insensitive) or
+/// the caller must treat it as invalid. Deliberately strict (unlike
+/// most optional fields in this app): silently falling back to the
+/// *widest* scope on a typo would be a real footgun for a permissions
+/// feature specifically.
+fn parse_scope_field(s: &str) -> Option<crate::zfs::permission::Scope> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Some(crate::zfs::permission::Scope::Both);
+    }
+    if s.eq_ignore_ascii_case("local") {
+        return Some(crate::zfs::permission::Scope::Local);
+    }
+    if s.eq_ignore_ascii_case("descendent") {
+        return Some(crate::zfs::permission::Scope::Descendent);
+    }
+    if s.eq_ignore_ascii_case("both") {
+        return Some(crate::zfs::permission::Scope::Both);
+    }
+    None
+}
+
+/// Parses a required comma-separated `Permissions` field — splits,
+/// trims, drops empty tokens; `None` if that leaves nothing (blank, or
+/// just commas/whitespace), since there's no sensible "blank means X"
+/// default for a permission list (unlike Shares' optional fields).
+fn parse_required_perms_field(s: &str) -> Option<Vec<String>> {
+    let perms: Vec<String> = s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+    if perms.is_empty() {
+        None
+    } else {
+        Some(perms)
+    }
+}
+
+/// Reconstructs the `PermissionTarget` a `PermissionRow` was flattened
+/// from — used by `'d'`/`'x'` to revoke exactly the target the selected
+/// row represents.
+fn permission_target_for_row(row: &PermissionRow) -> crate::zfs::permission::PermissionTarget {
+    match row {
+        PermissionRow::Set { name, .. } => crate::zfs::permission::PermissionTarget::Set(name.clone()),
+        PermissionRow::CreateTime { .. } => crate::zfs::permission::PermissionTarget::CreateTime,
+        PermissionRow::Grant { recipient, scope, .. } => {
+            crate::zfs::permission::PermissionTarget::Grant { recipient: recipient.clone(), scope: *scope }
         }
     }
 }
@@ -4056,6 +4263,275 @@ mod tests {
                 call: MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharenfs".to_string(), value: "on".to_string() },
             }
         );
+    }
+
+    #[test]
+    fn build_pending_action_grant_permission_requires_recipient_and_permissions() {
+        let kind = FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        let blank = vec![
+            FormField { label: "Recipient".to_string(), value: String::new() },
+            FormField { label: "Scope".to_string(), value: String::new() },
+            FormField { label: "Permissions".to_string(), value: String::new() },
+        ];
+        assert!(build_pending_action(&kind, &blank).is_none(), "blank Permissions must keep the form open");
+
+        let no_recipient = vec![
+            FormField { label: "Recipient".to_string(), value: "fb".to_string() },
+            FormField { label: "Scope".to_string(), value: String::new() },
+            FormField { label: "Permissions".to_string(), value: "snapshot".to_string() },
+        ];
+        assert!(build_pending_action(&kind, &no_recipient).is_none(), "a bare name with no user:/group: prefix must keep the form open");
+    }
+
+    #[test]
+    fn build_pending_action_grant_permission_assembles_user_local() {
+        let kind = FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![
+            FormField { label: "Recipient".to_string(), value: "user:fb".to_string() },
+            FormField { label: "Scope".to_string(), value: "local".to_string() },
+            FormField { label: "Permissions".to_string(), value: "snapshot, create".to_string() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::DatasetPermissions,
+                call: MutationCall::AllowPermission {
+                    dataset: "tank/data".to_string(),
+                    target: crate::zfs::permission::PermissionTarget::Grant {
+                        recipient: crate::zfs::permission::Recipient::User("fb".to_string()),
+                        scope: crate::zfs::permission::Scope::Local,
+                    },
+                    perms: vec!["snapshot".to_string(), "create".to_string()],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_grant_permission_blank_scope_defaults_to_both() {
+        let kind = FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![
+            FormField { label: "Recipient".to_string(), value: "everyone".to_string() },
+            FormField { label: "Scope".to_string(), value: String::new() },
+            FormField { label: "Permissions".to_string(), value: "mount".to_string() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action.call,
+            MutationCall::AllowPermission {
+                dataset: "tank/data".to_string(),
+                target: crate::zfs::permission::PermissionTarget::Grant { recipient: crate::zfs::permission::Recipient::Everyone, scope: crate::zfs::permission::Scope::Both },
+                perms: vec!["mount".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_grant_permission_garbage_scope_keeps_form_open() {
+        let kind = FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![
+            FormField { label: "Recipient".to_string(), value: "everyone".to_string() },
+            FormField { label: "Scope".to_string(), value: "lcoal".to_string() },
+            FormField { label: "Permissions".to_string(), value: "mount".to_string() },
+        ];
+        assert!(build_pending_action(&kind, &fields).is_none(), "a scope typo must not silently fall back to Both");
+    }
+
+    #[test]
+    fn build_pending_action_grant_permission_set_assembles() {
+        let kind = FormKind::GrantPermissionSet { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![
+            FormField { label: "Set name".to_string(), value: "admin".to_string() },
+            FormField { label: "Permissions".to_string(), value: "snapshot,rollback".to_string() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::DatasetPermissions,
+                call: MutationCall::AllowPermission {
+                    dataset: "tank/data".to_string(),
+                    target: crate::zfs::permission::PermissionTarget::Set("admin".to_string()),
+                    perms: vec!["snapshot".to_string(), "rollback".to_string()],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_grant_create_time_permission_assembles() {
+        let kind = FormKind::GrantCreateTimePermission { host: 0, dataset: "tank/data".to_string() };
+        let fields = vec![FormField { label: "Permissions".to_string(), value: "destroy".to_string() }];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::DatasetPermissions,
+                call: MutationCall::AllowPermission {
+                    dataset: "tank/data".to_string(),
+                    target: crate::zfs::permission::PermissionTarget::CreateTime,
+                    perms: vec!["destroy".to_string()],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_revoke_permissions_assembles() {
+        let kind = FormKind::RevokePermissions {
+            host: 0,
+            dataset: "tank/data".to_string(),
+            target: crate::zfs::permission::PermissionTarget::Set("admin".to_string()),
+        };
+        let fields = vec![FormField { label: "Permissions to remove".to_string(), value: "rollback".to_string() }];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::DatasetPermissions,
+                call: MutationCall::UnallowPermission {
+                    dataset: "tank/data".to_string(),
+                    target: crate::zfs::permission::PermissionTarget::Set("admin".to_string()),
+                    perms: Some(vec!["rollback".to_string()]),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_revoke_permissions_blank_keeps_form_open() {
+        let kind = FormKind::RevokePermissions { host: 0, dataset: "tank/data".to_string(), target: crate::zfs::permission::PermissionTarget::CreateTime };
+        let fields = vec![FormField { label: "Permissions to remove".to_string(), value: String::new() }];
+        assert!(build_pending_action(&kind, &fields).is_none());
+    }
+
+    fn enter_datasets_permissions_tab(app: &mut App) {
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.handle_key(KeyCode::Right); // -> Right focus, Properties tab
+        app.handle_key(KeyCode::Char(']')); // -> Permissions tab
+    }
+
+    #[test]
+    fn handle_key_n_on_permissions_tab_with_no_dataset_selected_does_not_panic_or_open_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        enter_datasets_permissions_tab(&mut app);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_key_n_on_permissions_tab_opens_grant_permission_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_permissions_tab(&mut app);
+        app.handle_key(KeyCode::Char('n'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 3);
+                assert_eq!(*kind, FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_s_on_permissions_tab_opens_grant_permission_set_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_permissions_tab(&mut app);
+        app.handle_key(KeyCode::Char('s'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(*kind, FormKind::GrantPermissionSet { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_c_on_permissions_tab_opens_create_time_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_permissions_tab(&mut app);
+        app.handle_key(KeyCode::Char('c'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(*kind, FormKind::GrantCreateTimePermission { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_d_and_x_on_permissions_tab_with_no_row_selected_do_not_panic() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_permissions_tab(&mut app);
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none());
+        app.handle_key(KeyCode::Char('x'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_key_d_on_selected_permission_row_opens_full_revoke_confirm() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_permissions_tab(&mut app);
+        app.dataset_permissions = vec![PermissionRow::Set { name: "admin".to_string(), perms: vec!["snapshot".to_string()] }];
+        app.dataset_permissions_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        match &app.modal {
+            Some(Modal::Confirm { action, .. }) => {
+                assert_eq!(
+                    action.call,
+                    MutationCall::UnallowPermission { dataset: "tank/data".to_string(), target: crate::zfs::permission::PermissionTarget::Set("admin".to_string()), perms: None }
+                );
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_x_on_selected_permission_row_opens_revoke_specific_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_permissions_tab(&mut app);
+        app.dataset_permissions = vec![PermissionRow::Grant {
+            recipient: crate::zfs::permission::Recipient::User("fb".to_string()),
+            scope: crate::zfs::permission::Scope::Both,
+            perms: vec!["snapshot".to_string(), "mount".to_string()],
+        }];
+        app.dataset_permissions_table.select(Some(0));
+        app.handle_key(KeyCode::Char('x'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(
+                    *kind,
+                    FormKind::RevokePermissions {
+                        host: 0,
+                        dataset: "tank/data".to_string(),
+                        target: crate::zfs::permission::PermissionTarget::Grant { recipient: crate::zfs::permission::Recipient::User("fb".to_string()), scope: crate::zfs::permission::Scope::Both },
+                    }
+                );
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
     }
 
     #[test]

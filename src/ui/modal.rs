@@ -24,6 +24,8 @@ pub enum MutationCall {
     CreateSnapshot { dataset: String, name: String },
     DestroySnapshot { dataset: String, name: String },
     RollbackSnapshot { dataset: String, name: String },
+    AllowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Vec<String> },
+    UnallowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Option<Vec<String>> },
 }
 
 impl MutationCall {
@@ -56,6 +58,10 @@ impl MutationCall {
             MutationCall::CreateSnapshot { dataset, name } => crate::zfs::snapshot::create_snapshot(runner, dataset, name),
             MutationCall::DestroySnapshot { dataset, name } => crate::zfs::snapshot::destroy_snapshot(runner, dataset, name),
             MutationCall::RollbackSnapshot { dataset, name } => crate::zfs::snapshot::rollback_snapshot(runner, dataset, name),
+            MutationCall::AllowPermission { dataset, target, perms } => crate::zfs::permission::allow(runner, dataset, target, perms),
+            MutationCall::UnallowPermission { dataset, target, perms } => {
+                crate::zfs::permission::unallow(runner, dataset, target, perms.as_deref())
+            }
         }
     }
 }
@@ -110,6 +116,20 @@ pub enum FormKind {
     /// `hosts` are comma-separated lists, `read_only` is `"y"`/`"n"`
     /// text, `root` is a username; every field may be blank.
     ShareNfs { host: usize, dataset: String },
+    /// Fields: `[recipient, scope, permissions]` — `recipient` is
+    /// `"everyone"` / `"user:<name>"` / `"group:<name>"`, `scope` is
+    /// `"local"`/`"descendent"`/`"both"` (blank defaults to `"both"`),
+    /// `permissions` is a required comma-separated list.
+    GrantPermission { host: usize, dataset: String },
+    /// Fields: `[set_name, permissions]` — both required; `set_name` is
+    /// the bare name without the leading `@`.
+    GrantPermissionSet { host: usize, dataset: String },
+    /// Fields: `[permissions]` — required.
+    GrantCreateTimePermission { host: usize, dataset: String },
+    /// Fields: `[permissions]` — required; `target` is fixed at
+    /// modal-open time from the selected Permissions-sub-tab row, not
+    /// user-entered.
+    RevokePermissions { host: usize, dataset: String, target: crate::zfs::permission::PermissionTarget },
 }
 
 /// A modal dialog awaiting user input before a mutation runs.

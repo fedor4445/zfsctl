@@ -30,6 +30,7 @@ The local machine is always available as the "local" host and does not need a co
 ## Keys
 
 - `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `'['` / `']'` (Datasets right pane only, once focused with `Right`): cycle between the Properties and Permissions sub-tabs.
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
@@ -48,10 +49,33 @@ The local machine is always available as the "local" host and does not need a co
 
 ### Pool/Dataset properties pane (right pane, `Right` to focus)
 
-- `Up` / `Down`: select a property
+- `Up` / `Down`: select a property (or, on the Datasets Permissions sub-tab, a permission row — see below)
 - `Enter`: edit the selected property's value (prompts pre-filled with the current value; submitting runs `zpool set`/`zfs set`)
-- `r`: re-fetch properties for the currently-selected pool/dataset
+- `r`: re-fetch properties (or permissions, on that sub-tab) for the currently-selected pool/dataset
 - `Esc` / `Left`: back out to the middle pane
+
+#### Datasets' Permissions sub-tab (`'['`/`']'` to switch to it)
+
+Delegated ZFS administration permissions (`zfs allow`/`unallow`) for the
+selected dataset — who can run which ZFS subcommands/properties on it.
+Not available for Pools (`zfs allow` only targets a filesystem or
+volume).
+
+- `n`: grant a permission to a user/group/everyone (prompts for
+  Recipient — `everyone` / `user:<name>` / `group:<name>` — Scope —
+  `local`/`descendent`/`both`, blank means `both` — and Permissions, a
+  required comma-separated list)
+- `s`: define or add to a named permission set (prompts for the set
+  name without `@`, and Permissions)
+- `c`: add a create-time permission — auto-granted to whoever creates a
+  new child dataset under this one (prompts for Permissions only)
+- `d`: revoke everything for the selected row's target (y/n confirm)
+- `x`: revoke just specific permissions from the selected row, leaving
+  the rest intact (prompts for which permissions to remove)
+
+Granting is always additive (never a replace) — this mirrors how `zfs
+allow` itself works: granting a user two different permissions in two
+separate calls merges into one combined grant, it never overwrites.
 
 ### Vdevs (inside a drilled-into pool)
 
@@ -97,4 +121,4 @@ The local machine is always available as the "local" host and does not need a co
 
 ## Status
 
-v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated permissions (`zfs allow`), file ACLs (`getfacl`/`setfacl`), and bhyve zvol association are still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares can only be viewed and removed, not created or edited, since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).
+v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated ZFS administration permissions (`zfs allow`/`unallow`) can be viewed, granted, and revoked from a Permissions sub-tab in the Datasets right pane (`'['`/`']'` to switch to it, once focused with `Right`) — Pools has no equivalent, since `zfs allow` only targets a filesystem or volume. File ACLs (`getfacl`/`setfacl`) and bhyve zvol association are still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares can only be viewed and removed, not created or edited, since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).
