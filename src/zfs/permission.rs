@@ -62,28 +62,56 @@ fn parse_recipient_line(line: &str) -> Option<(Recipient, Vec<String>)> {
     }
 }
 
+/// Extracts the dataset name from a `"---- Permissions on <name> ----"`
+/// banner line. ZFS names never contain spaces, so the first space
+/// after the fixed prefix is always the boundary before the trailing
+/// dash padding.
+fn parse_banner_dataset(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("---- Permissions on ")?;
+    let end = rest.find(' ')?;
+    Some(&rest[..end])
+}
+
 /// Parses `zfs allow <dataset>`'s output (confirmed live — no `-H`/`-p`
 /// machine-readable mode exists for this command, unlike `zfs get`).
 /// With nothing delegated, the command prints nothing at all (confirmed:
-/// not even a banner line) — `parse_permissions("")` returns an
+/// not even a banner line) — `parse_permissions("", dataset)` returns an
 /// all-empty snapshot, not an error. With delegations present, a banner
-/// line is followed by one of 5 exact section headers (no leading
-/// whitespace, ends with `:`), each followed by indented entry lines
-/// until the next header or end of output — confirmed live, including
-/// that the `zfs-allow(8)` man page's own example for `-c` is wrong (it
-/// shows `-c` output under `Permission sets:` with no `@` prefix; the
-/// real header is the 5th one, `Create time permissions:`). Lenient:
-/// an unrecognized header or a malformed entry line is skipped rather
-/// than failing the whole parse, matching `zfs::share::parse_shares`'s
-/// established leniency for the same reason.
-pub fn parse_permissions(output: &str) -> PermissionsSnapshot {
+/// line (`"---- Permissions on <name> ----"`) is followed by one of 5
+/// exact section headers (no leading whitespace, ends with `:`), each
+/// followed by indented entry lines until the next header or end of
+/// output — confirmed live, including that the `zfs-allow(8)` man
+/// page's own example for `-c` is wrong (it shows `-c` output under
+/// `Permission sets:` with no `@` prefix; the real header is the 5th
+/// one, `Create time permissions:`).
+///
+/// **`zfs allow <dataset>` prints one such block per ancestor dataset
+/// that has delegations too, not just `<dataset>`'s own** (confirmed
+/// against the OpenZFS source: `dsl_deleg_get` walks up the dataset
+/// tree and `print_fs_perms` loops over every result) — `dataset` is
+/// the name the caller actually asked about, and only the block whose
+/// banner names it is parsed; every other block (an ancestor's own
+/// delegations) is skipped entirely, never merged in as if it were
+/// `dataset`'s own.
+///
+/// Lenient: an unrecognized header or a malformed entry line is skipped
+/// rather than failing the whole parse, matching
+/// `zfs::share::parse_shares`'s established leniency for the same
+/// reason.
+pub fn parse_permissions(output: &str, dataset: &str) -> PermissionsSnapshot {
     let mut snapshot = PermissionsSnapshot::default();
     let mut current: Option<String> = None;
+    let mut in_target_block = false;
     for line in output.lines() {
         if line.is_empty() {
             continue;
         }
         if line.starts_with("----") {
+            in_target_block = parse_banner_dataset(line) == Some(dataset);
+            current = None;
+            continue;
+        }
+        if !in_target_block {
             continue;
         }
         let is_header = !line.starts_with(char::is_whitespace) && line.trim_end().ends_with(':');
@@ -133,7 +161,7 @@ pub fn parse_permissions(output: &str) -> PermissionsSnapshot {
 /// lists across the whole host).
 pub fn list_permissions(runner: &dyn CommandRunner, dataset: &str) -> Result<PermissionsSnapshot> {
     let output = super::run_checked(runner, "zfs", &["allow", dataset], &format!("zfs allow {dataset}"))?;
-    Ok(parse_permissions(&output.stdout))
+    Ok(parse_permissions(&output.stdout, dataset))
 }
 
 /// Returns true if `s` is safe to use as one caller-supplied token (a
@@ -261,12 +289,12 @@ Local+Descendent permissions:
 
     #[test]
     fn parse_permissions_empty_output_is_all_empty() {
-        assert_eq!(parse_permissions(""), PermissionsSnapshot::default());
+        assert_eq!(parse_permissions("", "scratch/data"), PermissionsSnapshot::default());
     }
 
     #[test]
     fn parse_permissions_fixture_covers_all_five_sections() {
-        let snapshot = parse_permissions(PERMISSIONS_FIXTURE);
+        let snapshot = parse_permissions(PERMISSIONS_FIXTURE, "scratch/data");
         assert_eq!(
             snapshot,
             PermissionsSnapshot {
@@ -306,7 +334,7 @@ Some Future Section:
 Local permissions:
         group wheel create,destroy
 ";
-        let snapshot = parse_permissions(output);
+        let snapshot = parse_permissions(output, "scratch/data");
         assert_eq!(
             snapshot.grants,
             vec![PermissionGrant { recipient: Recipient::Group("wheel".to_string()), scope: Scope::Local, perms: vec!["create".to_string(), "destroy".to_string()] }],
@@ -322,11 +350,34 @@ Local permissions:
         this line has no recognizable shape at all
         group wheel create,destroy
 ";
-        let snapshot = parse_permissions(output);
+        let snapshot = parse_permissions(output, "scratch/data");
         assert_eq!(
             snapshot.grants,
             vec![PermissionGrant { recipient: Recipient::Group("wheel".to_string()), scope: Scope::Local, perms: vec!["create".to_string(), "destroy".to_string()] }],
             "a malformed entry line must be skipped, not panic or corrupt the next valid entry"
+        );
+    }
+
+    #[test]
+    fn parse_permissions_ignores_blocks_for_ancestor_datasets() {
+        // `zfs allow <child>` prints one "---- Permissions on X ----"
+        // block per ancestor that has delegations, not just the
+        // child's own (confirmed via dsl_deleg_get walking up the
+        // dataset tree). A parent's grants must never be merged in as
+        // if they belonged to the child being viewed.
+        let output = "\
+---- Permissions on scratch -------------------------------------------
+Local+Descendent permissions:
+        user fb snapshot
+---- Permissions on scratch/data -------------------------------------
+Local permissions:
+        user fb mount
+";
+        let snapshot = parse_permissions(output, "scratch/data");
+        assert_eq!(
+            snapshot.grants,
+            vec![PermissionGrant { recipient: Recipient::User("fb".to_string()), scope: Scope::Local, perms: vec!["mount".to_string()] }],
+            "the ancestor block (scratch) must not be merged into scratch/data's own permissions"
         );
     }
 

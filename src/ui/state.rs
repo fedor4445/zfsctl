@@ -639,12 +639,29 @@ impl App {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_permissions_table.selected()) {
                     if let Some(row) = self.dataset_permissions.get(i) {
                         let target = permission_target_for_row(row);
+                        // A `Grant` row's own `perms` is only the
+                        // subset ZFS shows at *this* scope -- a
+                        // same-recipient permission can also exist at a
+                        // different scope (e.g. shown as a separate
+                        // "Local" row alongside a "Local+Descendent"
+                        // one for the same user). Passing `None` here
+                        // would revoke everything for that
+                        // recipient+scope, including permissions this
+                        // row never displayed. `Set`/`CreateTime` rows
+                        // have no such split -- the row already is the
+                        // entire target, so `None` (confirmed live to
+                        // delete the whole set/create-time delegation)
+                        // is correct and unchanged for them.
+                        let perms = match row {
+                            PermissionRow::Grant { perms, .. } => Some(perms.clone()),
+                            PermissionRow::Set { .. } | PermissionRow::CreateTime { .. } => None,
+                        };
                         self.modal = Some(Modal::Confirm {
                             prompt: format!("Revoke all permissions for this target on '{dataset}'? (y/n)"),
                             action: PendingAction {
                                 host: self.selected_host,
                                 section: Section::DatasetPermissions,
-                                call: MutationCall::UnallowPermission { dataset, target, perms: None },
+                                call: MutationCall::UnallowPermission { dataset, target, perms },
                             },
                         });
                     }
@@ -1238,6 +1255,11 @@ impl App {
                                 self.dataset_properties.clear();
                                 self.dataset_properties_table.select(None);
                                 self.dataset_properties_for = None;
+                            }
+                            if self.dataset_permissions_for.is_some() && self.dataset_permissions_for != self.selected_dataset_name() {
+                                self.dataset_permissions.clear();
+                                self.dataset_permissions_table.select(None);
+                                self.dataset_permissions_for = None;
                             }
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -3497,6 +3519,35 @@ mod tests {
     }
 
     #[test]
+    fn datasets_list_refresh_that_repoints_selection_clears_stale_permissions() {
+        // Same class of bug the Properties pane already guards against
+        // (see pools_list_replacement_that_re_points_selected_index_at_a_different_pool_clears_stale_properties):
+        // view "tank/old"'s permissions, then a list-changing refresh
+        // re-points the selected index at a different dataset. The
+        // stale permissions (and their selection) must be cleared
+        // rather than silently kept and shown under the new dataset's
+        // title — or worse, acted on by 'd'/'x' against the wrong
+        // dataset.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/old".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.dataset_permissions = vec![PermissionRow::Set { name: "admin".to_string(), perms: vec!["snapshot".to_string()] }];
+        app.dataset_permissions_table.select(Some(0));
+        app.dataset_permissions_for = Some("tank/old".to_string());
+
+        app.tx
+            .send(WorkerMsg::Datasets(
+                0,
+                Ok(vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+
+        assert!(app.dataset_permissions.is_empty(), "stale permissions for tank/old must be cleared once the list refresh re-points the selection at tank/new");
+        assert_eq!(app.dataset_permissions_for, None);
+    }
+
+    #[test]
     fn selected_pool_name_and_selected_dataset_name_helpers() {
         let mut app = App::new(vec!["local".to_string()]);
         app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
@@ -4499,6 +4550,43 @@ mod tests {
                 assert_eq!(
                     action.call,
                     MutationCall::UnallowPermission { dataset: "tank/data".to_string(), target: crate::zfs::permission::PermissionTarget::Set("admin".to_string()), perms: None }
+                );
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_d_on_selected_grant_row_revokes_only_that_rows_own_permissions() {
+        // Reviewer's repro: fb has "snapshot" as Local+Descendent and
+        // "mount" as Local only, so two separate rows show. Revoking the
+        // "Local / mount" row must not also delete fb's Local half of
+        // "snapshot" -- it must only ever touch exactly the permissions
+        // that row displays, not everything for that recipient+scope.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_permissions_tab(&mut app);
+        app.dataset_permissions = vec![PermissionRow::Grant {
+            recipient: crate::zfs::permission::Recipient::User("fb".to_string()),
+            scope: crate::zfs::permission::Scope::Local,
+            perms: vec!["mount".to_string()],
+        }];
+        app.dataset_permissions_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        match &app.modal {
+            Some(Modal::Confirm { action, .. }) => {
+                assert_eq!(
+                    action.call,
+                    MutationCall::UnallowPermission {
+                        dataset: "tank/data".to_string(),
+                        target: crate::zfs::permission::PermissionTarget::Grant {
+                            recipient: crate::zfs::permission::Recipient::User("fb".to_string()),
+                            scope: crate::zfs::permission::Scope::Local,
+                        },
+                        perms: Some(vec!["mount".to_string()]),
+                    },
+                    "must revoke only this row's own permissions, not perms: None (which would also wipe the Local half of any other grant for the same recipient)"
                 );
             }
             other => panic!("expected Confirm modal, got {other:?}"),
