@@ -6,6 +6,7 @@ pub use state::App;
 
 use crate::error::{AppError, Result};
 use crate::hosts::HostInventory;
+use crate::ui::state::DatasetDetailTab;
 use crate::ui::state::PaneFocus;
 use crate::ui::state::Section;
 use crossterm::event::{self, Event, KeyCode};
@@ -113,6 +114,11 @@ fn event_loop(
                             app.refresh_dataset_properties(host.runner.clone(), dataset);
                         }
                     }
+                    Section::DatasetPermissions => {
+                        if let Some(dataset) = app.selected_dataset_name() {
+                            app.refresh_dataset_permissions(host.runner.clone(), dataset);
+                        }
+                    }
                     Section::Hosts => {}
                 }
             }
@@ -147,11 +153,18 @@ fn event_loop(
                                             app.refresh_pool_properties(host.runner.clone(), pool);
                                         }
                                     }
-                                    Section::Datasets => {
-                                        if let Some(dataset) = app.selected_dataset_name() {
-                                            app.refresh_dataset_properties(host.runner.clone(), dataset);
+                                    Section::Datasets => match app.dataset_detail_tab {
+                                        DatasetDetailTab::Properties => {
+                                            if let Some(dataset) = app.selected_dataset_name() {
+                                                app.refresh_dataset_properties(host.runner.clone(), dataset);
+                                            }
                                         }
-                                    }
+                                        DatasetDetailTab::Permissions => {
+                                            if let Some(dataset) = app.selected_dataset_name() {
+                                                app.refresh_dataset_permissions(host.runner.clone(), dataset);
+                                            }
+                                        }
+                                    },
                                     _ => {}
                                 }
                             } else {
@@ -164,7 +177,8 @@ fn event_loop(
                                     Section::Hosts
                                     | Section::Vdevs
                                     | Section::PoolProperties
-                                    | Section::DatasetProperties => {}
+                                    | Section::DatasetProperties
+                                    | Section::DatasetPermissions => {}
                                 }
                             }
                         }
@@ -190,6 +204,17 @@ fn event_loop(
                                     }
                                 }
                                 _ => {}
+                            }
+                        }
+                    }
+                    if (key.code == KeyCode::Char('[') || key.code == KeyCode::Char(']'))
+                        && app.pane_focus == PaneFocus::Right
+                        && app.current_section() == Section::Datasets
+                        && app.dataset_detail_tab == DatasetDetailTab::Permissions
+                    {
+                        if let Some(host) = inventory.hosts.get(app.selected_host) {
+                            if let Some(dataset) = app.selected_dataset_name() {
+                                app.refresh_dataset_permissions(host.runner.clone(), dataset);
                             }
                         }
                     }

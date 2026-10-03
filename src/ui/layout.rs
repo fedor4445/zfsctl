@@ -1,4 +1,4 @@
-use super::state::{App, Section};
+use super::state::{App, DatasetDetailTab, PermissionRow, Section};
 use crate::ui::modal::Modal;
 use crate::zfs::disk::DiskMembership;
 use crate::zfs::pool::ScanStatus;
@@ -116,6 +116,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
+                Section::DatasetPermissions => "Dataset Permissions",
             };
             let style = if i == app.selected_section {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -160,7 +161,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Disks => draw_disks(f, app, area),
         Section::Shares => draw_shares(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
-        Section::Vdevs | Section::PoolProperties | Section::DatasetProperties => {
+        Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions => {
             unreachable!("never in App::sections")
         }
     }
@@ -274,17 +275,49 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.dataset_detail_tab == DatasetDetailTab::Permissions {
+        draw_dataset_permissions(f, app, area);
+        return;
+    }
     let rows = app.dataset_properties.iter().map(|p| {
         Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(p))
     });
     let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
-    let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, ← back)");
+    let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Property", "Value", "Source"]))
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.dataset_properties_table);
+}
+
+fn draw_dataset_permissions(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = app.dataset_permissions.iter().map(|row| match row {
+        PermissionRow::Set { name, perms } => Row::new(vec![format!("Set @{name}"), "—".to_string(), perms.join(",")]),
+        PermissionRow::CreateTime { perms } => Row::new(vec!["Create-time".to_string(), "—".to_string(), perms.join(",")]),
+        PermissionRow::Grant { recipient, scope, perms } => {
+            let target = match recipient {
+                crate::zfs::permission::Recipient::User(name) => format!("user {name}"),
+                crate::zfs::permission::Recipient::Group(name) => format!("group {name}"),
+                crate::zfs::permission::Recipient::Everyone => "everyone".to_string(),
+            };
+            let scope_label = match scope {
+                crate::zfs::permission::Scope::Local => "Local",
+                crate::zfs::permission::Scope::Descendent => "Descendent",
+                crate::zfs::permission::Scope::Both => "Local+Descendent",
+            };
+            Row::new(vec![target, scope_label.to_string(), perms.join(",")])
+        }
+    });
+    let widths = [Constraint::Length(20), Constraint::Length(18), Constraint::Min(16)];
+    let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
+    let title = format!("Permissions — {dataset} ('r' refresh, n/s/c grant, d/x revoke, '['/']' tabs, ← back)");
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["Target", "Scope", "Permissions"]))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.dataset_permissions_table);
 }
 
 fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {

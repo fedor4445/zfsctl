@@ -30,6 +30,7 @@ pub enum Section {
     Vdevs,
     PoolProperties,
     DatasetProperties,
+    DatasetPermissions,
 }
 
 /// Which pane currently receives navigation keys. Meaningful only while
@@ -39,6 +40,46 @@ pub enum Section {
 pub enum PaneFocus {
     Middle,
     Right,
+}
+
+/// Which view the Datasets right pane shows. Meaningful only while
+/// `current_section() == Section::Datasets && pane_focus ==
+/// PaneFocus::Right` — the Pools right pane has exactly one view and
+/// never gains this concept. `'['`/`']'` cycle it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DatasetDetailTab {
+    #[default]
+    Properties,
+    Permissions,
+}
+
+/// One flattened, display/selection-ready row for the Permissions
+/// sub-tab's table — `zfs::permission::PermissionsSnapshot`'s three
+/// buckets (sets, create-time, grants) collapsed into a single
+/// selectable list the moment a refresh result arrives, so the table
+/// and `'d'`/`'x'` never need to re-derive it from the snapshot shape.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PermissionRow {
+    Set { name: String, perms: Vec<String> },
+    CreateTime { perms: Vec<String> },
+    Grant { recipient: crate::zfs::permission::Recipient, scope: crate::zfs::permission::Scope, perms: Vec<String> },
+}
+
+/// Flattens a `PermissionsSnapshot` into one `Vec<PermissionRow>` in a
+/// stable order (sets, then create-time, then grants) for display and
+/// selection.
+fn flatten_permissions_snapshot(snapshot: &crate::zfs::permission::PermissionsSnapshot) -> Vec<PermissionRow> {
+    let mut rows = Vec::new();
+    for set in &snapshot.sets {
+        rows.push(PermissionRow::Set { name: set.name.clone(), perms: set.perms.clone() });
+    }
+    if !snapshot.create_time.is_empty() {
+        rows.push(PermissionRow::CreateTime { perms: snapshot.create_time.clone() });
+    }
+    for grant in &snapshot.grants {
+        rows.push(PermissionRow::Grant { recipient: grant.recipient.clone(), scope: grant.scope, perms: grant.perms.clone() });
+    }
+    rows
 }
 
 /// Each variant carries the index (into `App::hosts`) of the host the
@@ -61,6 +102,9 @@ pub enum WorkerMsg {
     PoolProperties(usize, String, Result<Vec<Property>>),
     /// The `String` is the dataset name this fetch was for.
     DatasetProperties(usize, String, Result<Vec<Property>>),
+    /// The `String` is the dataset name this fetch was for — same
+    /// stale-identity discard rationale as `DatasetProperties`.
+    DatasetPermissions(usize, String, Result<crate::zfs::permission::PermissionsSnapshot>),
     MutationDone(usize, Section, Result<()>),
 }
 
@@ -124,6 +168,10 @@ pub struct App {
     pub pool_properties_for: Option<String>,
     pub dataset_properties: Vec<Property>,
     pub dataset_properties_table: TableState,
+    pub dataset_detail_tab: DatasetDetailTab,
+    pub dataset_permissions: Vec<PermissionRow>,
+    pub dataset_permissions_table: TableState,
+    pub dataset_permissions_for: Option<String>,
     /// See `pool_properties_for`.
     pub dataset_properties_for: Option<String>,
     pub modal: Option<Modal>,
@@ -174,6 +222,10 @@ impl App {
             pool_properties_for: None,
             dataset_properties: Vec::new(),
             dataset_properties_table: TableState::default(),
+            dataset_detail_tab: DatasetDetailTab::default(),
+            dataset_permissions: Vec::new(),
+            dataset_permissions_table: TableState::default(),
+            dataset_permissions_for: None,
             dataset_properties_for: None,
             modal: None,
             status_message: None,
@@ -270,6 +322,10 @@ impl App {
         self.dataset_properties.clear();
         self.dataset_properties_table.select(None);
         self.dataset_properties_for = None;
+        self.dataset_detail_tab = DatasetDetailTab::default();
+        self.dataset_permissions.clear();
+        self.dataset_permissions_table.select(None);
+        self.dataset_permissions_for = None;
     }
 
     pub fn handle_key(&mut self, key: KeyCode) {
@@ -317,7 +373,11 @@ impl App {
                     }
                 }
             }
-            KeyCode::Enter if self.pane_focus == PaneFocus::Right && self.current_section() == Section::Datasets => {
+            KeyCode::Enter
+                if self.pane_focus == PaneFocus::Right
+                    && self.current_section() == Section::Datasets
+                    && self.dataset_detail_tab == DatasetDetailTab::Properties =>
+            {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
                         if !prop.source.is_editable() {
@@ -362,6 +422,10 @@ impl App {
                         self.dataset_properties.clear();
                         self.dataset_properties_table.select(None);
                         self.dataset_properties_for = None;
+                        self.dataset_detail_tab = DatasetDetailTab::default();
+                        self.dataset_permissions.clear();
+                        self.dataset_permissions_table.select(None);
+                        self.dataset_permissions_for = None;
                     }
                     _ => {}
                 }
@@ -495,23 +559,43 @@ impl App {
                     kind: FormKind::CreatePool { host: self.selected_host },
                 });
             }
-            KeyCode::Down if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => {
-                move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), true);
+            KeyCode::Down if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => match self.dataset_detail_tab {
+                DatasetDetailTab::Properties => move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), true),
+                DatasetDetailTab::Permissions => move_table_selection(&mut self.dataset_permissions_table, self.dataset_permissions.len(), true),
+            },
+            KeyCode::Up if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => match self.dataset_detail_tab {
+                DatasetDetailTab::Properties => move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), false),
+                DatasetDetailTab::Permissions => move_table_selection(&mut self.dataset_permissions_table, self.dataset_permissions.len(), false),
+            },
+            KeyCode::Char('[') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => {
+                self.dataset_detail_tab = match self.dataset_detail_tab {
+                    DatasetDetailTab::Properties => DatasetDetailTab::Permissions,
+                    DatasetDetailTab::Permissions => DatasetDetailTab::Properties,
+                };
             }
-            KeyCode::Up if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => {
-                move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), false);
+            KeyCode::Char(']') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => {
+                self.dataset_detail_tab = match self.dataset_detail_tab {
+                    DatasetDetailTab::Properties => DatasetDetailTab::Permissions,
+                    DatasetDetailTab::Permissions => DatasetDetailTab::Properties,
+                };
             }
             KeyCode::Down if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
                 self.dataset_properties.clear();
                 self.dataset_properties_table.select(None);
                 self.dataset_properties_for = None;
+                self.dataset_permissions.clear();
+                self.dataset_permissions_table.select(None);
+                self.dataset_permissions_for = None;
             }
             KeyCode::Up if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), false);
                 self.dataset_properties.clear();
                 self.dataset_properties_table.select(None);
                 self.dataset_properties_for = None;
+                self.dataset_permissions.clear();
+                self.dataset_permissions_table.select(None);
+                self.dataset_permissions_for = None;
             }
             KeyCode::Char('n') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 self.modal = Some(Modal::Form {
@@ -981,6 +1065,21 @@ impl App {
         });
     }
 
+    /// See `refresh_dataset_properties`.
+    pub fn refresh_dataset_permissions(&mut self, runner: Arc<dyn CommandRunner>, dataset: String) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::DatasetPermissions, host) {
+            self.pending_refresh.insert((Section::DatasetPermissions, host));
+            return;
+        }
+        self.begin_refresh(Section::DatasetPermissions, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::permission::list_permissions(runner.as_ref(), &dataset);
+            let _ = tx.send(WorkerMsg::DatasetPermissions(host, dataset, result));
+        });
+    }
+
     /// Drains all pending worker messages, applying each to `self`.
     /// Returns the list of sections that need re-listing, either because
     /// a mutation targeting the currently-selected host just succeeded,
@@ -1187,6 +1286,28 @@ impl App {
                             self.dataset_properties = props;
                             clamp_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len());
                             self.dataset_properties_for = Some(dataset);
+                            self.status_message = None;
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
+                WorkerMsg::DatasetPermissions(host, dataset, result) => {
+                    self.end_refresh(Section::DatasetPermissions, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::DatasetPermissions, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::DatasetPermissions);
+                    }
+                    if Some(&dataset) != self.selected_dataset_name().as_ref() {
+                        continue;
+                    }
+                    match result {
+                        Ok(snapshot) => {
+                            self.dataset_permissions = flatten_permissions_snapshot(&snapshot);
+                            clamp_table_selection(&mut self.dataset_permissions_table, self.dataset_permissions.len());
+                            self.dataset_permissions_for = Some(dataset);
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1447,6 +1568,94 @@ mod tests {
     use super::*;
     use crate::exec::test_support::FakeRunner;
     use crate::zfs::property::PropertySource;
+
+    #[test]
+    fn flatten_permissions_snapshot_produces_one_row_per_entry_in_a_stable_order() {
+        let snapshot = crate::zfs::permission::PermissionsSnapshot {
+            sets: vec![crate::zfs::permission::PermissionSet { name: "admin".to_string(), perms: vec!["snapshot".to_string()] }],
+            create_time: vec!["destroy".to_string()],
+            grants: vec![crate::zfs::permission::PermissionGrant {
+                recipient: crate::zfs::permission::Recipient::User("fb".to_string()),
+                scope: crate::zfs::permission::Scope::Both,
+                perms: vec!["mount".to_string()],
+            }],
+        };
+        let rows = flatten_permissions_snapshot(&snapshot);
+        assert_eq!(
+            rows,
+            vec![
+                PermissionRow::Set { name: "admin".to_string(), perms: vec!["snapshot".to_string()] },
+                PermissionRow::CreateTime { perms: vec!["destroy".to_string()] },
+                PermissionRow::Grant {
+                    recipient: crate::zfs::permission::Recipient::User("fb".to_string()),
+                    scope: crate::zfs::permission::Scope::Both,
+                    perms: vec!["mount".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn refresh_dataset_permissions_populates_app_state_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(
+            "---- Permissions on tank/data -------------------------------------\nLocal+Descendent permissions:\n        user fb snapshot\n",
+        ));
+        app.refresh_dataset_permissions(runner, "tank/data".to_string());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.dataset_permissions.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            app.dataset_permissions,
+            vec![PermissionRow::Grant { recipient: crate::zfs::permission::Recipient::User("fb".to_string()), scope: crate::zfs::permission::Scope::Both, perms: vec!["snapshot".to_string()] }]
+        );
+        assert_eq!(app.dataset_permissions_for, Some("tank/data".to_string()));
+    }
+
+    #[test]
+    fn dataset_permissions_result_for_a_stale_dataset_is_discarded() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.tx
+            .send(WorkerMsg::DatasetPermissions(0, "tank/old".to_string(), Ok(crate::zfs::permission::PermissionsSnapshot::default())))
+            .unwrap();
+        app.datasets = vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.drain_worker_messages();
+        assert_eq!(app.dataset_permissions_for, None, "a result for a dataset that's no longer selected must not populate the pane");
+    }
+
+    #[test]
+    fn entering_right_focus_on_datasets_resets_to_properties_tab() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.dataset_detail_tab = DatasetDetailTab::Permissions;
+        app.handle_key(KeyCode::Right);
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Properties, "re-entering the right pane must never silently keep a stale sub-tab");
+    }
+
+    #[test]
+    fn bracket_keys_toggle_dataset_detail_tab_only_in_datasets_right_focus() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::Char('[')); // Pools right pane has no sub-tab -- no-op
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Properties);
+
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.handle_key(KeyCode::Right); // enter right focus
+        app.handle_key(KeyCode::Char(']'));
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Permissions);
+        app.handle_key(KeyCode::Char('['));
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Properties);
+    }
 
     #[test]
     fn handle_key_s_on_pools_opens_scrub_confirm_modal() {
