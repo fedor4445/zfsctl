@@ -10,6 +10,30 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-01-shares-nfs-smb-design.md`.
 
+> **Post-implementation amendment (2026-10-02):** This plan was executed
+> as written (Tasks 1-3 below; Task 4 was executed later, folded into
+> the fix wave described next), then a whole-branch review found that
+> **SMB share creation/editing does not actually work on FreeBSD** —
+> confirmed live, as root, against the real test box: `zfs set
+> sharesmb=on <dataset>` prints `"No SMB support in FreeBSD yet."` and
+> fails, though the property is stored anyway. Per explicit product
+> decision, every `'M'` key, `FormKind::ShareSmb`, and SMB-form code
+> this plan describes below was **built and then removed** in a
+> subsequent fix wave — SMB shares can still be **viewed and removed**,
+> never created or edited. The task bodies below are kept verbatim as
+> the historical record of what was actually built in Tasks 1-3; they
+> no longer describe the shipped end state. **The spec
+> (`docs/superpowers/specs/2026-10-01-shares-nfs-smb-design.md`) is kept
+> current and is the authoritative description of the shipped
+> feature** — read it, not this plan, for how Shares actually behaves
+> today. The same whole-branch review also found and fixed: snapshots/
+> zvols appearing as fake shares (missing `-t filesystem` filter), a
+> stale-pre-fill bug where `'N'` could silently widen an already-
+> restricted share before the Shares section had ever been refreshed
+> (fixed via a new `shares_loaded` guard), and the Shares list never
+> showing a share's raw value (fixed, plus a lossy-edit warning for
+> values the structured form can't fully represent).
+
 ## Global Constraints
 
 - FreeBSD only, CLI shelling via machine-readable flags where available — `zfs get -H -p sharenfs,sharesmb` (no dataset argument) is exactly as machine-readable as every other `get` call in this app, just grouped by multiple datasets instead of one.
