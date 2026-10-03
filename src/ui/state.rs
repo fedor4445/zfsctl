@@ -553,7 +553,7 @@ impl App {
             }
             KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if !self.shares_loaded {
-                    self.status_message = Some("Visit the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
+                    self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
                 } else if self.nfs_available == Some(false) {
                     self.status_message = Some("NFS server not available on this host".to_string());
                 } else if let Some(i) = self.datasets_table.selected() {

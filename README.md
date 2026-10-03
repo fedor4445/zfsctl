@@ -67,7 +67,7 @@ The local machine is always available as the "local" host and does not need a co
 - `n`: create a new dataset (prompts for name)
 - `d`: destroy the selected dataset (type the dataset's name to confirm)
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
-- `N`: create/edit an NFS share for the selected dataset (prompts for networks, hosts, read-only, and root user mapping — all optional; visit the Shares section at least once first, so zfsctl knows the dataset's current share state before offering to change it)
+- `N`: create/edit an NFS share for the selected dataset (prompts for networks, hosts, read-only, and root user mapping — all optional; press `r` in the Shares section at least once first, so zfsctl knows the dataset's current share state before offering to change it)
 
 ### Snapshots
 
