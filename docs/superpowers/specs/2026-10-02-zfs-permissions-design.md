@@ -54,13 +54,12 @@ here, deferred to their own future feature.
 - A permission-name vocabulary allowlist — the ~50 documented permission
   names (confirmed via `zfs-allow(8)`) could be validated client-side, but
   that list needs maintenance as ZFS adds properties/subcommands over
-  versions. Instead, reuse the exact existing guard pattern from
-  `zfs::snapshot`'s `is_safe_zfs_target`/`is_safe_host` (reject a token
-  starting with `-`) — this is the actual structural risk (the perm list
-  is a bare positional argument in `zfs allow`'s synopsis, unlike `zfs
-  get`/`set`'s flag-based arguments), needs no vocabulary to maintain, and
-  an invalid-but-safe permission name still just fails with `zfs`'s own
-  clear error, same as every other creation form in this app.
+  versions. Instead, a small dedicated guard rejects any caller-supplied
+  token starting with `-` before it ever reaches the command (see
+  Architecture for why this is a third confirmed `--` exception, not a
+  reuse of `is_safe_zfs_target`'s shape) — needs no vocabulary to
+  maintain, and an invalid-but-safe permission name still just fails with
+  `zfs`'s own clear error, same as every other creation form in this app.
 
 ## Architecture
 
@@ -166,13 +165,28 @@ confirmed against the live probes above:
 entirely when `perms` is `None` (confirmed: this is what fully removes a
 target — e.g. `zfs unallow -s @admin scratch/data` deleted the whole set).
 
-Every caller-supplied permission token is checked with a new guard
-function (same shape and rationale as `zfs::snapshot`'s
-`is_safe_zfs_target`/`is_safe_host`): reject any token starting with `-`
-before it's ever passed to `allow`/`unallow`, since the permission list is
-a bare positional argument in `zfs allow`'s own synopsis (unlike `zfs get`/
-`set`'s flag-value arguments), not because this app treats its own
-operator as an adversary.
+**Confirmed live: `--` does not work for this command either** — a third
+exception alongside `zfs set`/`zpool set`. `zfs allow -u fb -- snapshot
+scratch/data` fails with `"wrong number of parameters"` (the full usage
+dump); `zfs unallow -u fb -- scratch/data` fails too, differently. So the
+usual "`--` before the first caller-supplied positional" convention this
+codebase otherwise applies to every mutating `zpool`/`zfs` subcommand
+cannot be used here. Every caller-supplied token (recipient name,
+permission-set name, individual permission name) is instead checked with
+a new guard function, `is_safe_permission_arg`, rejecting anything
+starting with `-` before it's ever passed to `allow`/`unallow` — not
+because this app treats its own operator as an adversary, but because
+this is the only guard that structurally eliminates the risk without
+needing to know exactly how this command's own non-standard argument
+parser (confirmed distinctive: it rejects unrecognized tokens with its
+own usage dump rather than a normal getopt-style error) would react to a
+dash-leading value. This is a different, simpler check than
+`zfs::snapshot`'s `is_safe_zfs_target`/`is_safe_host` (a full
+character-allowlist) — those exist because `replicate_snapshot` hand-
+builds a raw shell pipeline string, bypassing the normal safe argv-array
+exec path entirely; `allow`/`unallow` use the ordinary `run_checked`
+path like every other mutation, so the only remaining risk is flag
+misinterpretation by `zfs` itself, not shell metacharacter injection.
 
 Always pass explicit `-u`/`-g` (never the bare-name heuristic the man page
 also supports) — per `zfs-allow(8)` itself: "to specify a user or group
