@@ -1227,10 +1227,6 @@ fn build_vdev_spec_from_selection(redundancy: &str, disks: &[String]) -> Vec<Str
     }
 }
 
-/// Builds the `PendingAction` for a submitted form, mapping its fields
-/// positionally per `FormKind`'s documented field order. Returns `None`
-/// if a required field is empty — the caller keeps the form modal open
-/// in that case rather than losing the user's input.
 /// Builds the `Modal::Form` for editing (or, for a not-yet-shared
 /// placeholder `Share` with `off`/`None` fields, creating) the given
 /// share — used by the Shares section's `Enter` and the Datasets
@@ -1263,6 +1259,10 @@ fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
     }
 }
 
+/// Builds the `PendingAction` for a submitted form, mapping its fields
+/// positionally per `FormKind`'s documented field order. Returns `None`
+/// if a required field is empty — the caller keeps the form modal open
+/// in that case rather than losing the user's input.
 fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<PendingAction> {
     match kind {
         FormKind::CreatePool { host } => {
