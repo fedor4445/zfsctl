@@ -12,14 +12,29 @@ impl SshRunner {
     }
 
     /// Builds the argument list passed to the local `ssh` binary:
-    /// `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> "<remote command>"`,
+    /// `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> "sudo -n <remote command>"`,
     /// where the remote command is `cmd` and `args` shell-quoted and
     /// joined into one string. `-o BatchMode=yes -o ConnectTimeout=10`
-    /// prevent hanging on a password prompt or an unreachable host. The
+    /// prevent hanging on a password prompt or an unreachable host; the
     /// leading `--` stops `ssh` from treating a `host` value that starts
     /// with `-` as an option flag (argument injection / flag smuggling).
+    ///
+    /// `sudo -n` (non-interactive) is the same idea applied one layer
+    /// further in: zfsctl connects as an unprivileged user and expects
+    /// a narrow, command-scoped `NOPASSWD` sudoers entry on the remote
+    /// host (see README) for exactly `zpool`/`zfs`/`getfacl`/`setfacl`
+    /// -- `-n` means a missing or misconfigured entry fails immediately
+    /// with a clear error instead of `sudo` hanging on a password
+    /// prompt that can never arrive over a non-interactive SSH command
+    /// execution. Bare command names (not full paths) are intentional:
+    /// `sudo`'s own `secure_path` (FreeBSD's default) resolves them
+    /// from a fixed, root-controlled `PATH` regardless of the
+    /// connecting user's own `$PATH`, so the usual bare-name/`PATH`
+    /// substitution risk doesn't apply here the way it would running
+    /// these commands directly, unprivileged.
     fn build_args(&self, cmd: &str, args: &[&str]) -> Vec<String> {
-        let mut remote = shell_quote(cmd);
+        let mut remote = "sudo -n ".to_string();
+        remote.push_str(&shell_quote(cmd));
         for arg in args {
             remote.push(' ');
             remote.push_str(&shell_quote(arg));
@@ -82,7 +97,7 @@ mod tests {
                 "ConnectTimeout=10".to_string(),
                 "--".to_string(),
                 "backup-host".to_string(),
-                "zpool list -H -p".to_string()
+                "sudo -n zpool list -H -p".to_string()
             ]
         );
     }
@@ -100,7 +115,7 @@ mod tests {
                 "ConnectTimeout=10".to_string(),
                 "--".to_string(),
                 "backup-host".to_string(),
-                "echo 'hello world'".to_string()
+                "sudo -n echo 'hello world'".to_string()
             ]
         );
     }
@@ -118,7 +133,7 @@ mod tests {
                 "ConnectTimeout=10".to_string(),
                 "--".to_string(),
                 "backup-host".to_string(),
-                r"echo 'it'\''s here'".to_string()
+                r"sudo -n echo 'it'\''s here'".to_string()
             ]
         );
     }
@@ -136,9 +151,21 @@ mod tests {
                 "ConnectTimeout=10".to_string(),
                 "--".to_string(),
                 "backup-host".to_string(),
-                "zfs snapshot tank/data@2026-09-04".to_string()
+                "sudo -n zfs snapshot tank/data@2026-09-04".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn always_prefixes_the_remote_command_with_non_interactive_sudo() {
+        // -n (non-interactive) is to `sudo` what `BatchMode=yes` is to
+        // `ssh` itself: if the remote sudoers NOPASSWD entry is missing
+        // or wrong, `sudo` fails immediately with a clear error instead
+        // of hanging on a password prompt that can never arrive over a
+        // non-interactive SSH command execution.
+        let runner = SshRunner::new("backup-host");
+        let args = runner.build_args("getfacl", &["-v", "/tank/data"]);
+        assert_eq!(args[6], "sudo -n getfacl -v /tank/data");
     }
 
     #[test]

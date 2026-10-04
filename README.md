@@ -29,6 +29,26 @@ The local machine is always available as the "local" host and does not need a co
 
 To manage several hosts from one login (metal or VMs), pick one as your hub and add the others to that host's `config.toml` — the Hosts section shows a hint if it detects only "local" is configured.
 
+### Remote host setup: unprivileged SSH + sudo
+
+`ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the four commands `zfsctl` ever runs, not full root.
+
+On each remote host, as root, find the exact paths (they're typically `/sbin/zpool`, `/sbin/zfs`, `/bin/getfacl`, `/bin/setfacl` on FreeBSD, but confirm on your actual install rather than assume):
+
+```sh
+which zpool zfs getfacl setfacl
+```
+
+Then add a `NOPASSWD` entry scoped to exactly those paths for the connecting user (replace `fbsd` and the paths with what you found):
+
+```sh
+visudo
+# add a line like:
+fbsd ALL=(root) NOPASSWD: /sbin/zpool, /sbin/zfs, /bin/getfacl, /bin/setfacl
+```
+
+Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `secure_path` (FreeBSD's default) already protects the *command being resolved*, but the sudoers entry itself should still pin the exact binaries it authorizes, as a second, independent layer — this is the actual place the hardening belongs, not the client code, which only ever sends `sudo -n zpool ...` (bare names) and relies on `secure_path` for safe resolution.
+
 ## Keys
 
 - `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
