@@ -27,6 +27,8 @@ ssh_target = "backup.example.com"
 
 The local machine is always available as the "local" host and does not need a config entry.
 
+To manage several hosts from one login (metal or VMs), pick one as your hub and add the others to that host's `config.toml` — the Hosts section shows a hint if it detects only "local" is configured.
+
 ## Keys
 
 - `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).

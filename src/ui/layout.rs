@@ -190,8 +190,24 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(h.as_str()).style(style)
         })
         .collect();
+    let list_area = if app.hosts.len() == 1 {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(4)])
+            .split(area);
+        let hint = Paragraph::new(format!(
+            "Only this host is configured. To manage other hosts from here, add them to {} and restart.",
+            crate::config::DEFAULT_CONFIG_PATH
+        ))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(hint, chunks[1]);
+        chunks[0]
+    } else {
+        area
+    };
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Hosts"));
-    f.render_widget(list, area);
+    f.render_widget(list, list_area);
 }
 
 fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
