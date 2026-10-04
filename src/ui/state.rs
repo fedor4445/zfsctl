@@ -1099,8 +1099,13 @@ impl App {
             },
             Modal::Form { title, mut fields, mut focused, description, kind } => match key {
                 KeyCode::Esc => None,
-                KeyCode::Tab => {
+                KeyCode::Tab | KeyCode::Down => {
                     focused = (focused + 1) % fields.len();
+                    self.modal = Some(Modal::Form { title, fields, focused, description, kind });
+                    None
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    focused = if focused == 0 { fields.len() - 1 } else { focused - 1 };
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
@@ -1132,7 +1137,7 @@ impl App {
                             None => {
                                 self.status_message =
                                     Some("Could not submit -- check the field values against the hints in their labels".to_string());
-                                self.modal = Some(Modal::Form { title, fields, focused, description, kind });
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
                                 None
                             }
                         }
@@ -3590,6 +3595,71 @@ mod tests {
         app.handle_modal_key(KeyCode::Tab);
         match &app.modal {
             Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 0, "must wrap back to the first field"),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_form_backtab_moves_focus_backward_and_wraps() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('n')); // CreatePool form, 2 fields, focused = 0
+        app.handle_modal_key(KeyCode::BackTab);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 1, "BackTab from the first field must wrap to the last"),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+        app.handle_modal_key(KeyCode::BackTab);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 0),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_modal_key_form_up_and_down_move_focus_the_same_as_backtab_and_tab() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('n')); // CreatePool form, 2 fields, focused = 0
+        app.handle_modal_key(KeyCode::Down);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 1),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+        app.handle_modal_key(KeyCode::Up);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 0),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+        app.handle_modal_key(KeyCode::Up);
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Form { focused, .. }) => assert_eq!(*focused, 1, "Up from the first field must wrap to the last, same as BackTab"),
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_submission_resets_focus_to_the_first_field_so_an_invalid_earlier_field_is_visible_without_tabbing_through_everything() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.acl_entries_for = Some("/tank/data".to_string());
+        app.handle_key(KeyCode::Char('n')); // AddAclEntry form, 4 fields: Recipient, Permissions, Flags, Type
+        for c in "fb".chars() {
+            app.handle_modal_key(KeyCode::Char(c)); // bad Recipient -- needs "user:fb"
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "read_data".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab); // -> Flags
+        app.handle_modal_key(KeyCode::Tab); // -> Type (focused = 3)
+        app.handle_modal_key(KeyCode::Enter); // fails: bad Recipient
+        match &app.modal {
+            Some(Modal::Form { focused, .. }) => {
+                assert_eq!(*focused, 0, "a failed submission should land back on the first field, not stay on the last one that happened to be focused");
+            }
             other => panic!("expected Form modal, got {other:?}"),
         }
     }

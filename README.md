@@ -62,6 +62,13 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 - `Esc`: dismiss the current status message, back out of a focused properties pane, or (while a modal is open) cancel it
 - `F2` (while a form field with a known value set is focused — `zfs allow`'s Permissions, or the ACL form's Permissions/Flags/Type): open a picker. Type to filter, `Up`/`Down` to move, `Space` to toggle a value (Permissions/Flags — multiple can be checked), `Enter` to confirm (joins every checked value with commas for multi-select, or picks the highlighted single value for Type), `Esc` to cancel without changing the field. A field with no known value set (`Recipient`, `Name`, `Scope`, etc.) ignores `F2`.
 
+### Forms (any modal with text fields to fill in)
+
+- `Tab` / `Down`: move to the next field (wraps from the last field back to the first)
+- `Shift+Tab` / `Up`: move to the previous field (wraps from the first field back to the last)
+- `Enter` on the last field: submit. An invalid value anywhere in the form is rejected with a status message explaining that submission failed — the form stays open, focus resets to the first field so you can `Tab`/`Down` through to find and fix the problem without needing to `Esc` and start over
+- `Esc`: cancel, discarding whatever was typed
+
 ### Hosts
 
 - `Up` / `Down`: select the active host
