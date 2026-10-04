@@ -64,7 +64,7 @@ Opening the picker reads the field's *current* `value` (whatever's already typed
 
 ## Vocabularies
 
-### `ZFS_ALLOW_PERMISSIONS` (97 entries, confirmed live via `zfs allow` on `fb@172.16.10.90`, 2026-10-04)
+### `ZFS_ALLOW_PERMISSIONS` (96 entries, confirmed live via `zfs allow` on `fb@172.16.10.90`, 2026-10-04)
 
 Subcommands: `allow`, `clone`, `create`, `destroy`, `diff`, `hold`, `mount`, `promote`, `receive`, `release`, `rename`, `rollback`, `send`, `send:raw`, `share`, `snapshot`, `bookmark`, `load-key`, `change-key`.
 
@@ -103,4 +103,4 @@ Properties: `aclinherit`, `aclmode`, `acltype`, `atime`, `canmount`, `casesensit
 - `Up`/`Down` at the top/bottom of a *filtered* (not full) list — confirm the clamp uses the filtered list's length, not the full vocabulary's, or it could appear to do nothing (stuck at an index past the filtered list's end) or panic on an out-of-bounds access.
 - Typing a filter that matches zero entries — confirm the picker shows an empty (not a panicking or stale) list, and that `Enter`/`Space` on an empty filtered list are safe no-ops.
 - Switching `focused` fields *while* a picker from a previous field is still conceptually "attached" — confirmed not reachable: the event loop routes all keys to the picker first whenever `self.picker.is_some()`, so `Tab` (which changes `focused` on the form) can never reach the form while a picker is open; the picker must be closed (`Enter`/`Esc`) first, which is exactly what's intended.
-- The 14-entry `ACL_PERMISSIONS` list vs. the 97-entry `ZFS_ALLOW_PERMISSIONS` list are genuinely different vocabularies attached to fields that are both just labeled "Permissions" in their forms — confirm the vocabulary-lookup function keys on `(kind, field_index)`, never on the field's *label* text, so the two are never accidentally conflated.
+- The 14-entry `ACL_PERMISSIONS` list vs. the 96-entry `ZFS_ALLOW_PERMISSIONS` list are genuinely different vocabularies attached to fields that are both just labeled "Permissions" in their forms — confirm the vocabulary-lookup function keys on `(kind, field_index)`, never on the field's *label* text, so the two are never accidentally conflated.
