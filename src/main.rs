@@ -1,3 +1,4 @@
+mod acl;
 mod config;
 mod error;
 mod exec;
