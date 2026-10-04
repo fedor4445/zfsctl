@@ -1130,6 +1130,8 @@ impl App {
                         match build_pending_action(&kind, &fields) {
                             Some(action) => Some(action),
                             None => {
+                                self.status_message =
+                                    Some("Could not submit -- check the field values against the hints in their labels".to_string());
                                 self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                                 None
                             }
@@ -5783,6 +5785,35 @@ mod tests {
             }
             other => panic!("expected Form modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn submitting_any_form_with_invalid_input_sets_a_status_message_explaining_why() {
+        // A live session hit this directly: typing a bare username
+        // ("fb") into the ACL Recipient field instead of "user:fb"
+        // made Enter silently do nothing, with no visible explanation
+        // -- indistinguishable from the UI being frozen. This is the
+        // shared fallback every form's failed submission goes through
+        // (not ACL-specific), so the fix and its test live here.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.acl_entries_for = Some("/tank/data".to_string());
+        app.handle_key(KeyCode::Char('n'));
+        for c in "fb".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab); // -> Permissions
+        for c in "read_data".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab); // -> Flags
+        app.handle_modal_key(KeyCode::Tab); // -> Type
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "invalid input must keep the form open");
+        assert!(app.status_message.is_some(), "a failed submission must say so, not silently do nothing");
     }
 
     #[test]
