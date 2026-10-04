@@ -131,6 +131,9 @@ pub enum WorkerMsg {
     /// as `DatasetPermissions`.
     DatasetAcl(usize, String, Result<Vec<crate::acl::AclEntry>>),
     MutationDone(usize, Section, Result<()>),
+    /// The outcome of an Add Host SSH reachability probe. `String,
+    /// String` are the candidate host's name and SSH target.
+    HostProbe(String, String, Result<()>),
 }
 
 pub struct App {
@@ -205,6 +208,11 @@ pub struct App {
     pub modal: Option<Modal>,
     pub status_message: Option<String>,
     pub should_quit: bool,
+    /// Set by `drain_worker_messages` once a probed host is confirmed
+    /// reachable; consumed by the event loop (which owns the live
+    /// `HostInventory` -- `App` itself never touches it directly) to
+    /// hot-reload the host and persist it to `config.toml`.
+    pub pending_new_host: Option<(String, String)>,
     in_flight: HashSet<(Section, usize)>,
     /// Refresh requests for a `(section, host)` that arrived while a
     /// refresh for that same key was already in flight. Recorded here
@@ -261,6 +269,7 @@ impl App {
             modal: None,
             status_message: None,
             should_quit: false,
+            pending_new_host: None,
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
             tx,
@@ -494,6 +503,18 @@ impl App {
                     self.selected_host - 1
                 };
                 self.clear_host_data();
+            }
+            KeyCode::Char('n') if self.current_section() == Section::Hosts => {
+                self.modal = Some(Modal::Form {
+                    title: "Add Host".to_string(),
+                    fields: vec![
+                        FormField { label: "Name".to_string(), value: String::new() },
+                        FormField { label: "SSH target (e.g. user@host)".to_string(), value: String::new() },
+                    ],
+                    focused: 0,
+                    description: None,
+                    kind: FormKind::AddHost,
+                });
             }
             KeyCode::Down if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 move_table_selection(&mut self.vdevs_table, self.vdevs.len(), true);
@@ -1071,6 +1092,17 @@ impl App {
                         focused += 1;
                         self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                         None
+                    } else if matches!(kind, FormKind::AddHost) {
+                        let name = fields[0].value.trim().to_string();
+                        let target = fields[1].value.trim().to_string();
+                        let is_duplicate = self.hosts.iter().any(|h| h.eq_ignore_ascii_case(&name));
+                        if name.is_empty() || target.is_empty() || is_duplicate {
+                            self.modal = Some(Modal::Form { title, fields, focused, description, kind });
+                            None
+                        } else {
+                            self.begin_add_host(name, target);
+                            None
+                        }
                     } else {
                         match build_pending_action(&kind, &fields) {
                             Some(action) => Some(action),
@@ -1291,6 +1323,28 @@ impl App {
         std::thread::spawn(move || {
             let result = crate::acl::list_acl(runner.as_ref(), &path);
             let _ = tx.send(WorkerMsg::DatasetAcl(host, path, result));
+        });
+    }
+
+    /// Spawns the SSH reachability probe for a candidate new host and
+    /// returns immediately -- the modal is already closed by the
+    /// caller before this runs, matching every other slow mutation in
+    /// this app (the outcome is reported later via `status_message`,
+    /// not by keeping the form open across the async gap). Uses
+    /// `zfs::run_checked` (not a bare `SshRunner::run`) specifically
+    /// because `SshRunner::run` alone does not check the remote
+    /// command's exit status -- an unreachable host or a rejected key
+    /// still returns `Ok` from the raw call, just with a non-zero
+    /// `CommandOutput::status`.
+    pub fn begin_add_host(&mut self, name: String, target: String) {
+        self.status_message = Some(format!("Connecting to '{target}'..."));
+        let tx = self.tx.clone();
+        let name_for_thread = name;
+        let target_for_thread = target;
+        std::thread::spawn(move || {
+            let runner = crate::exec::ssh::SshRunner::new(target_for_thread.clone());
+            let result = crate::zfs::run_checked(&runner, "true", &[], &format!("ssh {target_for_thread}")).map(|_| ());
+            let _ = tx.send(WorkerMsg::HostProbe(name_for_thread, target_for_thread, result));
         });
     }
 
@@ -1559,6 +1613,16 @@ impl App {
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
                 }
+                WorkerMsg::HostProbe(name, target, result) => match result {
+                    Ok(()) => {
+                        self.hosts.push(name.clone());
+                        self.pending_new_host = Some((name, target));
+                        self.status_message = None;
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Could not add host '{name}': {e}"));
+                    }
+                },
                 WorkerMsg::MutationDone(host, section, result) => {
                     if host != self.selected_host {
                         continue;
@@ -1828,6 +1892,14 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 },
             })
         }
+        // `FormKind::AddHost` never reaches here -- `handle_modal_key`
+        // intercepts it before calling `build_pending_action` at all,
+        // since there's no existing host/dataset/pool context for this
+        // function's `PendingAction` to carry. This arm exists only so
+        // the match stays exhaustive; it degrades safely (same as any
+        // other invalid-for-this-function case) rather than panicking
+        // if some future edit ever did route it here by mistake.
+        FormKind::AddHost => None,
     }
 }
 
@@ -5134,6 +5206,140 @@ mod tests {
             }
             other => panic!("expected Form modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_key_n_on_hosts_section_opens_add_host_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        match &app.modal {
+            Some(Modal::Form { title, fields, kind, .. }) => {
+                assert_eq!(title, "Add Host");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(*kind, FormKind::AddHost);
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submitting_add_host_form_with_blank_name_keeps_form_open() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Tab); // move to SSH target field
+        for c in "example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "blank Name must keep the form open");
+    }
+
+    #[test]
+    fn submitting_add_host_form_with_blank_target_keeps_form_open() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "newhost".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "blank SSH target must keep the form open");
+    }
+
+    #[test]
+    fn submitting_add_host_form_with_whitespace_only_name_keeps_form_open() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "   ".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "a whitespace-only name must be treated as blank");
+    }
+
+    #[test]
+    fn submitting_add_host_form_with_case_insensitive_duplicate_name_keeps_form_open() {
+        let mut app = App::new(vec!["local".to_string(), "fb16".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "FB16".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "a name differing only by case from an existing host must be rejected as a duplicate");
+    }
+
+    #[test]
+    fn submitting_add_host_form_with_duplicate_of_local_keeps_form_open() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "Local".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "\"local\" (case-insensitively) must always be rejected as a duplicate");
+    }
+
+    #[test]
+    fn submitting_valid_add_host_form_closes_modal_and_sets_connecting_status() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "newhost".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "newhost.example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_none(), "a valid submission must close the form immediately, not wait for the async probe");
+        assert_eq!(app.status_message, Some("Connecting to 'newhost.example.com'...".to_string()));
+    }
+
+    #[test]
+    fn host_probe_success_adds_name_and_sets_pending_new_host() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.tx.send(WorkerMsg::HostProbe("newhost".to_string(), "newhost.example.com".to_string(), Ok(()))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.hosts.contains(&"newhost".to_string()));
+        assert_eq!(app.pending_new_host, Some(("newhost".to_string(), "newhost.example.com".to_string())));
+    }
+
+    #[test]
+    fn host_probe_failure_sets_status_message_and_touches_nothing_else() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let before = app.hosts.clone();
+        app.tx
+            .send(WorkerMsg::HostProbe(
+                "newhost".to_string(),
+                "newhost.example.com".to_string(),
+                Err(crate::error::AppError::CommandFailed {
+                    cmd: "ssh newhost.example.com".to_string(),
+                    status: 255,
+                    stderr: "Could not resolve hostname newhost.example.com".to_string(),
+                }),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.hosts, before, "a failed probe must not add anything to the host list");
+        assert_eq!(app.pending_new_host, None);
+        assert!(app.status_message.as_ref().unwrap().contains("Could not resolve hostname"));
     }
 
     fn enter_datasets_acl_tab(app: &mut App) {

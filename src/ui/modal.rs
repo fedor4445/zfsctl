@@ -142,6 +142,13 @@ pub enum FormKind {
     /// defaults to `"allow"`). `position` is fixed at modal-open time
     /// (always the current entry count — new entries are appended).
     AddAclEntry { host: usize, path: String, position: usize },
+    /// Fields: `[name, ssh_target]` — both required. Unlike every
+    /// other `FormKind`, submitting this one never produces a
+    /// `PendingAction`: there's no existing host/runner to dispatch
+    /// against, since the whole point is that the host doesn't exist
+    /// yet. `handle_modal_key` special-cases this variant instead of
+    /// routing it through `build_pending_action`.
+    AddHost,
 }
 
 /// A modal dialog awaiting user input before a mutation runs.
