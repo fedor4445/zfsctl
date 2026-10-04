@@ -1,5 +1,6 @@
 pub mod layout;
 pub mod modal;
+pub mod picker;
 pub mod state;
 
 pub use state::App;
