@@ -725,6 +725,41 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('n')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Acl =>
+            {
+                if let Some(path) = self.selected_dataset_mountpoint() {
+                    let position = self.acl_entries.len();
+                    self.modal = Some(Modal::Form {
+                        title: format!("Add ACL entry on '{path}'"),
+                        fields: vec![
+                            FormField { label: "Recipient (owner / group / everyone / user:<name> / group:<name>)".to_string(), value: String::new() },
+                            FormField { label: "Permissions".to_string(), value: String::new() },
+                            FormField { label: "Flags (blank = none)".to_string(), value: String::new() },
+                            FormField { label: "Type (allow/deny, blank=allow)".to_string(), value: String::new() },
+                        ],
+                        focused: 0,
+                        description: None,
+                        kind: FormKind::AddAclEntry { host: self.selected_host, path, position },
+                    });
+                }
+            }
+            KeyCode::Char('d')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Acl =>
+            {
+                if let (Some(path), Some(i)) = (self.selected_dataset_mountpoint(), self.acl_entries_table.selected()) {
+                    if i < self.acl_entries.len() {
+                        self.modal = Some(Modal::Confirm {
+                            prompt: format!("Remove ACL entry #{i} on '{path}'? (y/n)"),
+                            action: PendingAction { host: self.selected_host, section: Section::DatasetAcl, call: MutationCall::RemoveAclEntry { path, position: i } },
+                        });
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
                 self.dataset_properties.clear();
@@ -1767,6 +1802,21 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
                 call: MutationCall::UnallowPermission { dataset: dataset.clone(), target: target.clone(), perms: Some(perms) },
             })
         }
+        FormKind::AddAclEntry { host, path, position } => {
+            let tag = parse_acl_recipient_field(&fields[0].value)?;
+            let permissions = parse_required_perms_field(&fields[1].value)?;
+            let flags = parse_optional_flags_field(&fields[2].value);
+            let entry_type = parse_acl_type_field(&fields[3].value)?;
+            Some(PendingAction {
+                host: *host,
+                section: Section::DatasetAcl,
+                call: MutationCall::AddAclEntry {
+                    path: path.clone(),
+                    position: *position,
+                    entry: crate::acl::AclEntry { tag, permissions, flags, entry_type },
+                },
+            })
+        }
     }
 }
 
@@ -1827,6 +1877,59 @@ fn parse_required_perms_field(s: &str) -> Option<Vec<String>> {
     } else {
         Some(perms)
     }
+}
+
+/// Parses the ACL `Recipient` field's mini-language: `owner`, `group`,
+/// `everyone`, `user:<name>`, or `group:<name>` — five shapes (one more
+/// than the Permissions sub-tab's three, since ACLs distinguish the
+/// owning group `group@` from a specific named group).
+fn parse_acl_recipient_field(s: &str) -> Option<crate::acl::AclTag> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("owner") {
+        return Some(crate::acl::AclTag::Owner);
+    }
+    if s.eq_ignore_ascii_case("group") {
+        return Some(crate::acl::AclTag::OwningGroup);
+    }
+    if s.eq_ignore_ascii_case("everyone") {
+        return Some(crate::acl::AclTag::Everyone);
+    }
+    if let Some(name) = s.strip_prefix("user:") {
+        if !name.is_empty() {
+            return Some(crate::acl::AclTag::User(name.to_string()));
+        }
+        return None;
+    }
+    if let Some(name) = s.strip_prefix("group:") {
+        if !name.is_empty() {
+            return Some(crate::acl::AclTag::NamedGroup(name.to_string()));
+        }
+        return None;
+    }
+    None
+}
+
+/// Parses the ACL `Type` field — blank defaults to `Allow` (the more
+/// common case), anything else must be exactly `allow`/`deny`
+/// (case-insensitive). Deliberately strict, same reasoning as
+/// Permissions' `Scope` field: silently defaulting a typo to the
+/// *less restrictive* `allow` would be a real footgun.
+fn parse_acl_type_field(s: &str) -> Option<crate::acl::AclEntryType> {
+    let s = s.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("allow") {
+        return Some(crate::acl::AclEntryType::Allow);
+    }
+    if s.eq_ignore_ascii_case("deny") {
+        return Some(crate::acl::AclEntryType::Deny);
+    }
+    None
+}
+
+/// Parses an optional comma-separated `Flags` field — splits, trims,
+/// drops empty tokens; blank (or just commas/whitespace) is valid and
+/// means no inheritance flags, unlike the required `Permissions` field.
+fn parse_optional_flags_field(s: &str) -> Vec<String> {
+    s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
 }
 
 /// Reconstructs the `PermissionTarget` a `PermissionRow` was flattened
@@ -4633,6 +4736,120 @@ mod tests {
         assert!(build_pending_action(&kind, &fields).is_none());
     }
 
+    #[test]
+    fn build_pending_action_add_acl_entry_requires_recipient_and_permissions() {
+        let kind = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 3 };
+        let blank = vec![
+            FormField { label: "Recipient".to_string(), value: String::new() },
+            FormField { label: "Permissions".to_string(), value: String::new() },
+            FormField { label: "Flags".to_string(), value: String::new() },
+            FormField { label: "Type".to_string(), value: String::new() },
+        ];
+        assert!(build_pending_action(&kind, &blank).is_none(), "blank Permissions must keep the form open");
+
+        let bad_recipient = vec![
+            FormField { label: "Recipient".to_string(), value: "nobody".to_string() },
+            FormField { label: "Permissions".to_string(), value: "read_data".to_string() },
+            FormField { label: "Flags".to_string(), value: String::new() },
+            FormField { label: "Type".to_string(), value: String::new() },
+        ];
+        assert!(build_pending_action(&kind, &bad_recipient).is_none(), "a bare name with no user:/group: prefix (and not owner/group/everyone) must keep the form open");
+    }
+
+    #[test]
+    fn build_pending_action_add_acl_entry_assembles_named_user_with_flags_and_deny() {
+        let kind = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 3 };
+        let fields = vec![
+            FormField { label: "Recipient".to_string(), value: "user:nobody".to_string() },
+            FormField { label: "Permissions".to_string(), value: "read_data, write_data".to_string() },
+            FormField { label: "Flags".to_string(), value: "file_inherit,dir_inherit".to_string() },
+            FormField { label: "Type".to_string(), value: "deny".to_string() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action,
+            PendingAction {
+                host: 0,
+                section: Section::DatasetAcl,
+                call: MutationCall::AddAclEntry {
+                    path: "/tank/data".to_string(),
+                    position: 3,
+                    entry: crate::acl::AclEntry {
+                        tag: crate::acl::AclTag::User("nobody".to_string()),
+                        permissions: vec!["read_data".to_string(), "write_data".to_string()],
+                        flags: vec!["file_inherit".to_string(), "dir_inherit".to_string()],
+                        entry_type: crate::acl::AclEntryType::Deny,
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_add_acl_entry_blank_flags_and_type_default_correctly() {
+        let kind = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
+        let fields = vec![
+            FormField { label: "Recipient".to_string(), value: "everyone".to_string() },
+            FormField { label: "Permissions".to_string(), value: "read_data".to_string() },
+            FormField { label: "Flags".to_string(), value: String::new() },
+            FormField { label: "Type".to_string(), value: String::new() },
+        ];
+        let action = build_pending_action(&kind, &fields).unwrap();
+        assert_eq!(
+            action.call,
+            MutationCall::AddAclEntry {
+                path: "/tank/data".to_string(),
+                position: 0,
+                entry: crate::acl::AclEntry {
+                    tag: crate::acl::AclTag::Everyone,
+                    permissions: vec!["read_data".to_string()],
+                    flags: vec![],
+                    entry_type: crate::acl::AclEntryType::Allow,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn build_pending_action_add_acl_entry_garbage_type_keeps_form_open() {
+        let kind = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
+        let fields = vec![
+            FormField { label: "Recipient".to_string(), value: "owner".to_string() },
+            FormField { label: "Permissions".to_string(), value: "read_data".to_string() },
+            FormField { label: "Flags".to_string(), value: String::new() },
+            FormField { label: "Type".to_string(), value: "dny".to_string() },
+        ];
+        assert!(build_pending_action(&kind, &fields).is_none(), "a Type typo must not silently default to allow");
+    }
+
+    #[test]
+    fn build_pending_action_add_acl_entry_owner_and_group_recipients() {
+        let kind = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
+        let owner_fields = vec![
+            FormField { label: "Recipient".to_string(), value: "owner".to_string() },
+            FormField { label: "Permissions".to_string(), value: "read_data".to_string() },
+            FormField { label: "Flags".to_string(), value: String::new() },
+            FormField { label: "Type".to_string(), value: String::new() },
+        ];
+        let action = build_pending_action(&kind, &owner_fields).unwrap();
+        match action.call {
+            MutationCall::AddAclEntry { entry, .. } => assert_eq!(entry.tag, crate::acl::AclTag::Owner),
+            other => panic!("expected AddAclEntry, got {other:?}"),
+        }
+
+        let group_fields = vec![
+            FormField { label: "Recipient".to_string(), value: "group:admins".to_string() },
+            FormField { label: "Permissions".to_string(), value: "read_data".to_string() },
+            FormField { label: "Flags".to_string(), value: String::new() },
+            FormField { label: "Type".to_string(), value: String::new() },
+        ];
+        let action = build_pending_action(&kind, &group_fields).unwrap();
+        match action.call {
+            MutationCall::AddAclEntry { entry, .. } => assert_eq!(entry.tag, crate::acl::AclTag::NamedGroup("admins".to_string())),
+            other => panic!("expected AddAclEntry, got {other:?}"),
+        }
+    }
+
     fn enter_datasets_permissions_tab(app: &mut App) {
         app.handle_key(KeyCode::Tab); // -> Pools
         app.handle_key(KeyCode::Tab); // -> Datasets
@@ -4791,6 +5008,82 @@ mod tests {
                 );
             }
             other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    fn enter_datasets_acl_tab(app: &mut App) {
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.handle_key(KeyCode::Right); // -> Right focus, Properties tab
+        app.handle_key(KeyCode::Char(']')); // -> Permissions tab
+        app.handle_key(KeyCode::Char(']')); // -> Acl tab
+    }
+
+    #[test]
+    fn handle_key_n_on_acl_tab_with_no_dataset_selected_does_not_panic_or_open_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        enter_datasets_acl_tab(&mut app);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_key_n_on_acl_tab_with_no_mountpoint_does_not_panic_or_open_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/vol".to_string(), kind: crate::zfs::dataset::DatasetKind::Volume, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none(), "a zvol (no mountpoint) must not open an ACL form");
+    }
+
+    #[test]
+    fn handle_key_n_on_acl_tab_opens_add_acl_entry_form_appending_at_the_current_count() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.acl_entries = vec![
+            crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow },
+            crate::acl::AclEntry { tag: crate::acl::AclTag::OwningGroup, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow },
+        ];
+        app.handle_key(KeyCode::Char('n'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields.len(), 4);
+                assert_eq!(*kind, FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 2 });
+            }
+            other => panic!("expected Form modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_d_on_acl_tab_with_no_row_selected_does_not_panic() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn handle_key_d_on_selected_acl_row_opens_remove_confirm_with_its_position() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.acl_entries = vec![
+            crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow },
+            crate::acl::AclEntry { tag: crate::acl::AclTag::OwningGroup, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow },
+        ];
+        app.acl_entries_table.select(Some(1));
+        app.handle_key(KeyCode::Char('d'));
+        match &app.modal {
+            Some(Modal::Confirm { action, .. }) => {
+                assert_eq!(action.call, MutationCall::RemoveAclEntry { path: "/tank/data".to_string(), position: 1 });
+            }
+            other => panic!("expected Confirm modal, got {other:?}"),
         }
     }
 

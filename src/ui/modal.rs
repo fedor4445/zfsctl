@@ -26,6 +26,8 @@ pub enum MutationCall {
     RollbackSnapshot { dataset: String, name: String },
     AllowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Vec<String> },
     UnallowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Option<Vec<String>> },
+    AddAclEntry { path: String, position: usize, entry: crate::acl::AclEntry },
+    RemoveAclEntry { path: String, position: usize },
 }
 
 impl MutationCall {
@@ -62,6 +64,8 @@ impl MutationCall {
             MutationCall::UnallowPermission { dataset, target, perms } => {
                 crate::zfs::permission::unallow(runner, dataset, target, perms.as_deref())
             }
+            MutationCall::AddAclEntry { path, position, entry } => crate::acl::add_acl_entry(runner, path, *position, entry),
+            MutationCall::RemoveAclEntry { path, position } => crate::acl::remove_acl_entry(runner, path, *position),
         }
     }
 }
@@ -130,6 +134,14 @@ pub enum FormKind {
     /// modal-open time from the selected Permissions-sub-tab row, not
     /// user-entered.
     RevokePermissions { host: usize, dataset: String, target: crate::zfs::permission::PermissionTarget },
+    /// Fields: `[recipient, permissions, flags, type]` — `recipient` is
+    /// `"owner"` / `"group"` / `"everyone"` / `"user:<name>"` /
+    /// `"group:<name>"`, `permissions` is a required comma-separated
+    /// list, `flags` is an optional comma-separated list (blank means
+    /// no inheritance flags), `type` is `"allow"`/`"deny"` (blank
+    /// defaults to `"allow"`). `position` is fixed at modal-open time
+    /// (always the current entry count — new entries are appended).
+    AddAclEntry { host: usize, path: String, position: usize },
 }
 
 /// A modal dialog awaiting user input before a mutation runs.
