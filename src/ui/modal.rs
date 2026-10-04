@@ -169,6 +169,9 @@ pub enum Modal {
         description: Option<String>,
         kind: FormKind,
     },
+    /// A read-only overlay with no action to confirm or submit — Help
+    /// and About. Dismissed by any key.
+    Info { title: String, body: String },
 }
 
 #[cfg(test)]

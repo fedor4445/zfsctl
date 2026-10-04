@@ -101,6 +101,11 @@ fn draw_status_bar(f: &mut Frame, text: &str, style: Style, gauge: Option<(f64, 
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(2)])
+        .split(area);
+
     let items: Vec<ListItem> = app
         .sections
         .iter()
@@ -129,7 +134,10 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     let title = if app.is_loading() { "zfsctl (refreshing...)" } else { "zfsctl" };
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(list, area);
+    f.render_widget(list, chunks[0]);
+
+    let footer = Paragraph::new("? Help\nA About").style(Style::default().fg(Color::DarkGray));
+    f.render_widget(footer, chunks[1]);
 }
 
 fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
@@ -450,6 +458,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
                 None => fields_lines,
             }
         }
+        Modal::Info { body, .. } => wrapped_line_count(body, inner_width),
     };
     // +2 for the top/bottom border; floor of 5 so a one-line prompt
     // doesn't render a cramped, near-invisible box.
@@ -482,6 +491,12 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
                 lines.push(format!("{marker} {}: {}", field.label, field.value));
             }
             let p = Paragraph::new(lines.join("\n"))
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title(title.as_str()));
+            f.render_widget(p, popup_area);
+        }
+        Modal::Info { title, body } => {
+            let p = Paragraph::new(body.as_str())
                 .wrap(Wrap { trim: false })
                 .block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);

@@ -372,6 +372,12 @@ impl App {
     pub fn handle_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => {
+                self.modal = Some(Modal::Info { title: "Help".to_string(), body: help_text() });
+            }
+            KeyCode::Char('A') => {
+                self.modal = Some(Modal::Info { title: "About".to_string(), body: about_text() });
+            }
             KeyCode::Esc | KeyCode::Backspace if self.drilled_pool.is_some() => {
                 self.drilled_pool = None;
                 self.vdevs.clear();
@@ -1090,6 +1096,7 @@ impl App {
                     None
                 }
             },
+            Modal::Info { .. } => None,
         }
     }
 
@@ -1988,6 +1995,71 @@ fn clamp_table_selection(state: &mut TableState, len: usize) {
     }
 }
 
+fn about_text() -> String {
+    format!(
+        "zfsctl v{}\n\nA napp-it-like terminal UI for managing ZFS storage on FreeBSD.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn help_text() -> String {
+    "\
+Global
+  Tab / Shift+Tab  switch sections
+  Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
+  r                refresh the focused pane
+  Esc              dismiss a status message, back out of a focused pane, or cancel a modal
+  ?                this Help screen
+  A                About
+  q                quit
+
+Pools
+  Enter            drill into vdev/disk tree
+  Right / Left     focus/unfocus the properties pane
+  n / d            create / destroy a pool
+  s / R            scrub / resilver (y/n confirm)
+
+Vdevs (inside a drilled-into pool)
+  o / O            offline / online the selected disk
+  x                replace the selected disk
+  a                add a vdev/mirror/raidz group
+
+Pool/Dataset properties pane
+  Enter            edit the selected property
+  r                re-fetch for the current pool/dataset
+
+Datasets
+  Right / Left     focus/unfocus the detail pane
+  n / d            create / destroy a dataset
+  s                snapshot the selected dataset
+  N                create/edit an NFS share
+  '[' / ']'        cycle Properties / Permissions / ACL sub-tabs (once focused)
+
+Datasets: Permissions sub-tab
+  n / s / c        grant: to a recipient / as a named set / as create-time
+  d / x            revoke everything / revoke specific permissions
+
+Datasets: ACL sub-tab
+  n                add an ACL entry (always appended at the end)
+  d                remove the selected entry by position
+
+Snapshots
+  d                destroy (type dataset@name to confirm)
+  b                roll back (type dataset@name to confirm)
+
+Disks
+  Space            toggle-select a disk
+  n / a            create a pool / add a vdev from the selected disk(s)
+  Esc              clear selection
+
+Shares
+  Enter            edit an NFS share (SMB shares are view/remove only)
+  d                remove the selected share
+
+Press any key to close."
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2476,6 +2548,55 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         app.handle_key(KeyCode::Char('q'));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn handle_key_question_mark_opens_help_info_modal_from_any_section() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools, to confirm it's not section-gated
+        app.handle_key(KeyCode::Char('?'));
+        match &app.modal {
+            Some(Modal::Info { title, .. }) => assert_eq!(title, "Help"),
+            other => panic!("expected Info modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_capital_a_opens_about_info_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('A'));
+        match &app.modal {
+            Some(Modal::Info { title, body }) => {
+                assert_eq!(title, "About");
+                assert!(body.contains("zfsctl"));
+                assert!(body.contains("Claude"));
+            }
+            other => panic!("expected Info modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_key_capital_a_does_not_shadow_section_gated_lowercase_a() {
+        // The existing section-gated lowercase 'a' bindings (e.g. add
+        // vdev) must keep working -- only capital 'A' is the new global
+        // About key.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('A'));
+        assert!(app.modal.is_some());
+        app.handle_modal_key(KeyCode::Esc);
+        assert!(app.modal.is_none());
+        app.handle_key(KeyCode::Char('a'));
+        assert!(app.modal.is_none(), "lowercase 'a' outside any section-gated context must stay a no-op, not open About");
+    }
+
+    #[test]
+    fn esc_closes_the_info_modal() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('?'));
+        assert!(app.modal.is_some());
+        let result = app.handle_modal_key(KeyCode::Esc);
+        assert!(result.is_none());
+        assert!(app.modal.is_none());
     }
 
     #[test]

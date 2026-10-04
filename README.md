@@ -34,6 +34,8 @@ The local machine is always available as the "local" host and does not need a co
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
+- `?`: show the Help screen (full keybinding reference)
+- `A`: show the About screen
 - `q`: quit
 - `Esc`: dismiss the current status message, back out of a focused properties pane, or (while a modal is open) cancel it
 
