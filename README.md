@@ -41,6 +41,11 @@ To manage several hosts from one login (metal or VMs), pick one as your hub and 
 - `q`: quit
 - `Esc`: dismiss the current status message, back out of a focused properties pane, or (while a modal is open) cancel it
 
+### Hosts
+
+- `Up` / `Down`: select the active host
+- `n`: add a new host (prompts for Name and an SSH target, e.g. `user@host`). Validates the name isn't blank or a case-insensitive duplicate of an existing host (including `"local"`), then probes SSH reachability in the background (up to 10 seconds) before accepting it — on success the host is usable immediately, no restart, and is written to `config.toml` so it survives one; on failure (bad name, unreachable host, auth rejected) the attempt is abandoned and the specific SSH error is shown — press `n` again to retry.
+
 ### Pools
 
 - `Enter` on a selected pool: drill into its vdev/disk tree

@@ -40,7 +40,7 @@ const VDEVS_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// failed — otherwise a failure between `enable_raw_mode()` and a fully
 /// constructed `Terminal` would leave the user's shell in raw mode with
 /// no way to recover except closing the terminal window.
-pub fn run_app(inventory: HostInventory) -> Result<()> {
+pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf) -> Result<()> {
     enable_raw_mode().map_err(|e| AppError::Config(format!("enabling raw mode: {e}")))?;
 
     // Ensure a panic anywhere in the event loop still restores the
@@ -66,7 +66,7 @@ pub fn run_app(inventory: HostInventory) -> Result<()> {
                 app.refresh_pools(first_host.runner.clone());
             }
 
-            event_loop(&mut terminal, &mut app, &inventory)
+            event_loop(&mut terminal, &mut app, &mut inventory, &config_path)
         });
 
     let _ = disable_raw_mode();
@@ -78,11 +78,17 @@ pub fn run_app(inventory: HostInventory) -> Result<()> {
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
-    inventory: &HostInventory,
+    inventory: &mut HostInventory,
+    config_path: &std::path::Path,
 ) -> Result<()> {
     let mut last_vdevs_auto_refresh = Instant::now() - VDEVS_AUTO_REFRESH_INTERVAL;
     loop {
         let refreshes = app.drain_worker_messages();
+        if let Some((name, target)) = app.pending_new_host.take() {
+            if let Err(e) = inventory.apply_new_host(config_path, name, target) {
+                app.status_message = Some(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
+            }
+        }
         app.clear_stale_scan_status();
 
         if last_vdevs_auto_refresh.elapsed() >= VDEVS_AUTO_REFRESH_INTERVAL {

@@ -20,7 +20,7 @@ fn run() -> error::Result<()> {
     let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
     let config = config::Config::load(&config_path)?;
     let inventory = hosts::HostInventory::from_config(&config);
-    ui::run_app(inventory)
+    ui::run_app(inventory, config_path)
 }
 
 fn check_root() -> error::Result<()> {
