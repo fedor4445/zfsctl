@@ -731,19 +731,23 @@ impl App {
                     && self.dataset_detail_tab == DatasetDetailTab::Acl =>
             {
                 if let Some(path) = self.selected_dataset_mountpoint() {
-                    let position = self.acl_entries.len();
-                    self.modal = Some(Modal::Form {
-                        title: format!("Add ACL entry on '{path}'"),
-                        fields: vec![
-                            FormField { label: "Recipient (owner / group / everyone / user:<name> / group:<name>)".to_string(), value: String::new() },
-                            FormField { label: "Permissions".to_string(), value: String::new() },
-                            FormField { label: "Flags (blank = none)".to_string(), value: String::new() },
-                            FormField { label: "Type (allow/deny, blank=allow)".to_string(), value: String::new() },
-                        ],
-                        focused: 0,
-                        description: None,
-                        kind: FormKind::AddAclEntry { host: self.selected_host, path, position },
-                    });
+                    if self.acl_entries_for.as_deref() != Some(path.as_str()) {
+                        self.status_message = Some("ACL not loaded yet -- press 'r' to refresh before adding an entry".to_string());
+                    } else {
+                        let position = self.acl_entries.len();
+                        self.modal = Some(Modal::Form {
+                            title: format!("Add ACL entry on '{path}'"),
+                            fields: vec![
+                                FormField { label: "Recipient (owner / group / everyone / user:<name> / group:<name>)".to_string(), value: String::new() },
+                                FormField { label: "Permissions".to_string(), value: String::new() },
+                                FormField { label: "Flags (blank = none)".to_string(), value: String::new() },
+                                FormField { label: "Type (allow/deny, blank=allow)".to_string(), value: String::new() },
+                            ],
+                            focused: 0,
+                            description: None,
+                            kind: FormKind::AddAclEntry { host: self.selected_host, path, position },
+                        });
+                    }
                 }
             }
             KeyCode::Char('d')
@@ -5047,6 +5051,7 @@ mod tests {
             crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow },
             crate::acl::AclEntry { tag: crate::acl::AclTag::OwningGroup, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow },
         ];
+        app.acl_entries_for = Some("/tank/data".to_string());
         app.handle_key(KeyCode::Char('n'));
         match &app.modal {
             Some(Modal::Form { fields, kind, .. }) => {
@@ -5055,6 +5060,24 @@ mod tests {
             }
             other => panic!("expected Form modal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_key_n_on_acl_tab_before_acl_has_loaded_shows_status_and_does_not_open_form() {
+        // Catches a real bug a final review found: pressing 'n' while
+        // acl_entries is still empty (fetch in flight, fetch failed, or
+        // just-cleared by a Datasets refresh) computed position as 0
+        // and silently prepended instead of appending -- `setfacl -a 0`
+        // puts the new entry FIRST, ahead of every existing entry,
+        // confirmed live. Must refuse until acl_entries_for matches.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        // acl_entries is empty and acl_entries_for is None -- never refreshed.
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none(), "must not open a form that would compute the wrong (prepend) position");
+        assert!(app.status_message.is_some());
     }
 
     #[test]

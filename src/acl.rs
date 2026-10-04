@@ -66,17 +66,19 @@ fn parse_acl_line(line: &str) -> Option<AclEntry> {
 /// live it renders permissions/flags as named, `/`-separated long-form
 /// tokens rather than the non-verbose form's undocumented fixed-width
 /// positional letter codes) and parses every non-header, non-blank
-/// line. Lenient: an unrecognized or malformed line is skipped rather
-/// than failing the whole list, matching `zfs::share::parse_shares`'s
-/// and `zfs::permission::parse_permissions`'s established leniency.
+/// line. Unlike `zfs::share::parse_shares`/`zfs::permission::parse_permissions`,
+/// an unparseable *entry* line fails the whole list rather than being
+/// skipped: the returned `Vec`'s index doubles as the `setfacl`
+/// position for add/remove, so silently dropping one entry would make
+/// every later entry's index point at the wrong position.
 pub fn list_acl(runner: &dyn CommandRunner, path: &str) -> Result<Vec<AclEntry>> {
     let output = crate::zfs::run_checked(runner, "getfacl", &["-v", path], &format!("getfacl -v {path}"))?;
-    Ok(output
+    output
         .stdout
         .lines()
         .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-        .filter_map(parse_acl_line)
-        .collect())
+        .map(|line| parse_acl_line(line).ok_or_else(|| crate::error::AppError::Parse(format!("unrecognized getfacl entry line: {line:?}"))))
+        .collect()
 }
 
 fn render_acl_entry(entry: &AclEntry) -> String {
@@ -190,6 +192,23 @@ mod tests {
     fn list_acl_surfaces_command_failure() {
         let runner = FakeRunner::failing("permission denied", 1);
         assert!(list_acl(&runner, "/scratch/data").is_err());
+    }
+
+    #[test]
+    fn list_acl_fails_rather_than_silently_shifting_positions_past_an_unparseable_entry_line() {
+        // Caught by a final review: silently skipping an unparseable
+        // *entry* line (as opposed to a `#`-comment header line) means
+        // every later entry's Vec index no longer matches its real
+        // `setfacl` position -- `d` on a later row would then remove
+        // the wrong entry. Position correctness matters more than
+        // leniency here, unlike zfs::share/zfs::permission's parsers.
+        let fixture = "\
+# file: /scratch/data
+            owner@:read_data::allow
+       this-is-not-a-recognizable-acl-entry-line
+            group@:read_data::allow
+";
+        assert!(list_acl(&FakeRunner::new(fixture), "/scratch/data").is_err());
     }
 
     #[test]

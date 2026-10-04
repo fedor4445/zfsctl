@@ -30,25 +30,35 @@ pub struct Dataset {
 }
 
 pub const DATASET_LIST_ARGS: &[&str] = &[
-    "list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type",
+    "list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type,mounted",
 ];
 
-/// Parses `zfs list -H -p -o name,used,avail,refer,mountpoint,type`
+/// Parses `zfs list -H -p -o name,used,avail,refer,mountpoint,type,mounted`
 /// output (tab-separated, one dataset per line).
+///
+/// `mountpoint` alone is not enough to know where (or whether) a
+/// dataset is actually mounted: `zfs` prints the `mountpoint` property
+/// even when the dataset isn't mounted there (confirmed live on a
+/// default FreeBSD install -- `zroot/usr` reports mountpoint `/usr`
+/// with `canmount=off`, `mounted=no`; the real `/usr` belongs to a
+/// different dataset). So `mountpoint` here is `Some` only when
+/// `mounted` says `yes` and the value isn't `legacy` (which names no
+/// real path at all -- ZFS defers mounting it to `/etc/fstab`).
 pub fn parse_dataset_list(output: &str) -> Result<Vec<Dataset>> {
     output
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() != 6 {
+            if fields.len() != 7 {
                 return Err(AppError::Parse(format!(
-                    "expected 6 fields in zfs list line: {line:?}"
+                    "expected 7 fields in zfs list line: {line:?}"
                 )));
             }
-            let mountpoint = match fields[4] {
-                "-" | "none" => None,
-                mp => Some(mp.to_string()),
+            let mountpoint = match (fields[4], fields[6]) {
+                ("-", _) | ("none", _) | ("legacy", _) => None,
+                (mp, "yes") => Some(mp.to_string()),
+                (_, _) => None,
             };
             Ok(Dataset {
                 name: fields[0].to_string(),
@@ -119,8 +129,8 @@ mod tests {
     use crate::exec::test_support::FakeRunner;
 
     const ZFS_LIST_FIXTURE: &str = "\
-tank/data\t100000000\t900000000\t100000000\t/tank/data\tfilesystem
-tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
+tank/data\t100000000\t900000000\t100000000\t/tank/data\tfilesystem\tyes
+tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
 ";
 
     #[test]
@@ -150,6 +160,33 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
     }
 
     #[test]
+    fn parses_dataset_list_fixture_with_mounted_column_treats_unmounted_filesystem_as_no_mountpoint() {
+        // zfs list prints the `mountpoint` property regardless of
+        // whether the dataset is actually mounted there (confirmed live
+        // on a default FreeBSD install: zroot/usr has mountpoint=/usr,
+        // canmount=off, mounted=no -- the real /usr is a different
+        // dataset's mountpoint entirely). Code that treats the printed
+        // mountpoint as a real, currently-mounted path without checking
+        // `mounted` points at the wrong filesystem.
+        let fixture = "zroot/usr\t100\t200\t100\t/usr\tfilesystem\tno\n";
+        let datasets = parse_dataset_list(fixture).unwrap();
+        assert_eq!(
+            datasets,
+            vec![Dataset { name: "zroot/usr".to_string(), kind: DatasetKind::Filesystem, used: 100, available: 200, referenced: 100, mountpoint: None }]
+        );
+    }
+
+    #[test]
+    fn parses_dataset_list_fixture_with_mounted_column_treats_legacy_mountpoint_as_no_mountpoint() {
+        let fixture = "tank/legacy\t100\t200\t100\tlegacy\tfilesystem\tyes\n";
+        let datasets = parse_dataset_list(fixture).unwrap();
+        assert_eq!(
+            datasets,
+            vec![Dataset { name: "tank/legacy".to_string(), kind: DatasetKind::Filesystem, used: 100, available: 200, referenced: 100, mountpoint: None }]
+        );
+    }
+
+    #[test]
     fn rejects_malformed_dataset_list_line() {
         let result = parse_dataset_list("tank/data\tnot-enough-fields\n");
         assert!(result.is_err());
@@ -164,13 +201,13 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume
         assert_eq!(calls[0].0, "zfs");
         assert_eq!(
             calls[0].1,
-            vec!["list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type"]
+            vec!["list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type,mounted"]
         );
     }
 
     #[test]
     fn parses_dataset_list_line_with_dash_numeric_fields() {
-        let datasets = parse_dataset_list("tank/broken\t-\t-\t-\t-\tfilesystem\n").unwrap();
+        let datasets = parse_dataset_list("tank/broken\t-\t-\t-\t-\tfilesystem\tno\n").unwrap();
         assert_eq!(
             datasets,
             vec![Dataset {
