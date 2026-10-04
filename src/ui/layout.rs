@@ -195,12 +195,9 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(4)])
             .split(area);
-        let hint = Paragraph::new(format!(
-            "Only this host is configured. To manage other hosts from here, add them to {} and restart.",
-            crate::config::DEFAULT_CONFIG_PATH
-        ))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(Color::DarkGray));
+        let hint = Paragraph::new("Only this host is configured. Press 'n' to add another host.".to_string())
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::DarkGray));
         f.render_widget(hint, chunks[1]);
         chunks[0]
     } else {

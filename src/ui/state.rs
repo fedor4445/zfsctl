@@ -208,11 +208,20 @@ pub struct App {
     pub modal: Option<Modal>,
     pub status_message: Option<String>,
     pub should_quit: bool,
-    /// Set by `drain_worker_messages` once a probed host is confirmed
-    /// reachable; consumed by the event loop (which owns the live
-    /// `HostInventory` -- `App` itself never touches it directly) to
-    /// hot-reload the host and persist it to `config.toml`.
-    pub pending_new_host: Option<(String, String)>,
+    /// Appended by `drain_worker_messages` once a probed host is
+    /// confirmed reachable; drained by the event loop (which owns the
+    /// live `HostInventory` -- `App` itself never touches it directly)
+    /// to hot-reload each one and persist it to `config.toml`. A `Vec`,
+    /// not a single `Option` slot: a final review caught that a lone
+    /// slot silently lost a second host whose probe resolved in the
+    /// same event-loop tick as the first's.
+    pub pending_new_hosts: Vec<(String, String)>,
+    /// Lowercased names currently being probed (submitted, not yet
+    /// resolved) -- checked alongside `self.hosts` so a second
+    /// submission of the same name while the first is still
+    /// connecting is rejected too, not just once the first has
+    /// finished and landed in `self.hosts`.
+    pending_probes: HashSet<String>,
     in_flight: HashSet<(Section, usize)>,
     /// Refresh requests for a `(section, host)` that arrived while a
     /// refresh for that same key was already in flight. Recorded here
@@ -269,7 +278,8 @@ impl App {
             modal: None,
             status_message: None,
             should_quit: false,
-            pending_new_host: None,
+            pending_new_hosts: Vec::new(),
+            pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
             tx,
@@ -1095,11 +1105,17 @@ impl App {
                     } else if matches!(kind, FormKind::AddHost) {
                         let name = fields[0].value.trim().to_string();
                         let target = fields[1].value.trim().to_string();
-                        let is_duplicate = self.hosts.iter().any(|h| h.eq_ignore_ascii_case(&name));
-                        if name.is_empty() || target.is_empty() || is_duplicate {
+                        let name_lower = name.to_lowercase();
+                        let is_duplicate = self.hosts.iter().any(|h| h.eq_ignore_ascii_case(&name)) || self.pending_probes.contains(&name_lower);
+                        if name.is_empty() || target.is_empty() {
+                            self.modal = Some(Modal::Form { title, fields, focused, description, kind });
+                            None
+                        } else if is_duplicate {
+                            self.status_message = Some(format!("A host named '{name}' already exists or is already being added"));
                             self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                             None
                         } else {
+                            self.pending_probes.insert(name_lower);
                             self.begin_add_host(name, target);
                             None
                         }
@@ -1613,16 +1629,18 @@ impl App {
                         Err(e) => self.status_message = Some(e.to_string()),
                     }
                 }
-                WorkerMsg::HostProbe(name, target, result) => match result {
-                    Ok(()) => {
-                        self.hosts.push(name.clone());
-                        self.pending_new_host = Some((name, target));
-                        self.status_message = None;
+                WorkerMsg::HostProbe(name, target, result) => {
+                    self.pending_probes.remove(&name.to_lowercase());
+                    match result {
+                        Ok(()) => {
+                            self.pending_new_hosts.push((name, target));
+                            self.status_message = None;
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("Could not add host '{name}': {e}"));
+                        }
                     }
-                    Err(e) => {
-                        self.status_message = Some(format!("Could not add host '{name}': {e}"));
-                    }
-                },
+                }
                 WorkerMsg::MutationDone(host, section, result) => {
                     if host != self.selected_host {
                         continue;
@@ -2084,6 +2102,10 @@ Global
   ?                this Help screen
   A                About
   q                quit
+
+Hosts
+  Up / Down        select the active host
+  n                add a new host (prompts for Name and SSH target)
 
 Pools
   Enter            drill into vdev/disk tree
@@ -5277,6 +5299,7 @@ mod tests {
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "a name differing only by case from an existing host must be rejected as a duplicate");
+        assert!(app.status_message.is_some(), "a duplicate rejection must say why, per the spec's own testing section -- a silent re-show looks like nothing happened");
     }
 
     #[test]
@@ -5293,6 +5316,7 @@ mod tests {
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "\"local\" (case-insensitively) must always be rejected as a duplicate");
+        assert!(app.status_message.is_some());
     }
 
     #[test]
@@ -5313,12 +5337,31 @@ mod tests {
     }
 
     #[test]
-    fn host_probe_success_adds_name_and_sets_pending_new_host() {
+    fn host_probe_success_queues_the_host_for_the_event_loop_to_apply() {
+        // Queued, not pushed directly onto `self.hosts` here -- the
+        // event loop is the one place that pushes into `app.hosts` and
+        // `inventory.hosts` together (see `apply_pending_new_hosts` in
+        // `ui/mod.rs`), so the two index-aligned lists can never drift
+        // apart. A final review caught that an earlier single-`Option`
+        // version of this signal silently dropped a second host whose
+        // probe resolved in the same tick as the first's.
         let mut app = App::new(vec!["local".to_string()]);
         app.tx.send(WorkerMsg::HostProbe("newhost".to_string(), "newhost.example.com".to_string(), Ok(()))).unwrap();
         app.drain_worker_messages();
-        assert!(app.hosts.contains(&"newhost".to_string()));
-        assert_eq!(app.pending_new_host, Some(("newhost".to_string(), "newhost.example.com".to_string())));
+        assert!(!app.hosts.contains(&"newhost".to_string()), "pushing onto app.hosts happens in the event loop, not here");
+        assert_eq!(app.pending_new_hosts, vec![("newhost".to_string(), "newhost.example.com".to_string())]);
+    }
+
+    #[test]
+    fn host_probe_success_queues_every_host_even_when_several_resolve_before_one_drain() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.tx.send(WorkerMsg::HostProbe("hosta".to_string(), "hosta.example.com".to_string(), Ok(()))).unwrap();
+        app.tx.send(WorkerMsg::HostProbe("hostb".to_string(), "hostb.example.com".to_string(), Ok(()))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(
+            app.pending_new_hosts,
+            vec![("hosta".to_string(), "hosta.example.com".to_string()), ("hostb".to_string(), "hostb.example.com".to_string())]
+        );
     }
 
     #[test]
@@ -5338,8 +5381,71 @@ mod tests {
             .unwrap();
         app.drain_worker_messages();
         assert_eq!(app.hosts, before, "a failed probe must not add anything to the host list");
-        assert_eq!(app.pending_new_host, None);
+        assert!(app.pending_new_hosts.is_empty());
         assert!(app.status_message.as_ref().unwrap().contains("Could not resolve hostname"));
+    }
+
+    #[test]
+    fn host_probe_failure_clears_the_in_flight_marker_so_the_name_can_be_retried() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "newhost".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "newhost.example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter); // starts probing "newhost"
+        app.tx
+            .send(WorkerMsg::HostProbe(
+                "newhost".to_string(),
+                "newhost.example.com".to_string(),
+                Err(crate::error::AppError::CommandFailed { cmd: "ssh newhost.example.com".to_string(), status: 255, stderr: "unreachable".to_string() }),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+
+        // Retrying the same name after the failed probe cleared it
+        // must be accepted, not rejected as still-in-flight.
+        app.handle_key(KeyCode::Char('n'));
+        for c in "newhost".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "newhost.example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(app.modal.is_none(), "a retry after the first probe failed must be accepted");
+    }
+
+    #[test]
+    fn submitting_add_host_form_while_same_name_probe_already_in_flight_is_rejected_with_a_message() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "newhost".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "newhost.example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter); // first submission: starts probing "newhost", self.hosts doesn't have it yet
+        assert!(app.modal.is_none());
+
+        app.handle_key(KeyCode::Char('n'));
+        for c in "NewHost".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "different.example.com".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let result = app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(result, None);
+        assert!(app.modal.is_some(), "a name already being probed (case-insensitively) must be rejected, not started a second time");
+        assert!(app.status_message.as_ref().unwrap().to_lowercase().contains("newhost"), "the rejection must say which name collided");
     }
 
     fn enter_datasets_acl_tab(app: &mut App) {

@@ -75,6 +75,25 @@ pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf) ->
     result
 }
 
+/// Drains every queued new host (`app.pending_new_hosts`) and applies
+/// each one: pushes the name onto `app.hosts` and pushes the host
+/// itself onto `inventory.hosts` in the same step, so the two
+/// index-aligned lists can never drift apart. Extracted out of
+/// `event_loop` (which has no test harness at all) specifically so
+/// this part does: a final review found that an earlier, single-
+/// `Option` version of the signal this reads lost a second host whose
+/// probe resolved in the same tick as the first's -- draining a `Vec`
+/// instead means every queued success is applied, never just the
+/// last one.
+fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_path: &std::path::Path) {
+    for (name, target) in app.pending_new_hosts.drain(..) {
+        app.hosts.push(name.clone());
+        if let Err(e) = inventory.apply_new_host(config_path, name, target) {
+            app.status_message = Some(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
+        }
+    }
+}
+
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -84,11 +103,7 @@ fn event_loop(
     let mut last_vdevs_auto_refresh = Instant::now() - VDEVS_AUTO_REFRESH_INTERVAL;
     loop {
         let refreshes = app.drain_worker_messages();
-        if let Some((name, target)) = app.pending_new_host.take() {
-            if let Err(e) = inventory.apply_new_host(config_path, name, target) {
-                app.status_message = Some(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
-            }
-        }
+        apply_pending_new_hosts(app, inventory, config_path);
         app.clear_stale_scan_status();
 
         if last_vdevs_auto_refresh.elapsed() >= VDEVS_AUTO_REFRESH_INTERVAL {
@@ -249,4 +264,48 @@ fn event_loop(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn apply_pending_new_hosts_applies_every_queued_host_keeping_both_lists_aligned() {
+        // A final review caught that an earlier single-`Option`
+        // version of the signal this drains silently lost a second
+        // host whose probe resolved in the same event-loop tick as
+        // the first's. Queuing two hosts before a single drain call
+        // and asserting both land, in order, in both `app.hosts` and
+        // `inventory.hosts` is the regression test for that.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let mut app = App::new(vec!["local".to_string()]);
+        let mut inventory = HostInventory::from_config(&Config::default());
+        app.pending_new_hosts = vec![
+            ("hosta".to_string(), "hosta.example.com".to_string()),
+            ("hostb".to_string(), "hostb.example.com".to_string()),
+        ];
+
+        apply_pending_new_hosts(&mut app, &mut inventory, &config_path);
+
+        assert_eq!(app.hosts, vec!["local".to_string(), "hosta".to_string(), "hostb".to_string()]);
+        let inventory_names: Vec<&str> = inventory.hosts.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(inventory_names, vec!["local", "hosta", "hostb"]);
+        assert!(app.pending_new_hosts.is_empty());
+    }
+
+    #[test]
+    fn apply_pending_new_hosts_is_a_noop_when_nothing_is_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let mut app = App::new(vec!["local".to_string()]);
+        let mut inventory = HostInventory::from_config(&Config::default());
+
+        apply_pending_new_hosts(&mut app, &mut inventory, &config_path);
+
+        assert_eq!(app.hosts, vec!["local".to_string()]);
+        assert_eq!(inventory.hosts.len(), 1);
+    }
 }
