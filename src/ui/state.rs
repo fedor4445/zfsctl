@@ -31,6 +31,7 @@ pub enum Section {
     PoolProperties,
     DatasetProperties,
     DatasetPermissions,
+    DatasetAcl,
 }
 
 /// Which pane currently receives navigation keys. Meaningful only while
@@ -51,6 +52,25 @@ pub enum DatasetDetailTab {
     #[default]
     Properties,
     Permissions,
+    Acl,
+}
+
+impl DatasetDetailTab {
+    fn next(self) -> Self {
+        match self {
+            DatasetDetailTab::Properties => DatasetDetailTab::Permissions,
+            DatasetDetailTab::Permissions => DatasetDetailTab::Acl,
+            DatasetDetailTab::Acl => DatasetDetailTab::Properties,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            DatasetDetailTab::Properties => DatasetDetailTab::Acl,
+            DatasetDetailTab::Permissions => DatasetDetailTab::Properties,
+            DatasetDetailTab::Acl => DatasetDetailTab::Permissions,
+        }
+    }
 }
 
 /// One flattened, display/selection-ready row for the Permissions
@@ -105,6 +125,11 @@ pub enum WorkerMsg {
     /// The `String` is the dataset name this fetch was for — same
     /// stale-identity discard rationale as `DatasetProperties`.
     DatasetPermissions(usize, String, Result<crate::zfs::permission::PermissionsSnapshot>),
+    /// The `String` is the **mountpoint path** this fetch was for (not
+    /// the dataset name — ACLs are filesystem-path-scoped, not
+    /// dataset-metadata-scoped). Same stale-identity discard rationale
+    /// as `DatasetPermissions`.
+    DatasetAcl(usize, String, Result<Vec<crate::acl::AclEntry>>),
     MutationDone(usize, Section, Result<()>),
 }
 
@@ -172,6 +197,9 @@ pub struct App {
     pub dataset_permissions: Vec<PermissionRow>,
     pub dataset_permissions_table: TableState,
     pub dataset_permissions_for: Option<String>,
+    pub acl_entries: Vec<crate::acl::AclEntry>,
+    pub acl_entries_table: TableState,
+    pub acl_entries_for: Option<String>,
     /// See `pool_properties_for`.
     pub dataset_properties_for: Option<String>,
     pub modal: Option<Modal>,
@@ -226,6 +254,9 @@ impl App {
             dataset_permissions: Vec::new(),
             dataset_permissions_table: TableState::default(),
             dataset_permissions_for: None,
+            acl_entries: Vec::new(),
+            acl_entries_table: TableState::default(),
+            acl_entries_for: None,
             dataset_properties_for: None,
             modal: None,
             status_message: None,
@@ -298,6 +329,13 @@ impl App {
         self.datasets_table.selected().and_then(|i| self.datasets.get(i)).map(|d| d.name.clone())
     }
 
+    /// The mountpoint of the currently-selected Datasets row, or `None`
+    /// if it has none (a zvol, or an unmounted filesystem) -- the ACL
+    /// sub-tab operates on this, not on `selected_dataset_name()`.
+    pub fn selected_dataset_mountpoint(&self) -> Option<String> {
+        self.datasets_table.selected().and_then(|i| self.datasets.get(i)).and_then(|d| d.mountpoint.clone())
+    }
+
     /// Clears data panes so a stale render from the previously-selected
     /// host is never left on screen looking current after switching hosts.
     fn clear_host_data(&mut self) {
@@ -326,6 +364,9 @@ impl App {
         self.dataset_permissions.clear();
         self.dataset_permissions_table.select(None);
         self.dataset_permissions_for = None;
+        self.acl_entries.clear();
+        self.acl_entries_table.select(None);
+        self.acl_entries_for = None;
     }
 
     pub fn handle_key(&mut self, key: KeyCode) {
@@ -426,6 +467,9 @@ impl App {
                         self.dataset_permissions.clear();
                         self.dataset_permissions_table.select(None);
                         self.dataset_permissions_for = None;
+                        self.acl_entries.clear();
+                        self.acl_entries_table.select(None);
+                        self.acl_entries_for = None;
                     }
                     _ => {}
                 }
@@ -562,22 +606,18 @@ impl App {
             KeyCode::Down if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => match self.dataset_detail_tab {
                 DatasetDetailTab::Properties => move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), true),
                 DatasetDetailTab::Permissions => move_table_selection(&mut self.dataset_permissions_table, self.dataset_permissions.len(), true),
+                DatasetDetailTab::Acl => move_table_selection(&mut self.acl_entries_table, self.acl_entries.len(), true),
             },
             KeyCode::Up if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => match self.dataset_detail_tab {
                 DatasetDetailTab::Properties => move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), false),
                 DatasetDetailTab::Permissions => move_table_selection(&mut self.dataset_permissions_table, self.dataset_permissions.len(), false),
+                DatasetDetailTab::Acl => move_table_selection(&mut self.acl_entries_table, self.acl_entries.len(), false),
             },
             KeyCode::Char('[') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => {
-                self.dataset_detail_tab = match self.dataset_detail_tab {
-                    DatasetDetailTab::Properties => DatasetDetailTab::Permissions,
-                    DatasetDetailTab::Permissions => DatasetDetailTab::Properties,
-                };
+                self.dataset_detail_tab = self.dataset_detail_tab.prev();
             }
             KeyCode::Char(']') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => {
-                self.dataset_detail_tab = match self.dataset_detail_tab {
-                    DatasetDetailTab::Properties => DatasetDetailTab::Permissions,
-                    DatasetDetailTab::Permissions => DatasetDetailTab::Properties,
-                };
+                self.dataset_detail_tab = self.dataset_detail_tab.next();
             }
             KeyCode::Char('n')
                 if self.current_section() == Section::Datasets
@@ -693,6 +733,9 @@ impl App {
                 self.dataset_permissions.clear();
                 self.dataset_permissions_table.select(None);
                 self.dataset_permissions_for = None;
+                self.acl_entries.clear();
+                self.acl_entries_table.select(None);
+                self.acl_entries_for = None;
             }
             KeyCode::Up if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), false);
@@ -702,6 +745,9 @@ impl App {
                 self.dataset_permissions.clear();
                 self.dataset_permissions_table.select(None);
                 self.dataset_permissions_for = None;
+                self.acl_entries.clear();
+                self.acl_entries_table.select(None);
+                self.acl_entries_for = None;
             }
             KeyCode::Char('n') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 self.modal = Some(Modal::Form {
@@ -1186,6 +1232,22 @@ impl App {
         });
     }
 
+    /// See `refresh_dataset_permissions`. `path` is the dataset's
+    /// mountpoint, not its name -- ACLs are filesystem-path-scoped.
+    pub fn refresh_dataset_acl(&mut self, runner: Arc<dyn CommandRunner>, path: String) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::DatasetAcl, host) {
+            self.pending_refresh.insert((Section::DatasetAcl, host));
+            return;
+        }
+        self.begin_refresh(Section::DatasetAcl, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::acl::list_acl(runner.as_ref(), &path);
+            let _ = tx.send(WorkerMsg::DatasetAcl(host, path, result));
+        });
+    }
+
     /// Drains all pending worker messages, applying each to `self`.
     /// Returns the list of sections that need re-listing, either because
     /// a mutation targeting the currently-selected host just succeeded,
@@ -1260,6 +1322,11 @@ impl App {
                                 self.dataset_permissions.clear();
                                 self.dataset_permissions_table.select(None);
                                 self.dataset_permissions_for = None;
+                            }
+                            if self.acl_entries_for.is_some() && self.acl_entries_for != self.selected_dataset_mountpoint() {
+                                self.acl_entries.clear();
+                                self.acl_entries_table.select(None);
+                                self.acl_entries_for = None;
                             }
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1419,6 +1486,28 @@ impl App {
                             self.dataset_permissions = flatten_permissions_snapshot(&snapshot);
                             clamp_table_selection(&mut self.dataset_permissions_table, self.dataset_permissions.len());
                             self.dataset_permissions_for = Some(dataset);
+                            self.status_message = None;
+                        }
+                        Err(e) => self.status_message = Some(e.to_string()),
+                    }
+                }
+                WorkerMsg::DatasetAcl(host, path, result) => {
+                    self.end_refresh(Section::DatasetAcl, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::DatasetAcl, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::DatasetAcl);
+                    }
+                    if Some(&path) != self.selected_dataset_mountpoint().as_ref() {
+                        continue;
+                    }
+                    match result {
+                        Ok(entries) => {
+                            self.acl_entries = entries;
+                            clamp_table_selection(&mut self.acl_entries_table, self.acl_entries.len());
+                            self.acl_entries_for = Some(path);
                             self.status_message = None;
                         }
                         Err(e) => self.status_message = Some(e.to_string()),
@@ -1884,6 +1973,89 @@ mod tests {
         assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Permissions);
         app.handle_key(KeyCode::Char('['));
         assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Properties);
+    }
+
+    #[test]
+    fn bracket_keys_cycle_through_all_three_dataset_detail_tabs() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.handle_key(KeyCode::Right); // enter right focus, Properties tab
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Properties);
+        app.handle_key(KeyCode::Char(']'));
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Permissions);
+        app.handle_key(KeyCode::Char(']'));
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Acl);
+        app.handle_key(KeyCode::Char(']')); // wraps back to Properties
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Properties);
+        app.handle_key(KeyCode::Char('[')); // wraps the other way
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Acl);
+        app.handle_key(KeyCode::Char('['));
+        assert_eq!(app.dataset_detail_tab, DatasetDetailTab::Permissions);
+    }
+
+    #[test]
+    fn refresh_dataset_acl_populates_app_state_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(
+            "# file: /tank/data\n# owner: root\n# group: wheel\n            owner@:read_data/write_data/execute::allow\n",
+        ));
+        app.refresh_dataset_acl(runner, "/tank/data".to_string());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.acl_entries.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            app.acl_entries,
+            vec![crate::acl::AclEntry {
+                tag: crate::acl::AclTag::Owner,
+                permissions: vec!["read_data".to_string(), "write_data".to_string(), "execute".to_string()],
+                flags: vec![],
+                entry_type: crate::acl::AclEntryType::Allow,
+            }]
+        );
+        assert_eq!(app.acl_entries_for, Some("/tank/data".to_string()));
+    }
+
+    #[test]
+    fn acl_result_for_a_stale_mountpoint_is_discarded() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.tx.send(WorkerMsg::DatasetAcl(0, "/tank/old".to_string(), Ok(vec![]))).unwrap();
+        app.datasets = vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/new".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.acl_entries_for = Some("placeholder".to_string());
+        app.drain_worker_messages();
+        assert_eq!(app.acl_entries_for, Some("placeholder".to_string()), "a result for a mountpoint that's no longer selected must not overwrite the current state");
+    }
+
+    #[test]
+    fn datasets_list_refresh_that_repoints_selection_clears_stale_acl_entries() {
+        // Same class of bug Permissions' final review caught for
+        // dataset_permissions_for -- built in from the start here.
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/old".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/old".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.acl_entries = vec![crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow }];
+        app.acl_entries_table.select(Some(0));
+        app.acl_entries_for = Some("/tank/old".to_string());
+
+        app.tx
+            .send(WorkerMsg::Datasets(
+                0,
+                Ok(vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/new".to_string()) }]),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+
+        assert!(app.acl_entries.is_empty(), "stale ACL entries for tank/old must be cleared once the list refresh re-points the selection at tank/new");
+        assert_eq!(app.acl_entries_for, None);
     }
 
     #[test]

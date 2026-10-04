@@ -117,6 +117,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
                 Section::DatasetPermissions => "Dataset Permissions",
+                Section::DatasetAcl => "Dataset ACL",
             };
             let style = if i == app.selected_section {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -161,7 +162,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Disks => draw_disks(f, app, area),
         Section::Shares => draw_shares(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
-        Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions => {
+        Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl => {
             unreachable!("never in App::sections")
         }
     }
@@ -275,9 +276,16 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
-    if app.dataset_detail_tab == DatasetDetailTab::Permissions {
-        draw_dataset_permissions(f, app, area);
-        return;
+    match app.dataset_detail_tab {
+        DatasetDetailTab::Permissions => {
+            draw_dataset_permissions(f, app, area);
+            return;
+        }
+        DatasetDetailTab::Acl => {
+            draw_dataset_acl(f, app, area);
+            return;
+        }
+        DatasetDetailTab::Properties => {}
     }
     let rows = app.dataset_properties.iter().map(|p| {
         Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(p))
@@ -318,6 +326,39 @@ fn draw_dataset_permissions(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.dataset_permissions_table);
+}
+
+fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
+    let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
+    if app.selected_dataset_mountpoint().is_none() {
+        let title = format!("ACL — {dataset} (no mountpoint -- not applicable, e.g. a zvol)");
+        let table = Table::new(std::iter::empty::<Row>(), [Constraint::Min(1)])
+            .block(Block::default().borders(Borders::ALL).title(title));
+        f.render_widget(table, area);
+        return;
+    }
+    let rows = app.acl_entries.iter().enumerate().map(|(i, entry)| {
+        let target = match &entry.tag {
+            crate::acl::AclTag::Owner => "owner@".to_string(),
+            crate::acl::AclTag::OwningGroup => "group@".to_string(),
+            crate::acl::AclTag::Everyone => "everyone@".to_string(),
+            crate::acl::AclTag::User(name) => format!("user {name}"),
+            crate::acl::AclTag::NamedGroup(name) => format!("group {name}"),
+        };
+        let flags = if entry.flags.is_empty() { "—".to_string() } else { entry.flags.join("/") };
+        let entry_type = match entry.entry_type {
+            crate::acl::AclEntryType::Allow => "Allow",
+            crate::acl::AclEntryType::Deny => "Deny",
+        };
+        Row::new(vec![i.to_string(), target, entry.permissions.join("/"), flags, entry_type.to_string()])
+    });
+    let widths = [Constraint::Length(3), Constraint::Length(14), Constraint::Min(20), Constraint::Length(16), Constraint::Length(6)];
+    let title = format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)");
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["#", "Target", "Permissions", "Flags", "Type"]))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(table, area, &mut app.acl_entries_table);
 }
 
 fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {

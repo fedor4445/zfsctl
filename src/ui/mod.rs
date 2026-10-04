@@ -119,6 +119,11 @@ fn event_loop(
                             app.refresh_dataset_permissions(host.runner.clone(), dataset);
                         }
                     }
+                    Section::DatasetAcl => {
+                        if let Some(path) = app.selected_dataset_mountpoint() {
+                            app.refresh_dataset_acl(host.runner.clone(), path);
+                        }
+                    }
                     Section::Hosts => {}
                 }
             }
@@ -164,6 +169,11 @@ fn event_loop(
                                                 app.refresh_dataset_permissions(host.runner.clone(), dataset);
                                             }
                                         }
+                                        DatasetDetailTab::Acl => {
+                                            if let Some(path) = app.selected_dataset_mountpoint() {
+                                                app.refresh_dataset_acl(host.runner.clone(), path);
+                                            }
+                                        }
                                     },
                                     _ => {}
                                 }
@@ -178,7 +188,8 @@ fn event_loop(
                                     | Section::Vdevs
                                     | Section::PoolProperties
                                     | Section::DatasetProperties
-                                    | Section::DatasetPermissions => {}
+                                    | Section::DatasetPermissions
+                                    | Section::DatasetAcl => {}
                                 }
                             }
                         }
@@ -207,14 +218,20 @@ fn event_loop(
                             }
                         }
                     }
-                    if (key.code == KeyCode::Char('[') || key.code == KeyCode::Char(']'))
-                        && app.pane_focus == PaneFocus::Right
-                        && app.current_section() == Section::Datasets
-                        && app.dataset_detail_tab == DatasetDetailTab::Permissions
-                    {
+                    if (key.code == KeyCode::Char('[') || key.code == KeyCode::Char(']')) && app.pane_focus == PaneFocus::Right && app.current_section() == Section::Datasets {
                         if let Some(host) = inventory.hosts.get(app.selected_host) {
-                            if let Some(dataset) = app.selected_dataset_name() {
-                                app.refresh_dataset_permissions(host.runner.clone(), dataset);
+                            match app.dataset_detail_tab {
+                                DatasetDetailTab::Permissions => {
+                                    if let Some(dataset) = app.selected_dataset_name() {
+                                        app.refresh_dataset_permissions(host.runner.clone(), dataset);
+                                    }
+                                }
+                                DatasetDetailTab::Acl => {
+                                    if let Some(path) = app.selected_dataset_mountpoint() {
+                                        app.refresh_dataset_acl(host.runner.clone(), path);
+                                    }
+                                }
+                                DatasetDetailTab::Properties => {}
                             }
                         }
                     }
