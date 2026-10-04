@@ -1997,7 +1997,7 @@ fn clamp_table_selection(state: &mut TableState, len: usize) {
 
 fn about_text() -> String {
     format!(
-        "zfsctl v{}\n\nA napp-it-like terminal UI for managing ZFS storage on FreeBSD.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
+        "zfsctl v{}\n\nA terminal UI for managing ZFS storage on FreeBSD.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
         env!("CARGO_PKG_VERSION")
     )
 }

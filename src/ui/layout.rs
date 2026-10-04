@@ -1,4 +1,4 @@
-use super::state::{App, DatasetDetailTab, PermissionRow, Section};
+use super::state::{App, DatasetDetailTab, PaneFocus, PermissionRow, Section};
 use crate::ui::modal::Modal;
 use crate::zfs::disk::DiskMembership;
 use crate::zfs::pool::ScanStatus;
@@ -214,7 +214,7 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Pools — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Size", "Alloc", "Free", "Health"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.pools_table);
 }
@@ -240,7 +240,7 @@ fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Property", "Value", "Source"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.pool_properties_table);
 }
@@ -278,7 +278,7 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Datasets — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Used", "Avail", "Kind"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.datasets_table);
 }
@@ -303,7 +303,7 @@ fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Property", "Value", "Source"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.dataset_properties_table);
 }
@@ -331,7 +331,7 @@ fn draw_dataset_permissions(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Permissions — {dataset} ('r' refresh, n/s/c grant, d/x revoke, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Target", "Scope", "Permissions"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.dataset_permissions_table);
 }
@@ -341,7 +341,7 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
     if app.selected_dataset_mountpoint().is_none() {
         let title = format!("ACL — {dataset} (no mountpoint -- not applicable, e.g. a zvol)");
         let table = Table::new(std::iter::empty::<Row>(), [Constraint::Min(1)])
-            .block(Block::default().borders(Borders::ALL).title(title));
+            .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title));
         f.render_widget(table, area);
         return;
     }
@@ -364,7 +364,7 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["#", "Target", "Permissions", "Flags", "Type"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(table, area, &mut app.acl_entries_table);
 }
@@ -536,4 +536,31 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// The border style for a Pools/Datasets split-pane block: an accent
+/// color when `pane` is the one `current` currently points at, the
+/// terminal's default style otherwise. Pulled out as a pure function
+/// (rather than inlined at each call site) so the focus/color mapping
+/// has exactly one definition and is unit-testable without a rendering
+/// backend.
+fn pane_border_style(current: PaneFocus, pane: PaneFocus) -> Style {
+    if current == pane {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pane_border_style_highlights_only_the_current_pane() {
+        assert_eq!(pane_border_style(PaneFocus::Middle, PaneFocus::Middle), Style::default().fg(Color::Cyan));
+        assert_eq!(pane_border_style(PaneFocus::Middle, PaneFocus::Right), Style::default());
+        assert_eq!(pane_border_style(PaneFocus::Right, PaneFocus::Right), Style::default().fg(Color::Cyan));
+        assert_eq!(pane_border_style(PaneFocus::Right, PaneFocus::Middle), Style::default());
+    }
 }

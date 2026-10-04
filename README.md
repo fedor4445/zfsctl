@@ -1,6 +1,6 @@
 # zfsctl
 
-A napp-it-like terminal UI for managing ZFS storage on FreeBSD.
+A terminal UI for managing ZFS storage on FreeBSD.
 
 ## Requirements
 
