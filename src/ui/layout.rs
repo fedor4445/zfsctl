@@ -41,6 +41,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(modal) = app.modal.clone() {
         draw_modal(f, &modal, area);
     }
+    if let Some(picker) = app.picker.clone() {
+        draw_picker(f, &picker, area);
+    }
 }
 
 /// Builds the status bar's text, color, and (while a resilver/scrub is
@@ -515,6 +518,41 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
             f.render_widget(p, popup_area);
         }
     }
+}
+
+/// Renders on top of `draw_modal`'s output whenever `app.picker` is
+/// `Some` -- the form underneath stays drawn exactly as `draw_modal`
+/// left it; this is a second, smaller popup layered above it.
+fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, area: Rect) {
+    let filter_lower = picker.filter.to_lowercase();
+    let filtered: Vec<&String> = picker.values.iter().filter(|v| v.to_lowercase().contains(&filter_lower)).collect();
+
+    const PICKER_WIDTH_PERCENT: u16 = 50;
+    let popup_height = (filtered.len() as u16 + 4).clamp(6, area.height.saturating_sub(4).max(6));
+    let popup_area = centered_rect(PICKER_WIDTH_PERCENT, popup_height, area);
+    f.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let marker = if picker.multi_select {
+                if picker.checked.contains(value.as_str()) { "[x] " } else { "[ ] " }
+            } else {
+                ""
+            };
+            let style = if i == picker.selected { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
+            ListItem::new(format!("{marker}{value}")).style(style)
+        })
+        .collect();
+
+    let title = if picker.filter.is_empty() {
+        "Pick a value (type to filter, Space toggle, Enter confirm, Esc cancel)".to_string()
+    } else {
+        format!("Pick a value — filter: '{}' (Space toggle, Enter confirm, Esc cancel)", picker.filter)
+    };
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
+    f.render_widget(list, popup_area);
 }
 
 /// Conservatively estimates how many terminal rows `text` occupies when

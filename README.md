@@ -40,6 +40,7 @@ To manage several hosts from one login (metal or VMs), pick one as your hub and 
 - `A`: show the About screen
 - `q`: quit
 - `Esc`: dismiss the current status message, back out of a focused properties pane, or (while a modal is open) cancel it
+- `F2` (while a form field with a known value set is focused — `zfs allow`'s Permissions, or the ACL form's Permissions/Flags/Type): open a picker. Type to filter, `Up`/`Down` to move, `Space` to toggle a value (Permissions/Flags — multiple can be checked), `Enter` to confirm (joins every checked value with commas for multi-select, or picks the highlighted single value for Type), `Esc` to cancel without changing the field. A field with no known value set (`Recipient`, `Name`, `Scope`, etc.) ignores `F2`.
 
 ### Hosts
 

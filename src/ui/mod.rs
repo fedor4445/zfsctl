@@ -161,7 +161,9 @@ fn event_loop(
             if let Event::Key(key) =
                 event::read().map_err(|e| AppError::Config(format!("reading event: {e}")))?
             {
-                if app.modal.is_some() {
+                if app.picker.is_some() {
+                    app.handle_picker_key(key.code);
+                } else if app.modal.is_some() {
                     if let Some(action) = app.handle_modal_key(key.code) {
                         if let Some(host) = inventory.hosts.get(action.host) {
                             app.dispatch_mutation(action, host.runner.clone());
