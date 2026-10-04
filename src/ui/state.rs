@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::exec::CommandRunner;
 use crate::ui::modal::{FormField, FormKind, Modal, MutationCall, PendingAction};
+use crate::ui::picker::{build_picker_state, PickerState};
 use crate::zfs::dataset::Dataset;
 use crate::zfs::disk::DiskInfo;
 use crate::zfs::disk::DiskMembership;
@@ -206,6 +207,11 @@ pub struct App {
     /// See `pool_properties_for`.
     pub dataset_properties_for: Option<String>,
     pub modal: Option<Modal>,
+    /// A picker popup layered on top of `modal` (which stays open and
+    /// untouched underneath) -- separate state, not a `Modal` variant,
+    /// so the form being edited and the picker helping edit one of its
+    /// fields are independent for as long as the picker is open.
+    pub picker: Option<PickerState>,
     pub status_message: Option<String>,
     pub should_quit: bool,
     /// Appended by `drain_worker_messages` once a probed host is
@@ -276,6 +282,7 @@ impl App {
             acl_entries_for: None,
             dataset_properties_for: None,
             modal: None,
+            picker: None,
             status_message: None,
             should_quit: false,
             pending_new_hosts: Vec::new(),
@@ -1139,12 +1146,85 @@ impl App {
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
+                KeyCode::F(2) => {
+                    if let Some(picker) = build_picker_state(&kind, focused, &fields[focused].value) {
+                        self.picker = Some(picker);
+                    }
+                    self.modal = Some(Modal::Form { title, fields, focused, description, kind });
+                    None
+                }
                 _ => {
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
             },
             Modal::Info { .. } => None,
+        }
+    }
+
+    /// Handles a key while `self.picker` is open. Never returns a
+    /// `PendingAction` -- a picker only ever edits the still-open
+    /// form's focused field, it never submits anything itself.
+    pub fn handle_picker_key(&mut self, key: KeyCode) {
+        let Some(mut picker) = self.picker.take() else { return };
+        let filter_lower = picker.filter.to_lowercase();
+        let filtered: Vec<String> = picker.values.iter().filter(|v| v.to_lowercase().contains(&filter_lower)).cloned().collect();
+        match key {
+            KeyCode::Esc => {}
+            KeyCode::Up => {
+                picker.selected = picker.selected.saturating_sub(1);
+                self.picker = Some(picker);
+            }
+            KeyCode::Down => {
+                if !filtered.is_empty() && picker.selected + 1 < filtered.len() {
+                    picker.selected += 1;
+                }
+                self.picker = Some(picker);
+            }
+            KeyCode::Char(' ') if picker.multi_select => {
+                if let Some(value) = filtered.get(picker.selected) {
+                    if !picker.checked.insert(value.clone()) {
+                        picker.checked.remove(value);
+                    }
+                }
+                self.picker = Some(picker);
+            }
+            KeyCode::Char(' ') => {
+                self.picker = Some(picker);
+            }
+            KeyCode::Enter => {
+                if picker.multi_select {
+                    let mut vals: Vec<String> = picker.checked.iter().cloned().collect();
+                    vals.sort();
+                    let new_value = vals.join(",");
+                    if let Some(Modal::Form { fields, focused, .. }) = &mut self.modal {
+                        if let Some(field) = fields.get_mut(*focused) {
+                            field.value = new_value;
+                        }
+                    }
+                } else if let Some(value) = filtered.get(picker.selected).cloned() {
+                    if let Some(Modal::Form { fields, focused, .. }) = &mut self.modal {
+                        if let Some(field) = fields.get_mut(*focused) {
+                            field.value = value;
+                        }
+                    }
+                } else {
+                    self.picker = Some(picker);
+                }
+            }
+            KeyCode::Backspace => {
+                picker.filter.pop();
+                picker.selected = 0;
+                self.picker = Some(picker);
+            }
+            KeyCode::Char(c) => {
+                picker.filter.push(c);
+                picker.selected = 0;
+                self.picker = Some(picker);
+            }
+            _ => {
+                self.picker = Some(picker);
+            }
         }
     }
 
@@ -5242,6 +5322,215 @@ mod tests {
             }
             other => panic!("expected Form modal, got {other:?}"),
         }
+    }
+
+    fn open_grant_permission_form(app: &mut App) {
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Right); // Right focus, Properties tab
+        app.handle_key(KeyCode::Char(']')); // Permissions tab
+        app.handle_key(KeyCode::Char('n')); // open Grant Permission form
+    }
+
+    #[test]
+    fn f2_on_a_vocabulary_field_opens_the_picker_without_touching_the_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_grant_permission_form(&mut app);
+        app.handle_modal_key(KeyCode::Tab); // -> Scope
+        app.handle_modal_key(KeyCode::Tab); // -> Permissions (index 2)
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.picker.is_some());
+        match &app.modal {
+            Some(Modal::Form { fields, focused, kind, .. }) => {
+                assert_eq!(*focused, 2);
+                assert_eq!(fields.len(), 3);
+                assert_eq!(*kind, FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() });
+            }
+            other => panic!("expected the form to still be open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn f2_on_a_field_with_no_vocabulary_is_a_no_op() {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_grant_permission_form(&mut app); // focused = 0, Recipient
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.picker.is_none());
+        assert!(app.modal.is_some());
+    }
+
+    #[test]
+    fn typing_in_an_open_picker_filters_the_list_case_insensitively_and_resets_selection() {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_grant_permission_form(&mut app);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        app.handle_picker_key(KeyCode::Down); // move off 0 first, to prove filtering resets it
+        for c in "SNAP".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.selected, 0);
+        assert!(picker.values.iter().filter(|v| v.to_lowercase().contains("snap")).count() >= 2); // snapshot, snapdir, snapdev, snapshot_limit
+    }
+
+    #[test]
+    fn space_toggles_a_value_in_a_multi_select_picker() {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_grant_permission_form(&mut app);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        for c in "create".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        app.handle_picker_key(KeyCode::Char(' '));
+        assert_eq!(app.picker.as_ref().unwrap().checked, std::collections::HashSet::from(["create".to_string()]));
+        app.handle_picker_key(KeyCode::Char(' '));
+        assert!(app.picker.as_ref().unwrap().checked.is_empty(), "a second space on the same highlighted value must untoggle it");
+    }
+
+    #[test]
+    fn space_is_a_no_op_in_a_single_select_picker() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char(']'));
+        app.handle_key(KeyCode::Char(']')); // Acl tab
+        app.acl_entries_for = Some("/tank/data".to_string());
+        app.handle_key(KeyCode::Char('n')); // open Add ACL Entry form
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab); // -> Type (index 3)
+        app.handle_modal_key(KeyCode::F(2));
+        app.handle_picker_key(KeyCode::Char(' '));
+        assert!(app.picker.as_ref().unwrap().checked.is_empty());
+    }
+
+    #[test]
+    fn enter_on_a_multi_select_picker_joins_checked_values_into_the_field_and_closes_it() {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_grant_permission_form(&mut app);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        for c in "create".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        app.handle_picker_key(KeyCode::Char(' '));
+        for _ in 0.."create".len() {
+            app.handle_picker_key(KeyCode::Backspace);
+        }
+        for c in "destroy".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        app.handle_picker_key(KeyCode::Char(' '));
+        app.handle_picker_key(KeyCode::Enter);
+        assert!(app.picker.is_none());
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[2].value, "create,destroy"),
+            other => panic!("expected the form to still be open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_a_single_select_picker_writes_the_highlighted_value_and_closes_it() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char(']'));
+        app.handle_key(KeyCode::Char(']'));
+        app.acl_entries_for = Some("/tank/data".to_string());
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        app.handle_picker_key(KeyCode::Down); // allow -> deny
+        app.handle_picker_key(KeyCode::Enter);
+        assert!(app.picker.is_none());
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[3].value, "deny"),
+            other => panic!("expected the form to still be open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_an_empty_filtered_single_select_picker_is_a_no_op() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char(']'));
+        app.handle_key(KeyCode::Char(']'));
+        app.acl_entries_for = Some("/tank/data".to_string());
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        for c in "nonexistent-type".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        app.handle_picker_key(KeyCode::Enter);
+        assert!(app.picker.is_some(), "Enter against an empty filtered list must not close the picker");
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[3].value, "", "the field must be untouched"),
+            other => panic!("expected the form to still be open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn esc_cancels_the_picker_without_touching_the_field_or_the_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_grant_permission_form(&mut app);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        for c in "existing".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::F(2));
+        for c in "create".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        app.handle_picker_key(KeyCode::Char(' '));
+        app.handle_picker_key(KeyCode::Esc);
+        assert!(app.picker.is_none());
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[2].value, "existing", "Esc must leave the field exactly as it was before F2"),
+            other => panic!("expected the form to still be open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn up_and_down_clamp_within_the_filtered_list_without_panicking() {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_grant_permission_form(&mut app);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        app.handle_picker_key(KeyCode::Up); // already at 0, must not underflow
+        assert_eq!(app.picker.as_ref().unwrap().selected, 0);
+        for c in "xattr".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        // filtered list now has exactly 1 entry ("xattr" -- unique in
+        // ZFS_ALLOW_PERMISSIONS; "read_xattr"/"write_xattr" only exist
+        // in the separate ACL_PERMISSIONS vocabulary) -- Down must not
+        // move past it
+        app.handle_picker_key(KeyCode::Down);
+        assert_eq!(app.picker.as_ref().unwrap().selected, 0);
     }
 
     #[test]
