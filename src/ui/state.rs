@@ -674,7 +674,7 @@ impl App {
                         fields: vec![
                             FormField { label: "Recipient (everyone / user:<name> / group:<name>)".to_string(), value: String::new() },
                             FormField { label: "Scope (local/descendent/both, blank=both)".to_string(), value: String::new() },
-                            FormField { label: "Permissions".to_string(), value: String::new() },
+                            FormField { label: "Permissions (F2 to pick)".to_string(), value: String::new() },
                         ],
                         focused: 0,
                         description: None,
@@ -692,7 +692,7 @@ impl App {
                         title: format!("Grant/add-to permission set on '{dataset}'"),
                         fields: vec![
                             FormField { label: "Set name (without @)".to_string(), value: String::new() },
-                            FormField { label: "Permissions".to_string(), value: String::new() },
+                            FormField { label: "Permissions (F2 to pick)".to_string(), value: String::new() },
                         ],
                         focused: 0,
                         description: None,
@@ -708,7 +708,7 @@ impl App {
                 if let Some(dataset) = self.selected_dataset_name() {
                     self.modal = Some(Modal::Form {
                         title: format!("Grant create-time permission on '{dataset}'"),
-                        fields: vec![FormField { label: "Permissions".to_string(), value: String::new() }],
+                        fields: vec![FormField { label: "Permissions (F2 to pick)".to_string(), value: String::new() }],
                         focused: 0,
                         description: None,
                         kind: FormKind::GrantCreateTimePermission { host: self.selected_host, dataset },
@@ -761,7 +761,7 @@ impl App {
                         let target = permission_target_for_row(row);
                         self.modal = Some(Modal::Form {
                             title: format!("Revoke specific permissions on '{dataset}'"),
-                            fields: vec![FormField { label: "Permissions to remove".to_string(), value: String::new() }],
+                            fields: vec![FormField { label: "Permissions to remove (F2 to pick)".to_string(), value: String::new() }],
                             focused: 0,
                             description: None,
                             kind: FormKind::RevokePermissions { host: self.selected_host, dataset, target },
@@ -783,9 +783,9 @@ impl App {
                             title: format!("Add ACL entry on '{path}'"),
                             fields: vec![
                                 FormField { label: "Recipient (owner / group / everyone / user:<name> / group:<name>)".to_string(), value: String::new() },
-                                FormField { label: "Permissions".to_string(), value: String::new() },
-                                FormField { label: "Flags (blank = none)".to_string(), value: String::new() },
-                                FormField { label: "Type (allow/deny, blank=allow)".to_string(), value: String::new() },
+                                FormField { label: "Permissions (F2 to pick)".to_string(), value: String::new() },
+                                FormField { label: "Flags (blank = none, F2 to pick)".to_string(), value: String::new() },
+                                FormField { label: "Type (allow/deny, blank=allow, F2 to pick)".to_string(), value: String::new() },
                             ],
                             focused: 0,
                             description: None,
@@ -2178,6 +2178,7 @@ Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
+  F2               in a form, on a Permissions/Flags/Type field: open a picker (type filter, Space toggle, Enter OK, Esc cancel)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal
   ?                this Help screen
   A                About

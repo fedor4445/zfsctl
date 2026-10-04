@@ -6,7 +6,7 @@ use crate::zfs::property::Property;
 use crate::zfs::share::Share;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -534,25 +534,35 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, area: Rec
 
     let items: Vec<ListItem> = filtered
         .iter()
-        .enumerate()
-        .map(|(i, value)| {
+        .map(|value| {
             let marker = if picker.multi_select {
                 if picker.checked.contains(value.as_str()) { "[x] " } else { "[ ] " }
             } else {
                 ""
             };
-            let style = if i == picker.selected { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
-            ListItem::new(format!("{marker}{value}")).style(style)
+            ListItem::new(format!("{marker}{value}"))
         })
         .collect();
 
     let title = if picker.filter.is_empty() {
-        "Pick a value (type to filter, Space toggle, Enter confirm, Esc cancel)".to_string()
+        "Pick a value (type filter, Space toggle, Enter OK, Esc cancel)".to_string()
     } else {
-        format!("Pick a value — filter: '{}' (Space toggle, Enter confirm, Esc cancel)", picker.filter)
+        format!("Pick — filter '{}' (Space toggle, Enter OK, Esc cancel)", picker.filter)
     };
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(list, popup_area);
+    // `ListState` (not a manually-painted `i == picker.selected` style
+    // per item, and not plain `render_widget`) is what makes ratatui
+    // actually scroll the visible window to keep the selected row in
+    // view -- essential once the vocabulary is longer than the popup
+    // is tall (the zfs-allow Permissions list has 96 entries; a
+    // typical terminal shows well under half of that at once).
+    let mut list_state = ListState::default();
+    if !filtered.is_empty() {
+        list_state.select(Some(picker.selected.min(filtered.len() - 1)));
+    }
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(list, popup_area, &mut list_state);
 }
 
 /// Conservatively estimates how many terminal rows `text` occupies when
