@@ -246,6 +246,15 @@ impl ThemeEnv {
     }
 }
 
+/// Stops crossterm from applying `NO_COLOR` on its own. Left alone it
+/// strips every color and emits a bare `ESC[m` (a full SGR reset) in its
+/// place, which also wipes the bold/reverse ratatui has just set for the
+/// same cell. `resolve` already honours `NO_COLOR` by choosing `mono`
+/// (which emits no colors), so an explicitly configured theme must win.
+pub fn apply_color_policy() {
+    crossterm::style::force_color_output(true);
+}
+
 #[derive(Debug)]
 pub struct Resolved {
     pub theme: Theme,
@@ -468,5 +477,19 @@ mod tests {
         for t in [Theme::ansi(), Theme::mono(), Theme::from_name(ThemeName::SolarizedDark, true)] {
             assert_eq!(t.selected_row(), Style::new().add_modifier(Modifier::REVERSED));
         }
+    }
+
+    /// crossterm strips every color when NO_COLOR is set, and writes a bare
+    /// `ESC[;m` (a full SGR reset) in its place, which also wipes the
+    /// bold/reverse ratatui just set. `resolve` already applies NO_COLOR
+    /// (by choosing `mono`), so an explicitly configured theme must win.
+    /// NOTE: touches process env; this is the only test that does.
+    #[test]
+    fn explicit_theme_colors_survive_no_color_in_the_environment() {
+        std::env::set_var("NO_COLOR", "1");
+        apply_color_policy();
+        let out = format!("{}", crossterm::style::SetForegroundColor(crossterm::style::Color::Red));
+        std::env::remove_var("NO_COLOR");
+        assert!(out.contains("38;5;"), "colors were stripped: {out:?}");
     }
 }

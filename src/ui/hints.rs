@@ -96,7 +96,14 @@ fn context_hints(app: &App) -> Vec<Hint> {
         if !app.vdevs.is_empty() {
             v.push(h("↑↓", "Move", 1));
         }
-        if app.vdevs_table.selected().is_some() {
+        // Only a leaf disk can be offlined/onlined/replaced; on a mirror/raidz
+        // group row these keys just set a status message.
+        let leaf_selected = app
+            .vdevs_table
+            .selected()
+            .and_then(|i| app.vdevs.get(i))
+            .is_some_and(|v| crate::zfs::pool::is_leaf_disk(&v.name));
+        if leaf_selected {
             v.push(h("o", "Offline", 2));
             v.push(h("O", "Online", 2));
             v.push(h("x", "Replace", 2));
@@ -358,6 +365,15 @@ mod tests {
         a
     }
 
+    /// A drilled pool whose selected row is a mirror GROUP, not a disk:
+    /// o/O/x only set a status message there.
+    fn drilled_group_selected() -> App {
+        let mut a = drilled(false);
+        a.vdevs.insert(1, VdevLine { depth: 1, name: "mirror-0".to_string(), health: PoolHealth::Online });
+        a.vdevs_table.select(Some(1));
+        a
+    }
+
     fn datasets_middle(shares_loaded: bool) -> App {
         let mut a = base();
         go(&mut a, Section::Datasets);
@@ -439,6 +455,7 @@ mod tests {
             ("pools right", pools_right()),
             ("vdevs, row selected", drilled(true)),
             ("vdevs, nothing selected", drilled(false)),
+            ("vdevs, mirror group selected", drilled_group_selected()),
             ("datasets middle", datasets_middle(false)),
             ("datasets middle, shares loaded", datasets_middle(true)),
             ("datasets right: properties", datasets_right(DatasetDetailTab::Properties)),

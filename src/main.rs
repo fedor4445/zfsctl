@@ -22,6 +22,7 @@ fn run() -> error::Result<()> {
     // Resolved before the terminal enters raw mode, so a bad `theme`
     // value prints a plain error and exits instead of garbling the screen.
     let resolved = ui::theme::resolve(config.ui.theme.as_deref(), &ui::theme::ThemeEnv::from_process())?;
+    ui::theme::apply_color_policy();
     let inventory = hosts::HostInventory::from_config(&config);
     ui::run_app(inventory, config_path, resolved)
 }
