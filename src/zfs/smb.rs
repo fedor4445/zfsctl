@@ -1,5 +1,6 @@
 //! Managed block in smb4.conf: pure parsing, rendering, validation.
 use crate::error::{AppError, Result};
+use crate::exec::CommandRunner;
 
 pub const CONF_PATH: &str = "/usr/local/etc/smb4.conf";
 pub const BLOCK_START: &str = "## zfsctl managed shares -- do not edit by hand -- start";
@@ -207,6 +208,102 @@ pub fn validate_user(user: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+pub fn read_conf(runner: &dyn CommandRunner) -> Result<String> {
+    let out = runner.run("cat", &[CONF_PATH])?;
+    if out.success() {
+        return Ok(out.stdout);
+    }
+    if out.stderr.contains("No such file or directory") {
+        return Ok(String::new());
+    }
+    Err(AppError::CommandFailed { cmd: format!("cat {CONF_PATH}"), status: out.status, stderr: out.stderr })
+}
+
+pub fn list_managed(runner: &dyn CommandRunner) -> Result<Vec<SmbShare>> {
+    parse_managed(&read_conf(runner)?)
+}
+
+fn write_conf(runner: &dyn CommandRunner, content: &str) -> Result<()> {
+    let out = runner.run_with_stdin("tee", &[CONF_PATH], content)?;
+    if out.success() {
+        Ok(())
+    } else {
+        Err(smb_err(format!("could not write {CONF_PATH}: {}", out.stderr.trim())))
+    }
+}
+
+/// Reloads Samba; if that fails, puts `previous` back so the file on
+/// disk never stays in a state the running daemon rejected.
+fn reload_or_restore(runner: &dyn CommandRunner, previous: &str) -> Result<()> {
+    let out = runner.run("service", &["samba_server", "reload"])?;
+    if out.success() {
+        return Ok(());
+    }
+    let reload_msg = out.stderr.trim().to_string();
+    match write_conf(runner, previous) {
+        Ok(()) => Err(smb_err(format!(
+            "'service samba_server reload' failed ({reload_msg}); the previous smb4.conf has been restored"
+        ))),
+        Err(restore) => Err(smb_err(format!(
+            "'service samba_server reload' failed ({reload_msg}) AND restoring the previous smb4.conf also failed ({restore}); fix {CONF_PATH} by hand"
+        ))),
+    }
+}
+
+pub fn set_share(runner: &dyn CommandRunner, share: &SmbShare, password: Option<&str>) -> Result<()> {
+    validate_share_name(&share.name).map_err(smb_err)?;
+    if let Some(user) = &share.valid_user {
+        validate_user(user).map_err(smb_err)?;
+    }
+    if share.dataset.is_empty() || share.dataset.chars().any(char::is_control) {
+        return Err(smb_err("dataset is empty or contains control characters"));
+    }
+    if share.path.is_empty() || share.path.chars().any(char::is_control) {
+        return Err(smb_err("share path is empty or contains control characters"));
+    }
+    if password.is_some_and(|p| p.contains(['\n', '\r'])) {
+        return Err(smb_err("password must not contain a line break"));
+    }
+
+    let original = read_conf(runner)?;
+    let mut shares = parse_managed(&original)?;
+    if outside_block_stanza_names(&original)?.contains(&share.name.to_lowercase()) {
+        return Err(smb_err(format!("a share named '{}' already exists in smb4.conf outside zfsctl's managed block", share.name)));
+    }
+    if shares.iter().any(|s| s.dataset != share.dataset && s.name.eq_ignore_ascii_case(&share.name)) {
+        return Err(smb_err(format!("another managed share is already named '{}'", share.name)));
+    }
+    match shares.iter_mut().find(|s| s.dataset == share.dataset) {
+        Some(slot) => *slot = share.clone(),
+        None => shares.push(share.clone()),
+    }
+    let updated = render_with_shares(&original, &shares)?;
+
+    if let (Some(user), Some(pw)) = (&share.valid_user, password) {
+        let out = runner.run_with_stdin("smbpasswd", &["-a", "-s", user], &format!("{pw}\n{pw}\n"))?;
+        if !out.success() {
+            return Err(smb_err(format!(
+                "could not set the Samba password for '{user}' ({}); smb4.conf was not changed",
+                out.stderr.trim()
+            )));
+        }
+    }
+    write_conf(runner, &updated)?;
+    reload_or_restore(runner, &original)
+}
+
+pub fn remove_share(runner: &dyn CommandRunner, dataset: &str) -> Result<()> {
+    let original = read_conf(runner)?;
+    let mut shares = parse_managed(&original)?;
+    let before = shares.len();
+    shares.retain(|s| s.dataset != dataset);
+    if shares.len() == before {
+        return Err(smb_err(format!("no managed SMB share for dataset '{dataset}'")));
+    }
+    write_conf(runner, &render_with_shares(&original, &shares)?)?;
+    reload_or_restore(runner, &original)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +434,145 @@ mod tests {
         for bad in ["", "-a", "--x", "a b", "a,b", "a\nb", "a;b", "a/b"] {
             assert!(validate_user(bad).is_err(), "{bad:?}");
         }
+    }
+    use crate::exec::test_support::FakeRunner;
+    fn calls(r: &FakeRunner) -> Vec<String> {
+        r.calls.lock().unwrap().iter().map(|(c, _)| c.clone()).collect()
+    }
+    fn tee_writes(r: &FakeRunner) -> Vec<String> {
+        r.stdin_calls.lock().unwrap().iter().filter(|(c, _)| c == "tee").map(|(_, s)| s.clone()).collect()
+    }
+    fn runner_with(conf: &str) -> FakeRunner {
+        FakeRunner::new("").route("cat", CONF_PATH, conf)
+    }
+
+    #[test]
+    fn read_conf_treats_a_missing_file_as_empty_but_other_failures_as_errors() {
+        let missing = FakeRunner::new("").route_failure("cat", CONF_PATH, "cat: /usr/local/etc/smb4.conf: No such file or directory", 1);
+        assert_eq!(read_conf(&missing).unwrap(), "");
+        let denied = FakeRunner::new("").route_failure("cat", CONF_PATH, "sudo: a password is required", 1);
+        assert!(read_conf(&denied).is_err());
+    }
+
+    #[test]
+    fn set_share_create_runs_cat_smbpasswd_tee_reload_in_that_order() {
+        let r = runner_with(FB_CONF);
+        set_share(&r, &share("media", "tank/media", Some("carol"), false), Some("p w$1")).unwrap();
+        assert_eq!(calls(&r), vec!["cat", "smbpasswd", "tee", "service"]);
+        let all = r.calls.lock().unwrap();
+        assert_eq!(all[1].1, vec!["-a", "-s", "carol"]);
+        assert_eq!(all[2].1, vec![CONF_PATH]);
+        assert_eq!(all[3].1, vec!["samba_server", "reload"]);
+        let stdin = r.stdin_calls.lock().unwrap();
+        assert_eq!(stdin[0], ("smbpasswd".to_string(), "p w$1\np w$1\n".to_string()), "password verbatim, doubled, on stdin only");
+        assert!(all.iter().all(|(_, args)| args.iter().all(|a| !a.contains("p w$1"))), "password must never appear in an argument");
+        let written = &stdin[1].1;
+        assert!(written.starts_with(FB_CONF), "bytes outside the block are preserved");
+        assert!(written.contains("valid users = carol"));
+    }
+
+    #[test]
+    fn set_share_without_a_user_or_without_a_password_skips_smbpasswd() {
+        let r = runner_with(FB_CONF);
+        set_share(&r, &share("pub", "tank/pub", None, true), Some("ignored")).unwrap();
+        assert!(!calls(&r).contains(&"smbpasswd".to_string()));
+        let r = runner_with(FB_CONF);
+        set_share(&r, &share("media", "tank/media", Some("carol"), true), None).unwrap();
+        assert!(!calls(&r).contains(&"smbpasswd".to_string()), "blank password on edit = keep the existing one");
+    }
+
+    #[test]
+    fn set_share_bad_user_fails_before_the_config_is_touched() {
+        let r = runner_with(FB_CONF).route_failure("smbpasswd", "-a", "Failed to add entry for user nosuch.", 1);
+        let err = set_share(&r, &share("media", "tank/media", Some("nosuch"), false), Some("pw")).unwrap_err().to_string();
+        assert!(err.contains("nosuch") && err.contains("not changed"), "{err}");
+        assert!(tee_writes(&r).is_empty());
+        assert!(!calls(&r).contains(&"service".to_string()));
+    }
+
+    #[test]
+    fn set_share_edit_replaces_the_dataset_s_stanza_instead_of_adding_a_second_block() {
+        let first = render_with_shares(FB_CONF, &[share("media", "tank/media", None, true)]).unwrap();
+        let r = runner_with(&first);
+        set_share(&r, &share("renamed", "tank/media", None, false), None).unwrap();
+        let written = tee_writes(&r).remove(0);
+        let parsed = parse_managed(&written).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "renamed");
+        assert_eq!(written.matches(BLOCK_START).count(), 1);
+    }
+
+    #[test]
+    fn set_share_refuses_names_that_collide_with_unmanaged_or_other_managed_stanzas() {
+        let r = runner_with(FB_CONF);
+        assert!(set_share(&r, &share("Alice", "tank/a", None, true), None).is_err());
+        assert!(set_share(&r, &share("global", "tank/a", None, true), None).is_err());
+        assert!(tee_writes(&r).is_empty());
+        let first = render_with_shares(FB_CONF, &[share("media", "tank/media", None, true)]).unwrap();
+        let r = runner_with(&first);
+        assert!(set_share(&r, &share("MEDIA", "tank/other", None, true), None).is_err());
+        assert!(tee_writes(&r).is_empty());
+    }
+
+    #[test]
+    fn set_share_validates_its_inputs_even_if_the_ui_did_not() {
+        let r = runner_with(FB_CONF);
+        assert!(set_share(&r, &share("bad name", "tank/a", None, true), None).is_err());
+        assert!(set_share(&r, &share("ok", "tank/a", Some("-evil"), true), Some("pw")).is_err());
+        assert!(set_share(&r, &share("ok", "tank/a", Some("bob"), true), Some("a\nb")).is_err(), "newline would break the stdin protocol");
+        assert!(calls(&r).iter().all(|c| c != "smbpasswd" && c != "tee"));
+    }
+
+    #[test]
+    fn set_share_works_on_a_host_with_no_smb4_conf_yet() {
+        let r = FakeRunner::new("").route_failure("cat", CONF_PATH, "cat: x: No such file or directory", 1);
+        set_share(&r, &share("a", "tank/a", None, true), None).unwrap();
+        assert!(tee_writes(&r)[0].starts_with(BLOCK_START));
+    }
+
+    #[test]
+    fn set_share_write_failure_is_reported_and_skips_reload() {
+        let r = runner_with(FB_CONF).route_failure("tee", CONF_PATH, "Permission denied", 1);
+        let err = set_share(&r, &share("a", "tank/a", None, true), None).unwrap_err().to_string();
+        assert!(err.contains("smb4.conf") && err.contains("Permission denied"), "{err}");
+        assert!(!calls(&r).contains(&"service".to_string()));
+    }
+
+    #[test]
+    fn set_share_reload_failure_restores_the_previous_file_and_says_both_things() {
+        let r = runner_with(FB_CONF).route_failure("service", "samba_server", "smbd: invalid config", 1);
+        let err = set_share(&r, &share("a", "tank/a", None, true), None).unwrap_err().to_string();
+        assert!(err.contains("reload") && err.contains("restored"), "{err}");
+        let writes = tee_writes(&r);
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[1], FB_CONF, "the original bytes are written back");
+    }
+
+    #[test]
+    fn remove_share_drops_only_that_dataset_and_never_runs_smbpasswd() {
+        let both = render_with_shares(FB_CONF, &[share("a", "tank/a", Some("carol"), true), share("b", "tank/b", None, true)]).unwrap();
+        let r = runner_with(&both);
+        remove_share(&r, "tank/a").unwrap();
+        let written = tee_writes(&r).remove(0);
+        let left = parse_managed(&written).unwrap();
+        assert_eq!(left.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["b"]);
+        assert!(written.starts_with(FB_CONF));
+        assert!(!calls(&r).contains(&"smbpasswd".to_string()));
+        assert_eq!(calls(&r).last().unwrap(), "service");
+    }
+
+    #[test]
+    fn remove_share_for_an_unknown_dataset_is_an_error_and_changes_nothing() {
+        let r = runner_with(FB_CONF);
+        assert!(remove_share(&r, "tank/none").is_err());
+        assert!(tee_writes(&r).is_empty());
+    }
+
+    #[test]
+    fn set_share_rejects_empty_or_control_character_datasets() {
+        let r = runner_with(FB_CONF);
+        assert!(set_share(&r, &share("ok", "", None, true), None).is_err());
+        assert!(set_share(&r, &share("ok", "tank/a\n[evil]", None, true), None).is_err());
+        assert!(tee_writes(&r).is_empty());
     }
 }
