@@ -297,6 +297,16 @@ pub fn hint_line(hints: &[Hint], width: usize, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn smb(dataset: &str) -> crate::zfs::share::Share {
+        crate::zfs::share::Share::Smb {
+            dataset: dataset.to_string(),
+            name: "media".to_string(),
+            path: format!("/{dataset}"),
+            valid_user: Some("carol".to_string()),
+            read_only: false,
+        }
+    }
     use crate::acl::{AclEntry, AclEntryType, AclTag};
     use crate::ui::modal::{FormField, FormKind, MutationCall, PendingAction};
     use crate::ui::state::PermissionRow;
@@ -434,7 +444,7 @@ mod tests {
         go(&mut a, Section::Shares);
         a.shares = vec![
             Share::Nfs { dataset: "tank/a".to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None },
-            Share::Smb { dataset: "tank/b".to_string(), name: None },
+            smb("tank/b"),
         ];
         a.shares_table.select(Some(0));
         a

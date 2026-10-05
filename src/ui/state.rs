@@ -1614,6 +1614,9 @@ impl App {
                             self.samba_available = Some(snapshot.samba_available);
                             self.shares_loaded = true;
                             self.status_message = None;
+                            if let Some(e) = snapshot.smb_error {
+                                self.set_error(format!("SMB shares unavailable: {e}"));
+                            }
                         }
                         Err(e) => self.set_error(e.to_string()),
                     }
@@ -2262,6 +2265,16 @@ Press any key to close."
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn smb(dataset: &str) -> crate::zfs::share::Share {
+        crate::zfs::share::Share::Smb {
+            dataset: dataset.to_string(),
+            name: "media".to_string(),
+            path: format!("/{dataset}"),
+            valid_user: Some("carol".to_string()),
+            read_only: false,
+        }
+    }
     use crate::exec::test_support::FakeRunner;
     use crate::zfs::property::PropertySource;
 
@@ -4763,7 +4776,7 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         let runner: Arc<dyn CommandRunner> = Arc::new(
             FakeRunner::new("")
-                .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\ntank/data\tsharesmb\toff\tdefault\n")
+                .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\n")
                 .route("service", "nfsd", "nfsd is running as pid 1234.\n")
                 .route("service", "samba_server", "smbd is not running.\n"),
         );
@@ -4790,9 +4803,10 @@ mod tests {
             .send(WorkerMsg::Shares(
                 1,
                 Ok(crate::zfs::share::SharesSnapshot {
-                    shares: vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: None }],
+                    shares: vec![smb("tank/data")],
                     nfs_available: true,
                     samba_available: true,
+                    smb_error: None,
                 }),
             ))
             .unwrap();
@@ -4803,7 +4817,7 @@ mod tests {
     #[test]
     fn switching_host_clears_shares_state() {
         let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
-        app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: None }];
+        app.shares = vec![smb("tank/data")];
         app.shares_table.select(Some(0));
         app.nfs_available = Some(true);
         app.samba_available = Some(false);
@@ -4853,7 +4867,7 @@ mod tests {
         for _ in 0..5 {
             app.handle_key(KeyCode::Tab);
         } // -> Shares
-        app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: Some("myshare".to_string()) }];
+        app.shares = vec![smb("tank/data")];
         app.shares_table.select(Some(0));
         app.handle_key(KeyCode::Enter);
         assert!(app.modal.is_none(), "SMB share creation/editing isn't supported on FreeBSD; Enter on an SMB row must not open an edit form");
@@ -4893,7 +4907,7 @@ mod tests {
         for _ in 0..5 {
             app.handle_key(KeyCode::Tab);
         } // -> Shares
-        app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/data".to_string(), name: None }];
+        app.shares = vec![smb("tank/data")];
         app.shares_table.select(Some(0));
         app.handle_key(KeyCode::Char('d'));
         match &app.modal {

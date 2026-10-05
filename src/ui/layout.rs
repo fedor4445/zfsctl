@@ -488,14 +488,19 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let rows = app.shares.iter().map(|s| match s {
         Share::Nfs { dataset, raw, .. } => Row::new(vec![dataset.clone(), "NFS".to_string(), raw.clone()]),
-        Share::Smb { dataset, name } => {
-            Row::new(vec![dataset.clone(), "SMB".to_string(), name.clone().unwrap_or_else(|| "(default name)".to_string())])
-        }
+        Share::Smb { dataset, name, valid_user, read_only, .. } => Row::new(vec![
+            dataset.clone(),
+            "SMB".to_string(),
+            format!("\\\\{name}  user={}  {}", valid_user.as_deref().unwrap_or("(guest)"), if *read_only { "ro" } else { "rw" }),
+        ]),
     });
     let widths = [Constraint::Length(24), Constraint::Length(8), Constraint::Min(20)];
     let mut hints = Vec::new();
     if app.nfs_available == Some(false) {
         hints.push("NFS unavailable: nfsd not running");
+    }
+    if app.samba_available == Some(false) {
+        hints.push("SMB unavailable: smbd not running");
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
     let title = format!("Shares — {} ('r' refresh, Enter edit, 'd' remove){hint_suffix}", app.active_host_name());
