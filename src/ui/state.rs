@@ -2043,26 +2043,27 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
 }
 
 fn smb_edit_modal(existing: Option<&crate::zfs::share::Share>, dataset: &str, path: &str, host: usize) -> Modal {
-    let (name, user, read_only, existing_user) = match existing {
-        Some(crate::zfs::share::Share::Smb { name, valid_user, read_only, .. }) => {
-            (name.clone(), valid_user.clone().unwrap_or_default(), *read_only, valid_user.clone())
+    let (name, user, read_only, existing_user, guest_ok) = match existing {
+        Some(crate::zfs::share::Share::Smb { name, valid_user, read_only, guest_ok, .. }) => {
+            (name.clone(), valid_user.clone().unwrap_or_default(), *read_only, valid_user.clone(), *guest_ok)
         }
         _ => {
             let suggestion = dataset.rsplit('/').next().unwrap_or("").to_string();
             let suggestion = if crate::zfs::smb::validate_share_name(&suggestion).is_ok() { suggestion } else { String::new() };
-            (suggestion, String::new(), false, None)
+            (suggestion, String::new(), false, None, false)
         }
     };
     Modal::Form {
         title: format!("SMB share: '{dataset}'"),
         fields: vec![
             FormField { label: "Share name".to_string(), value: name },
-            FormField { label: "Valid user (blank = guest)".to_string(), value: user },
+            FormField { label: "Valid user (blank = any Samba user)".to_string(), value: user },
             FormField { label: "Password (blank on edit = unchanged)".to_string(), value: String::new() },
             FormField { label: "Read-only (y/n)".to_string(), value: if read_only { "y".to_string() } else { "n".to_string() } },
+            FormField { label: "Guest access (y/n)".to_string(), value: if guest_ok { "y".to_string() } else { "n".to_string() } },
         ],
         focused: 0,
-        description: Some(format!("Shares {path} as \\\\<host>\\<name>. The Valid user must already be a Unix account; the password is its separate Samba password. Setting a password replaces that user's Samba password for every share they use.")),
+        description: Some(format!("Shares {path} as \\\\<host>\\<name>. The Valid user must already be a Unix account; the password is its separate Samba password. Setting a password replaces that user's Samba password for every share they use. Blank user + guest n: any Samba user may connect. Guest y: anonymous access with no password (needs a blank user).")),
         kind: FormKind::ShareSmb { host, dataset: dataset.to_string(), path: path.to_string(), existing_user },
     }
 }
@@ -2079,11 +2080,15 @@ fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs:
     }
     let password = &fields[2].value; // verbatim: spaces can be part of a password
     let read_only = fields[3].value.trim().to_lowercase().starts_with('y');
+    let guest_ok = fields[4].value.trim().to_lowercase().starts_with('y');
+    if guest_ok && !user.is_empty() {
+        return Err("Guest access can't be combined with a Valid user".to_string());
+    }
     let clash = shares.iter().any(|s| matches!(s, crate::zfs::share::Share::Smb { dataset: d, name: n, .. } if d != dataset && n.eq_ignore_ascii_case(name)));
     if clash {
         return Err(format!("A share named '{name}' already exists on another dataset"));
     }
-    let password = if user.is_empty() {
+    let password = if user.is_empty() || guest_ok {
         None
     } else if password.is_empty() {
         if existing_user.as_deref() == Some(user) {
@@ -2104,6 +2109,7 @@ fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs:
                 path: path.clone(),
                 valid_user: if user.is_empty() { None } else { Some(user.to_string()) },
                 read_only,
+                guest_ok,
             },
             password,
         },
@@ -2356,6 +2362,7 @@ mod tests {
             path: format!("/{dataset}"),
             valid_user: Some("carol".to_string()),
             read_only: false,
+            guest_ok: false,
         }
     }
     use crate::exec::test_support::FakeRunner;
@@ -4989,7 +4996,8 @@ mod tests {
         match &app.modal {
             Some(Modal::Form { fields, kind, .. }) => {
                 assert_eq!(*kind, FormKind::ShareSmb { host: 0, dataset: "tank/media".into(), path: "/tank/media".into(), existing_user: None });
-                assert_eq!(fields.len(), 4);
+                assert_eq!(fields.len(), 5);
+                assert_eq!(fields[4].value, "n");
                 assert_eq!(fields[0].value, "media", "suggests the dataset's last path component");
                 assert_eq!(fields[1].value, "");
             }
@@ -5031,11 +5039,11 @@ mod tests {
 
     /// Feeds each value then Enter through `handle_modal_key` (Enter
     /// advances; the 4th submits); returns what the final Enter produced.
-    fn type_into_smb_form(app: &mut App, values: [&str; 4]) -> Option<PendingAction> {
+    fn type_into_smb_form(app: &mut App, values: [&str; 5]) -> Option<PendingAction> {
         let mut last = None;
         for v in values {
             for c in v.chars() {
-                // '\u{8}' stands for Backspace (the read-only field is pre-filled with "n")
+                // '\u{8}' stands for Backspace (the read-only and guest fields are pre-filled with "n")
                 app.handle_modal_key(if c == '\u{8}' { KeyCode::Backspace } else { KeyCode::Char(c) });
             }
             last = app.handle_modal_key(KeyCode::Enter);
@@ -5056,11 +5064,11 @@ mod tests {
     #[test]
     fn submitting_a_valid_smb_form_builds_a_set_smb_share_action() {
         let mut app = open_blank_smb_form();
-        let action = type_into_smb_form(&mut app, ["media", "carol", " pw 1 ", "\u{8}y"]).expect("submitted");
+        let action = type_into_smb_form(&mut app, ["media", "carol", " pw 1 ", "\u{8}y", "n"]).expect("submitted");
         assert_eq!(
             action.call,
             MutationCall::SetSmbShare {
-                share: crate::zfs::smb::SmbShare { name: "media".into(), dataset: "tank/media".into(), path: "/tank/media".into(), valid_user: Some("carol".into()), read_only: true },
+                share: crate::zfs::smb::SmbShare { name: "media".into(), dataset: "tank/media".into(), path: "/tank/media".into(), valid_user: Some("carol".into()), read_only: true, guest_ok: false },
                 password: Some(crate::ui::modal::Secret(" pw 1 ".to_string())),
             },
             "the password is kept verbatim, not trimmed"
@@ -5070,16 +5078,17 @@ mod tests {
 
     #[test]
     fn smb_form_validation_errors_keep_the_form_open_with_a_specific_message() {
-        let cases: [([&str; 4], &str); 5] = [
-            (["", "", "", "n"], "required"),
-            (["bad name", "", "", "n"], "letters, digits"),
-            (["media", "-evil", "pw", "n"], "valid Unix username"),
-            (["media", "carol", "", "n"], "Samba password is required"),
-            (["alice", "", "", "n"], "already"),
+        let cases: [([&str; 5], &str); 6] = [
+            (["", "", "", "n", "n"], "required"),
+            (["bad name", "", "", "n", "n"], "letters, digits"),
+            (["media", "-evil", "pw", "n", "n"], "valid Unix username"),
+            (["media", "carol", "", "n", "n"], "Samba password is required"),
+            (["alice", "", "", "n", "n"], "already"),
+            (["media", "carol", "pw", "n", "\u{8}y"], "Guest access can't be combined"),
         ];
         for (values, expect) in cases {
             let mut app = open_blank_smb_form();
-            app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/other".into(), name: "alice".into(), path: "/x".into(), valid_user: None, read_only: true }];
+            app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/other".into(), name: "alice".into(), path: "/x".into(), valid_user: None, read_only: true, guest_ok: false }];
             assert!(type_into_smb_form(&mut app, values).is_none());
             assert!(matches!(app.modal, Some(Modal::Form { .. })), "{values:?} must keep the form open");
             let msg = app.status_message.clone().unwrap_or_default();
@@ -5092,7 +5101,7 @@ mod tests {
         let mut app = datasets_app_with_mount(Some("/tank/media"));
         app.shares = vec![smb("tank/media")]; // existing user: carol
         app.handle_key(KeyCode::Char('M'));
-        for _ in 0..3 {
+        for _ in 0..4 {
             assert!(app.handle_modal_key(KeyCode::Enter).is_none());
         }
         let action = app.handle_modal_key(KeyCode::Enter).expect("unchanged user + blank password is fine");
@@ -5108,7 +5117,7 @@ mod tests {
         for c in "bob".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
-        for _ in 0..3 {
+        for _ in 0..4 {
             assert!(app.handle_modal_key(KeyCode::Enter).is_none());
         }
         assert!(matches!(app.modal, Some(Modal::Form { .. })), "changing the user requires a password");
@@ -5117,8 +5126,34 @@ mod tests {
     #[test]
     fn a_blank_user_ignores_any_typed_password() {
         let mut app = open_blank_smb_form();
-        let action = type_into_smb_form(&mut app, ["pub", "", "ignored", "n"]).unwrap();
+        let action = type_into_smb_form(&mut app, ["pub", "", "ignored", "n", "n"]).unwrap();
         assert!(matches!(action.call, MutationCall::SetSmbShare { password: None, ref share } if share.valid_user.is_none()));
+    }
+
+    #[test]
+    fn a_default_blank_form_is_not_guest_and_builds_no_guest_ok() {
+        let mut app = open_blank_smb_form();
+        let action = type_into_smb_form(&mut app, ["any", "", "", "n", "n"]).unwrap();
+        let MutationCall::SetSmbShare { ref share, password: None } = action.call else { panic!("{:?}", action.call) };
+        assert!(!share.guest_ok);
+        assert!(!crate::zfs::smb::render_with_shares("", std::slice::from_ref(share)).unwrap().contains("guest ok"));
+    }
+
+    #[test]
+    fn guest_y_with_a_blank_user_builds_a_guest_share_ignoring_the_password() {
+        let mut app = open_blank_smb_form();
+        let action = type_into_smb_form(&mut app, ["pub", "", "ignored", "n", "\u{8}y"]).unwrap();
+        assert!(matches!(action.call, MutationCall::SetSmbShare { password: None, ref share } if share.guest_ok && share.valid_user.is_none()));
+    }
+
+    #[test]
+    fn editing_an_existing_guest_share_prefills_guest_y() {
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/media".into(), name: "pub".into(), path: "/tank/media".into(), valid_user: None, read_only: true, guest_ok: true }];
+        app.handle_key(KeyCode::Char('M'));
+        let Some(Modal::Form { fields, .. }) = &app.modal else { panic!("expected form") };
+        assert_eq!(fields.len(), 5);
+        assert_eq!(fields[4].value, "y");
     }
 
     #[test]

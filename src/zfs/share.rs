@@ -18,6 +18,7 @@ pub enum Share {
         path: String,
         valid_user: Option<String>,
         read_only: bool,
+        guest_ok: bool,
     },
 }
 
@@ -229,6 +230,7 @@ pub fn list_shares_with_availability(runner: &dyn CommandRunner) -> Result<Share
                 path: s.path,
                 valid_user: s.valid_user,
                 read_only: s.read_only,
+                guest_ok: s.guest_ok,
             })),
             Err(e) => smb_error = Some(e.to_string()),
         }
@@ -431,6 +433,7 @@ tank/data@snap1\tsharenfs\t-\t-
                 path: "/tank/media".to_string(),
                 valid_user: Some("carol".to_string()),
                 read_only: false,
+                guest_ok: false,
             }
         );
     }

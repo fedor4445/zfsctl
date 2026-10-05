@@ -225,8 +225,10 @@ pub enum FormKind {
     /// defaults to `"allow"`). `position` is fixed at modal-open time
     /// (always the current entry count — new entries are appended).
     AddAclEntry { host: usize, path: String, position: usize },
-    /// Fields: `[name, valid_user, password, read_only]` -- a blank
-    /// `valid_user` means guest access; a blank `password` on edit keeps
+    /// Fields: `[name, valid_user, password, read_only, guest]` -- a blank
+    /// `valid_user` with guest `n` means any authenticated Samba user may
+    /// connect; guest `y` (blank user only) means anonymous access and the
+    /// password is ignored; a blank `password` on edit keeps
     /// the existing Samba password (only valid when the user is
     /// unchanged, see `existing_user`). The password field is masked.
     ShareSmb { host: usize, dataset: String, path: String, existing_user: Option<String> },
@@ -284,7 +286,7 @@ mod tests {
     #[test]
     fn secret_never_appears_in_debug_output() {
         let call = MutationCall::SetSmbShare {
-            share: crate::zfs::smb::SmbShare { name: "a".into(), dataset: "tank/a".into(), path: "/tank/a".into(), valid_user: Some("bob".into()), read_only: false },
+            share: crate::zfs::smb::SmbShare { name: "a".into(), dataset: "tank/a".into(), path: "/tank/a".into(), valid_user: Some("bob".into()), read_only: false, guest_ok: false },
             password: Some(Secret("hunter2".to_string())),
         };
         assert!(!format!("{call:?}").contains("hunter2"));

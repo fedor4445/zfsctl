@@ -484,14 +484,22 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(table, area, &mut app.disks_table);
 }
 
+fn smb_access_label(guest_ok: bool, valid_user: Option<&str>) -> String {
+    match (guest_ok, valid_user) {
+        (true, _) => "guest".to_string(),
+        (false, Some(u)) => format!("user={u}"),
+        (false, None) => "any Samba user".to_string(),
+    }
+}
+
 fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let rows = app.shares.iter().map(|s| match s {
         Share::Nfs { dataset, raw, .. } => Row::new(vec![dataset.clone(), "NFS".to_string(), raw.clone()]),
-        Share::Smb { dataset, name, valid_user, read_only, .. } => Row::new(vec![
+        Share::Smb { dataset, name, valid_user, read_only, guest_ok, .. } => Row::new(vec![
             dataset.clone(),
             "SMB".to_string(),
-            format!("\\\\{name}  user={}  {}", valid_user.as_deref().unwrap_or("(guest)"), if *read_only { "ro" } else { "rw" }),
+            format!("\\\\{name}  {}  {}", smb_access_label(*guest_ok, valid_user.as_deref()), if *read_only { "ro" } else { "rw" }),
         ]),
     });
     let widths = [Constraint::Length(24), Constraint::Length(8), Constraint::Min(20)];

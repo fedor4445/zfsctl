@@ -16,6 +16,8 @@ pub struct SmbShare {
     pub path: String,
     pub valid_user: Option<String>,
     pub read_only: bool,
+    /// Anonymous access (`guest ok = yes`). Explicit opt-in; never combined with a `valid_user`.
+    pub guest_ok: bool,
 }
 
 fn smb_err(msg: impl Into<String>) -> AppError {
@@ -63,6 +65,7 @@ struct Partial {
     path: Option<String>,
     valid_user: Option<String>,
     read_only: Option<bool>,
+    guest_ok: Option<bool>,
 }
 
 fn finish(p: Partial, out: &mut Vec<SmbShare>) -> Result<()> {
@@ -74,7 +77,7 @@ fn finish(p: Partial, out: &mut Vec<SmbShare>) -> Result<()> {
     if out.iter().any(|s| s.dataset == dataset) {
         return Err(smb_err(format!("dataset '{dataset}' has more than one managed share")));
     }
-    out.push(SmbShare { name: p.name, dataset, path, valid_user: p.valid_user, read_only: p.read_only.unwrap_or(true) });
+    out.push(SmbShare { name: p.name, dataset, path, valid_user: p.valid_user, read_only: p.read_only.unwrap_or(true), guest_ok: p.guest_ok.unwrap_or(false) });
     Ok(())
 }
 
@@ -118,8 +121,7 @@ pub fn parse_managed(conf: &str) -> Result<Vec<SmbShare>> {
                     p.valid_user = if value.is_empty() { None } else { Some(value.to_string()) };
                 }
                 "browseable" => {}
-                // Derived from `valid users` on render; accepted, ignored.
-                "guest ok" => {}
+                "guest ok" => p.guest_ok = Some(!value.eq_ignore_ascii_case("no")),
                 "read only" => p.read_only = Some(!value.eq_ignore_ascii_case("no")),
                 _ => return Err(smb_err(format!("unrecognised setting in managed block [{}]: '{line}'", p.name))),
             }
@@ -139,7 +141,7 @@ fn render_block(shares: &[SmbShare]) -> String {
         out.push_str(&format!("[{}]\n    {DATASET_KEY} = {}\n    path = {}\n", s.name, s.dataset, s.path));
         if let Some(user) = &s.valid_user {
             out.push_str(&format!("    valid users = {user}\n"));
-        } else {
+        } else if s.guest_ok {
             out.push_str("    guest ok = yes\n");
         }
         out.push_str(&format!("    browseable = yes\n    read only = {}\n", if s.read_only { "yes" } else { "no" }));
@@ -295,6 +297,9 @@ pub fn set_share(runner: &dyn CommandRunner, share: &SmbShare, password: Option<
     if let Some(user) = &share.valid_user {
         validate_user(user).map_err(smb_err)?;
     }
+    if share.guest_ok && share.valid_user.is_some() {
+        return Err(smb_err("guest access can't be combined with a valid user"));
+    }
     if share.dataset.is_empty() || share.dataset.chars().any(char::is_control) {
         return Err(smb_err("dataset is empty or contains control characters"));
     }
@@ -369,6 +374,7 @@ mod tests {
             path: format!("/{dataset}"),
             valid_user: user.map(str::to_string),
             read_only: ro,
+            guest_ok: false,
         }
     }
 
@@ -629,13 +635,42 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_user_without_guest_renders_no_guest_ok_and_parses_back_false() {
+        let out = render_with_shares("", &[share("any", "tank/any", None, true)]).unwrap();
+        assert!(!out.contains("guest ok"), "{out}");
+        assert!(!parse_managed(&out).unwrap()[0].guest_ok);
+    }
+
+    #[test]
+    fn guest_ok_parses_yes_no_case_insensitively() {
+        let mk = |v: &str| format!("{BLOCK_START}\n[a]\n    # zfsctl-dataset = tank/a\n    path = /tank/a\n    guest ok = {v}\n{BLOCK_END}\n");
+        assert!(parse_managed(&mk("Yes")).unwrap()[0].guest_ok);
+        assert!(!parse_managed(&mk("NO")).unwrap()[0].guest_ok);
+        assert!(parse_managed(&mk("true")).unwrap()[0].guest_ok);
+    }
+
+    #[test]
+    fn set_share_rejects_guest_with_a_valid_user_and_makes_no_calls() {
+        let r = runner_with(FB_CONF);
+        let mut s = share("x", "tank/x", Some("bob"), true);
+        s.guest_ok = true;
+        assert!(set_share(&r, &s, None).is_err());
+        assert!(tee_writes(&r).is_empty());
+        assert_eq!(calls(&r), Vec::<String>::new());
+    }
+
+    #[test]
     fn guest_shares_render_guest_ok_and_round_trip() {
-        let out = render_with_shares("", &[share("pub", "tank/pub", None, true), share("priv", "tank/priv", Some("bob"), true)]).unwrap();
+        let mut g = share("pub", "tank/pub", None, true);
+        g.guest_ok = true;
+        let out = render_with_shares("", &[g, share("priv", "tank/priv", Some("bob"), true)]).unwrap();
         let stanzas: Vec<&str> = out.split("[priv]").collect();
         assert!(stanzas[0].contains("guest ok = yes"), "{out}");
         assert!(!stanzas[1].contains("guest ok"), "{out}");
         let parsed = parse_managed(&out).unwrap();
         assert_eq!(parsed[0].valid_user, None);
+        assert!(parsed[0].guest_ok);
+        assert!(!parsed[1].guest_ok);
         assert_eq!(parsed[1].valid_user.as_deref(), Some("bob"));
     }
 

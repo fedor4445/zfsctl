@@ -308,6 +308,7 @@ mod tests {
             path: format!("/{dataset}"),
             valid_user: Some("carol".to_string()),
             read_only: false,
+            guest_ok: false,
         }
     }
     use crate::acl::{AclEntry, AclEntryType, AclTag};
