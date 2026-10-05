@@ -30,6 +30,68 @@ pub enum MutationCall {
     RemoveAclEntry { path: String, position: usize },
 }
 
+/// How alarming an action's confirmation should look. Drives the modal
+/// border/title style and the hint bar's confirm key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Neutral,
+    Warn,
+    Danger,
+}
+
+impl MutationCall {
+    /// Deliberately has no wildcard arm: adding a `MutationCall` variant
+    /// must not compile until someone decides how alarming it is.
+    pub fn tone(&self) -> Tone {
+        match self {
+            MutationCall::DestroyPool { .. }
+            | MutationCall::DestroyDataset { .. }
+            | MutationCall::DestroySnapshot { .. }
+            | MutationCall::RollbackSnapshot { .. } => Tone::Danger,
+            MutationCall::OfflineDisk { .. }
+            | MutationCall::ReplaceDisk { .. }
+            | MutationCall::UnallowPermission { .. }
+            | MutationCall::RemoveAclEntry { .. } => Tone::Warn,
+            MutationCall::ScrubPool { .. }
+            | MutationCall::ResilverPool { .. }
+            | MutationCall::OnlineDisk { .. }
+            | MutationCall::CreatePool { .. }
+            | MutationCall::AddVdev { .. }
+            | MutationCall::CreateDataset { .. }
+            | MutationCall::CreateSnapshot { .. }
+            | MutationCall::AllowPermission { .. }
+            | MutationCall::AddAclEntry { .. }
+            | MutationCall::SetPoolProperty { .. }
+            | MutationCall::SetDatasetProperty { .. } => Tone::Neutral,
+        }
+    }
+
+    /// Short capitalised name shown in a danger/warn modal's title.
+    pub fn label(&self) -> &'static str {
+        match self {
+            MutationCall::ScrubPool { .. } => "SCRUB POOL",
+            MutationCall::ResilverPool { .. } => "RESILVER POOL",
+            MutationCall::DestroyPool { .. } => "DESTROY POOL",
+            MutationCall::CreatePool { .. } => "CREATE POOL",
+            MutationCall::AddVdev { .. } => "ADD VDEV",
+            MutationCall::OfflineDisk { .. } => "OFFLINE DISK",
+            MutationCall::OnlineDisk { .. } => "ONLINE DISK",
+            MutationCall::ReplaceDisk { .. } => "REPLACE DISK",
+            MutationCall::SetPoolProperty { .. } => "SET POOL PROPERTY",
+            MutationCall::CreateDataset { .. } => "CREATE DATASET",
+            MutationCall::DestroyDataset { .. } => "DESTROY DATASET",
+            MutationCall::SetDatasetProperty { .. } => "SET DATASET PROPERTY",
+            MutationCall::CreateSnapshot { .. } => "CREATE SNAPSHOT",
+            MutationCall::DestroySnapshot { .. } => "DESTROY SNAPSHOT",
+            MutationCall::RollbackSnapshot { .. } => "ROLLBACK SNAPSHOT",
+            MutationCall::AllowPermission { .. } => "GRANT PERMISSION",
+            MutationCall::UnallowPermission { .. } => "REVOKE PERMISSION",
+            MutationCall::AddAclEntry { .. } => "ADD ACL ENTRY",
+            MutationCall::RemoveAclEntry { .. } => "REMOVE ACL ENTRY",
+        }
+    }
+}
+
 impl MutationCall {
     /// The single place that maps a `MutationCall` variant to its
     /// underlying `zfs::*` library call.
@@ -353,5 +415,51 @@ mod tests {
             calls[0],
             ("zfs".to_string(), vec!["set".to_string(), "compression=zstd".to_string(), "tank/data".to_string()])
         );
+    }
+}
+
+#[cfg(test)]
+mod tone_tests {
+    use super::*;
+
+    #[test]
+    fn irreversible_actions_are_danger() {
+        for call in [
+            MutationCall::DestroyPool { pool: "tank".into() },
+            MutationCall::DestroyDataset { name: "tank/a".into() },
+            MutationCall::DestroySnapshot { dataset: "tank/a".into(), name: "s".into() },
+            MutationCall::RollbackSnapshot { dataset: "tank/a".into(), name: "s".into() },
+        ] {
+            assert_eq!(call.tone(), Tone::Danger, "{call:?}");
+        }
+    }
+
+    #[test]
+    fn disruptive_but_recoverable_actions_are_warn() {
+        for call in [
+            MutationCall::OfflineDisk { pool: "tank".into(), disk: "da0".into() },
+            MutationCall::ReplaceDisk { pool: "tank".into(), old_disk: "da0".into(), new_disk: "da1".into() },
+            MutationCall::RemoveAclEntry { path: "/tank".into(), position: 0 },
+        ] {
+            assert_eq!(call.tone(), Tone::Warn, "{call:?}");
+        }
+    }
+
+    #[test]
+    fn routine_actions_are_neutral() {
+        for call in [
+            MutationCall::ScrubPool { pool: "tank".into() },
+            MutationCall::OnlineDisk { pool: "tank".into(), disk: "da0".into() },
+            MutationCall::CreateDataset { name: "tank/a".into() },
+        ] {
+            assert_eq!(call.tone(), Tone::Neutral, "{call:?}");
+        }
+    }
+
+    #[test]
+    fn labels_name_the_action_in_capitals() {
+        assert_eq!(MutationCall::DestroyPool { pool: "t".into() }.label(), "DESTROY POOL");
+        assert_eq!(MutationCall::RollbackSnapshot { dataset: "t".into(), name: "s".into() }.label(), "ROLLBACK SNAPSHOT");
+        assert_eq!(MutationCall::OfflineDisk { pool: "t".into(), disk: "d".into() }.label(), "OFFLINE DISK");
     }
 }

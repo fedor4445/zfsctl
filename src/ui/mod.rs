@@ -1,7 +1,9 @@
+pub mod hints;
 pub mod layout;
 pub mod modal;
 pub mod picker;
 pub mod state;
+pub mod theme;
 
 pub use state::App;
 
@@ -41,7 +43,7 @@ const VDEVS_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// failed — otherwise a failure between `enable_raw_mode()` and a fully
 /// constructed `Terminal` would leave the user's shell in raw mode with
 /// no way to recover except closing the terminal window.
-pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf) -> Result<()> {
+pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf, resolved: theme::Resolved) -> Result<()> {
     enable_raw_mode().map_err(|e| AppError::Config(format!("enabling raw mode: {e}")))?;
 
     // Ensure a panic anywhere in the event loop still restores the
@@ -63,6 +65,8 @@ pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf) ->
 
             let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
             let mut app = App::new(host_names);
+            app.theme = resolved.theme;
+            app.status_message = resolved.note;
             if let Some(first_host) = inventory.hosts.first() {
                 app.refresh_pools(first_host.runner.clone());
             }
@@ -87,10 +91,10 @@ pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf) ->
 /// instead means every queued success is applied, never just the
 /// last one.
 fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_path: &std::path::Path) {
-    for (name, target) in app.pending_new_hosts.drain(..) {
+    for (name, target) in std::mem::take(&mut app.pending_new_hosts) {
         app.hosts.push(name.clone());
         if let Err(e) = inventory.apply_new_host(config_path, name, target) {
-            app.status_message = Some(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
+            app.set_error(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
         }
     }
 }

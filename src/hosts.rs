@@ -78,6 +78,7 @@ mod tests {
                 HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) },
                 HostConfig { name: "offsite".to_string(), ssh_target: Some("offsite.example.com".to_string()) },
             ],
+            ..Default::default()
         };
         let inventory = HostInventory::from_config(&config);
         let names: Vec<&str> = inventory.hosts.iter().map(|h| h.name.as_str()).collect();
@@ -127,6 +128,7 @@ mod tests {
     fn get_finds_host_by_name_or_returns_none() {
         let config = Config {
             hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) }],
+            ..Default::default()
         };
         let inventory = HostInventory::from_config(&config);
         assert!(inventory.get("backup").is_some());

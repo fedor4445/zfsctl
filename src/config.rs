@@ -8,6 +8,22 @@ pub const DEFAULT_CONFIG_PATH: &str = "/usr/local/etc/zfsctl/config.toml";
 pub struct Config {
     #[serde(default)]
     pub hosts: Vec<HostConfig>,
+    #[serde(default, skip_serializing_if = "UiConfig::is_default")]
+    pub ui: UiConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct UiConfig {
+    /// One of `ui::theme::THEME_NAMES`; validated at startup by
+    /// `ui::theme::resolve`, not here, so the error can list the choices.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub theme: Option<String>,
+}
+
+impl UiConfig {
+    fn is_default(&self) -> bool {
+        self.theme.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,9 +93,39 @@ mod tests {
                     ssh_target: Some("backup.example.com".to_string()),
                 },
             ],
+            ..Default::default()
         };
         config.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
         assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn ui_theme_defaults_to_none_and_is_not_serialized_when_unset() {
+        let config = Config::default();
+        assert_eq!(config.ui.theme, None);
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert!(!text.contains("[ui]"), "{text}");
+        assert!(!text.contains("theme"), "{text}");
+    }
+
+    #[test]
+    fn ui_theme_parses_from_toml_alongside_hosts() {
+        let text = "[ui]\ntheme = \"solarized-dark\"\n\n[[hosts]]\nname = \"backup\"\nssh_target = \"backup.example.com\"\n";
+        let config: Config = toml::from_str(text).unwrap();
+        assert_eq!(config.ui.theme.as_deref(), Some("solarized-dark"));
+        assert_eq!(config.hosts.len(), 1);
+    }
+
+    #[test]
+    fn ui_theme_survives_a_save_load_round_trip_with_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) }],
+            ui: UiConfig { theme: Some("mono".to_string()) },
+        };
+        config.save(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap(), config);
     }
 }
