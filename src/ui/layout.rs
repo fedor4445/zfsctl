@@ -1,13 +1,13 @@
 use super::state::{App, DatasetDetailTab, PaneFocus, PermissionRow, Section};
-use crate::ui::modal::Modal;
+use crate::ui::modal::{Modal, Tone};
 use crate::zfs::disk::DiskMembership;
 use crate::zfs::pool::ScanStatus;
 use crate::zfs::property::Property;
 use crate::zfs::share::Share;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use crate::ui::theme::Theme;
-use ratatui::style::Style;
-use ratatui::text::Span;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
@@ -44,7 +44,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(hint_line), outer[2]);
 
     if let Some(modal) = app.modal.clone() {
-        draw_modal(f, &modal, area);
+        draw_modal(f, &modal, &app.theme, area);
     }
     if let Some(picker) = app.picker.clone() {
         draw_picker(f, &picker, &app.theme, area);
@@ -469,7 +469,20 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
 /// height is now content-driven (see `draw_modal`).
 const MODAL_WIDTH_PERCENT: u16 = 60;
 
-fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
+/// Border and title for a Confirm/ConfirmTyped modal. Danger and warn
+/// get a glyph plus the action's name in the title (so they read as such
+/// without color) and the theme's danger/warn style on the border.
+fn confirm_block(theme: &Theme, tone: Tone, label: &str, neutral_title: &str, risky_suffix: &str) -> Block<'static> {
+    let (glyph, border) = match tone {
+        Tone::Danger => ("✖", theme.danger),
+        Tone::Warn => ("▲", theme.warn),
+        Tone::Neutral => ("", Style::default()),
+    };
+    let title = if tone == Tone::Neutral { neutral_title.to_string() } else { format!("{glyph} {label} — {risky_suffix}") };
+    Block::default().borders(Borders::ALL).border_style(border).title(Span::styled(title, border))
+}
+
+fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
     // percentage of the terminal's height let long prompts or the
@@ -503,17 +516,23 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
     let popup_area = centered_rect(MODAL_WIDTH_PERCENT, popup_height, area);
     f.render_widget(Clear, popup_area);
     match modal {
-        Modal::Confirm { prompt, .. } => {
-            let p = Paragraph::new(prompt.as_str())
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Confirm (y/n)"));
+        Modal::Confirm { prompt, action } => {
+            let block = confirm_block(theme, action.call.tone(), action.call.label(), "Confirm (y/n)", "confirm (y/n)");
+            let p = Paragraph::new(prompt.as_str()).wrap(Wrap { trim: false }).block(block);
             f.render_widget(p, popup_area);
         }
-        Modal::ConfirmTyped { prompt, input, .. } => {
-            let text = format!("{prompt}\n\n> {input}");
-            let p = Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Type to confirm (Enter/Esc)"));
+        Modal::ConfirmTyped { prompt, input, action, .. } => {
+            let block = confirm_block(
+                theme,
+                action.call.tone(),
+                action.call.label(),
+                "Type to confirm (Enter/Esc)",
+                "type to confirm (Enter/Esc)",
+            );
+            let mut lines: Vec<Line> = prompt.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(format!("> {input}"), Style::default().add_modifier(Modifier::BOLD)));
+            let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(block);
             f.render_widget(p, popup_area);
         }
         Modal::Form { title, fields, focused, description, .. } => {
@@ -528,7 +547,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
             }
             let p = Paragraph::new(lines.join("\n"))
                 .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title(title.as_str()));
+                .block(Block::default().borders(Borders::ALL).border_style(theme.accent).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
         Modal::Info { title, body } => {
@@ -810,5 +829,78 @@ mod tests {
         assert_eq!(style_of_row22(&mut app).fg, theme.err.fg);
         app.status_message = Some("select a disk with Space first".to_string());
         assert_eq!(style_of_row22(&mut app).fg, Some(Color::Reset)); // an unstyled buffer cell reports Reset, not None
+    }
+
+    use crate::ui::modal::{Modal, MutationCall, PendingAction};
+
+    fn buffer_of(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn style_of_symbol(buf: &ratatui::buffer::Buffer, symbol: &str) -> Option<Style> {
+        buf.content().iter().find(|c| c.symbol() == symbol).map(|c| c.style())
+    }
+
+    fn destroy_pool_modal() -> Modal {
+        Modal::ConfirmTyped {
+            prompt: "Type the pool name to destroy 'tank':".to_string(),
+            expected: "tank".to_string(),
+            input: "ta".to_string(),
+            action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::DestroyPool { pool: "tank".to_string() } },
+        }
+    }
+
+    #[test]
+    fn a_destroy_modal_is_titled_with_a_glyph_and_the_action_and_drawn_in_red() {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.modal = Some(destroy_pool_modal());
+        let rows = render(&mut app, 100, 30).join("\n");
+        assert!(rows.contains("✖ DESTROY POOL"), "{rows}");
+        let buf = buffer_of(&mut app, 100, 30);
+        assert_eq!(style_of_symbol(&buf, "✖").unwrap().fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn a_destroy_modal_still_shows_the_typed_input_line() {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.modal = Some(destroy_pool_modal());
+        let rows = render(&mut app, 100, 30).join("\n");
+        assert!(rows.contains("> ta"), "{rows}");
+    }
+
+    #[test]
+    fn a_warn_confirm_is_titled_with_a_triangle_and_drawn_in_yellow() {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.modal = Some(Modal::Confirm {
+            prompt: "Offline disk 'da0' in pool 'tank'? (y/n)".to_string(),
+            action: PendingAction { host: 0, section: Section::Vdevs, call: MutationCall::OfflineDisk { pool: "tank".to_string(), disk: "da0".to_string() } },
+        });
+        let rows = render(&mut app, 100, 30).join("\n");
+        assert!(rows.contains("▲ OFFLINE DISK"), "{rows}");
+        let buf = buffer_of(&mut app, 100, 30);
+        assert_eq!(style_of_symbol(&buf, "▲").unwrap().fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn a_routine_confirm_keeps_its_plain_title() {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.modal = Some(Modal::Confirm {
+            prompt: "Scrub pool 'tank'? (y/n)".to_string(),
+            action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::ScrubPool { pool: "tank".to_string() } },
+        });
+        let rows = render(&mut app, 100, 30).join("\n");
+        assert!(rows.contains("Confirm (y/n)"), "{rows}");
+        assert!(!rows.contains('✖'));
+    }
+
+    #[test]
+    fn the_danger_modal_is_distinguishable_without_color_in_the_mono_theme() {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.theme = Theme::mono();
+        app.modal = Some(destroy_pool_modal());
+        let rows = render(&mut app, 100, 30).join("\n");
+        assert!(rows.contains("✖ DESTROY POOL"), "{rows}");
     }
 }
