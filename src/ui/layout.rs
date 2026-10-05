@@ -5,7 +5,8 @@ use crate::zfs::pool::ScanStatus;
 use crate::zfs::property::Property;
 use crate::zfs::share::Share;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use crate::ui::theme::Theme;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
@@ -42,7 +43,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_modal(f, &modal, area);
     }
     if let Some(picker) = app.picker.clone() {
-        draw_picker(f, &picker, area);
+        draw_picker(f, &picker, &app.theme, area);
     }
 }
 
@@ -104,6 +105,7 @@ fn draw_status_bar(f: &mut Frame, text: &str, style: Style, gauge: Option<(f64, 
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme.clone();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(2)])
@@ -128,7 +130,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::DatasetAcl => "Dataset ACL",
             };
             let style = if i == app.selected_section {
-                Style::default().add_modifier(Modifier::REVERSED)
+                theme.selected_row()
             } else {
                 Style::default()
             };
@@ -180,13 +182,14 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme.clone();
     let items: Vec<ListItem> = app
         .hosts
         .iter()
         .enumerate()
         .map(|(i, h)| {
             let style = if i == app.selected_host {
-                Style::default().add_modifier(Modifier::REVERSED)
+                theme.selected_row()
             } else {
                 Style::default()
             };
@@ -200,17 +203,18 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
             .split(area);
         let hint = Paragraph::new("Only this host is configured. Press 'n' to add another host.".to_string())
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::DarkGray));
+            .style(theme.dim());
         f.render_widget(hint, chunks[1]);
         chunks[0]
     } else {
         area
     };
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Hosts"));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title("Hosts"));
     f.render_widget(list, list_area);
 }
 
 fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app.pools.iter().map(|p| {
         Row::new(vec![
             p.name.clone(),
@@ -230,8 +234,8 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Pools — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Size", "Alloc", "Free", "Health"]))
-        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Middle)).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pools_table);
 }
 
@@ -239,29 +243,31 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
 /// that it can't be edited — separate from the existing "read-only
 /// property" status-message hint, which only appears after you've
 /// already tried.
-fn read_only_property_style(prop: &Property) -> Style {
+fn read_only_property_style(theme: &Theme, prop: &Property) -> Style {
     if prop.source.is_editable() {
         Style::default()
     } else {
-        Style::default().fg(Color::DarkGray)
+        theme.dim()
     }
 }
 
 fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app.pool_properties.iter().map(|p| {
-        Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(p))
+        Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(&theme, p))
     });
     let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
     let pool = app.selected_pool_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Property", "Value", "Source"]))
-        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pool_properties_table);
 }
 
 fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app.vdevs.iter().map(|v| {
         let indented = format!("{}{}", "  ".repeat(v.depth), v.name);
         Row::new(vec![indented, format!("{:?}", v.health)])
@@ -271,12 +277,13 @@ fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Vdevs — {pool} ('r' refresh, Esc/Backspace back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Device", "Health"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.vdevs_table);
 }
 
 fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app.datasets.iter().map(|d| {
         Row::new(vec![
             d.name.clone(),
@@ -294,12 +301,13 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Datasets — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Used", "Avail", "Kind"]))
-        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Middle)).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.datasets_table);
 }
 
 fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     match app.dataset_detail_tab {
         DatasetDetailTab::Permissions => {
             draw_dataset_permissions(f, app, area);
@@ -312,19 +320,20 @@ fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
         DatasetDetailTab::Properties => {}
     }
     let rows = app.dataset_properties.iter().map(|p| {
-        Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(p))
+        Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(&theme, p))
     });
     let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Property", "Value", "Source"]))
-        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.dataset_properties_table);
 }
 
 fn draw_dataset_permissions(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app.dataset_permissions.iter().map(|row| match row {
         PermissionRow::Set { name, perms } => Row::new(vec![format!("Set @{name}"), "—".to_string(), perms.join(",")]),
         PermissionRow::CreateTime { perms } => Row::new(vec!["Create-time".to_string(), "—".to_string(), perms.join(",")]),
@@ -347,17 +356,18 @@ fn draw_dataset_permissions(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Permissions — {dataset} ('r' refresh, n/s/c grant, d/x revoke, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Target", "Scope", "Permissions"]))
-        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.dataset_permissions_table);
 }
 
 fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     if app.selected_dataset_mountpoint().is_none() {
         let title = format!("ACL — {dataset} (no mountpoint -- not applicable, e.g. a zvol)");
         let table = Table::new(std::iter::empty::<Row>(), [Constraint::Min(1)])
-            .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title));
+            .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title));
         f.render_widget(table, area);
         return;
     }
@@ -380,12 +390,13 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["#", "Target", "Permissions", "Flags", "Type"]))
-        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(app.pane_focus, PaneFocus::Right)).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.acl_entries_table);
 }
 
 fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app
         .snapshots
         .iter()
@@ -394,12 +405,13 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Snapshot", "Used"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
 }
 
 fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app.disks.iter().map(|d| {
         let marker = if app.selected_disks.contains(&d.name) { "[x]" } else { "[ ]" };
         let status = match &d.membership {
@@ -408,7 +420,7 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let style = match &d.membership {
             DiskMembership::Available => Style::default(),
-            DiskMembership::InPool { .. } => Style::default().fg(Color::DarkGray),
+            DiskMembership::InPool { .. } => theme.dim(),
         };
         Row::new(vec![format!("{marker} {}", d.name), d.size.to_string(), status]).style(style)
     });
@@ -419,12 +431,13 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
     );
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Name", "Size", "Status"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.disks_table);
 }
 
 fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
     let rows = app.shares.iter().map(|s| match s {
         Share::Nfs { dataset, raw, .. } => Row::new(vec![dataset.clone(), "NFS".to_string(), raw.clone()]),
         Share::Smb { dataset, name } => {
@@ -440,8 +453,8 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Shares — {} ('r' refresh, Enter edit, 'd' remove){hint_suffix}", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Dataset", "Protocol", "Details"]))
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
+        .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.shares_table);
 }
 
@@ -523,7 +536,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
 /// Renders on top of `draw_modal`'s output whenever `app.picker` is
 /// `Some` -- the form underneath stays drawn exactly as `draw_modal`
 /// left it; this is a second, smaller popup layered above it.
-fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, area: Rect) {
+fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &Theme, area: Rect) {
     let filter_lower = picker.filter.to_lowercase();
     let filtered: Vec<&String> = picker.values.iter().filter(|v| v.to_lowercase().contains(&filter_lower)).collect();
 
@@ -560,8 +573,8 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, area: Rec
         list_state.select(Some(picker.selected.min(filtered.len() - 1)));
     }
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(Block::default().borders(Borders::ALL).border_style(theme.accent).title(title))
+        .highlight_style(theme.selected_row());
     f.render_stateful_widget(list, popup_area, &mut list_state);
 }
 
@@ -599,29 +612,27 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-/// The border style for a Pools/Datasets split-pane block: an accent
-/// color when `pane` is the one `current` currently points at, the
-/// terminal's default style otherwise. Pulled out as a pure function
-/// (rather than inlined at each call site) so the focus/color mapping
-/// has exactly one definition and is unit-testable without a rendering
-/// backend.
-fn pane_border_style(current: PaneFocus, pane: PaneFocus) -> Style {
-    if current == pane {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    }
+/// The border style for a Pools/Datasets split-pane block: the theme's
+/// accent when `pane` is the one `current` currently points at, the
+/// terminal's default style otherwise.
+fn pane_border_style(theme: &Theme, current: PaneFocus, pane: PaneFocus) -> Style {
+    theme.pane_border(current == pane)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::theme::Theme;
+    // Explicit (not via `super::*`): Task 7 removes `Color` from the
+    // module's own imports once the status bar stops naming colors.
+    use ratatui::style::Color;
 
     #[test]
     fn pane_border_style_highlights_only_the_current_pane() {
-        assert_eq!(pane_border_style(PaneFocus::Middle, PaneFocus::Middle), Style::default().fg(Color::Cyan));
-        assert_eq!(pane_border_style(PaneFocus::Middle, PaneFocus::Right), Style::default());
-        assert_eq!(pane_border_style(PaneFocus::Right, PaneFocus::Right), Style::default().fg(Color::Cyan));
-        assert_eq!(pane_border_style(PaneFocus::Right, PaneFocus::Middle), Style::default());
+        let theme = Theme::ansi();
+        assert_eq!(pane_border_style(&theme, PaneFocus::Middle, PaneFocus::Middle), Style::default().fg(Color::Cyan));
+        assert_eq!(pane_border_style(&theme, PaneFocus::Middle, PaneFocus::Right), Style::default());
+        assert_eq!(pane_border_style(&theme, PaneFocus::Right, PaneFocus::Right), Style::default().fg(Color::Cyan));
+        assert_eq!(pane_border_style(&theme, PaneFocus::Right, PaneFocus::Middle), Style::default());
     }
 }
