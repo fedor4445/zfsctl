@@ -581,7 +581,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
             let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(block);
             f.render_widget(p, popup_area);
         }
-        Modal::Form { title, fields, focused, description, .. } => {
+        Modal::Form { title, fields, focused, description, kind } => {
             let mut lines = Vec::new();
             if let Some(desc) = description {
                 lines.push(desc.clone());
@@ -589,7 +589,8 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
             }
             for (i, field) in fields.iter().enumerate() {
                 let marker = if i == *focused { ">" } else { " " };
-                lines.push(format!("{marker} {}: {}", field.label, field.value));
+                let shown = if kind.masks_field(i) { "*".repeat(field.value.chars().count()) } else { field.value.clone() };
+                lines.push(format!("{marker} {}: {shown}", field.label));
             }
             let p = Paragraph::new(lines.join("\n"))
                 .wrap(Wrap { trim: false })

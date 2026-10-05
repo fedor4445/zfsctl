@@ -908,6 +908,23 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                if !self.shares_loaded {
+                    self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
+                } else if self.samba_available == Some(false) {
+                    self.status_message = Some("Samba (smbd) is not running on this host".to_string());
+                } else if let Some(i) = self.datasets_table.selected() {
+                    if let Some(ds) = self.datasets.get(i) {
+                        match &ds.mountpoint {
+                            None => self.status_message = Some(format!("'{}' has no mounted mountpoint to share", ds.name)),
+                            Some(path) => {
+                                let existing = self.shares.iter().find(|s| matches!(s, crate::zfs::share::Share::Smb { dataset, .. } if dataset == &ds.name));
+                                self.modal = Some(smb_edit_modal(existing, &ds.name, path, self.selected_host));
+                            }
+                        }
+                    }
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Snapshots => {
                 move_table_selection(&mut self.snapshots_table, self.snapshots.len(), true);
             }
@@ -963,34 +980,24 @@ impl App {
             KeyCode::Enter if self.current_section() == Section::Shares => {
                 if let Some(i) = self.shares_table.selected() {
                     if let Some(share) = self.shares.get(i) {
-                        match share {
-                            crate::zfs::share::Share::Nfs { .. } => {
-                                self.modal = Some(share_edit_modal(share, self.selected_host));
-                            }
-                            crate::zfs::share::Share::Smb { .. } => {
-                                self.status_message = Some(
-                                    "SMB share creation/editing isn't supported on FreeBSD (zfs set sharesmb doesn't actually work) — 'd' still removes it".to_string(),
-                                );
-                            }
-                        }
+                        self.modal = Some(share_edit_modal(share, self.selected_host));
                     }
                 }
             }
             KeyCode::Char('d') if self.current_section() == Section::Shares => {
                 if let Some(i) = self.shares_table.selected() {
                     if let Some(share) = self.shares.get(i) {
-                        let (dataset, key, protocol) = match share {
-                            crate::zfs::share::Share::Nfs { dataset, .. } => (dataset.clone(), "sharenfs", "NFS"),
-                            crate::zfs::share::Share::Smb { dataset, .. } => (dataset.clone(), "sharesmb", "SMB"),
+                        let (prompt, call) = match share {
+                            crate::zfs::share::Share::Nfs { dataset, .. } => (
+                                format!("Remove NFS share for '{dataset}'? (y/n)"),
+                                MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: "sharenfs".to_string(), value: "off".to_string() },
+                            ),
+                            crate::zfs::share::Share::Smb { dataset, name, .. } => (
+                                format!("Remove SMB share '{name}' for '{dataset}'? Connected clients lose access. (y/n)"),
+                                MutationCall::RemoveSmbShare { dataset: dataset.clone() },
+                            ),
                         };
-                        self.modal = Some(Modal::Confirm {
-                            prompt: format!("Remove {protocol} share for '{dataset}'? (y/n)"),
-                            action: PendingAction {
-                                host: self.selected_host,
-                                section: Section::Shares,
-                                call: MutationCall::SetDatasetProperty { dataset, key: key.to_string(), value: "off".to_string() },
-                            },
-                        });
+                        self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::Shares, call } });
                     }
                 }
             }
@@ -1148,6 +1155,15 @@ impl App {
                             self.pending_probes.insert(name_lower);
                             self.begin_add_host(name, target);
                             None
+                        }
+                    } else if matches!(kind, FormKind::ShareSmb { .. }) {
+                        match build_smb_action(&kind, &fields, &self.shares) {
+                            Ok(action) => Some(action),
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
                         }
                     } else {
                         match build_pending_action(&kind, &fields) {
@@ -1802,10 +1818,7 @@ fn build_vdev_spec_from_selection(redundancy: &str, disks: &[String]) -> Vec<Str
 /// builds the form. `host` is the index of the currently-selected host
 /// (`self.selected_host` at every call site), threaded through into the
 /// resulting `FormKind` so the eventual mutation runs against the right
-/// host. SMB share creation/editing is not supported — `zfs set
-/// sharesmb=on` does not actually work on FreeBSD (confirmed empirically:
-/// it prints "No SMB support in FreeBSD yet." and fails, despite storing
-/// the property) — so zfsctl never calls this with a `Share::Smb`.
+/// host. SMB shares route to `smb_edit_modal` (managed smb4.conf block).
 fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
     match share {
         crate::zfs::share::Share::Nfs { dataset, raw, networks, hosts, read_only, root } => {
@@ -1829,9 +1842,7 @@ fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
                 kind: FormKind::ShareNfs { host, dataset: dataset.clone() },
             }
         }
-        crate::zfs::share::Share::Smb { .. } => {
-            unreachable!("share_edit_modal is only ever called with a Share::Nfs — see handle_key's Shares Enter arm and Datasets 'N' arm")
-        }
+        crate::zfs::share::Share::Smb { dataset, path, .. } => smb_edit_modal(Some(share), dataset, path, host),
     }
 }
 
@@ -2025,7 +2036,78 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         // other invalid-for-this-function case) rather than panicking
         // if some future edit ever did route it here by mistake.
         FormKind::AddHost => None,
+        // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
+        // instead: it needs the current share list for the duplicate-name check.
+        FormKind::ShareSmb { .. } => None,
     }
+}
+
+fn smb_edit_modal(existing: Option<&crate::zfs::share::Share>, dataset: &str, path: &str, host: usize) -> Modal {
+    let (name, user, read_only, existing_user) = match existing {
+        Some(crate::zfs::share::Share::Smb { name, valid_user, read_only, .. }) => {
+            (name.clone(), valid_user.clone().unwrap_or_default(), *read_only, valid_user.clone())
+        }
+        _ => {
+            let suggestion = dataset.rsplit('/').next().unwrap_or("").to_string();
+            let suggestion = if crate::zfs::smb::validate_share_name(&suggestion).is_ok() { suggestion } else { String::new() };
+            (suggestion, String::new(), false, None)
+        }
+    };
+    Modal::Form {
+        title: format!("SMB share: '{dataset}'"),
+        fields: vec![
+            FormField { label: "Share name".to_string(), value: name },
+            FormField { label: "Valid user (blank = guest)".to_string(), value: user },
+            FormField { label: "Password (blank on edit = unchanged)".to_string(), value: String::new() },
+            FormField { label: "Read-only (y/n)".to_string(), value: if read_only { "y".to_string() } else { "n".to_string() } },
+        ],
+        focused: 0,
+        description: Some(format!("Shares {path} as \\\\<host>\\<name>. The Valid user must already be a Unix account; the password is its separate Samba password.")),
+        kind: FormKind::ShareSmb { host, dataset: dataset.to_string(), path: path.to_string(), existing_user },
+    }
+}
+
+fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs::share::Share]) -> std::result::Result<PendingAction, String> {
+    let FormKind::ShareSmb { host, dataset, path, existing_user } = kind else {
+        return Err("not an SMB form".to_string());
+    };
+    let name = fields[0].value.trim();
+    crate::zfs::smb::validate_share_name(name)?;
+    let user = fields[1].value.trim();
+    if !user.is_empty() {
+        crate::zfs::smb::validate_user(user)?;
+    }
+    let password = &fields[2].value; // verbatim: spaces can be part of a password
+    let read_only = fields[3].value.trim().to_lowercase().starts_with('y');
+    let clash = shares.iter().any(|s| matches!(s, crate::zfs::share::Share::Smb { dataset: d, name: n, .. } if d != dataset && n.eq_ignore_ascii_case(name)));
+    if clash {
+        return Err(format!("A share named '{name}' already exists on another dataset"));
+    }
+    let password = if user.is_empty() {
+        None
+    } else if password.is_empty() {
+        if existing_user.as_deref() == Some(user) {
+            None
+        } else {
+            return Err("A Samba password is required when setting or changing the valid user".to_string());
+        }
+    } else {
+        Some(crate::ui::modal::Secret(password.clone()))
+    };
+    Ok(PendingAction {
+        host: *host,
+        section: Section::Shares,
+        call: MutationCall::SetSmbShare {
+            share: crate::zfs::smb::SmbShare {
+                name: name.to_string(),
+                dataset: dataset.clone(),
+                path: path.clone(),
+                valid_user: if user.is_empty() { None } else { Some(user.to_string()) },
+                read_only,
+            },
+            password,
+        },
+    })
 }
 
 /// Parses the `Recipient` field's mini-language: `everyone`,
@@ -2235,6 +2317,7 @@ Datasets
   n / d            create / destroy a dataset
   s                snapshot the selected dataset
   N                create/edit an NFS share
+  M                create/edit an SMB share
   '[' / ']'        cycle Properties / Permissions / ACL sub-tabs (once focused)
 
 Datasets: Permissions sub-tab
@@ -2255,7 +2338,7 @@ Disks
   Esc              clear selection
 
 Shares
-  Enter            edit an NFS share (SMB shares are view/remove only)
+  Enter            edit the selected share
   d                remove the selected share
 
 Press any key to close."
@@ -4862,19 +4945,6 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_smb_share_row_sets_hint_instead_of_opening_a_form() {
-        let mut app = App::new(vec!["local".to_string()]);
-        for _ in 0..5 {
-            app.handle_key(KeyCode::Tab);
-        } // -> Shares
-        app.shares = vec![smb("tank/data")];
-        app.shares_table.select(Some(0));
-        app.handle_key(KeyCode::Enter);
-        assert!(app.modal.is_none(), "SMB share creation/editing isn't supported on FreeBSD; Enter on an SMB row must not open an edit form");
-        assert!(app.status_message.is_some());
-    }
-
-    #[test]
     fn handle_key_d_on_nfs_share_row_opens_remove_confirm_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         for _ in 0..5 {
@@ -4901,24 +4971,197 @@ mod tests {
         }
     }
 
+    fn datasets_app_with_mount(mountpoint: Option<&str>) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        app.datasets = vec![Dataset { name: "tank/media".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string) }];
+        app.datasets_table.select(Some(0));
+        app.shares_loaded = true;
+        app.samba_available = Some(true);
+        app
+    }
+
     #[test]
-    fn handle_key_d_on_smb_share_row_opens_remove_confirm_modal() {
+    fn shift_m_on_datasets_opens_a_blank_smb_form_for_an_unshared_dataset() {
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.handle_key(KeyCode::Char('M'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(*kind, FormKind::ShareSmb { host: 0, dataset: "tank/media".into(), path: "/tank/media".into(), existing_user: None });
+                assert_eq!(fields.len(), 4);
+                assert_eq!(fields[0].value, "media", "suggests the dataset's last path component");
+                assert_eq!(fields[1].value, "");
+            }
+            other => panic!("expected Form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_m_prefills_from_the_existing_managed_share() {
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.shares = vec![smb("tank/media")];
+        app.handle_key(KeyCode::Char('M'));
+        match &app.modal {
+            Some(Modal::Form { fields, kind, .. }) => {
+                assert_eq!(fields[0].value, "media");
+                assert_eq!(fields[1].value, "carol");
+                assert_eq!(fields[2].value, "", "the password is never pre-filled");
+                assert_eq!(fields[3].value, "n");
+                assert!(matches!(kind, FormKind::ShareSmb { existing_user: Some(u), .. } if u == "carol"));
+            }
+            other => panic!("expected Form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_m_is_refused_without_a_mountpoint_before_shares_load_or_when_smbd_is_down() {
+        let mut app = datasets_app_with_mount(None);
+        app.handle_key(KeyCode::Char('M'));
+        assert!(app.modal.is_none() && app.status_message.is_some());
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.shares_loaded = false;
+        app.handle_key(KeyCode::Char('M'));
+        assert!(app.modal.is_none() && app.status_message.is_some());
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.samba_available = Some(false);
+        app.handle_key(KeyCode::Char('M'));
+        assert!(app.modal.is_none() && app.status_message.is_some());
+    }
+
+    /// Feeds each value then Enter through `handle_modal_key` (Enter
+    /// advances; the 4th submits); returns what the final Enter produced.
+    fn type_into_smb_form(app: &mut App, values: [&str; 4]) -> Option<PendingAction> {
+        let mut last = None;
+        for v in values {
+            for c in v.chars() {
+                // '\u{8}' stands for Backspace (the read-only field is pre-filled with "n")
+                app.handle_modal_key(if c == '\u{8}' { KeyCode::Backspace } else { KeyCode::Char(c) });
+            }
+            last = app.handle_modal_key(KeyCode::Enter);
+        }
+        last
+    }
+
+    fn open_blank_smb_form() -> App {
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.handle_key(KeyCode::Char('M'));
+        // clear the suggested name so each test types its own
+        for _ in 0..5 {
+            app.handle_modal_key(KeyCode::Backspace);
+        }
+        app
+    }
+
+    #[test]
+    fn submitting_a_valid_smb_form_builds_a_set_smb_share_action() {
+        let mut app = open_blank_smb_form();
+        let action = type_into_smb_form(&mut app, ["media", "carol", " pw 1 ", "\u{8}y"]).expect("submitted");
+        assert_eq!(
+            action.call,
+            MutationCall::SetSmbShare {
+                share: crate::zfs::smb::SmbShare { name: "media".into(), dataset: "tank/media".into(), path: "/tank/media".into(), valid_user: Some("carol".into()), read_only: true },
+                password: Some(crate::ui::modal::Secret(" pw 1 ".to_string())),
+            },
+            "the password is kept verbatim, not trimmed"
+        );
+        assert_eq!(action.section, Section::Shares);
+    }
+
+    #[test]
+    fn smb_form_validation_errors_keep_the_form_open_with_a_specific_message() {
+        let cases: [([&str; 4], &str); 5] = [
+            (["", "", "", "n"], "required"),
+            (["bad name", "", "", "n"], "letters, digits"),
+            (["media", "-evil", "pw", "n"], "valid Unix username"),
+            (["media", "carol", "", "n"], "Samba password is required"),
+            (["alice", "", "", "n"], "already"),
+        ];
+        for (values, expect) in cases {
+            let mut app = open_blank_smb_form();
+            app.shares = vec![crate::zfs::share::Share::Smb { dataset: "tank/other".into(), name: "alice".into(), path: "/x".into(), valid_user: None, read_only: true }];
+            assert!(type_into_smb_form(&mut app, values).is_none());
+            assert!(matches!(app.modal, Some(Modal::Form { .. })), "{values:?} must keep the form open");
+            let msg = app.status_message.clone().unwrap_or_default();
+            assert!(msg.contains(expect), "{values:?}: '{msg}' should contain '{expect}'");
+        }
+    }
+
+    #[test]
+    fn editing_with_a_blank_password_is_allowed_only_when_the_user_is_unchanged() {
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.shares = vec![smb("tank/media")]; // existing user: carol
+        app.handle_key(KeyCode::Char('M'));
+        for _ in 0..3 {
+            assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+        }
+        let action = app.handle_modal_key(KeyCode::Enter).expect("unchanged user + blank password is fine");
+        assert!(matches!(action.call, MutationCall::SetSmbShare { password: None, .. }));
+
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.shares = vec![smb("tank/media")];
+        app.handle_key(KeyCode::Char('M'));
+        app.handle_modal_key(KeyCode::Enter); // to Valid user
+        for _ in 0..5 {
+            app.handle_modal_key(KeyCode::Backspace);
+        }
+        for c in "bob".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        for _ in 0..3 {
+            assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+        }
+        assert!(matches!(app.modal, Some(Modal::Form { .. })), "changing the user requires a password");
+    }
+
+    #[test]
+    fn a_blank_user_ignores_any_typed_password() {
+        let mut app = open_blank_smb_form();
+        let action = type_into_smb_form(&mut app, ["pub", "", "ignored", "n"]).unwrap();
+        assert!(matches!(action.call, MutationCall::SetSmbShare { password: None, ref share } if share.valid_user.is_none()));
+    }
+
+    #[test]
+    fn enter_on_an_smb_share_row_opens_its_prefilled_form_using_the_stanza_path() {
         let mut app = App::new(vec!["local".to_string()]);
         for _ in 0..5 {
             app.handle_key(KeyCode::Tab);
         } // -> Shares
         app.shares = vec![smb("tank/data")];
         app.shares_table.select(Some(0));
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Form { kind: FormKind::ShareSmb { path, .. }, .. }) if path == "/tank/data"));
+    }
+
+    #[test]
+    fn handle_key_d_on_smb_share_row_opens_a_remove_confirm_for_the_managed_share() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        }
+        app.shares = vec![smb("tank/data")];
+        app.shares_table.select(Some(0));
         app.handle_key(KeyCode::Char('d'));
         match &app.modal {
-            Some(Modal::Confirm { action, .. }) => {
-                assert_eq!(
-                    action.call,
-                    MutationCall::SetDatasetProperty { dataset: "tank/data".to_string(), key: "sharesmb".to_string(), value: "off".to_string() }
-                );
-            }
-            other => panic!("expected Confirm modal, got {other:?}"),
+            Some(Modal::Confirm { action, .. }) => assert_eq!(action.call, MutationCall::RemoveSmbShare { dataset: "tank/data".to_string() }),
+            other => panic!("expected Confirm, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_smb_error_in_the_shares_snapshot_sets_an_error_status_but_keeps_the_nfs_shares() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let nfs = crate::zfs::share::Share::Nfs { dataset: "tank/n".into(), raw: "on".into(), networks: vec![], hosts: vec![], read_only: false, root: None };
+        app.tx
+            .send(WorkerMsg::Shares(
+                0,
+                Ok(crate::zfs::share::SharesSnapshot { shares: vec![nfs], nfs_available: true, samba_available: true, smb_error: Some("boom".into()) }),
+            ))
+            .unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.shares.len(), 1, "NFS shares still populated");
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("boom")));
+        assert!(app.status_is_error());
     }
 
     #[test]
