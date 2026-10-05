@@ -7,7 +7,8 @@ use crate::zfs::share::Share;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use crate::ui::theme::Theme;
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, Borders, Cell, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -215,25 +216,40 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
-    let rows = app.pools.iter().map(|p| {
-        Row::new(vec![
-            p.name.clone(),
-            p.size.to_string(),
-            p.allocated.to_string(),
-            p.free.to_string(),
-            format!("{:?}", p.health),
-        ])
-    });
-    let widths = [
-        Constraint::Length(20),
-        Constraint::Length(14),
-        Constraint::Length(14),
-        Constraint::Length(14),
-        Constraint::Length(10),
-    ];
+    let rows: Vec<Vec<Cell>> = app
+        .pools
+        .iter()
+        .map(|p| {
+            vec![
+                Cell::from(Span::styled(p.name.clone(), theme.name_style(&p.health))),
+                Cell::from(theme.health_span(&p.health)),
+                Cell::from(theme.capacity_cell(p.allocated, p.size)),
+                Cell::from(p.size.to_string()),
+                Cell::from(p.allocated.to_string()),
+                Cell::from(p.free.to_string()),
+            ]
+        })
+        .collect();
+    // Columns in priority order: Health and Used come right after Name,
+    // and the lowest-priority ones are dropped (not squeezed) when the
+    // pane is too narrow — a proportional squeeze clips Health to "Heal",
+    // and Health is the thing the user is scanning for.
+    let headers = ["Name", "Health", "Used", "Size", "Alloc", "Free"];
+    let col_widths: [u16; 6] = [8, 12, 14, 14, 14, 14];
+    let inner = area.width.saturating_sub(2);
+    let mut ncols = 2;
+    while ncols < col_widths.len() && col_widths[..=ncols].iter().sum::<u16>() + ncols as u16 <= inner {
+        ncols += 1;
+    }
+    let widths: Vec<Constraint> = col_widths[..ncols]
+        .iter()
+        .enumerate()
+        .map(|(i, w)| if i == 0 { Constraint::Min(*w) } else { Constraint::Length(*w) })
+        .collect();
+    let rows = rows.into_iter().map(|cells| Row::new(cells.into_iter().take(ncols).collect::<Vec<_>>()));
     let title = format!("Pools — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Name", "Size", "Alloc", "Free", "Health"]))
+        .header(Row::new(headers[..ncols].to_vec()))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pools_table);
@@ -270,9 +286,9 @@ fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let rows = app.vdevs.iter().map(|v| {
         let indented = format!("{}{}", "  ".repeat(v.depth), v.name);
-        Row::new(vec![indented, format!("{:?}", v.health)])
+        Row::new(vec![Cell::from(indented), Cell::from(theme.health_span(&v.health))])
     });
-    let widths = [Constraint::Length(30), Constraint::Length(12)];
+    let widths = [Constraint::Length(30), Constraint::Length(14)];
     let pool = app.drilled_pool.as_deref().unwrap_or("?");
     let title = format!("Vdevs — {pool} ('r' refresh, Esc/Backspace back)");
     let table = Table::new(rows, widths)
@@ -634,5 +650,83 @@ mod tests {
         assert_eq!(pane_border_style(&theme, PaneFocus::Middle, PaneFocus::Right), Style::default());
         assert_eq!(pane_border_style(&theme, PaneFocus::Right, PaneFocus::Right), Style::default().fg(Color::Cyan));
         assert_eq!(pane_border_style(&theme, PaneFocus::Right, PaneFocus::Middle), Style::default());
+    }
+
+    use crate::zfs::pool::{Pool, PoolHealth, VdevLine};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Renders one frame and returns it as one string per terminal row.
+    fn render(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    fn pool(name: &str, allocated: u64, size: u64, health: PoolHealth) -> Pool {
+        Pool { name: name.to_string(), size, allocated, free: size.saturating_sub(allocated), health }
+    }
+
+    fn app_in_pools(pools: Vec<Pool>) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        app.pools = pools;
+        app.pools_table.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn pools_table_shows_health_glyphs_and_capacity_bars() {
+        let mut app = app_in_pools(vec![
+            pool("tank", 31, 100, PoolHealth::Online),
+            pool("scratch", 90, 100, PoolHealth::Degraded),
+        ]);
+        let rows = render(&mut app, 200, 30).join("\n");
+        assert!(rows.contains("● ONLINE"), "{rows}");
+        assert!(rows.contains("▲ DEGRADED"), "{rows}");
+        assert!(rows.contains("31%"), "{rows}");
+        assert!(rows.contains("90%!"), "{rows}");
+    }
+
+    #[test]
+    fn pools_table_survives_zero_size_and_overfull_pools() {
+        let mut app = app_in_pools(vec![
+            pool("empty", 0, 0, PoolHealth::Offline),
+            pool("over", 150, 100, PoolHealth::Faulted),
+        ]);
+        let rows = render(&mut app, 200, 30).join("\n");
+        assert!(rows.contains("○ OFFLINE"), "{rows}");
+        assert!(rows.contains("✖ FAULTED"), "{rows}");
+        assert!(rows.contains("100%!"), "{rows}");
+    }
+
+    #[test]
+    fn unrecognized_pool_health_is_rendered_as_its_raw_text() {
+        let mut app = app_in_pools(vec![pool("odd", 1, 100, PoolHealth::Other("SUSPENDED".to_string()))]);
+        let rows = render(&mut app, 200, 30).join("\n");
+        assert!(rows.contains("SUSPENDED"), "{rows}");
+        assert!(!rows.contains("● SUSPENDED"), "{rows}");
+    }
+
+    #[test]
+    fn health_is_visible_at_80_columns() {
+        let mut app = app_in_pools(vec![pool("tank", 31, 100, PoolHealth::Online)]);
+        let rows = render(&mut app, 80, 24).join("\n");
+        assert!(rows.contains("ONLINE"), "Health must survive a narrow terminal:\n{rows}");
+    }
+
+    #[test]
+    fn vdev_tree_shows_health_glyphs() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        app.drilled_pool = Some("tank".to_string());
+        app.vdevs = vec![
+            VdevLine { depth: 0, name: "tank".to_string(), health: PoolHealth::Degraded },
+            VdevLine { depth: 1, name: "da0".to_string(), health: PoolHealth::Faulted },
+        ];
+        let rows = render(&mut app, 100, 20).join("\n");
+        assert!(rows.contains("▲ DEGRADED"), "{rows}");
+        assert!(rows.contains("✖ FAULTED"), "{rows}");
     }
 }
