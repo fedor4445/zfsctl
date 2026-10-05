@@ -19,11 +19,37 @@ impl CommandRunner for LocalRunner {
             status: output.status.code().unwrap_or(-1),
         })
     }
+
+    fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
+        let mut command = Command::new(cmd);
+        command.args(args);
+        super::run_command_with_stdin(command, cmd, stdin)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_with_stdin_feeds_the_child_its_stdin() {
+        let output = LocalRunner.run_with_stdin("cat", &[], "hello\nworld\n").unwrap();
+        assert_eq!(output.stdout, "hello\nworld\n");
+        assert!(output.success());
+    }
+
+    #[test]
+    fn run_with_stdin_does_not_deadlock_on_input_larger_than_a_pipe_buffer() {
+        let big = "x".repeat(1_000_000);
+        let output = LocalRunner.run_with_stdin("cat", &[], &big).unwrap();
+        assert_eq!(output.stdout.len(), big.len());
+    }
+
+    #[test]
+    fn run_with_stdin_reports_exit_status_when_the_child_ignores_stdin() {
+        let output = LocalRunner.run_with_stdin("false", &[], &"y".repeat(1_000_000)).unwrap();
+        assert!(!output.success());
+    }
 
     #[test]
     fn runs_a_successful_command_and_captures_stdout() {

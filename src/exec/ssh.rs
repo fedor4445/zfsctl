@@ -78,6 +78,12 @@ impl CommandRunner for SshRunner {
             status: output.status.code().unwrap_or(-1),
         })
     }
+
+    fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
+        let mut command = Command::new("ssh");
+        command.args(self.build_args(cmd, args));
+        super::run_command_with_stdin(command, "ssh", stdin)
+    }
 }
 
 #[cfg(test)]
