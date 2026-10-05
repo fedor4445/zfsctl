@@ -213,6 +213,7 @@ pub struct App {
     /// fields are independent for as long as the picker is open.
     pub picker: Option<PickerState>,
     pub status_message: Option<String>,
+    pub theme: crate::ui::theme::Theme,
     pub should_quit: bool,
     /// Appended by `drain_worker_messages` once a probed host is
     /// confirmed reachable; drained by the event loop (which owns the
@@ -284,6 +285,7 @@ impl App {
             modal: None,
             picker: None,
             status_message: None,
+            theme: crate::ui::theme::Theme::ansi(),
             should_quit: false,
             pending_new_hosts: Vec::new(),
             pending_probes: HashSet::new(),

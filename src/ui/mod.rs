@@ -42,7 +42,7 @@ const VDEVS_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// failed — otherwise a failure between `enable_raw_mode()` and a fully
 /// constructed `Terminal` would leave the user's shell in raw mode with
 /// no way to recover except closing the terminal window.
-pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf) -> Result<()> {
+pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf, resolved: theme::Resolved) -> Result<()> {
     enable_raw_mode().map_err(|e| AppError::Config(format!("enabling raw mode: {e}")))?;
 
     // Ensure a panic anywhere in the event loop still restores the
@@ -64,6 +64,8 @@ pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf) ->
 
             let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
             let mut app = App::new(host_names);
+            app.theme = resolved.theme;
+            app.status_message = resolved.note;
             if let Some(first_host) = inventory.hosts.first() {
                 app.refresh_pools(first_host.runner.clone());
             }

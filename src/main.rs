@@ -19,8 +19,11 @@ fn run() -> error::Result<()> {
     check_root()?;
     let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
     let config = config::Config::load(&config_path)?;
+    // Resolved before the terminal enters raw mode, so a bad `theme`
+    // value prints a plain error and exits instead of garbling the screen.
+    let resolved = ui::theme::resolve(config.ui.theme.as_deref(), &ui::theme::ThemeEnv::from_process())?;
     let inventory = hosts::HostInventory::from_config(&config);
-    ui::run_app(inventory, config_path)
+    ui::run_app(inventory, config_path, resolved)
 }
 
 fn check_root() -> error::Result<()> {
