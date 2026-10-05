@@ -2062,7 +2062,7 @@ fn smb_edit_modal(existing: Option<&crate::zfs::share::Share>, dataset: &str, pa
             FormField { label: "Read-only (y/n)".to_string(), value: if read_only { "y".to_string() } else { "n".to_string() } },
         ],
         focused: 0,
-        description: Some(format!("Shares {path} as \\\\<host>\\<name>. The Valid user must already be a Unix account; the password is its separate Samba password.")),
+        description: Some(format!("Shares {path} as \\\\<host>\\<name>. The Valid user must already be a Unix account; the password is its separate Samba password. Setting a password replaces that user's Samba password for every share they use.")),
         kind: FormKind::ShareSmb { host, dataset: dataset.to_string(), path: path.to_string(), existing_user },
     }
 }
@@ -5119,6 +5119,13 @@ mod tests {
         let mut app = open_blank_smb_form();
         let action = type_into_smb_form(&mut app, ["pub", "", "ignored", "n"]).unwrap();
         assert!(matches!(action.call, MutationCall::SetSmbShare { password: None, ref share } if share.valid_user.is_none()));
+    }
+
+    #[test]
+    fn smb_form_warns_that_a_password_replaces_the_users_samba_password() {
+        let modal = smb_edit_modal(None, "tank/data", "/tank/data", 0);
+        let Modal::Form { description: Some(d), .. } = modal else { panic!("expected form with description") };
+        assert!(d.contains("replaces"), "{d}");
     }
 
     #[test]

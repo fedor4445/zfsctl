@@ -161,7 +161,13 @@ pub mod test_support {
 
         fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
             self.stdin_calls.lock().unwrap().push((cmd.to_string(), stdin.to_string()));
-            self.run(cmd, args)
+            let mut out = self.run(cmd, args)?;
+            // Like `tee`, echo stdin as stdout unless a route scripted this call.
+            let first_arg = args.first().copied().unwrap_or("");
+            if !self.routes.contains_key(&(cmd.to_string(), first_arg.to_string())) {
+                out.stdout = stdin.to_string();
+            }
+            Ok(out)
         }
     }
 }
