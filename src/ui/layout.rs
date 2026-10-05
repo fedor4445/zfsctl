@@ -484,18 +484,31 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(table, area, &mut app.disks_table);
 }
 
+fn smb_access_label(guest_ok: bool, valid_user: Option<&str>) -> String {
+    match (guest_ok, valid_user) {
+        (true, _) => "guest".to_string(),
+        (false, Some(u)) => format!("user={u}"),
+        (false, None) => "any Samba user".to_string(),
+    }
+}
+
 fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let rows = app.shares.iter().map(|s| match s {
         Share::Nfs { dataset, raw, .. } => Row::new(vec![dataset.clone(), "NFS".to_string(), raw.clone()]),
-        Share::Smb { dataset, name } => {
-            Row::new(vec![dataset.clone(), "SMB".to_string(), name.clone().unwrap_or_else(|| "(default name)".to_string())])
-        }
+        Share::Smb { dataset, name, valid_user, read_only, guest_ok, .. } => Row::new(vec![
+            dataset.clone(),
+            "SMB".to_string(),
+            format!("\\\\{name}  {}  {}", smb_access_label(*guest_ok, valid_user.as_deref()), if *read_only { "ro" } else { "rw" }),
+        ]),
     });
     let widths = [Constraint::Length(24), Constraint::Length(8), Constraint::Min(20)];
     let mut hints = Vec::new();
     if app.nfs_available == Some(false) {
         hints.push("NFS unavailable: nfsd not running");
+    }
+    if app.samba_available == Some(false) {
+        hints.push("SMB unavailable: smbd not running");
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
     let title = format!("Shares — {} ('r' refresh, Enter edit, 'd' remove){hint_suffix}", app.active_host_name());
@@ -576,7 +589,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
             let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(block);
             f.render_widget(p, popup_area);
         }
-        Modal::Form { title, fields, focused, description, .. } => {
+        Modal::Form { title, fields, focused, description, kind } => {
             let mut lines = Vec::new();
             if let Some(desc) = description {
                 lines.push(desc.clone());
@@ -584,7 +597,8 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
             }
             for (i, field) in fields.iter().enumerate() {
                 let marker = if i == *focused { ">" } else { " " };
-                lines.push(format!("{marker} {}: {}", field.label, field.value));
+                let shown = if kind.masks_field(i) { "*".repeat(field.value.chars().count()) } else { field.value.clone() };
+                lines.push(format!("{marker} {}: {shown}", field.label));
             }
             let p = Paragraph::new(lines.join("\n"))
                 .wrap(Wrap { trim: false })

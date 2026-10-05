@@ -14,7 +14,11 @@ pub enum Share {
     },
     Smb {
         dataset: String,
-        name: Option<String>,
+        name: String,
+        path: String,
+        valid_user: Option<String>,
+        read_only: bool,
+        guest_ok: bool,
     },
 }
 
@@ -24,6 +28,9 @@ pub struct SharesSnapshot {
     pub shares: Vec<Share>,
     pub nfs_available: bool,
     pub samba_available: bool,
+    /// Set when the managed SMB block could not be read; NFS shares are
+    /// still returned so one broken half never hides the other.
+    pub smb_error: Option<String>,
 }
 
 /// Parses a `sharenfs` value using FreeBSD's **native `exports(5)`**
@@ -135,44 +142,30 @@ pub fn assemble_sharenfs(networks: &[String], hosts: &[String], read_only: bool,
     }
 }
 
-/// Groups `zfs get -H -p sharenfs,sharesmb` output (every dataset on
-/// the host, no dataset argument) by dataset name and builds one
-/// `Share` per protocol actually in use — a dataset shared via both
-/// NFS and SMB produces two independent entries. Datasets where both
-/// properties are `off` are dropped entirely. Lenient: a malformed
-/// line is skipped rather than failing the whole list, since one odd
-/// line for one dataset shouldn't take down the host's entire share
-/// list — diverges deliberately from the stricter single-entity
-/// parsers elsewhere in this crate (`parse_property_list` etc.), which
-/// only ever describe one already-known-good pool/dataset at a time.
+/// Groups `zfs get -H -p sharenfs` output (every dataset on the host,
+/// no dataset argument) by dataset name and builds one `Share::Nfs` per
+/// dataset actually shared. Datasets where `sharenfs` is `off` or `-`
+/// are dropped. SMB shares are no longer derived from `zfs get` (they
+/// come from the managed smb4.conf block). Lenient: a malformed line is
+/// skipped rather than failing the whole list, since one odd line for
+/// one dataset shouldn't take down the host's entire share list.
 fn parse_shares(output: &str) -> Vec<Share> {
-    let mut by_dataset: BTreeMap<String, (Option<String>, Option<String>)> = BTreeMap::new();
+    let mut by_dataset: BTreeMap<String, String> = BTreeMap::new();
     for line in output.lines() {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 4 {
             continue;
         }
         let (dataset, property, value) = (fields[0], fields[1], fields[2]);
-        let entry = by_dataset.entry(dataset.to_string()).or_insert((None, None));
-        match property {
-            "sharenfs" => entry.0 = Some(value.to_string()),
-            "sharesmb" => entry.1 = Some(value.to_string()),
-            _ => {}
+        if property == "sharenfs" {
+            by_dataset.insert(dataset.to_string(), value.to_string());
         }
     }
     let mut shares = Vec::new();
-    for (dataset, (sharenfs, sharesmb)) in by_dataset {
-        if let Some(raw) = sharenfs.as_deref() {
-            if raw != "off" && raw != "-" {
-                let (networks, hosts, read_only, root) = parse_sharenfs_fields(raw);
-                shares.push(Share::Nfs { dataset: dataset.clone(), raw: raw.to_string(), networks, hosts, read_only, root });
-            }
-        }
-        if let Some(name) = sharesmb.as_deref() {
-            if name != "off" && name != "-" {
-                let name = if name == "on" { None } else { Some(name.to_string()) };
-                shares.push(Share::Smb { dataset: dataset.clone(), name });
-            }
+    for (dataset, raw) in by_dataset {
+        if raw != "off" && raw != "-" {
+            let (networks, hosts, read_only, root) = parse_sharenfs_fields(&raw);
+            shares.push(Share::Nfs { dataset, raw, networks, hosts, read_only, root });
         }
     }
     shares
@@ -193,7 +186,7 @@ pub fn sharenfs_editable_losslessly(raw: &str) -> bool {
 }
 
 pub fn list_shares(runner: &dyn CommandRunner) -> Result<Vec<Share>> {
-    let output = super::run_checked(runner, "zfs", &["get", "-H", "-p", "-t", "filesystem", "sharenfs,sharesmb"], "zfs get sharenfs,sharesmb")?;
+    let output = super::run_checked(runner, "zfs", &["get", "-H", "-p", "-t", "filesystem", "sharenfs"], "zfs get sharenfs")?;
     Ok(parse_shares(&output.stdout))
 }
 
@@ -222,10 +215,27 @@ pub fn samba_available(runner: &dyn CommandRunner) -> Result<bool> {
 /// Composes all three calls into one snapshot — avoids extra
 /// round-trips, mirrors `zfs::disk::list_disks_with_membership`.
 pub fn list_shares_with_availability(runner: &dyn CommandRunner) -> Result<SharesSnapshot> {
-    let shares = list_shares(runner)?;
+    let mut shares = list_shares(runner)?;
     let nfs_available = nfs_server_available(runner)?;
     let samba_available = samba_available(runner)?;
-    Ok(SharesSnapshot { shares, nfs_available, samba_available })
+    let mut smb_error = None;
+    // Only read smb4.conf when Samba is up: a host without Samba (or with a
+    // sudoers file that predates SMB support) must not report an error on
+    // every refresh.
+    if samba_available {
+        match super::smb::list_managed(runner) {
+            Ok(managed) => shares.extend(managed.into_iter().map(|s| Share::Smb {
+                dataset: s.dataset,
+                name: s.name,
+                path: s.path,
+                valid_user: s.valid_user,
+                read_only: s.read_only,
+                guest_ok: s.guest_ok,
+            })),
+            Err(e) => smb_error = Some(e.to_string()),
+        }
+    }
+    Ok(SharesSnapshot { shares, nfs_available, samba_available, smb_error })
 }
 
 #[cfg(test)]
@@ -325,17 +335,11 @@ mod tests {
 
     const SHARES_FIXTURE: &str = "\
 tank/both\tsharenfs\ton\tlocal
-tank/both\tsharesmb\ton\tlocal
 tank/data\tsharenfs\toff\tdefault
-tank/data\tsharesmb\toff\tdefault
 tank/nfsonly\tsharenfs\t-maproot=nobody -network 172.16.10.0/24\tlocal
-tank/nfsonly\tsharesmb\toff\tdefault
 tank/smbonly\tsharenfs\toff\tdefault
-tank/smbonly\tsharesmb\tmyshare\tlocal
 tank/weird\tsharenfs\t-alldirs -ro -network 172.16.10.0/24\tlocal
-tank/weird\tsharesmb\toff\tdefault
 tank/data@snap1\tsharenfs\t-\t-
-tank/data@snap1\tsharesmb\t-\t-
 ";
 
     #[test]
@@ -345,7 +349,6 @@ tank/data@snap1\tsharesmb\t-\t-
             shares,
             vec![
                 Share::Nfs { dataset: "tank/both".to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None },
-                Share::Smb { dataset: "tank/both".to_string(), name: None },
                 Share::Nfs {
                     dataset: "tank/nfsonly".to_string(),
                     raw: "-maproot=nobody -network 172.16.10.0/24".to_string(),
@@ -354,7 +357,6 @@ tank/data@snap1\tsharesmb\t-\t-
                     read_only: false,
                     root: Some("nobody".to_string()),
                 },
-                Share::Smb { dataset: "tank/smbonly".to_string(), name: Some("myshare".to_string()) },
                 Share::Nfs {
                     dataset: "tank/weird".to_string(),
                     raw: "-alldirs -ro -network 172.16.10.0/24".to_string(),
@@ -370,11 +372,11 @@ tank/data@snap1\tsharesmb\t-\t-
 
     #[test]
     fn list_shares_uses_correct_command_and_parses_result() {
-        let runner = FakeRunner::new("tank/data\tsharenfs\ton\tlocal\ntank/data\tsharesmb\toff\tdefault\n");
+        let runner = FakeRunner::new("tank/data\tsharenfs\ton\tlocal\n");
         let shares = list_shares(&runner).unwrap();
         assert_eq!(shares, vec![Share::Nfs { dataset: "tank/data".to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None }]);
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["get".to_string(), "-H".to_string(), "-p".to_string(), "-t".to_string(), "filesystem".to_string(), "sharenfs,sharesmb".to_string()]));
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["get".to_string(), "-H".to_string(), "-p".to_string(), "-t".to_string(), "filesystem".to_string(), "sharenfs".to_string()]));
     }
 
     #[test]
@@ -409,16 +411,55 @@ tank/data@snap1\tsharesmb\t-\t-
         assert_eq!(samba_available(&runner).unwrap(), false);
     }
 
+    const MANAGED_CONF: &str = "[global]\n  x = y\n\n## zfsctl managed shares -- do not edit by hand -- start\n[media]\n    # zfsctl-dataset = tank/media\n    path = /tank/media\n    valid users = carol\n    browseable = yes\n    read only = no\n## zfsctl managed shares -- do not edit by hand -- end\n";
+
     #[test]
-    fn list_shares_with_availability_composes_all_three_calls() {
+    fn list_shares_with_availability_merges_nfs_and_managed_smb_shares() {
         let runner = FakeRunner::new("")
-            .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\ntank/data\tsharesmb\toff\tdefault\n")
+            .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\n")
             .route("service", "nfsd", "nfsd is running as pid 1234.\n")
-            .route("service", "samba_server", "smbd is running as pid 2.\n");
+            .route("service", "samba_server", "smbd is running as pid 2.\n")
+            .route("cat", crate::zfs::smb::CONF_PATH, MANAGED_CONF);
         let snapshot = list_shares_with_availability(&runner).unwrap();
-        assert_eq!(snapshot.shares.len(), 1);
         assert_eq!(snapshot.nfs_available, true);
         assert_eq!(snapshot.samba_available, true);
+        assert_eq!(snapshot.smb_error, None);
+        assert_eq!(snapshot.shares.len(), 2);
+        assert_eq!(
+            snapshot.shares[1],
+            Share::Smb {
+                dataset: "tank/media".to_string(),
+                name: "media".to_string(),
+                path: "/tank/media".to_string(),
+                valid_user: Some("carol".to_string()),
+                read_only: false,
+                guest_ok: false,
+            }
+        );
+    }
+
+    #[test]
+    fn smb_conf_is_not_read_when_samba_is_not_running() {
+        let runner = FakeRunner::new("")
+            .route("zfs", "get", "")
+            .route("service", "nfsd", "nfsd is running as pid 1.\n")
+            .route("service", "samba_server", "smbd is not running.\n")
+            .route_failure("cat", crate::zfs::smb::CONF_PATH, "sudo: a password is required", 1);
+        let snapshot = list_shares_with_availability(&runner).unwrap();
+        assert_eq!(snapshot.smb_error, None);
+        assert!(!runner.calls.lock().unwrap().iter().any(|(c, _)| c == "cat"));
+    }
+
+    #[test]
+    fn an_unreadable_smb_conf_leaves_nfs_shares_intact_and_reports_the_problem() {
+        let runner = FakeRunner::new("")
+            .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\n")
+            .route("service", "nfsd", "nfsd is running as pid 1.\n")
+            .route("service", "samba_server", "smbd is running as pid 2.\n")
+            .route_failure("cat", crate::zfs::smb::CONF_PATH, "sudo: a password is required", 1);
+        let snapshot = list_shares_with_availability(&runner).unwrap();
+        assert_eq!(snapshot.shares.len(), 1);
+        assert!(snapshot.smb_error.unwrap().contains("password is required"));
     }
 
     #[test]

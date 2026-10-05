@@ -18,6 +18,8 @@ pub enum AppError {
     Parse(String),
     #[error("config error: {0}")]
     Config(String),
+    #[error("SMB: {0}")]
+    Smb(String),
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;

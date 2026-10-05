@@ -28,6 +28,19 @@ pub enum MutationCall {
     UnallowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Option<Vec<String>> },
     AddAclEntry { path: String, position: usize, entry: crate::acl::AclEntry },
     RemoveAclEntry { path: String, position: usize },
+    SetSmbShare { share: crate::zfs::smb::SmbShare, password: Option<Secret> },
+    RemoveSmbShare { dataset: String },
+}
+
+/// A password held only until it is piped to `smbpasswd`. `Debug` never
+/// prints it, so a logged or panicking `PendingAction` can't leak it.
+#[derive(Clone, PartialEq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(***)")
+    }
 }
 
 /// How alarming an action's confirmation should look. Drives the modal
@@ -51,7 +64,8 @@ impl MutationCall {
             MutationCall::OfflineDisk { .. }
             | MutationCall::ReplaceDisk { .. }
             | MutationCall::UnallowPermission { .. }
-            | MutationCall::RemoveAclEntry { .. } => Tone::Warn,
+            | MutationCall::RemoveAclEntry { .. }
+            | MutationCall::RemoveSmbShare { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
             | MutationCall::ResilverPool { .. }
             | MutationCall::OnlineDisk { .. }
@@ -62,6 +76,7 @@ impl MutationCall {
             | MutationCall::AllowPermission { .. }
             | MutationCall::AddAclEntry { .. }
             | MutationCall::SetPoolProperty { .. }
+            | MutationCall::SetSmbShare { .. }
             | MutationCall::SetDatasetProperty { .. } => Tone::Neutral,
         }
     }
@@ -88,6 +103,8 @@ impl MutationCall {
             MutationCall::UnallowPermission { .. } => "REVOKE PERMISSION",
             MutationCall::AddAclEntry { .. } => "ADD ACL ENTRY",
             MutationCall::RemoveAclEntry { .. } => "REMOVE ACL ENTRY",
+            MutationCall::SetSmbShare { .. } => "SET SMB SHARE",
+            MutationCall::RemoveSmbShare { .. } => "REMOVE SMB SHARE",
         }
     }
 }
@@ -128,6 +145,10 @@ impl MutationCall {
             }
             MutationCall::AddAclEntry { path, position, entry } => crate::acl::add_acl_entry(runner, path, *position, entry),
             MutationCall::RemoveAclEntry { path, position } => crate::acl::remove_acl_entry(runner, path, *position),
+            MutationCall::SetSmbShare { share, password } => {
+                crate::zfs::smb::set_share(runner, share, password.as_ref().map(|p| p.0.as_str()))
+            }
+            MutationCall::RemoveSmbShare { dataset } => crate::zfs::smb::remove_share(runner, dataset),
         }
     }
 }
@@ -204,6 +225,13 @@ pub enum FormKind {
     /// defaults to `"allow"`). `position` is fixed at modal-open time
     /// (always the current entry count — new entries are appended).
     AddAclEntry { host: usize, path: String, position: usize },
+    /// Fields: `[name, valid_user, password, read_only, guest]` -- a blank
+    /// `valid_user` with guest `n` means any authenticated Samba user may
+    /// connect; guest `y` (blank user only) means anonymous access and the
+    /// password is ignored; a blank `password` on edit keeps
+    /// the existing Samba password (only valid when the user is
+    /// unchanged, see `existing_user`). The password field is masked.
+    ShareSmb { host: usize, dataset: String, path: String, existing_user: Option<String> },
     /// Fields: `[name, ssh_target]` — both required. Unlike every
     /// other `FormKind`, submitting this one never produces a
     /// `PendingAction`: there's no existing host/runner to dispatch
@@ -211,6 +239,13 @@ pub enum FormKind {
     /// yet. `handle_modal_key` special-cases this variant instead of
     /// routing it through `build_pending_action`.
     AddHost,
+}
+
+impl FormKind {
+    /// Whether the form field at `index` must be shown as `*` characters.
+    pub fn masks_field(&self, index: usize) -> bool {
+        matches!(self, FormKind::ShareSmb { .. }) && index == 2
+    }
 }
 
 /// A modal dialog awaiting user input before a mutation runs.
@@ -247,6 +282,30 @@ pub enum Modal {
 mod tests {
     use super::*;
     use crate::exec::test_support::FakeRunner;
+
+    #[test]
+    fn secret_never_appears_in_debug_output() {
+        let call = MutationCall::SetSmbShare {
+            share: crate::zfs::smb::SmbShare { name: "a".into(), dataset: "tank/a".into(), path: "/tank/a".into(), valid_user: Some("bob".into()), read_only: false, guest_ok: false },
+            password: Some(Secret("hunter2".to_string())),
+        };
+        assert!(!format!("{call:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn smb_calls_run_the_library_and_removal_is_warn_toned() {
+        let runner = FakeRunner::new("");
+        MutationCall::RemoveSmbShare { dataset: "tank/none".into() }.run(&runner).unwrap_err(); // nothing managed there
+        assert_eq!(MutationCall::RemoveSmbShare { dataset: "x".into() }.tone(), Tone::Warn);
+    }
+
+    #[test]
+    fn only_the_smb_password_field_is_masked() {
+        let kind = FormKind::ShareSmb { host: 0, dataset: "d".into(), path: "/d".into(), existing_user: None };
+        assert!(kind.masks_field(2));
+        assert!(!kind.masks_field(0) && !kind.masks_field(1) && !kind.masks_field(3));
+        assert!(!FormKind::CreatePool { host: 0 }.masks_field(2));
+    }
 
     #[test]
     fn scrub_pool_call_runs_scrub_pool() {

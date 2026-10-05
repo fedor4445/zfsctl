@@ -22,7 +22,8 @@ impl SshRunner {
     /// `sudo -n` (non-interactive) is the same idea applied one layer
     /// further in: zfsctl connects as an unprivileged user and expects
     /// a narrow, command-scoped `NOPASSWD` sudoers entry on the remote
-    /// host (see README) for exactly `zpool`/`zfs`/`getfacl`/`setfacl`
+    /// host (see README) for exactly the commands listed in the
+    /// README's sudoers section
     /// -- `-n` means a missing or misconfigured entry fails immediately
     /// with a clear error instead of `sudo` hanging on a password
     /// prompt that can never arrive over a non-interactive SSH command
@@ -77,6 +78,12 @@ impl CommandRunner for SshRunner {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             status: output.status.code().unwrap_or(-1),
         })
+    }
+
+    fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
+        let mut command = Command::new("ssh");
+        command.args(self.build_args(cmd, args));
+        super::run_command_with_stdin(command, "ssh", stdin)
     }
 }
 

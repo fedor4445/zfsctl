@@ -51,10 +51,10 @@ theme = "ansi"   # ansi (default) | mono | solarized-dark | solarized-light
 
 `ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the commands `zfsctl` ever runs, not full root.
 
-`zfsctl` shells out to six binaries in total (confirmed by grepping every `run`/`run_checked` call site, not just the obvious `zpool`/`zfs` ones — `getfacl`/`setfacl` back the ACL tab, `geom` backs the Disks section, and `service` backs the Shares section's NFS/SMB availability check; all six need the sudoers entry, or whichever feature uses the missing one fails with "a password is required" the first time you touch it). On each remote host, as root, find the exact paths (typically `/sbin/zpool`, `/sbin/zfs`, `/bin/getfacl`, `/bin/setfacl`, `/sbin/geom`, `/usr/sbin/service` on FreeBSD, but confirm on your actual install rather than assume):
+`zfsctl` shells out to nine binaries in total (confirmed by grepping every `run`/`run_checked`/`run_with_stdin` call site, not just the obvious `zpool`/`zfs` ones — `getfacl`/`setfacl` back the ACL tab, `geom` backs the Disks section, `service` backs the Shares section's NFS/SMB availability check and the Samba reload, `smbpasswd` sets a managed SMB share's Samba password, and `cat`/`tee` read and write `smb4.conf`; all nine need the sudoers entry, or whichever feature uses the missing one fails with "a password is required" the first time you touch it). The only other command in the code, `sh -c` (for `zfs send | zfs receive`), is the library-level replication function that is not wired into the UI, so it needs no entry. On each remote host, as root, find the exact paths (typically `/sbin/zpool`, `/sbin/zfs`, `/bin/getfacl`, `/bin/setfacl`, `/sbin/geom`, `/usr/sbin/service`, `/usr/local/bin/smbpasswd`, `/bin/cat`, `/usr/bin/tee` on FreeBSD, but confirm on your actual install rather than assume):
 
 ```sh
-which zpool zfs getfacl setfacl geom service
+which zpool zfs getfacl setfacl geom service smbpasswd cat tee
 ```
 
 Then add a `NOPASSWD` entry scoped to exactly those paths for the connecting user (replace `fbsd` and the paths with what you found):
@@ -62,10 +62,12 @@ Then add a `NOPASSWD` entry scoped to exactly those paths for the connecting use
 ```sh
 visudo
 # add a line like:
-fbsd ALL=(root) NOPASSWD: /sbin/zpool, /sbin/zfs, /bin/getfacl, /bin/setfacl, /sbin/geom, /usr/sbin/service
+fbsd ALL=(root) NOPASSWD: /sbin/zpool, /sbin/zfs, /bin/getfacl, /bin/setfacl, /sbin/geom, /usr/sbin/service, /usr/local/bin/smbpasswd, /bin/cat /usr/local/etc/smb4.conf, /usr/bin/tee /usr/local/etc/smb4.conf
 ```
 
 Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `secure_path` (FreeBSD's default) already protects the *command being resolved*, but the sudoers entry itself should still pin the exact binaries it authorizes, as a second, independent layer — this is the actual place the hardening belongs, not the client code, which only ever sends `sudo -n zpool ...` (bare names) and relies on `secure_path` for safe resolution.
+
+`cat` and `tee` are additionally pinned to the `smb4.conf` argument. A bare `sudo cat` would let the connecting user read any file as root (e.g. `/etc/master.passwd`), and a bare `sudo tee` would let them overwrite any file, so pinning prevents arbitrary-file read/overwrite through those two commands. It does not make the entry as a whole root-equivalent-proof: `smbpasswd`, `zfs` and `setfacl` are already broad (for example `zfs` can mount over or change permissions on arbitrary paths, and `setfacl` can alter ACLs anywhere). A `sudo sh` entry would be unrestricted root outright, which is why `zfsctl` uses `cat`/`tee` with a fixed path rather than `sh -c`. If your Samba config lives somewhere other than `/usr/local/etc/smb4.conf`, `zfsctl` does not currently support it.
 
 ## Keys
 
@@ -163,6 +165,7 @@ shown, and that order is also the position number `d`/`n` operate on.
 - `n`: create a new dataset (prompts for name)
 - `d`: destroy the selected dataset (type the dataset's name to confirm)
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
+- `M`: create/edit a managed SMB share for the selected (mounted) dataset (see Shares → SMB shares)
 - `N`: create/edit an NFS share for the selected dataset (prompts for networks, hosts, read-only, and root user mapping — all optional; press `r` in the Shares section at least once first, so zfsctl knows the dataset's current share state before offering to change it)
 
 ### Snapshots
@@ -182,15 +185,26 @@ shown, and that order is also the position number `d`/`n` operate on.
 ### Shares
 
 - `Up` / `Down`: select a share
-- `Enter`: edit an NFS share's networks/hosts/read-only/root mapping. SMB
-  rows show a hint instead of opening a form — FreeBSD's `sharesmb` ZFS
-  property doesn't actually work (confirmed: `zfs set sharesmb=on` prints
-  "No SMB support in FreeBSD yet." and fails, even though the property gets
-  stored), so zfsctl can only view and remove an existing SMB share, never
-  create or edit one.
+- `Enter`: edit the selected share — an NFS share's networks/hosts/read-only/root mapping, or a managed SMB share (same form as `M` in Datasets)
 - `d`: remove the selected share (NFS or SMB), y/n confirm
 - `r`: refresh the share list
 
+#### SMB shares
+
+FreeBSD's `sharesmb` ZFS property doesn't work (`zfs set sharesmb=on` prints "No SMB support in FreeBSD yet."), so `zfsctl` manages Samba itself. In Datasets, `M` creates or edits an SMB share for the selected (mounted) dataset: share name, valid user, a Samba password, read-only, and guest access.
+
+- **Managed block.** Shares live in one block in `/usr/local/etc/smb4.conf`, delimited by these exact marker lines:
+  ```
+  ## zfsctl managed shares -- do not edit by hand -- start
+  ## zfsctl managed shares -- do not edit by hand -- end
+  ```
+  Never edit inside it; everything outside it is never touched (hand-written shares such as your own `[homes]` stay byte-identical). The block is appended if absent. Each stanza carries a `# zfsctl-dataset = <dataset>` comment, which is how a share is tied to its dataset. Anything unrecognised inside the block is reported as an error rather than silently dropped. After every change `zfsctl` reloads Samba (`service samba_server reload`). Note that `smbd` accepts the reload even for a config it dislikes while it is running, so the previous `smb4.conf` is only restored if the reload command itself fails (and the same restore is attempted if writing the file fails). If `smb4.conf` did not exist beforehand, nothing is restored and the error says the file may be partial. A file that is not valid UTF-8 is never rewritten.
+- **One user per share**, one SMB share per dataset.
+- **Guest access is an explicit opt-in** (the `Guest access (y/n)` field, default `n`). A blank Valid user with guest `n` is a share any authenticated Samba user can reach (Samba's default). Guest `y` renders `guest ok = yes`: anonymous access with no password, which is read/write if Read-only is `n`, so set Read-only to `y` for guest shares unless you really want anonymous writes. Guest cannot be combined with a Valid user, and any password typed is ignored for a guest share.
+- **The Valid user must already be a Unix account.** `zfsctl` gives it a Samba password with `smbpasswd -a -s`. A password is required on create; on edit, a blank password keeps the existing one (only if the user is unchanged). Setting a password **replaces that user's Samba password for every share they use**; there is no way to avoid this when creating a share, so enter the user's current Samba password if you want to keep it.
+- **Removing a share** (`d` in Shares) deletes its stanza but leaves the user's Samba password in place, since the same user may also back a hand-written share.
+- SMB shares are only listed while `smbd` is running; a config or parse error shows in the Shares status line while NFS rows still render.
+
 ## Status
 
-v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated ZFS administration permissions (`zfs allow`/`unallow`) can be viewed, granted, and revoked from a Permissions sub-tab in the Datasets right pane (`'['`/`']'` to switch to it, once focused with `Right`) — Pools has no equivalent, since `zfs allow` only targets a filesystem or volume. File ACLs (`getfacl`/`setfacl`, NFSv4 only — POSIX ACLs are deferred) can be viewed, added, and removed from an ACL sub-tab in the Datasets right pane, scoped to the dataset's mountpoint; bhyve zvol association is still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares can only be viewed and removed, not created or edited, since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).
+v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated ZFS administration permissions (`zfs allow`/`unallow`) can be viewed, granted, and revoked from a Permissions sub-tab in the Datasets right pane (`'['`/`']'` to switch to it, once focused with `Right`) — Pools has no equivalent, since `zfs allow` only targets a filesystem or volume. File ACLs (`getfacl`/`setfacl`, NFSv4 only — POSIX ACLs are deferred) can be viewed, added, and removed from an ACL sub-tab in the Datasets right pane, scoped to the dataset's mountpoint; bhyve zvol association is still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares are created, edited and removed through a managed block in `smb4.conf` (see Shares → SMB shares), since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).

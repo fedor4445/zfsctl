@@ -163,6 +163,9 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 if app.shares_loaded && app.nfs_available != Some(false) {
                     v.push(h("N", "NFS share", 3));
                 }
+                if app.shares_loaded && app.samba_available != Some(false) && app.selected_dataset_mountpoint().is_some() {
+                    v.push(h("M", "SMB share", 3));
+                }
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -297,6 +300,17 @@ pub fn hint_line(hints: &[Hint], width: usize, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn smb(dataset: &str) -> crate::zfs::share::Share {
+        crate::zfs::share::Share::Smb {
+            dataset: dataset.to_string(),
+            name: "media".to_string(),
+            path: format!("/{dataset}"),
+            valid_user: Some("carol".to_string()),
+            read_only: false,
+            guest_ok: false,
+        }
+    }
     use crate::acl::{AclEntry, AclEntryType, AclTag};
     use crate::ui::modal::{FormField, FormKind, MutationCall, PendingAction};
     use crate::ui::state::PermissionRow;
@@ -434,7 +448,7 @@ mod tests {
         go(&mut a, Section::Shares);
         a.shares = vec![
             Share::Nfs { dataset: "tank/a".to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None },
-            Share::Smb { dataset: "tank/b".to_string(), name: None },
+            smb("tank/b"),
         ];
         a.shares_table.select(Some(0));
         a
@@ -558,7 +572,7 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_advertised_are_no_ops() {
-        let probes = ['s', 'R', 'd', 'n', 'N', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']'];
+        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']'];
         for (name, app) in scenarios() {
             let advertised: Vec<KeyCode> = hints(&app).iter().filter_map(|h| key_code(h.key)).collect();
             for ch in probes {
@@ -587,6 +601,18 @@ mod tests {
 
     fn keys(app: &App) -> Vec<&'static str> {
         hints(app).iter().map(|h| h.key).collect()
+    }
+
+    #[test]
+    fn datasets_middle_advertises_smb_share_only_when_it_can_work() {
+        let mut a = datasets_middle(true);
+        a.samba_available = Some(true);
+        assert!(keys(&a).contains(&"M"));
+        a.samba_available = Some(false);
+        assert!(!keys(&a).contains(&"M"));
+        let mut b = datasets_middle(false);
+        b.samba_available = Some(true);
+        assert!(!keys(&b).contains(&"M"), "not before shares have loaded");
     }
 
     #[test]
