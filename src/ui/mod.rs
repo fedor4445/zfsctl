@@ -91,10 +91,10 @@ pub fn run_app(mut inventory: HostInventory, config_path: std::path::PathBuf, re
 /// instead means every queued success is applied, never just the
 /// last one.
 fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_path: &std::path::Path) {
-    for (name, target) in app.pending_new_hosts.drain(..) {
+    for (name, target) in std::mem::take(&mut app.pending_new_hosts) {
         app.hosts.push(name.clone());
         if let Err(e) = inventory.apply_new_host(config_path, name, target) {
-            app.status_message = Some(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
+            app.set_error(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
         }
     }
 }

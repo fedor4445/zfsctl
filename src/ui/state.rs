@@ -214,6 +214,11 @@ pub struct App {
     pub picker: Option<PickerState>,
     pub status_message: Option<String>,
     pub theme: crate::ui::theme::Theme,
+    /// The text of the status message that was set via `set_error`.
+    /// Compared against `status_message` rather than kept as a bool, so
+    /// it invalidates itself the moment the message is replaced or
+    /// cleared — a stale flag can never recolor an unrelated message.
+    status_error: Option<String>,
     pub should_quit: bool,
     /// Appended by `drain_worker_messages` once a probed host is
     /// confirmed reachable; drained by the event loop (which owns the
@@ -286,6 +291,7 @@ impl App {
             picker: None,
             status_message: None,
             theme: crate::ui::theme::Theme::ansi(),
+            status_error: None,
             should_quit: false,
             pending_new_hosts: Vec::new(),
             pending_probes: HashSet::new(),
@@ -337,6 +343,16 @@ impl App {
 
     fn end_refresh(&mut self, section: Section, host: usize) {
         self.in_flight.remove(&(section, host));
+    }
+
+    /// Sets a failure message (rendered with the theme's `err` style).
+    pub fn set_error(&mut self, msg: String) {
+        self.status_error = Some(msg.clone());
+        self.status_message = Some(msg);
+    }
+
+    pub fn status_is_error(&self) -> bool {
+        self.status_message.is_some() && self.status_message == self.status_error
     }
 
     /// Name of the currently-selected host, for pane titles.
@@ -1125,7 +1141,7 @@ impl App {
                             self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                             None
                         } else if is_duplicate {
-                            self.status_message = Some(format!("A host named '{name}' already exists or is already being added"));
+                            self.set_error(format!("A host named '{name}' already exists or is already being added"));
                             self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                             None
                         } else {
@@ -1137,8 +1153,7 @@ impl App {
                         match build_pending_action(&kind, &fields) {
                             Some(action) => Some(action),
                             None => {
-                                self.status_message =
-                                    Some("Could not submit -- check the field values against the hints in their labels".to_string());
+                                self.set_error("Could not submit -- check the field values against the hints in their labels".to_string());
                                 self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
                                 None
                             }
@@ -1500,7 +1515,7 @@ impl App {
                                 self.pool_properties_for = None;
                             }
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::Datasets(host, result) => {
@@ -1534,7 +1549,7 @@ impl App {
                                 self.acl_entries_for = None;
                             }
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => {
@@ -1552,7 +1567,7 @@ impl App {
                             clamp_table_selection(&mut self.snapshots_table, self.snapshots.len());
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::Disks(host, result) => {
@@ -1579,7 +1594,7 @@ impl App {
                             clamp_table_selection(&mut self.disks_table, self.disks.len());
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::Shares(host, result) => {
@@ -1600,7 +1615,7 @@ impl App {
                             self.shares_loaded = true;
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::Vdevs(host, pool, result) => {
@@ -1627,7 +1642,7 @@ impl App {
                             self.pool_scan_status_shown_at = Some(Instant::now());
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::PoolProperties(host, pool, result) => {
@@ -1649,7 +1664,7 @@ impl App {
                             self.pool_properties_for = Some(pool);
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::DatasetProperties(host, dataset, result) => {
@@ -1671,7 +1686,7 @@ impl App {
                             self.dataset_properties_for = Some(dataset);
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::DatasetPermissions(host, dataset, result) => {
@@ -1693,7 +1708,7 @@ impl App {
                             self.dataset_permissions_for = Some(dataset);
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::DatasetAcl(host, path, result) => {
@@ -1715,7 +1730,7 @@ impl App {
                             self.acl_entries_for = Some(path);
                             self.status_message = None;
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::HostProbe(name, target, result) => {
@@ -1726,7 +1741,7 @@ impl App {
                             self.status_message = None;
                         }
                         Err(e) => {
-                            self.status_message = Some(format!("Could not add host '{name}': {e}"));
+                            self.set_error(format!("Could not add host '{name}': {e}"));
                         }
                     }
                 }
@@ -1755,7 +1770,7 @@ impl App {
                                 self.selected_disks.clear();
                             }
                         }
-                        Err(e) => self.status_message = Some(e.to_string()),
+                        Err(e) => self.set_error(e.to_string()),
                     }
                 }
             }
@@ -5952,4 +5967,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_error_marks_the_current_status_message_as_an_error() {
+        let mut app = App::new(vec!["local".to_string()]);
+        assert!(!app.status_is_error());
+        app.set_error("zpool destroy failed".to_string());
+        assert_eq!(app.status_message.as_deref(), Some("zpool destroy failed"));
+        assert!(app.status_is_error());
+    }
+
+    #[test]
+    fn a_later_ordinary_message_is_not_styled_as_an_error() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.set_error("boom".to_string());
+        app.status_message = Some("select a disk with Space first".to_string());
+        assert!(!app.status_is_error(), "stale error flag must not recolor an unrelated message");
+    }
+
+    #[test]
+    fn clearing_the_message_clears_the_error_state() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.set_error("boom".to_string());
+        app.handle_key(crossterm::event::KeyCode::Esc);
+        assert_eq!(app.status_message, None);
+        assert!(!app.status_is_error());
+    }
 }
