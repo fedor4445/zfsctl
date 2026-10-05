@@ -194,6 +194,16 @@ impl Theme {
         }
     }
 
+    /// Just `31%` / `100%!` for panes too narrow for the bar; same style and
+    /// the same `!` rule as `capacity_cell`.
+    pub fn capacity_compact(&self, allocated: u64, size: u64) -> Line<'static> {
+        let Some(pct) = capacity_pct(allocated, size) else {
+            return Line::styled("—", self.muted);
+        };
+        let bang = if pct > 85 { "!" } else { "" };
+        Line::from(Span::styled(format!("{pct}%{bang}"), self.capacity_style(pct)))
+    }
+
     /// `████░░░░ 31%`, colored by `capacity_style`; `—` when `size == 0`.
     pub fn capacity_cell(&self, allocated: u64, size: u64) -> Line<'static> {
         let Some(pct) = capacity_pct(allocated, size) else {
@@ -491,5 +501,15 @@ mod tests {
         let out = format!("{}", crossterm::style::SetForegroundColor(crossterm::style::Color::Red));
         std::env::remove_var("NO_COLOR");
         assert!(out.contains("38;5;"), "colors were stripped: {out:?}");
+    }
+
+    #[test]
+    fn capacity_compact_is_just_the_percentage_with_the_same_bang_and_style() {
+        let t = Theme::ansi();
+        assert_eq!(text(&t.capacity_compact(31, 100)), "31%");
+        assert_eq!(text(&t.capacity_compact(86, 100)), "86%!");
+        assert_eq!(text(&t.capacity_compact(150, 100)), "100%!");
+        assert_eq!(text(&t.capacity_compact(0, 0)), "—");
+        assert_eq!(t.capacity_compact(70, 100).spans[0].style, t.warn);
     }
 }

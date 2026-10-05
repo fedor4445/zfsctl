@@ -205,42 +205,83 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, list_area);
 }
 
+/// Name column width the Pools table protects before it spends space on
+/// anything beyond Health and a capacity figure.
+const POOL_NAME_PREFERRED: u16 = 16;
+const POOL_NAME_MINIMUM: u16 = 8;
+
 fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
-    let rows: Vec<Vec<Cell>> = app
+    // Column plan, in priority order. Health always; then a capacity
+    // figure (the full bar when Name can keep its preferred width,
+    // otherwise just `31%`, dropped only when even Name's minimum
+    // won't fit); then Size/Alloc/Free, each only while Name still keeps
+    // its preferred width. Columns are dropped, never squeezed: a
+    // proportional squeeze clips Health to "Heal".
+    let inner = area.width.saturating_sub(2);
+    // Width the non-Name columns need, counting one gap per column.
+    let needs = |non_name: &[u16]| non_name.iter().sum::<u16>() + non_name.len() as u16;
+    let mut non_name: Vec<u16> = vec![12];
+    let mut headers: Vec<&str> = vec!["Name", "Health"];
+    #[derive(PartialEq)]
+    enum Used {
+        Full,
+        Compact,
+        Hidden,
+    }
+    let used = if POOL_NAME_PREFERRED + needs(&[12, 14]) <= inner {
+        Used::Full
+    } else if POOL_NAME_MINIMUM + needs(&[12, 5]) <= inner {
+        Used::Compact
+    } else {
+        Used::Hidden
+    };
+    match used {
+        Used::Full => {
+            non_name.push(14);
+            headers.push("Used");
+        }
+        Used::Compact => {
+            non_name.push(5);
+            headers.push("Used");
+        }
+        Used::Hidden => {}
+    }
+    let mut extras = 0;
+    if used == Used::Full {
+        for header in ["Size", "Alloc", "Free"] {
+            if POOL_NAME_PREFERRED + needs(&[non_name.as_slice(), &[14]].concat()) <= inner {
+                non_name.push(14);
+                headers.push(header);
+                extras += 1;
+            }
+        }
+    }
+
+    let rows: Vec<Row> = app
         .pools
         .iter()
         .map(|p| {
-            vec![
+            let mut cells = vec![
                 Cell::from(Span::styled(p.name.clone(), theme.name_style(&p.health))),
                 Cell::from(theme.health_span(&p.health)),
-                Cell::from(theme.capacity_cell(p.allocated, p.size)),
-                Cell::from(p.size.to_string()),
-                Cell::from(p.allocated.to_string()),
-                Cell::from(p.free.to_string()),
-            ]
+            ];
+            match used {
+                Used::Full => cells.push(Cell::from(theme.capacity_cell(p.allocated, p.size))),
+                Used::Compact => cells.push(Cell::from(theme.capacity_compact(p.allocated, p.size))),
+                Used::Hidden => {}
+            }
+            let more = [p.size.to_string(), p.allocated.to_string(), p.free.to_string()];
+            cells.extend(more.into_iter().take(extras).map(Cell::from));
+            Row::new(cells)
         })
         .collect();
-    // Columns in priority order: Health and Used come right after Name,
-    // and the lowest-priority ones are dropped (not squeezed) when the
-    // pane is too narrow — a proportional squeeze clips Health to "Heal",
-    // and Health is the thing the user is scanning for.
-    let headers = ["Name", "Health", "Used", "Size", "Alloc", "Free"];
-    let col_widths: [u16; 6] = [8, 12, 14, 14, 14, 14];
-    let inner = area.width.saturating_sub(2);
-    let mut ncols = 2;
-    while ncols < col_widths.len() && col_widths[..=ncols].iter().sum::<u16>() + ncols as u16 <= inner {
-        ncols += 1;
-    }
-    let widths: Vec<Constraint> = col_widths[..ncols]
-        .iter()
-        .enumerate()
-        .map(|(i, w)| if i == 0 { Constraint::Min(*w) } else { Constraint::Length(*w) })
+    let widths: Vec<Constraint> = std::iter::once(Constraint::Min(POOL_NAME_MINIMUM))
+        .chain(non_name.iter().map(|w| Constraint::Length(*w)))
         .collect();
-    let rows = rows.into_iter().map(|cells| Row::new(cells.into_iter().take(ncols).collect::<Vec<_>>()));
     let title = format!("Pools — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(headers[..ncols].to_vec()))
+        .header(Row::new(headers))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pools_table);
@@ -902,5 +943,32 @@ mod tests {
         app.modal = Some(destroy_pool_modal());
         let rows = render(&mut app, 100, 30).join("\n");
         assert!(rows.contains("✖ DESTROY POOL"), "{rows}");
+    }
+
+    #[test]
+    fn capacity_is_visible_at_80_columns() {
+        let mut app = app_in_pools(vec![pool("tank", 31, 100, PoolHealth::Online)]);
+        let rows = render(&mut app, 80, 24).join("\n");
+        assert!(rows.contains("ONLINE"), "{rows}");
+        assert!(rows.contains("31%"), "capacity must survive 80 columns:\n{rows}");
+    }
+
+    #[test]
+    fn pool_names_keep_a_readable_width_as_columns_are_added() {
+        // 16-character name: the Name column must not be squeezed below
+        // this just because a low-priority column (Size/Alloc/Free) fits.
+        for width in [90u16, 110, 120, 140, 160, 200] {
+            let mut app = app_in_pools(vec![pool("sixteen-char-nm!", 31, 100, PoolHealth::Online)]);
+            let rows = render(&mut app, width, 24).join("\n");
+            assert!(rows.contains("sixteen-char-nm!"), "name clipped at {width} columns:\n{rows}");
+            assert!(rows.contains("ONLINE"), "health missing at {width} columns:\n{rows}");
+        }
+    }
+
+    #[test]
+    fn the_full_capacity_bar_is_used_when_there_is_room() {
+        let mut app = app_in_pools(vec![pool("tank", 31, 100, PoolHealth::Online)]);
+        let rows = render(&mut app, 200, 24).join("\n");
+        assert!(rows.contains("███░░░░░ 31%") || rows.contains("██░░░░░░ 31%"), "{rows}");
     }
 }
