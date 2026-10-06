@@ -1,7 +1,7 @@
 pub mod local;
 pub mod ssh;
 
-use crate::error::Result;
+use crate::error::{AppError, Result};
 
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
@@ -36,6 +36,13 @@ pub trait CommandRunner: Send + Sync {
     /// `run`. For read-only lookups that need no privilege (e.g.
     /// `getent passwd`). Never use it for anything that mutates state.
     fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput>;
+    /// The command this runner would run, unspawned, so a caller can wire its own pipes
+    /// (replication pipes one host's `zfs send` into another's `zfs receive`). The default
+    /// refuses, so a runner that cannot do this (a test fake) says so rather than guessing.
+    fn command(&self, cmd: &str, args: &[&str]) -> Result<std::process::Command> {
+        let _ = (cmd, args);
+        Err(AppError::Config("this runner cannot hand out a command to spawn".to_string()))
+    }
 }
 
 /// Shared by `LocalRunner` and `SshRunner`. Stdin is written from a
@@ -255,5 +262,10 @@ mod tests {
         let output = runner.run("service", &["samba_server", "onestatus"]).unwrap();
         assert_eq!(output.stdout, "smbd is running as pid 1.\nwinbindd is not running.\n");
         assert_eq!(output.status, 1);
+    }
+
+    #[test]
+    fn a_runner_without_command_support_refuses_instead_of_guessing() {
+        assert!(FakeRunner::new("").command("zfs", &[]).is_err());
     }
 }

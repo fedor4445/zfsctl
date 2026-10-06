@@ -154,6 +154,15 @@ pub fn vocabulary_for(kind: &FormKind, field_index: usize) -> Option<(&'static [
     }
 }
 
+/// Which fields of a job form take what: configured hosts, a live-fetched dataset or pool name
+/// (the host being whatever the form's host field says at F2 time), and a schedule preset.
+struct JobPickers<'a> {
+    hosts: &'a [String],
+    host_fields: &'static [usize],
+    live_fields: &'static [usize],
+    schedule_field: usize,
+}
+
 /// Builds the picker state for opening `F2` on `field_index` of a form
 /// of kind `kind`, pre-seeded from `current_value` (whatever's already
 /// typed into that field) -- so `F2` on a half-typed field doesn't
@@ -174,18 +183,24 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
         });
     }
     let job_form = match kind {
-        FormKind::Job { hosts, .. } => Some((hosts, 2)),
-        FormKind::SnapshotJob { hosts, .. } => Some((hosts, 5)),
+        FormKind::Job { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 2 }),
+        FormKind::SnapshotJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 5 }),
+        FormKind::ReplicateJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0, 3], live_fields: &[1, 4], schedule_field: 6 }),
         _ => None,
     };
-    if let Some((hosts, schedule_field)) = job_form {
-        if field_index == 1 {
-            // The host is whatever the form's Host field says at F2 time; `open_pool_picker` fills it in.
+    if let Some(spec) = job_form {
+        if spec.live_fields.contains(&field_index) {
+            // `open_pool_picker` points this at the right host and queues the fetch.
             return Some(PickerState { values: Vec::new(), filter: String::new(), selected: 0, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Loading, note: None, account: None, pool_host: Some(0) });
         }
-        let (values, selected) = if field_index == 0 {
-            (hosts.clone(), hosts.iter().position(|h| h == current_value.trim()).unwrap_or(0))
-        } else if field_index == schedule_field {
+        let (values, selected) = if spec.host_fields.contains(&field_index) {
+            let mut values = spec.hosts.to_vec();
+            if matches!(kind, FormKind::ReplicateJob { .. }) && field_index == 3 {
+                values.push(crate::jobs::DEST_FILE.to_string());
+            }
+            let selected = values.iter().position(|h| h == current_value.trim()).unwrap_or(0);
+            (values, selected)
+        } else if field_index == spec.schedule_field {
             let presets = crate::ui::jobs::preset_values();
             let selected = presets.iter().position(|p| crate::ui::jobs::insert_text(p) == current_value.trim()).unwrap_or(0);
             (presets, selected)

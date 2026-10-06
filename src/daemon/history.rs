@@ -26,6 +26,7 @@ pub enum RunResult {
     Ok,
     Failed,
     Skipped,
+    Cancelled,
 }
 
 // The JSON key is `event` (see the spec), so the field keeps that name.

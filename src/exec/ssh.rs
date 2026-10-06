@@ -98,6 +98,12 @@ impl CommandRunner for SshRunner {
         command.args(self.build_args(cmd, args));
         super::run_command_with_stdin(command, "ssh", stdin)
     }
+
+    fn command(&self, cmd: &str, args: &[&str]) -> Result<Command> {
+        let mut command = Command::new("ssh");
+        command.args(self.build_args(cmd, args));
+        Ok(command)
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +216,15 @@ mod tests {
         let runner = SshRunner::new("-oProxyCommand=touch /tmp/pwned");
         let args = runner.build_args("zpool", &["list"]);
         assert_eq!(args[4], "--", "a leading '--' must precede the host so ssh cannot parse it as an option");
+    }
+
+    #[test]
+    fn command_is_ssh_with_the_same_arguments_and_quoting_as_run() {
+        let runner = SshRunner::new("backup-host");
+        let cmd = runner.command("zfs", &["send", "--", "tank/a b@s"]).unwrap();
+        assert_eq!(cmd.get_program(), "ssh");
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, runner.build_args("zfs", &["send", "--", "tank/a b@s"]));
+        assert!(args.last().unwrap().starts_with("sudo -n zfs send"));
     }
 }

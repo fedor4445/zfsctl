@@ -149,6 +149,10 @@ mod tests {
             recursive: false,
             prefix: None,
             keep: None,
+            dest_host: None,
+            dest_dataset: None,
+            dest_dir: None,
+            force: false,
         }
     }
 
@@ -168,7 +172,7 @@ mod tests {
         let mut bad_host = job("bad-host", "0 3 * * *");
         bad_host.host = "gone".to_string();
         let mut kind = job("kind", "0 3 * * *");
-        kind.kind = "replicate".to_string();
+        kind.kind = "restic".to_string();
         let mut off = job("off", "0 3 * * *");
         off.enabled = false;
         let mut s = Scheduler::new(Utc);

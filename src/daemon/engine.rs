@@ -33,6 +33,14 @@ impl Paths {
     pub fn heartbeat(&self) -> PathBuf {
         self.dir.join("daemon.json")
     }
+    /// Live progress of running transfers, one file per run.
+    pub fn progress_dir(&self) -> PathBuf {
+        self.dir.join("progress")
+    }
+    /// Cancel requests dropped by the TUI, one file per job.
+    pub fn cancel_dir(&self) -> PathBuf {
+        self.dir.join("cancel")
+    }
 
     /// Creates the state directory, readable by root only.
     pub fn ensure_dir(&self) -> std::io::Result<()> {
@@ -184,7 +192,7 @@ mod tests {
     }
 
     fn job(id: &str, schedule: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: Some(at("2026-09-01T00:00:00Z")), dataset: None, recursive: false, prefix: None, keep: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: Some(at("2026-09-01T00:00:00Z")), dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
     }
 
     fn engine(dir: &tempfile::TempDir, now: &str) -> Engine<Utc> {
@@ -371,6 +379,17 @@ mod tests {
         let paths = Paths::new(dir.path());
         jobs::save(&paths.jobs(), &[Job::test_snapshot("snap", "tank/data", "hourly", 3)]).unwrap();
         History::new(paths.history()).append(&started("snap", "r1", "2026-10-07T03:00:00Z")).unwrap();
+        let work = engine(&dir, "2026-10-07T04:00:00Z").start(at("2026-10-07T04:00:00Z"));
+        assert!(work.iter().any(|w| matches!(w, Work::Orphan(run) if run.run_id == "r1")), "{work:?}");
+        assert!(!work.iter().any(|w| matches!(w, Work::Resume { .. })), "{work:?}");
+    }
+
+    #[test]
+    fn an_unfinished_replicate_run_is_closed_as_lost_not_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        jobs::save(&paths.jobs(), &[Job::test_replicate("repl", "tank/data", "hourly", "local", "backup/data")]).unwrap();
+        History::new(paths.history()).append(&started("repl", "r1", "2026-10-07T03:00:00Z")).unwrap();
         let work = engine(&dir, "2026-10-07T04:00:00Z").start(at("2026-10-07T04:00:00Z"));
         assert!(work.iter().any(|w| matches!(w, Work::Orphan(run) if run.run_id == "r1")), "{work:?}");
         assert!(!work.iter().any(|w| matches!(w, Work::Resume { .. })), "{work:?}");

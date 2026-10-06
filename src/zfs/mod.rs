@@ -10,6 +10,7 @@ pub mod property;
 pub mod share;
 pub mod share_detail;
 pub mod smb;
+pub mod replication;
 pub mod snapshot;
 pub mod snapshot_detail;
 

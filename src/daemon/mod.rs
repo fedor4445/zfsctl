@@ -6,8 +6,12 @@ pub mod heartbeat;
 pub mod history;
 pub mod notify;
 pub mod scheduler;
+pub mod cancel;
+pub mod progress;
+pub mod replicate;
 pub mod scrub;
 pub mod snapshot;
+pub mod transfer;
 
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
@@ -19,7 +23,9 @@ use history::{Event, EventKind, History, RunResult};
 use scrub::{Clock, Context, Locks, Outcome, SystemClock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 /// How often a running scrub is polled for completion.
@@ -49,6 +55,10 @@ struct Shared {
     poll: Duration,
     notify_command: RwLock<Option<String>>,
     stop: Arc<AtomicBool>,
+    /// Where running transfers write their progress files.
+    progress_dir: PathBuf,
+    /// The cancel flag of each running replication, by its cancel-file name.
+    cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 /// The parts of `config.toml` the daemon uses.
@@ -63,6 +73,12 @@ fn load_hosts(config_path: &Path) -> Result<Loaded> {
     let inventory = HostInventory::from_config(&config);
     let hosts = inventory.hosts.iter().map(|h| (h.name.clone(), Arc::clone(&h.runner))).collect();
     Ok(Loaded { hosts, notify_command: config.daemon.notify_command })
+}
+
+/// Progress and cancel files can only belong to a transfer of a previous daemon: remove them.
+fn clear_runtime_files(paths: &Paths) {
+    progress::clear_all(&paths.progress_dir());
+    cancel::clear_all(&paths.cancel_dir());
 }
 
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
@@ -95,18 +111,62 @@ impl Shared {
         }
     }
 
+    /// Runs a replication with its own cancel flag registered under the job's cancel-file name, so a
+    /// request file can reach it. A host that is no longer configured is a recorded failure.
+    fn replicate(&self, ctx: &Context, due: &scheduler::Due, run_id: &str) -> Outcome {
+        let job = &due.job;
+        let dest_host = job.dest_host.clone().unwrap_or_default();
+        let (Some(src), Some(dst)) = (self.runner(&job.host), self.runner(&dest_host)) else {
+            let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
+            return scrub::finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("host '{}' or '{dest_host}' is not configured", job.host), slot);
+        };
+        let flag = Arc::new(AtomicBool::new(false));
+        let key = cancel::file_name(&job.id);
+        {
+            // A slot that falls due while this job's previous transfer is still running must not
+            // replace (and later remove) that transfer's cancel flag.
+            let mut running = self.cancels.lock().unwrap_or_else(PoisonError::into_inner);
+            if running.contains_key(&key) {
+                let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
+                return scrub::finish(ctx, job, run_id, EventKind::Skipped, RunResult::Skipped, "skipped: already running".to_string(), slot);
+            }
+            running.insert(key.clone(), Arc::clone(&flag));
+        }
+        let env = replicate::Env { ctx, progress_dir: &self.progress_dir, cancel: &flag };
+        let outcome = replicate::run_replicate(&env, src.as_ref(), dst.as_ref(), job, due.scheduled_for, due.catch_up, run_id);
+        self.cancels.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+        outcome
+    }
+
+    /// Hands each pending cancel request to the run it names; a request for a job that is not
+    /// running has nothing to cancel and is dropped.
+    fn apply_cancel_requests(&self, dir: &Path) {
+        let running = self.cancels.lock().unwrap_or_else(PoisonError::into_inner);
+        for name in cancel::take_requests(dir) {
+            if let Some(flag) = running.get(&name) {
+                log(&format!("cancelling {name}"));
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
     /// Runs one piece of work to completion on the calling thread.
     fn execute(&self, work: Work) {
         let ctx = Context { history: &self.history, clock: self.clock.as_ref(), locks: &self.locks, poll: self.poll, stop: &self.stop };
         match work {
             Work::Run(due) => {
-                let Some(runner) = self.runner(&due.job.host) else { return };
                 let run_id = format!("{}-{}", due.job.id, self.clock.now().timestamp_millis());
                 log(&format!("running {} (slot {}{})", due.job.id, due.scheduled_for.to_rfc3339(), if due.catch_up { ", catch-up" } else { "" }));
-                let outcome = if due.job.kind == crate::jobs::KIND_SNAPSHOT {
-                    Some(snapshot::run_snapshot(&ctx, runner.as_ref(), &due.job, due.scheduled_for, due.catch_up, &run_id))
-                } else {
-                    scrub::run_scrub(&ctx, runner.as_ref(), &due.job, due.scheduled_for, due.catch_up, &run_id)
+                let outcome = match due.job.kind.as_str() {
+                    crate::jobs::KIND_REPLICATE => Some(self.replicate(&ctx, &due, &run_id)),
+                    kind => {
+                        let Some(runner) = self.runner(&due.job.host) else { return };
+                        if kind == crate::jobs::KIND_SNAPSHOT {
+                            Some(snapshot::run_snapshot(&ctx, runner.as_ref(), &due.job, due.scheduled_for, due.catch_up, &run_id))
+                        } else {
+                            scrub::run_scrub(&ctx, runner.as_ref(), &due.job, due.scheduled_for, due.catch_up, &run_id)
+                        }
+                    }
                 };
                 if let Some(outcome) = outcome {
                     log(&format!("{} {:?}: {}", outcome.job_id, outcome.result, outcome.message));
@@ -126,7 +186,7 @@ impl Shared {
                 }
             }
             Work::Orphan(run) => {
-                log(&format!("run {} of {} has no runnable job any more", run.run_id, run.job_id));
+                log(&format!("run {} of {} was unfinished when the daemon stopped, or its job is gone", run.run_id, run.job_id));
                 let _ = self.history.append(&Event {
                     job_id: run.job_id,
                     run_id: run.run_id,
@@ -134,7 +194,7 @@ impl Shared {
                     at: self.clock.now(),
                     scheduled_for: None,
                     result: Some(RunResult::Failed),
-                    message: "lost: the job was removed or can no longer run".to_string(),
+                    message: "lost: the daemon stopped (or the job was removed or can no longer run) while it was running".to_string(),
                     catch_up: false,
                     summary: None,
                 });
@@ -160,6 +220,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
     if let Some(pid) = heartbeat::live_other_instance(heartbeat::read(&heartbeat_path).as_ref(), now, std::process::id(), heartbeat::process_alive) {
         return Err(AppError::Config(format!("another zfsctl daemon is already running (pid {pid})")));
     }
+    clear_runtime_files(&paths);
     let loaded = load_hosts(config_path)?;
     let names: Vec<String> = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
     let shared = Arc::new(Shared {
@@ -170,7 +231,10 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         poll: POLL,
         notify_command: RwLock::new(loaded.notify_command),
         stop: Arc::clone(stop),
+        progress_dir: paths.progress_dir(),
+        cancels: Mutex::default(),
     });
+    let cancel_dir = paths.cancel_dir();
     let mut config_mtime = modified(config_path);
     let mut engine = Engine::new(paths, chrono::Local, names, now);
     let started_at = now;
@@ -202,6 +266,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
                 Err(e) => log(&format!("config.toml problem, keeping the previous hosts and notify command: {e}")),
             }
         }
+        shared.apply_cancel_requests(&cancel_dir);
         let before = engine.load_error.clone();
         let work = engine.step(now);
         if engine.load_error != before {
@@ -244,7 +309,7 @@ mod tests {
     }
 
     fn job() -> Job {
-        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None }
+        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
     }
 
     fn shared(dir: &tempfile::TempDir, runner: FakeRunner, notify: Option<String>) -> Shared {
@@ -257,6 +322,8 @@ mod tests {
             poll: Duration::from_secs(30),
             notify_command: RwLock::new(notify),
             stop: Arc::new(AtomicBool::new(false)),
+            progress_dir: dir.path().join("progress"),
+            cancels: Mutex::default(),
         }
     }
 
@@ -307,6 +374,7 @@ mod tests {
         let runs = history::runs(&shared.history.read());
         assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Failed)));
         assert!(runs[0].message.starts_with("lost:"));
+        assert!(runs[0].message.contains("daemon stopped"), "{}", runs[0].message);
     }
 
     #[test]
@@ -416,5 +484,68 @@ mod tests {
         let runs = history::runs(&shared.history.read());
         assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Ok)));
         assert!(runs[0].message.starts_with("created hourly-20261007T030000Z"), "{}", runs[0].message);
+    }
+
+    #[test]
+    fn a_cancelled_run_does_not_notify() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("notified");
+        let shared = shared(&dir, FakeRunner::new(""), Some(format!("touch {}", out.display())));
+        let outcome = Outcome { job_id: "j".into(), result: RunResult::Cancelled, message: "cancelled".into() };
+        shared.notify(&job(), &outcome);
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn a_due_replicate_job_whose_destination_host_is_not_configured_is_recorded_as_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let job = Job::test_replicate("repl", "tank/data", "hourly", "gone", "backup/data");
+        let due = Due { job, scheduled_for: shared.clock.now(), catch_up: false };
+        shared.execute(Work::Run(due));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Failed)));
+        assert!(runs[0].message.contains("gone"), "{}", runs[0].message);
+    }
+
+    #[test]
+    fn a_cancel_request_sets_the_flag_of_the_running_job_only_and_is_always_consumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let running = Arc::new(AtomicBool::new(false));
+        shared.cancels.lock().unwrap().insert(cancel::file_name("repl-a"), Arc::clone(&running));
+        let cancel_dir = dir.path().join("cancel");
+        cancel::request(&cancel_dir, "repl-a").unwrap();
+        cancel::request(&cancel_dir, "not-running").unwrap();
+        shared.apply_cancel_requests(&cancel_dir);
+        assert!(running.load(Ordering::SeqCst));
+        assert!(cancel::take_requests(&cancel_dir).is_empty(), "every request file is consumed");
+    }
+
+    #[test]
+    fn startup_removes_progress_and_cancel_files_left_by_a_previous_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let p = progress::Progress { job_id: "j".into(), bytes: 1, total: None, started_at: Utc::now(), updated_at: Utc::now(), rate: None };
+        progress::write(&paths.progress_dir(), "old", &p).unwrap();
+        cancel::request(&paths.cancel_dir(), "j").unwrap();
+        clear_runtime_files(&paths);
+        assert!(progress::read_all(&paths.progress_dir()).is_empty());
+        assert!(cancel::take_requests(&paths.cancel_dir()).is_empty());
+    }
+
+    #[test]
+    fn a_second_slot_of_a_running_replication_is_skipped_and_leaves_the_running_ones_cancel_flag_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let job = Job::test_replicate("repl", "tank/data", "hourly", "local", "backup/data");
+        let running = Arc::new(AtomicBool::new(false));
+        shared.cancels.lock().unwrap().insert(cancel::file_name("repl"), Arc::clone(&running));
+        shared.execute(Work::Run(Due { job, scheduled_for: shared.clock.now(), catch_up: false }));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Skipped)));
+        assert!(runs[0].message.contains("already running"), "{}", runs[0].message);
+        let map = shared.cancels.lock().unwrap();
+        assert!(map.get(&cancel::file_name("repl")).is_some_and(|f| Arc::ptr_eq(f, &running)), "the running transfer stays cancellable");
     }
 }
