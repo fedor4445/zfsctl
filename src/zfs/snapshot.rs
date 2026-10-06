@@ -45,15 +45,48 @@ pub fn list_snapshots(runner: &dyn CommandRunner) -> Result<Vec<Snapshot>> {
 /// The `--` before `target` stops `zfs` from treating a dataset name
 /// that starts with `-` as an option flag (argument injection).
 pub fn create_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
+    create_snapshot_with(runner, dataset, name, false)
+}
+
+/// `zfs snapshot [-r] -- dataset@name`; `-r` snapshots the dataset and every descendant atomically.
+pub fn create_snapshot_with(runner: &dyn CommandRunner, dataset: &str, name: &str, recursive: bool) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    super::run_checked(runner, "zfs", &["snapshot", "--", &target], &format!("zfs snapshot {target}"))?;
+    let mut args = vec!["snapshot"];
+    if recursive {
+        args.push("-r");
+    }
+    args.extend(["--", &target]);
+    super::run_checked(runner, "zfs", &args, &format!("zfs snapshot {target}"))?;
     Ok(())
 }
 
 pub fn destroy_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
+    destroy_snapshot_with(runner, dataset, name, false)
+}
+
+/// `zfs destroy [-r] -- dataset@name`; `-r` also destroys the same-named snapshot of each descendant.
+pub fn destroy_snapshot_with(runner: &dyn CommandRunner, dataset: &str, name: &str, recursive: bool) -> Result<()> {
     let target = format!("{dataset}@{name}");
-    super::run_checked(runner, "zfs", &["destroy", "--", &target], &format!("zfs destroy {target}"))?;
+    let mut args = vec!["destroy"];
+    if recursive {
+        args.push("-r");
+    }
+    args.extend(["--", &target]);
+    super::run_checked(runner, "zfs", &args, &format!("zfs destroy {target}"))?;
     Ok(())
+}
+
+/// The snapshots of `dataset` alone (`-d 1`), or of its whole tree when `recursive`.
+pub fn list_snapshots_of(runner: &dyn CommandRunner, dataset: &str, recursive: bool) -> Result<Vec<Snapshot>> {
+    let mut args: Vec<&str> = SNAPSHOT_LIST_ARGS.to_vec();
+    if recursive {
+        args.push("-r");
+    } else {
+        args.extend(["-d", "1"]);
+    }
+    args.push(dataset);
+    let output = super::run_checked(runner, "zfs", &args, &format!("zfs list -t snapshot {dataset}"))?;
+    parse_snapshot_list(&output.stdout)
 }
 
 pub fn rollback_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
@@ -270,5 +303,39 @@ tank/data@2026-09-04\t2000
         let result = replicate_snapshot(&runner, "tank/data@snap1", Some("host; rm -rf /"), "backup/data");
         assert!(result.is_err());
         assert!(runner.calls.lock().unwrap().is_empty(), "must reject before ever running a command");
+    }
+
+    fn args_of(runner: &FakeRunner) -> Vec<Vec<String>> {
+        runner.calls.lock().unwrap().iter().map(|(_, a)| a.clone()).collect()
+    }
+
+    #[test]
+    fn create_and_destroy_add_dash_r_only_when_recursive() {
+        let r = FakeRunner::new("");
+        create_snapshot_with(&r, "tank/data", "h-1", false).unwrap();
+        create_snapshot_with(&r, "tank/data", "h-1", true).unwrap();
+        destroy_snapshot_with(&r, "tank/data", "h-1", false).unwrap();
+        destroy_snapshot_with(&r, "tank/data", "h-1", true).unwrap();
+        assert_eq!(
+            args_of(&r),
+            vec![
+                vec!["snapshot", "--", "tank/data@h-1"],
+                vec!["snapshot", "-r", "--", "tank/data@h-1"],
+                vec!["destroy", "--", "tank/data@h-1"],
+                vec!["destroy", "-r", "--", "tank/data@h-1"],
+            ]
+        );
+    }
+
+    #[test]
+    fn listing_one_datasets_snapshots_is_depth_one_unless_recursive() {
+        let r = FakeRunner::new("tank/data@a\t1\n");
+        let flat = list_snapshots_of(&r, "tank/data", false).unwrap();
+        let tree = list_snapshots_of(&r, "tank/data", true).unwrap();
+        assert_eq!(flat[0].name, "a");
+        assert_eq!(tree.len(), 1);
+        let calls = args_of(&r);
+        assert_eq!(calls[0], vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used", "-d", "1", "tank/data"]);
+        assert_eq!(calls[1], vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used", "-r", "tank/data"]);
     }
 }
