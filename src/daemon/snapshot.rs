@@ -20,8 +20,10 @@ pub fn snapshot_name(prefix: &str, at: DateTime<Utc>) -> String {
 /// a manual snapshot or another job's can never be pruned by name collision.
 pub fn is_own(prefix: &str, name: &str) -> bool {
     let Some(stamp) = name.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')) else { return false };
-    let b = stamp.as_bytes();
-    b.len() == 16 && b[8] == b'T' && b[15] == b'Z' && b[..8].iter().all(u8::is_ascii_digit) && b[9..15].iter().all(u8::is_ascii_digit)
+    let Some((date, rest)) = stamp.split_at_checked(8) else { return false };
+    let Some(time) = rest.strip_prefix('T').and_then(|t| t.strip_suffix('Z')) else { return false };
+    let digits = |part: &str, len: usize| part.len() == len && part.bytes().all(|b| b.is_ascii_digit());
+    digits(date, 8) && digits(time, 6)
 }
 
 pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
@@ -99,7 +101,7 @@ mod tests {
 
     impl Zfs {
         fn new(existing: &[&str]) -> Self {
-            let listing = existing.iter().map(|n| format!("{n}\t1\n")).collect();
+            let listing = existing.iter().map(|n| format!("{n}\t1\n")).collect::<Vec<_>>().concat();
             Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), calls: Mutex::new(Vec::new()) }
         }
         fn calls(&self) -> Vec<Vec<String>> {

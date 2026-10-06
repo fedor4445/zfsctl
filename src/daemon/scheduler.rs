@@ -51,6 +51,7 @@ impl<Tz: TimeZone> Scheduler<Tz> {
     pub fn reload(&mut self, jobs: Vec<Job>, hosts: &[String], last_scheduled: &HashMap<String, DateTime<Utc>>, now: DateTime<Utc>) -> Vec<Unsupported> {
         let mut old = std::mem::take(&mut self.entries);
         let mut unsupported = Vec::new();
+        let clashes = jobs::duplicate_prefix_reasons(&jobs);
         for job in jobs {
             let schedule = match jobs::resolve(&job, hosts) {
                 Ok(s) => s,
@@ -59,6 +60,10 @@ impl<Tz: TimeZone> Scheduler<Tz> {
                     continue;
                 }
             };
+            if let Some(reason) = clashes.get(&job.id) {
+                unsupported.push(Unsupported { id: job.id.clone(), reason: reason.clone() });
+                continue;
+            }
             if !job.enabled {
                 continue;
             }
@@ -256,5 +261,17 @@ mod tests {
         let _ = s.catch_up(at("2026-10-07T12:00:00Z"));
         assert_eq!(s.next_time("j"), Some(at("2026-10-11T03:00:00Z")));
         assert_eq!(s.tick(at("2026-10-11T03:00:00Z")).len(), 1);
+    }
+
+    #[test]
+    fn the_later_of_two_snapshot_jobs_with_one_host_dataset_and_prefix_is_unsupported() {
+        let mut s = Scheduler::new(Utc);
+        let a = Job::test_snapshot("a", "tank/data", "hourly", 3);
+        let b = Job::test_snapshot("b", "tank/data", "hourly", 5);
+        let unsupported = s.reload(vec![a, b], &hosts(), &HashMap::new(), at("2026-10-06T00:00:00Z"));
+        assert_eq!(unsupported.len(), 1);
+        assert_eq!(unsupported[0].id, "b");
+        assert!(unsupported[0].reason.contains("prune each other"), "{}", unsupported[0].reason);
+        assert_eq!(s.len(), 1);
     }
 }

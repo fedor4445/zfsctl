@@ -103,7 +103,12 @@ impl Shared {
                 let Some(runner) = self.runner(&due.job.host) else { return };
                 let run_id = format!("{}-{}", due.job.id, self.clock.now().timestamp_millis());
                 log(&format!("running {} (slot {}{})", due.job.id, due.scheduled_for.to_rfc3339(), if due.catch_up { ", catch-up" } else { "" }));
-                if let Some(outcome) = scrub::run_scrub(&ctx, runner.as_ref(), &due.job, due.scheduled_for, due.catch_up, &run_id) {
+                let outcome = if due.job.kind == crate::jobs::KIND_SNAPSHOT {
+                    Some(snapshot::run_snapshot(&ctx, runner.as_ref(), &due.job, due.scheduled_for, due.catch_up, &run_id))
+                } else {
+                    scrub::run_scrub(&ctx, runner.as_ref(), &due.job, due.scheduled_for, due.catch_up, &run_id)
+                };
+                if let Some(outcome) = outcome {
                     log(&format!("{} {:?}: {}", outcome.job_id, outcome.result, outcome.message));
                     self.notify(&due.job, &outcome);
                 }
@@ -400,5 +405,16 @@ mod tests {
         let seen = watcher.join().unwrap().expect("a heartbeat appeared while the daemon ran");
         assert_eq!(seen.pid, std::process::id());
         assert!(!hb.exists(), "removed on a clean stop, so the TUI shows 'not running' at once");
+    }
+
+    #[test]
+    fn a_due_snapshot_job_runs_through_the_snapshot_runner_and_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let due = Due { job: Job::test_snapshot("snap", "tank/data", "hourly", 3), scheduled_for: shared.clock.now(), catch_up: false };
+        shared.execute(Work::Run(due));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Ok)));
+        assert!(runs[0].message.starts_with("created hourly-20261007T030000Z"), "{}", runs[0].message);
     }
 }

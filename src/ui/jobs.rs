@@ -172,7 +172,8 @@ pub fn load(state_dir: &Path, hosts: &[String], previous: Option<&JobsView>) -> 
         Ok(list) => (list, None),
         Err(e) => (previous.map(|p| p.jobs.clone()).unwrap_or_default(), Some(e.to_string())),
     };
-    let unsupported = jobs.iter().filter_map(|j| jobs::resolve(j, hosts).err().map(|reason| (j.id.clone(), reason))).collect();
+    let clashes = jobs::duplicate_prefix_reasons(&jobs);
+    let unsupported = jobs.iter().filter_map(|j| jobs::resolve(j, hosts).err().or_else(|| clashes.get(&j.id).cloned()).map(|reason| (j.id.clone(), reason))).collect();
     JobsView {
         runs: history::runs(&History::new(state_dir.join("history.jsonl")).read()),
         heartbeat: heartbeat::read(&state_dir.join("daemon.json")),
@@ -403,5 +404,14 @@ mod tests {
         h.append(&done).unwrap();
         let finished = load(dir.path(), &hosts(), None);
         assert_eq!(run_summary(finished.last_run("a").unwrap(), &est), "10-06 03:00  failed   3m 05s  scrub repaired 12K with 3 errors");
+    }
+
+    #[test]
+    fn load_reports_the_prefix_clash_as_a_reason_on_the_later_job() {
+        let dir = tempfile::tempdir().unwrap();
+        jobs::save(&dir.path().join("jobs.toml"), &[Job::test_snapshot("a", "tank/data", "hourly", 3), Job::test_snapshot("b", "tank/data", "hourly", 5)]).unwrap();
+        let view = load(dir.path(), &["local".to_string()], None);
+        assert!(!view.unsupported.contains_key("a"));
+        assert!(view.unsupported["b"].contains("prune each other"));
     }
 }
