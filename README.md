@@ -220,6 +220,18 @@ FreeBSD's `sharesmb` ZFS property doesn't work (`zfs set sharesmb=on` prints "No
 - **Removing a share** (`d` in Shares) deletes its stanza but leaves the user's Samba password in place, since the same user may also back a hand-written share.
 - SMB shares are only listed while `smbd` is running; a config or parse error shows in the Shares status line while NFS rows still render.
 
+## Scheduled jobs (`zfsctl daemon`)
+
+`zfsctl daemon` runs scheduled jobs on the hub, unattended. It must run as root, like the TUI, and reaches other hosts over the same SSH + sudo path, so it needs no new sudoers entries. The only job kind so far is **scrub**: run `zpool scrub` on a pool of any configured host on a cron schedule, watch it to completion, and record the result. (A Jobs section in the TUI to manage these comes later; until then edit `jobs.toml` by hand.)
+
+**Install the service.** Copy the binary and the rc script, then enable it:
+
+```sh
+install -m 755 target/release/zfsctl /usr/local/bin/zfsctl
+install -m 755 contrib/rc.d/zfsctl /usr/local/etc/rc.d/zfsctl
+sysrc zfsctl_enable=YES
+service zfsctl start
+
 ## Status
 
 v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. `zfs send`/`receive` replication is implemented and tested at the library layer (`zfs::snapshot::replicate_snapshot`) but is **not yet wired into the UI** — it needs its own design pass for progress display and cancellation, since a single replication can run for hours. A dedicated follow-up plan will wire it up. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated ZFS administration permissions (`zfs allow`/`unallow`) can be viewed, granted, and revoked from a Permissions sub-tab in the Datasets right pane (`'['`/`']'` to switch to it, once focused with `Right`) — Pools has no equivalent, since `zfs allow` only targets a filesystem or volume. File ACLs (`getfacl`/`setfacl`, NFSv4 only — POSIX ACLs are deferred) can be viewed, added, and removed from an ACL sub-tab in the Datasets right pane, scoped to the dataset's mountpoint; bhyve zvol association is still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares are created, edited and removed through a managed block in `smb4.conf` (see Shares → SMB shares), since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).

@@ -10,6 +10,24 @@ pub struct Config {
     pub hosts: Vec<HostConfig>,
     #[serde(default, skip_serializing_if = "UiConfig::is_default")]
     pub ui: UiConfig,
+    #[serde(default, skip_serializing_if = "DaemonConfig::is_default")]
+    pub daemon: DaemonConfig,
+}
+
+/// Settings for `zfsctl daemon`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DaemonConfig {
+    /// A shell command run when a scheduled job fails. The job's details
+    /// arrive in `ZFSCTL_JOB`, `ZFSCTL_HOST`, `ZFSCTL_KIND`, `ZFSCTL_RESULT`
+    /// and `ZFSCTL_MESSAGE`; never on the command line.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub notify_command: Option<String>,
+}
+
+impl DaemonConfig {
+    fn is_default(&self) -> bool {
+        self.notify_command.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -138,6 +156,7 @@ mod tests {
         let config = Config {
             hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) }],
             ui: UiConfig { theme: Some("mono".to_string()), auto_refresh_secs: None },
+            ..Default::default()
         };
         config.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), config);
@@ -159,5 +178,14 @@ mod tests {
         let text = toml::to_string_pretty(&config).unwrap();
         assert!(text.contains("auto_refresh_secs = 0"), "{text}");
         assert!(!toml::to_string_pretty(&Config::default()).unwrap().contains("auto_refresh"));
+    }
+
+    #[test]
+    fn daemon_notify_command_parses_and_is_only_written_back_when_set() {
+        let config: Config = toml::from_str("[daemon]\nnotify_command = \"curl -s ntfy.sh/zfs\"\n").unwrap();
+        assert_eq!(config.daemon.notify_command.as_deref(), Some("curl -s ntfy.sh/zfs"));
+        assert!(toml::to_string_pretty(&config).unwrap().contains("notify_command"));
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("daemon") && !text.contains("notify"), "{text}");
     }
 }
