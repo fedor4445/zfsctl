@@ -50,7 +50,7 @@ pub enum Work {
     /// A scrub started earlier and never seen to finish: keep watching it.
     /// `then` is a catch-up for the same job, run only after the resumed run
     /// ends: started on its own it would race the resumed run for the pool.
-    Resume { job: Job, run: Run, then: Option<Due> },
+    Resume { job: Box<Job>, run: Box<Run>, then: Option<Box<Due>> },
     /// A running run whose job no longer exists or can no longer run.
     Orphan(Run),
 }
@@ -112,7 +112,7 @@ impl<Tz: TimeZone> Engine<Tz> {
             match jobs.iter().find(|j| j.id == run.job_id && jobs::resolve(j, &self.hosts).is_ok()) {
                 Some(job) => {
                     let then = catch_ups.iter().position(|d| d.job.id == job.id).map(|i| catch_ups.remove(i));
-                    work.push(Work::Resume { job: job.clone(), run, then });
+                    work.push(Work::Resume { job: Box::new(job.clone()), run: Box::new(run), then: then.map(Box::new) });
                 }
                 None => work.push(Work::Orphan(run)),
             }

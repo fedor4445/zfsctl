@@ -76,7 +76,7 @@ impl Shared {
                     self.notify(&job, &outcome);
                     // The catch-up waits for the resumed run to end, so the two never race for the pool.
                     if let Some(due) = then {
-                        self.execute(Work::Run(due));
+                        self.execute(Work::Run(*due));
                     }
                 }
             }
@@ -253,7 +253,7 @@ mod tests {
         let run = history::runs(&shared.history.read()).remove(0);
         let mut catch_up = due();
         catch_up.catch_up = true;
-        shared.execute(Work::Resume { job: job(), run, then: Some(catch_up) });
+        shared.execute(Work::Resume { job: Box::new(job()), run: Box::new(run), then: Some(Box::new(catch_up)) });
         let order: Vec<String> = shared.history.read().into_iter().filter(|e| e.event != EventKind::Started).map(|e| e.run_id).collect();
         assert_eq!(order.len(), 2, "{order:?}");
         assert_eq!(order[0], "old-run", "the resumed run is closed first");

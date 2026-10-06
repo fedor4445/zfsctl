@@ -77,13 +77,28 @@ impl Watch {
             }
             // The completion line carries a timestamp, so a new scrub's differs from the old one's
             // even when it finished before our first poll.
-            Observation::Completed { summary, errors } if self.before.as_ref() != Some(&summary) => Verdict::Done { ok: !errors, message: summary },
+            Observation::Completed { summary, errors } if self.before.as_ref() != Some(&summary) => classify_new_scan(summary, errors),
             Observation::Completed { .. } | Observation::NeverScanned => {
                 self.unchanged += 1;
                 if self.unchanged >= DID_NOT_START_POLLS { Verdict::DidNotStart } else { Verdict::Keep }
             }
             Observation::Unreachable(_) => Verdict::Keep,
         }
+    }
+}
+
+/// What a scan line that differs from the one before the scrub means. Only a
+/// completed scrub (`scrub repaired ...`) is a result; a cancelled scrub or a
+/// resilver that took its place is a failure, and a paused scrub is unfinished.
+fn classify_new_scan(summary: String, errors: bool) -> Verdict {
+    if summary.starts_with("scrub repaired") {
+        Verdict::Done { ok: !errors, message: summary }
+    } else if summary.starts_with("scrub paused") {
+        Verdict::Keep
+    } else if summary.starts_with("scrub canceled") {
+        Verdict::Done { ok: false, message: summary }
+    } else {
+        Verdict::Done { ok: false, message: format!("the scrub was replaced by another scan and not completed: {summary}") }
     }
 }
 
@@ -331,12 +346,48 @@ mod tests {
 
     #[test]
     fn watch_keeps_going_while_in_progress_and_finishes_on_a_new_completion() {
-        let mut w = Watch::new(Some("old".into()));
+        let fresh = "scrub repaired 0B in 00:20:00 with 0 errors on Tue Oct  6 04:00:00 2026";
+        let mut w = Watch::new(Some("scrub repaired 0B in 00:20:00 with 0 errors on Sun Sep  6 03:20:01 2026".into()));
         assert_eq!(w.observe(Observation::InProgress, t(0)), Verdict::Keep);
-        let v = w.observe(Observation::Completed { summary: "new".into(), errors: false }, t(1));
-        assert_eq!(v, Verdict::Done { ok: true, message: "new".into() });
+        let v = w.observe(Observation::Completed { summary: fresh.into(), errors: false }, t(1));
+        assert_eq!(v, Verdict::Done { ok: true, message: fresh.into() });
+        let with_errors = "scrub repaired 12K in 00:20:00 with 2 errors on Tue Oct  6 04:00:00 2026";
         let mut w = Watch::new(None);
-        assert_eq!(w.observe(Observation::Completed { summary: "x".into(), errors: true }, t(0)), Verdict::Done { ok: false, message: "x".into() });
+        assert_eq!(w.observe(Observation::Completed { summary: with_errors.into(), errors: true }, t(0)), Verdict::Done { ok: false, message: with_errors.into() });
+    }
+
+    #[test]
+    fn a_cancelled_scrub_is_a_failed_run_not_a_green_one() {
+        let mut w = Watch::new(Some("scrub repaired 0B in 00:20:00 with 0 errors on Sun Sep  6 03:20:01 2026".into()));
+        let v = w.observe(Observation::Completed { summary: "scrub canceled on Tue Oct  6 03:05:00 2026".into(), errors: false }, t(0));
+        assert_eq!(v, Verdict::Done { ok: false, message: "scrub canceled on Tue Oct  6 03:05:00 2026".into() });
+    }
+
+    #[test]
+    fn a_paused_scrub_is_still_unfinished() {
+        let mut w = Watch::new(None);
+        let paused = || Observation::Completed { summary: "scrub paused since Tue Oct  6 03:05:00 2026".into(), errors: false };
+        for i in 0..5 {
+            assert_eq!(w.observe(paused(), t(i)), Verdict::Keep, "a paused scrub neither finished nor failed to start");
+        }
+        let v = w.observe(Observation::Completed { summary: "scrub repaired 0B in 00:20:00 with 0 errors on Tue Oct  6 04:00:00 2026".into(), errors: false }, t(6));
+        assert!(matches!(v, Verdict::Done { ok: true, .. }), "{v:?}");
+    }
+
+    #[test]
+    fn a_resilver_that_replaced_the_scrub_is_a_failed_run_naming_it() {
+        let mut w = Watch::new(Some("old".into()));
+        let v = w.observe(Observation::Completed { summary: "resilvered 500M in 00:00:30 with 0 errors on Tue Oct  6 03:10:00 2026".into(), errors: false }, t(0));
+        let Verdict::Done { ok, message } = v else { panic!("{v:?}") };
+        assert!(!ok);
+        assert!(message.contains("resilver") && message.contains("not completed"), "{message}");
+    }
+
+    #[test]
+    fn a_scrub_that_repaired_data_with_errors_still_reports_them() {
+        let mut w = Watch::new(None);
+        let v = w.observe(Observation::Completed { summary: "scrub repaired 12K in 00:20:00 with 3 errors on Tue Oct  6 04:00:00 2026".into(), errors: true }, t(0));
+        assert!(matches!(v, Verdict::Done { ok: false, .. }), "{v:?}");
     }
 
     #[test]
