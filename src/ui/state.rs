@@ -253,7 +253,7 @@ pub struct App {
     pub account_cache: HashMap<usize, (Instant, crate::zfs::accounts::HostAccounts)>,
     pub account_fetch_in_flight: HashMap<usize, Instant>,
     pub pending_account_fetch: Vec<usize>,
-    pub pending_pool_fetch: Vec<usize>,
+    pub pending_pool_fetch: Vec<(usize, crate::ui::picker::LiveNames)>,
     /// Lowercased names currently being probed (submitted, not yet
     /// resolved) -- checked alongside `self.hosts` so a second
     /// submission of the same name while the first is still
@@ -1507,21 +1507,28 @@ impl App {
     /// Points the job form's Pool picker at the host named in the form's Host field and queues
     /// one fetch of its pool names; an unknown host name fails the picker right away.
     fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str) {
-        let FormKind::Job { hosts, .. } = kind else { return };
+        let (hosts, what) = match kind {
+            FormKind::Job { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Pools),
+            FormKind::SnapshotJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
+            _ => return,
+        };
         match hosts.iter().position(|h| h == host_name.trim()) {
             Some(host) => {
                 picker.pool_host = Some(host);
-                self.pending_pool_fetch.push(host);
+                self.pending_pool_fetch.push((host, what));
             }
             None => picker.load = crate::ui::picker::PickerLoad::Failed(format!("unknown host '{}'", host_name.trim())),
         }
     }
 
-    /// Lists the host's pools on a worker thread and reports them as `WorkerMsg::PoolNames`.
-    pub fn fetch_pool_names(&mut self, runner: Arc<dyn CommandRunner>, host: usize) {
+    /// Lists the host's pools or datasets on a worker thread and reports them as `WorkerMsg::PoolNames`.
+    pub fn fetch_pool_names(&mut self, runner: Arc<dyn CommandRunner>, host: usize, what: crate::ui::picker::LiveNames) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = crate::zfs::pool::list_pools(runner.as_ref()).map(|pools| pools.into_iter().map(|p| p.name).collect());
+            let result = match what {
+                crate::ui::picker::LiveNames::Pools => crate::zfs::pool::list_pools(runner.as_ref()).map(|v| v.into_iter().map(|p| p.name).collect()),
+                crate::ui::picker::LiveNames::Datasets => crate::zfs::dataset::list_datasets(runner.as_ref()).map(|v| v.into_iter().map(|d| d.name).collect()),
+            };
             let _ = tx.send(WorkerMsg::PoolNames(host, result));
         });
     }
@@ -2863,7 +2870,7 @@ Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
-  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
+  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
@@ -2880,6 +2887,7 @@ Pools
   n / d            create / destroy a pool
   s / R            scrub / resilver (y/n confirm)
   J                schedule a recurring scrub of the selected pool (opens the job form)
+  J                (in Datasets) schedule recurring snapshots of the selected dataset
 
 Vdevs (inside a drilled-into pool)
   o / O            offline / online the selected disk
@@ -2923,6 +2931,7 @@ Jobs
   Up / Down        select a scheduled job
   Enter            edit the job (host, pool, schedule, catch up)
   n                new scrub job (or press J on a pool in Pools)
+  N                new snapshot job (or press J on a dataset in Datasets)
   Space            enable / disable the job
   d                delete the job (y/n; its past runs stay in the history)
 
@@ -7704,7 +7713,7 @@ mod tests {
         app.handle_modal_key(KeyCode::F(2));
         let picker = app.picker.as_ref().expect("a pool picker");
         assert_eq!(picker.load, crate::ui::picker::PickerLoad::Loading);
-        assert_eq!(app.pending_pool_fetch, vec![1]);
+        assert_eq!(app.pending_pool_fetch, vec![(1, crate::ui::picker::LiveNames::Pools)]);
         app.tx.send(WorkerMsg::PoolNames(1, Ok(vec!["scratch".to_string(), "zroot".to_string()]))).unwrap();
         app.drain_worker_messages();
         let picker = app.picker.as_ref().unwrap();
@@ -8297,5 +8306,37 @@ mod tests {
         // Editing that same job is fine, as is a different prefix.
         let kind = snapshot_kind(Some(other.clone()), vec![other]);
         assert!(build_snapshot_job_action(&kind, &snap_fields(["local", "tank/data", "n", "hourly", "9", "0 * * * *", "y"]), std::path::Path::new("/x"), chrono::Utc::now()).is_ok());
+    }
+
+    #[test]
+    fn f2_on_the_snapshot_forms_dataset_field_queues_a_dataset_fetch_for_the_chosen_host() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.handle_key(KeyCode::Char('N'));
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        assert_eq!(app.pending_pool_fetch, vec![(0, crate::ui::picker::LiveNames::Datasets)]);
+        app.tx.send(WorkerMsg::PoolNames(0, Ok(vec!["tank".to_string(), "tank/data".to_string()]))).unwrap();
+        app.drain_worker_messages();
+        app.handle_picker_key(KeyCode::Down);
+        app.handle_picker_key(KeyCode::Enter);
+        assert_eq!(form_values(&app)[1], "tank/data");
+    }
+
+    #[test]
+    fn f2_on_the_snapshot_forms_host_and_schedule_fields_opens_their_pickers_and_the_rest_do_nothing() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.handle_key(KeyCode::Char('N'));
+        app.handle_modal_key(KeyCode::F(2));
+        assert_eq!(app.picker.as_ref().unwrap().values, vec!["local"]);
+        app.picker = None;
+        for _ in 0..5 {
+            app.handle_modal_key(KeyCode::Tab);
+        }
+        app.handle_modal_key(KeyCode::F(2));
+        assert_eq!(app.picker.as_ref().unwrap().values, crate::ui::jobs::preset_values());
+        app.picker = None;
+        app.handle_modal_key(KeyCode::Tab); // Catch up
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.picker.is_none());
     }
 }

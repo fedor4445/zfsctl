@@ -117,11 +117,11 @@ fn apply_pending_account_fetches(app: &mut App, inventory: &HostInventory) {
     }
 }
 
-/// Same split as `apply_pending_account_fetches`, for the job form's Pool picker.
+/// Same split as `apply_pending_account_fetches`, for the job forms' Pool and Dataset pickers.
 fn apply_pending_pool_fetches(app: &mut App, inventory: &HostInventory) {
-    for host in std::mem::take(&mut app.pending_pool_fetch) {
+    for (host, what) in std::mem::take(&mut app.pending_pool_fetch) {
         if let Some(h) = inventory.hosts.get(host) {
-            app.fetch_pool_names(h.runner.clone(), host);
+            app.fetch_pool_names(h.runner.clone(), host, what);
         } else {
             app.fail_pool_fetch(host, AppError::Parse(format!("unknown host index {host}")));
         }
@@ -452,5 +452,29 @@ mod tests {
         app.drain_worker_messages();
         assert!(matches!(&app.picker.as_ref().unwrap().load, PickerLoad::Failed(m) if m.contains("unknown host index 9")));
         assert!(app.account_fetch_in_flight.is_empty());
+    }
+
+    #[test]
+    fn apply_pending_pool_fetches_lists_dataset_names_for_a_dataset_fetch() {
+        use crate::exec::test_support::FakeRunner;
+        use crate::hosts::Host;
+        use std::sync::Arc;
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner = FakeRunner::new("tank/data\t1\t2\t3\t/tank/data\tfilesystem\tyes\n");
+        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner), ssh_target: None }] };
+        let kind = crate::ui::modal::FormKind::SnapshotJob { hosts: vec!["local".to_string()], existing: None, jobs: Vec::new() };
+        app.picker = crate::ui::picker::build_picker_state(&kind, 1, "");
+        app.pending_pool_fetch = vec![(0, crate::ui::picker::LiveNames::Datasets)];
+        apply_pending_pool_fetches(&mut app, &inventory);
+        assert!(app.pending_pool_fetch.is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.drain_worker_messages();
+            if app.picker.as_ref().is_some_and(|p| p.load == crate::ui::picker::PickerLoad::Ready) || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(app.picker.as_ref().unwrap().values, vec!["tank/data"]);
     }
 }
