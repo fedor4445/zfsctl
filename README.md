@@ -49,7 +49,7 @@ theme = "ansi"   # ansi (default) | mono | solarized-dark | solarized-light
 
 ### Auto-refresh
 
-While you sit on Pools, Datasets, Snapshots or Disks, that list refreshes itself in the background (every 10 seconds by default, and straight away the first time you open it). Shares, Hosts, open modals/pickers and a pool's vdev view (which polls every 2 seconds on its own) are not touched. Your selection follows the item you had selected by name, so a refresh never changes which row a keypress acts on, and background refreshes don't flash the "refreshing" indicator or wipe a status message you're reading (a stale error does clear once the host answers). `r` still refreshes on demand.
+While you sit on Pools, Datasets, Snapshots, Disks or Shares, that list refreshes itself in the background (every 10 seconds by default, and straight away the first time you open it). Hosts, open modals/pickers and a pool's vdev view (which polls every 2 seconds on its own) are not touched. Your selection follows the item you had selected by name, so a refresh never changes which row a keypress acts on, and background refreshes don't flash the "refreshing" indicator or wipe a status message you're reading (a stale error does clear once the host answers). `r` still refreshes on demand.
 
 ```toml
 [ui]

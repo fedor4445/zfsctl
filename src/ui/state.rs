@@ -379,13 +379,13 @@ impl App {
     /// The list section the periodic refresh should keep fresh right now, if any:
     /// the one on screen, and only while nothing (a modal, a picker, a pool
     /// drill-down, which has its own faster poll) could be mid-interaction with it.
-    /// Hosts has nothing to refresh and Shares only changes when the user changes it.
+    /// Hosts has nothing to refresh.
     pub fn auto_refresh_section(&self) -> Option<Section> {
         if self.modal.is_some() || self.picker.is_some() || self.drilled_pool.is_some() {
             return None;
         }
         match self.current_section() {
-            section @ (Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks) => Some(section),
+            section @ (Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares) => Some(section),
             _ => None,
         }
     }
@@ -405,6 +405,7 @@ impl App {
             Section::Datasets => self.refresh_datasets(runner),
             Section::Snapshots => self.refresh_snapshots(runner),
             Section::Disks => self.refresh_disks(runner),
+            Section::Shares => self.refresh_shares(runner),
             _ => return,
         }
         if !already_running {
@@ -1760,7 +1761,7 @@ impl App {
                     }
                 }
                 WorkerMsg::Shares(host, result) => {
-                    self.end_refresh(Section::Shares, host);
+                    let quiet = self.end_refresh(Section::Shares, host);
                     let had_pending = self.pending_refresh.remove(&(Section::Shares, host));
                     if host != self.selected_host {
                         continue;
@@ -1770,12 +1771,13 @@ impl App {
                     }
                     match result {
                         Ok(snapshot) => {
+                            let previous = self.shares_table.selected().and_then(|i| self.shares.get(i)).map(share_identity);
                             self.shares = snapshot.shares;
-                            clamp_table_selection(&mut self.shares_table, self.shares.len());
+                            pin_selection(&mut self.shares_table, previous, &self.shares, share_identity);
                             self.nfs_available = Some(snapshot.nfs_available);
                             self.samba_available = Some(snapshot.samba_available);
                             self.shares_loaded = true;
-                            self.status_message = None;
+                            self.clear_status_after_refresh(quiet);
                             if let Some(e) = snapshot.smb_error {
                                 self.set_error(format!("SMB shares unavailable: {e}"));
                             }
@@ -2430,6 +2432,14 @@ fn move_table_selection(state: &mut TableState, len: usize, forward: bool) {
         }
     };
     state.select(Some(next));
+}
+
+/// A share is identified by its dataset and protocol (a dataset can have both an NFS and an SMB share).
+fn share_identity(share: &crate::zfs::share::Share) -> (String, bool) {
+    match share {
+        crate::zfs::share::Share::Nfs { dataset, .. } => (dataset.clone(), false),
+        crate::zfs::share::Share::Smb { dataset, .. } => (dataset.clone(), true),
+    }
 }
 
 /// After a list is replaced, keeps the selection on the same item (by identity) even if
@@ -7218,7 +7228,7 @@ mod tests {
             (Section::Datasets, Some(Section::Datasets)),
             (Section::Snapshots, Some(Section::Snapshots)),
             (Section::Disks, Some(Section::Disks)),
-            (Section::Shares, None),
+            (Section::Shares, Some(Section::Shares)),
         ] {
             assert_eq!(in_section(section).auto_refresh_section(), expected, "{section:?}");
         }
@@ -7361,13 +7371,35 @@ mod tests {
 
     #[test]
     fn auto_refresh_starts_the_refresh_that_belongs_to_the_visible_section() {
-        for section in [Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks] {
+        for section in [Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares] {
             let mut app = in_section(section);
             app.auto_refresh(runner(""), Instant::now(), TEN);
             assert!(app.in_flight.contains(&(section, 0)), "{section:?} refresh not started");
             assert_eq!(app.in_flight.len(), 1, "only the visible section is refreshed ({section:?})");
             assert!(app.quiet_refresh.contains(&(section, 0)), "{section:?} should be quiet");
         }
+    }
+
+    #[test]
+    fn a_share_refresh_keeps_the_selection_on_the_same_share_and_protocol() {
+        let nfs = |d: &str| crate::zfs::share::Share::Nfs { dataset: d.to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None };
+        let snapshot = |shares| crate::zfs::share::SharesSnapshot { shares, nfs_available: true, samba_available: true, smb_error: None };
+        let mut app = in_section(Section::Shares);
+        app.shares = vec![nfs("tank/a"), smb("tank/b")];
+        app.shares_table.select(Some(1)); // the SMB share on tank/b
+        app.tx.send(WorkerMsg::Shares(0, Ok(snapshot(vec![nfs("tank/0"), nfs("tank/b"), nfs("tank/a"), smb("tank/b")])))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.shares_table.selected(), Some(3), "tank/b's SMB share, not its NFS share");
+    }
+
+    #[test]
+    fn a_quiet_shares_refresh_keeps_an_informational_status() {
+        let mut app = in_section(Section::Shares);
+        app.status_message = Some("share created".to_string());
+        app.auto_refresh(runner(""), Instant::now(), TEN);
+        wait_until(&mut app, |a| a.shares_loaded);
+        assert!(app.shares_loaded);
+        assert_eq!(app.status_message.as_deref(), Some("share created"));
     }
 }
 
