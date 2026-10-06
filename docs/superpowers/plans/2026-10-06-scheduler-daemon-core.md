@@ -3059,7 +3059,7 @@ Expected: all tests PASS (the previous 730 plus the new ones); no clippy output 
 
 In `README.md`, add this section directly before `## Status`:
 
-```markdown
+````markdown
 ## Scheduled jobs (`zfsctl daemon`)
 
 `zfsctl daemon` runs scheduled jobs on the hub, unattended. It must run as root, like the TUI, and reaches other hosts over the same SSH + sudo path, so it needs no new sudoers entries. The only job kind so far is **scrub**: run `zpool scrub` on a pool of any configured host on a cron schedule, watch it to completion, and record the result. (A Jobs section in the TUI to manage these comes later; until then edit `jobs.toml` by hand.)
@@ -3101,7 +3101,7 @@ notify_command = "curl -s -d \"$ZFSCTL_JOB on $ZFSCTL_HOST: $ZFSCTL_MESSAGE\" nt
 ```
 
 It runs through `sh -c` with `ZFSCTL_JOB`, `ZFSCTL_HOST`, `ZFSCTL_KIND`, `ZFSCTL_RESULT` and `ZFSCTL_MESSAGE` set, and is killed after 30 seconds. Job data only ever reaches it through those variables, never the command line, so a pool or message can never be executed as code. A failing hook is logged and never affects the job.
-```
+````
 
 - [ ] **Step 9: Verify live on the hub**
 

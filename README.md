@@ -231,6 +231,36 @@ install -m 755 target/release/zfsctl /usr/local/bin/zfsctl
 install -m 755 contrib/rc.d/zfsctl /usr/local/etc/rc.d/zfsctl
 sysrc zfsctl_enable=YES
 service zfsctl start
+```
+
+`daemon(8)` detaches it, writes `/var/run/zfsctl.pid`, sends output to `/var/log/zfsctl.log`, and restarts it ten seconds after a crash. `zfsctl_binary`, `zfsctl_state_dir` and `zfsctl_log` in `rc.conf` override the binary path, the state directory and the log.
+
+**State** lives in `/var/db/zfsctl/` (root only): `jobs.toml` (the jobs), `history.jsonl` (one JSON line per run event) and `daemon.json` (a heartbeat rewritten every second; older than 10 seconds means the daemon is not running). The daemon notices an edited `jobs.toml` within a second and keeps the previous schedule if the new file does not parse.
+
+**A job** is one `[[jobs]]` table:
+
+```toml
+[[jobs]]
+id = "scrub-tank-monthly"
+host = "local"          # a host name from config.toml; "local" is the hub
+kind = "scrub"
+pool = "tank"
+schedule = "0 3 1 * *"  # five-field cron, in the hub's local time zone
+catch_up = true         # run once on startup if a scheduled time was missed (default true)
+enabled = true          # default true
+created_at = "2026-10-06T12:00:00Z"  # optional; a catch-up never reaches back before this
+```
+
+Schedules are `minute hour day-of-month month day-of-week` with `*`, numbers, lists, ranges and steps (`*/15`). Day of week is `0`-`6`, `0` being Sunday. If both day fields are restricted a day matches when either does. A local time that does not exist (the spring DST jump) is skipped; one that happens twice (autumn) runs once.
+
+**Notifications.** To be told when a job fails or a scrub finds errors, set a command in `config.toml`:
+
+```toml
+[daemon]
+notify_command = "curl -s -d \"$ZFSCTL_JOB on $ZFSCTL_HOST: $ZFSCTL_MESSAGE\" ntfy.sh/my-zfs-alerts"
+```
+
+It runs through `sh -c` with `ZFSCTL_JOB`, `ZFSCTL_HOST`, `ZFSCTL_KIND`, `ZFSCTL_RESULT` and `ZFSCTL_MESSAGE` set, and is killed after 30 seconds. Job data only ever reaches it through those variables, never the command line, so a pool or message can never be executed as code. A failing hook is logged and never affects the job.
 
 ## Status
 
