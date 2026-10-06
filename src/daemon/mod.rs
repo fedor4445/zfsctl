@@ -177,7 +177,7 @@ impl Shared {
                 }
             }
             Work::Orphan(run) => {
-                log(&format!("run {} of {} has no runnable job any more", run.run_id, run.job_id));
+                log(&format!("run {} of {} was unfinished when the daemon stopped, or its job is gone", run.run_id, run.job_id));
                 let _ = self.history.append(&Event {
                     job_id: run.job_id,
                     run_id: run.run_id,
@@ -185,7 +185,7 @@ impl Shared {
                     at: self.clock.now(),
                     scheduled_for: None,
                     result: Some(RunResult::Failed),
-                    message: "lost: the job was removed or can no longer run".to_string(),
+                    message: "lost: the daemon stopped (or the job was removed or can no longer run) while it was running".to_string(),
                     catch_up: false,
                     summary: None,
                 });
@@ -365,6 +365,7 @@ mod tests {
         let runs = history::runs(&shared.history.read());
         assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Failed)));
         assert!(runs[0].message.starts_with("lost:"));
+        assert!(runs[0].message.contains("daemon stopped"), "{}", runs[0].message);
     }
 
     #[test]

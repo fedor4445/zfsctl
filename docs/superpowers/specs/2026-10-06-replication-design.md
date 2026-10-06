@@ -175,6 +175,18 @@ Checked 2026-10-06 on 15.1-RELEASE (hub, `scratch/repl-*`, piped locally through
 - A full stream into an existing dataset fails with `cannot receive new filesystem stream: destination 'ds' exists` / `must specify -F to overwrite it`.
 - **A destination is "modified" only when data was written to it since its newest snapshot.** Taking a new, empty snapshot on the destination does *not* stop the next incremental from being received. Writing a file into the (mounted) destination makes the receive fail with `cannot receive incremental stream: destination ds has been modified` / `since most recent snapshot` (two lines), and the same receive with `-F` succeeds, rolling the destination back. The sending side adds `warning: cannot send ...: signal received`, which is noise.
 
+### Live results: the daemon and the TUI (2026-10-06, hub 15.1-RELEASE with the 16.0-CURRENT VM `fbsd16`)
+
+- **Pull, VM to hub:** `Ok: sent pull-... (full), 65.3 KiB`, received unmounted; the next run `Skipped: up to date`; the snapshot guid is identical on both sides.
+- **Full, VM to the same VM through the hub (two SSH processes, 801.5 MiB):** the Jobs panel showed `sent 38.2 MiB of 801.5 MiB (4%)  38.2 MiB/s  eta 19s`, later `34%  67.6 MiB/s`; the `c` hint appeared only while it ran.
+- **Cancel from the TUI:** `c` recorded `Cancelled: cancelled after 368.7 MiB; the next run resumes` within about a second; the Last column read `cancelled`; no `zfs send`/`zfs receive` processes were left on either host; the destination held a resume token.
+- **Resume:** the next run was `Ok: resumed an interrupted transfer, 435.5 MiB` (368.7 + 435.5 = the 801.5 MiB total); destination guid equal to the source's, token back to `-`, `mounted` `no`.
+- **Incremental:** after 100 MiB of new data and a new snapshot, `Ok: sent ... (incremental from ...), 100.2 MiB`, then `Skipped: up to date`.
+- **Daemon restart mid-transfer (800 MiB):** progress and cancel files were gone after the restart; the unfinished run was closed `failed: lost`; no stray processes; the next run `Ok: resumed an interrupted transfer, 663.2 MiB` with matching guids. (The lost run's message used to say "the job was removed or can no longer run"; it now says the daemon stopped.)
+- **Modified destination (hub, local to local):** a file written into the destination made the run `Failed: receive failed: cannot receive incremental stream: destination scratch/repl-dst has been modified since most recent snapshot` (both lines of zfs's message kept); with `force = true` the next run was `Ok: sent ... (incremental from ...)` and the destination was rolled back (the written file was gone).
+- **TUI form:** `R` opens the form with the defaults; F2 lists the configured hosts on both host fields (the destination one also offers `file`), the hub's real datasets for the source and the *destination host's* real datasets for the destination (typing `fbsd16` first); the saved job showed its source in the Target column; `Enter` re-opened it in the form; a second job with the same destination was refused (`... cannot run alongside this one: same destination as job '...': their incrementals would corrupt each other`); `d` deleted it.
+- **Noted, not a defect:** the rate is computed over each one-second sample, so a stalled second shows no rate or ETA until the next sample (one sample in the restart test showed `rate: 0`).
+
 ## Delivery
 
 Two implementation plans, one spec:
