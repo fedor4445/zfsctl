@@ -593,7 +593,8 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('a') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+            KeyCode::Char('a') if self.current_section() == Section::Pools => {
+                // Only meaningful while drilled into a pool; otherwise `a` does nothing here.
                 let Some(pool) = self.drilled_pool.clone() else { return };
                 self.modal = Some(Modal::Form {
                     title: format!("Add vdev to pool '{pool}'"),
