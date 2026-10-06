@@ -255,4 +255,14 @@ mod tests {
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("setfacl".to_string(), vec!["-x".to_string(), "2".to_string(), "/scratch/data".to_string()]));
     }
+
+    #[test]
+    fn parse_acl_line_rejects_a_named_user_or_group_with_an_empty_qualifier() {
+        assert_eq!(parse_acl_line("user::read_data::allow"), None, "4 fields with tag `user` has no qualifier");
+        assert_eq!(parse_acl_line("user::read_data::allow::"), None);
+        assert_eq!(parse_acl_tag("user", Some("")), None);
+        assert_eq!(parse_acl_tag("group", Some("")), None);
+        assert_eq!(parse_acl_tag("user", Some("bob")), Some(AclTag::User("bob".to_string())));
+        assert_eq!(parse_acl_tag("group", Some("wheel")), Some(AclTag::NamedGroup("wheel".to_string())));
+    }
 }

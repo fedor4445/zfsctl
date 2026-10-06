@@ -467,4 +467,11 @@ tank/data@snap1\tsharenfs\t-\t-
         let runner = FakeRunner::failing("permission denied", 1);
         assert!(list_shares_with_availability(&runner).is_err());
     }
+
+    #[test]
+    fn sharenfs_editable_losslessly_accepts_on_and_off_but_not_unrecognized_clauses() {
+        assert!(sharenfs_editable_losslessly("off"));
+        assert!(sharenfs_editable_losslessly("on"));
+        assert!(!sharenfs_editable_losslessly("-sec=krb5 -network 10.0.0.0/8"));
+    }
 }

@@ -747,4 +747,80 @@ mod tests {
         assert!(set_share(&r, &s, None).is_err());
         assert!(calls(&r).is_empty());
     }
+
+    fn managed(body: &str) -> String {
+        format!("{BLOCK_START}\n{body}{BLOCK_END}\n")
+    }
+
+    #[test]
+    fn parse_managed_requires_a_stanza_header_to_have_both_brackets() {
+        assert!(parse_managed(&managed("[open\n    # zfsctl-dataset = tank/a\n    path = /a\n")).is_err());
+        assert!(parse_managed(&managed("[ok]\n    # zfsctl-dataset = tank/a\n    path = /a\nclose]\n")).is_err());
+    }
+
+    #[test]
+    fn parse_managed_accepts_both_comment_styles_inside_the_block() {
+        let conf = managed("[a]\n    # zfsctl-dataset = tank/a\n    # hash comment\n    ; semicolon comment\n    path = /tank/a\n");
+        assert_eq!(parse_managed(&conf).unwrap().len(), 1);
+        let conf = managed("[a]\n    ; only a semicolon comment\n    # zfsctl-dataset = tank/a\n    path = /tank/a\n");
+        assert_eq!(parse_managed(&conf).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn render_separates_the_block_from_existing_text_with_exactly_one_blank_line() {
+        let s = [share("a", "tank/a", None, true)];
+        let block = render_block(&s);
+        assert_eq!(render_with_shares("[g]\nx\n", &s).unwrap(), format!("[g]\nx\n\n{block}"));
+        assert_eq!(render_with_shares("[g]\nx", &s).unwrap(), format!("[g]\nx\n\n{block}"));
+        assert_eq!(render_with_shares("", &s).unwrap(), block);
+    }
+
+    #[test]
+    fn outside_block_stanza_names_ignores_lines_that_only_start_or_only_end_with_a_bracket() {
+        let conf = "[Global]\n  a = [b]\n[unterminated\ntrailing]\n [ spaced ]\n";
+        assert_eq!(outside_block_stanza_names(conf).unwrap(), vec!["global", "spaced"]);
+    }
+
+    #[test]
+    fn validate_share_name_length_limit_is_80() {
+        assert!(validate_share_name(&"a".repeat(80)).is_ok());
+        assert!(validate_share_name(&"a".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn validate_user_length_limit_is_32() {
+        assert!(validate_user(&"a".repeat(32)).is_ok());
+        assert!(validate_user(&"a".repeat(33)).is_err());
+        assert!(validate_user("").is_err());
+        assert!(validate_user("a.b-c_d").is_ok());
+        assert!(validate_user("a b").is_err());
+    }
+
+    #[test]
+    fn set_share_rejects_an_empty_or_control_character_dataset_and_path() {
+        let r = runner_with(FB_CONF);
+        let mut s = share("ok", "tank/a", None, true);
+        s.dataset = String::new();
+        assert!(set_share(&r, &s, None).is_err(), "empty dataset");
+        s.dataset = "tank/a\n".to_string();
+        assert!(set_share(&r, &s, None).is_err(), "control char in dataset");
+        let mut s = share("ok", "tank/a", None, true);
+        s.path = String::new();
+        assert!(set_share(&r, &s, None).is_err(), "empty path");
+        s.path = "/tank/a\n".to_string();
+        assert!(set_share(&r, &s, None).is_err(), "control char in path");
+        assert!(tee_writes(&r).is_empty());
+    }
+
+    #[test]
+    fn set_share_name_clash_is_only_with_a_different_datasets_share() {
+        let first = render_with_shares(FB_CONF, &[share("media", "tank/media", None, true)]).unwrap();
+        // Re-saving the same dataset under the same name is an edit, not a clash.
+        let r = runner_with(&first);
+        set_share(&r, &share("media", "tank/media", None, false), None).unwrap();
+        // A different dataset with a different name is fine too.
+        let r = runner_with(&first);
+        set_share(&r, &share("other", "tank/other", None, true), None).unwrap();
+        assert_eq!(parse_managed(&tee_writes(&r)[0]).unwrap().len(), 2);
+    }
 }

@@ -11,6 +11,15 @@ pub struct CommandOutput {
 }
 
 impl CommandOutput {
+    /// A child killed by a signal has no exit code; report it as `-1`.
+    pub(crate) fn from_output(output: &std::process::Output) -> Self {
+        Self {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    }
+
     pub fn success(&self) -> bool {
         self.status == 0
     }
@@ -58,11 +67,7 @@ pub(crate) fn run_command_with_stdin(
         .wait_with_output()
         .map_err(|source| AppError::Spawn { cmd: spawn_name.to_string(), source })?;
     let _ = writer.join();
-    Ok(CommandOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        status: output.status.code().unwrap_or(-1),
-    })
+    Ok(CommandOutput::from_output(&output))
 }
 
 #[cfg(test)]
@@ -188,7 +193,26 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::FakeRunner;
-    use super::CommandRunner;
+    use super::{CommandOutput, CommandRunner};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    #[test]
+    fn from_output_reports_the_exit_code_and_both_streams() {
+        let output = Output {
+            status: ExitStatus::from_raw(3 << 8), // wait status for `exit(3)`
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        };
+        let converted = CommandOutput::from_output(&output);
+        assert_eq!((converted.stdout.as_str(), converted.stderr.as_str(), converted.status), ("out", "err", 3));
+    }
+
+    #[test]
+    fn from_output_reports_a_signal_killed_child_as_minus_one() {
+        let output = Output { status: ExitStatus::from_raw(9), stdout: Vec::new(), stderr: Vec::new() };
+        assert_eq!(CommandOutput::from_output(&output).status, -1);
+    }
 
     #[test]
     fn fake_runner_records_unprivileged_calls_separately_and_honours_routes() {

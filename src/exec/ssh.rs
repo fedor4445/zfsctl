@@ -69,11 +69,7 @@ impl SshRunner {
                 cmd: "ssh".to_string(),
                 source,
             })?;
-        Ok(CommandOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            status: output.status.code().unwrap_or(-1),
-        })
+        Ok(CommandOutput::from_output(&output))
     }
 }
 

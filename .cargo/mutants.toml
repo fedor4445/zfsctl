@@ -9,6 +9,11 @@ exclude_re = [
     "<impl Display",
     "tracing::",
     "in describe$",
+    # Equivalent mutants (no test can distinguish them); line numbers are matched on purpose
+    # the on/off shortcut is redundant, both values round-trip through the parser anyway
+    "share\\.rs:181:.* in sharenfs_editable_losslessly",
+    # a u64 never reaches the unit-overflow guard
+    "disk\\.rs:81:.* in human_size",
 ]
 exclude_globs = [
     "src/ui/theme.rs",

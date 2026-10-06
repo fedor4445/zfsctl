@@ -516,4 +516,20 @@ Local permissions:
         let runner = FakeRunner::failing("permission denied", 1);
         assert!(list_permissions(&runner, "scratch/data").is_err());
     }
+
+    #[test]
+    fn parse_permissions_stray_unindented_line_does_not_end_the_current_section() {
+        let output = "---- Permissions on scratch/data ----\nPermission sets:\nstray line without a colon\n        @admin clone,rollback\n";
+        let snapshot = parse_permissions(output, "scratch/data");
+        assert_eq!(snapshot.sets.len(), 1, "{snapshot:?}");
+        assert_eq!(snapshot.sets[0].name, "admin");
+    }
+
+    #[test]
+    fn parse_permissions_indented_line_ending_in_a_colon_is_an_entry_not_a_header() {
+        let output = "---- Permissions on scratch/data ----\nPermission sets:\n        @admin clone\n        @odd weird:\nLocal permissions:\n        user fb snapshot\n";
+        let snapshot = parse_permissions(output, "scratch/data");
+        assert_eq!(snapshot.sets.len(), 2, "{snapshot:?}");
+        assert_eq!(snapshot.grants.len(), 1, "{snapshot:?}");
+    }
 }

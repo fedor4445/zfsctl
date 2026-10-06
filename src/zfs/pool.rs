@@ -806,4 +806,52 @@ tank\tcomment\tmy pool\tlocal
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0].1[4], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
     }
+
+    #[test]
+    fn vdev_named_like_the_header_is_kept_but_the_real_header_is_skipped() {
+        let output = "  pool: tank\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        ONLINE       0     0     0\n\t  NAMEDISK  ONLINE       0     0     0\n\t  STATEDISK ONLINE       0     0     0\n";
+        let names: Vec<String> = parse_pool_status_vdevs(output).into_iter().map(|v| v.name).collect();
+        assert_eq!(names, vec!["tank", "NAMEDISK", "STATEDISK"]);
+    }
+
+    #[test]
+    fn is_leaf_disk_only_treats_numbered_group_names_as_groups() {
+        assert!(!is_leaf_disk("mirror-0"));
+        assert!(!is_leaf_disk("raidz2-12"));
+        assert!(is_leaf_disk("mirror-"), "no number: not a group node");
+        assert!(is_leaf_disk("mirror-x"));
+        assert!(is_leaf_disk("mirror-0a"));
+        assert!(is_leaf_disk("da0"));
+    }
+
+    #[test]
+    fn scan_summary_reports_errors_only_for_a_nonzero_count_before_the_word() {
+        assert!(scan_summary_reports_errors("resilvered 1002M in 00:02:40 with 3 errors on Mon"));
+        assert!(scan_summary_reports_errors("scrub repaired 0B in 00:00:01 with 1 error on Mon"));
+        assert!(!scan_summary_reports_errors("resilvered 1002M in 00:02:40 with 0 errors on Mon"));
+        assert!(!scan_summary_reports_errors("errors found"), "`errors` as the first word has no count before it");
+        assert!(!scan_summary_reports_errors("with many errors on Mon"), "non-numeric word before `errors`");
+        assert!(!scan_summary_reports_errors("scrub canceled"));
+    }
+
+    #[test]
+    fn parse_pool_scan_status_none_for_empty_or_none_requested() {
+        assert_eq!(parse_pool_scan_status("  pool: tank\n  scan:\nconfig:\n"), None);
+        assert_eq!(parse_pool_scan_status("  pool: tank\n  scan: none requested\nconfig:\n"), None);
+        assert_eq!(parse_pool_scan_status("  pool: tank\nconfig:\n"), None);
+    }
+
+    #[test]
+    fn in_progress_percent_comes_only_from_lines_after_the_scan_line() {
+        let before = "  pool: tank\n note: 50.0% done elsewhere\n  scan: resilver in progress since Mon\n\nconfig:\n";
+        assert_eq!(
+            parse_pool_scan_status(before),
+            Some(ScanStatus::InProgress { summary: "resilver in progress since Mon".to_string(), percent_done: None, eta: None })
+        );
+        let on_scan_line = "  scan: resilver in progress, 7.0% done\n\nconfig:\n";
+        match parse_pool_scan_status(on_scan_line) {
+            Some(ScanStatus::InProgress { percent_done, .. }) => assert_eq!(percent_done, None, "the scan line itself is the summary, not the progress line"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

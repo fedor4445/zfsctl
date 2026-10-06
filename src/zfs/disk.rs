@@ -588,4 +588,11 @@ Providers:
         assert_eq!(d.media, DiskMedia::Hdd(7200));
         assert_eq!(d.serial.as_deref(), Some("AB  CD EF"));
     }
+
+    #[test]
+    fn human_size_switches_from_bytes_to_kib_exactly_at_1024() {
+        assert_eq!(human_size(1023), "1023B");
+        assert_eq!(human_size(1024), "1.0K");
+        assert_eq!(human_size(0), "0B");
+    }
 }
