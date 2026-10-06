@@ -711,17 +711,19 @@ fn truncate_with_ellipsis(s: &str, max: usize) -> String {
 }
 
 /// Height of the Loading/Failed picker popup: the wrapped body plus two
-/// border rows, at least 5, never more than `max_height`.
+/// border rows, at least 5, never more than `max_height`. The body estimate
+/// gets a ~25% + 1 row margin because word wrapping can need more rows.
 fn failed_popup_height(body: &str, width: u16, max_height: u16) -> u16 {
     let inner = width.saturating_sub(2);
-    (wrapped_line_count(body, inner) + 2).max(5).min(max_height)
+    let lines = wrapped_line_count(body, inner);
+    (lines + lines / 4 + 1 + 2).max(5).min(max_height)
 }
 
-/// Conservatively estimates how many terminal rows `text` occupies when
-/// wrapped at `width` columns. Doesn't replicate `Paragraph`'s exact
-/// word-boundary wrapping, but over-reserves rather than under-reserves
-/// height, which is the safe direction — a popup with a little extra
-/// blank space is harmless, one that clips content is not.
+/// Byte-based estimate (ceil(len / width) per line) of how many terminal
+/// rows `text` occupies when wrapped at `width` columns. It does not
+/// replicate `Paragraph`'s word-boundary wrapping, which loses columns at
+/// each break, so it can under-count with word wrapping; callers that must
+/// not clip add a safety margin (see `failed_popup_height`).
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
     text.lines()
@@ -781,7 +783,7 @@ mod tests {
 
     #[test]
     fn failed_popup_height_fits_body_within_bounds() {
-        assert_eq!(super::failed_popup_height("Loading accounts…\n\nEsc to close", 40, 24), 5);
+        assert_eq!(super::failed_popup_height("Loading accounts…\n\nEsc to close", 40, 24), 6);
         let body = format!("Could not load accounts: {}\n\nEsc to close", "x".repeat(130));
         let h = super::failed_popup_height(&body, 40, 24);
         assert!(h >= super::wrapped_line_count(&body, 38) + 2 && h > 5, "{h}");
@@ -1083,6 +1085,35 @@ mod tests {
             checked: Default::default(),
             multi_select: false,
             load: crate::ui::picker::PickerLoad::Failed(msg),
+            note: None,
+            account: None,
+        });
+        let rows = render(&mut app, 80, 24).join("\n");
+        assert!(rows.contains("Esc to close"), "{rows}");
+        assert!(rows.contains("ENDMARK"), "{rows}");
+    }
+
+    #[test]
+    fn failed_popup_height_reserves_a_word_wrap_margin() {
+        let body = format!("Could not load accounts: {}\n\nEsc to close", "word ".repeat(26));
+        let old = super::wrapped_line_count(&body, 38) + 2;
+        let h = super::failed_popup_height(&body, 40, 24);
+        assert!(h > old, "{h} vs old {old}");
+        assert_eq!(super::failed_popup_height(&body, 40, 3), 3);
+        assert_eq!(super::failed_popup_height(&body, 40, 0), 0);
+    }
+
+    #[test]
+    fn a_realistic_multi_word_ssh_failure_keeps_esc_hint_and_tail_visible() {
+        let mut app = app_in_pools(vec![]);
+        let msg = "Could not load accounts: command 'getent passwd' failed with status 255: fb@172.16.10.90: Permission denied (publickey,password). Warning: Permanently added '172.16.10.90' (ED25519) to the list of known hosts. ENDMARK";
+        app.picker = Some(crate::ui::picker::PickerState {
+            values: vec![],
+            filter: String::new(),
+            selected: 0,
+            checked: Default::default(),
+            multi_select: false,
+            load: crate::ui::picker::PickerLoad::Failed(msg.to_string()),
             note: None,
             account: None,
         });
