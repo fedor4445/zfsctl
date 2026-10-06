@@ -181,6 +181,7 @@ shown, and that order is also the position number `d`/`n` operate on.
 - `n`: create a new dataset (prompts for name)
 - `d`: destroy the selected dataset (type the dataset's name to confirm)
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
+- `J`: schedule recurring snapshots of the selected dataset, keeping the newest N (opens the snapshot-job form with the dataset filled in; see **Scheduled jobs** below)
 - `M`: create/edit a managed SMB share for the selected (mounted) dataset (see Shares → SMB shares). Always shown; if smbd isn't running, the dataset isn't mounted, or shares aren't loaded yet, it says so in the status line instead
 - `N`: create/edit an NFS share for the selected dataset (always shown; if nfsd isn't running it says so in the status line instead; prompts for networks, hosts, read-only, and root user mapping — all optional; press `r` in the Shares section at least once first, so zfsctl knows the dataset's current share state before offering to change it)
 
@@ -227,13 +228,14 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 
 - `Up` / `Down`: select a job; the bottom panel shows its last 8 runs, its schedule and its next three run times
 - `n`: new scrub job (host, pool, schedule, catch up; `F2` lists the configured hosts, the pools of the chosen host (fetched live) and schedule presets, and the form previews the next three run times as you type)
+- `N`: new snapshot job (host, dataset, recursive, prefix, keep, schedule, catch up; `F2` lists the configured hosts, the datasets of the chosen host (fetched live) and schedule presets)
 - `Enter`: edit the selected job (its id, creation time and enabled flag are kept)
 - `Space`: enable or disable the selected job
 - `d`: delete the selected job (y/n; its past runs stay in the history until pruned)
 
 ## Scheduled jobs (`zfsctl daemon`)
 
-`zfsctl daemon` runs scheduled jobs on the hub, unattended. It must run as root, like the TUI, and reaches other hosts over the same SSH + sudo path, so it needs no new sudoers entries. The only job kind so far is **scrub**: run `zpool scrub` on a pool of any configured host on a cron schedule, watch it to completion, and record the result. Manage jobs from the **Jobs** section of the TUI (see its keys above, or `J` on a pool in Pools), or edit `jobs.toml` by hand: the daemon notices either within a second. The TUI only reads the state directory, so it must run on the hub (as root) to see the daemon's jobs.
+`zfsctl daemon` runs scheduled jobs on the hub, unattended. It must run as root, like the TUI, and reaches other hosts over the same SSH + sudo path, so it needs no new sudoers entries. There are two job kinds. A **scrub** job runs `zpool scrub` on a pool of any configured host on a cron schedule, watches it to completion and records the result. A **snapshot** job takes a snapshot of one dataset on a cron schedule and keeps only the newest `keep` of the snapshots it made. Manage jobs from the **Jobs** section of the TUI (see its keys above, or `J` on a pool in Pools), or edit `jobs.toml` by hand: the daemon notices either within a second. The TUI only reads the state directory, so it must run on the hub (as root) to see the daemon's jobs.
 
 **Install the service.** Copy the binary and the rc script, then enable it:
 
@@ -261,6 +263,22 @@ catch_up = true         # run once on startup if a scheduled time was missed (de
 enabled = true          # default true
 created_at = "2026-10-06T12:00:00Z"  # optional; a catch-up never reaches back before this
 ```
+
+**A snapshot job** takes `zfs snapshot` of one dataset (`recursive = true` adds `-r`, so a whole tree is snapshotted atomically and pruned together) and names it `<prefix>-<UTC timestamp>`, for example `hourly-20261006T193000Z`. After a successful snapshot it destroys its own snapshots beyond the newest `keep`, oldest first. It only ever destroys names that match exactly `<prefix>-<YYYYMMDDTHHMMSSZ>`, so manual snapshots, other jobs' snapshots and look-alikes such as `hourly-keep-forever` are never touched. If a snapshot cannot be destroyed (a hold, a clone) the run is recorded as failed with the reason, and the rest are still pruned. Hourly, daily and weekly tiers are separate jobs with separate prefixes. Two enabled snapshot jobs cannot share a host, dataset and prefix (they would prune each other); the later one is reported as unable to run. Changing a job's prefix leaves the old prefix's snapshots in place.
+
+```toml
+[[jobs]]
+id = "snap-tank-data-hourly"
+host = "local"
+kind = "snapshot"
+dataset = "tank/data"
+recursive = true        # default false
+prefix = "hourly"       # default "auto"; letters, digits, _ - and .
+keep = 24               # at least 1
+schedule = "0 * * * *"
+```
+
+In the TUI, `N` in Jobs opens the form and `J` on a dataset in Datasets opens it with the dataset filled in.
 
 Schedules are `minute hour day-of-month month day-of-week` with `*`, numbers, lists, ranges and steps (`*/15`). Day of week is `0`-`6`, `0` being Sunday. If both day fields are restricted a day matches when either does. A local time that does not exist (the spring DST jump) is skipped; one that happens twice (autumn) runs once.
 
