@@ -43,7 +43,7 @@ const VDEVS_AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// failed — otherwise a failure between `enable_raw_mode()` and a fully
 /// constructed `Terminal` would leave the user's shell in raw mode with
 /// no way to recover except closing the terminal window.
-pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, resolved: theme::Resolved) -> Result<()> {
+pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, resolved: theme::Resolved, auto_refresh: Option<Duration>) -> Result<()> {
     enable_raw_mode().map_err(|e| AppError::Config(format!("enabling raw mode: {e}")))?;
 
     // Ensure a panic anywhere in the event loop still restores the
@@ -71,7 +71,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
                 app.refresh_pools(first_host.runner.clone());
             }
 
-            event_loop(&mut terminal, &mut app, &mut inventory, config_path)
+            event_loop(&mut terminal, &mut app, &mut inventory, config_path, auto_refresh)
         });
 
     let _ = disable_raw_mode();
@@ -119,6 +119,7 @@ fn event_loop(
     app: &mut App,
     inventory: &mut HostInventory,
     config_path: &std::path::Path,
+    auto_refresh: Option<Duration>,
 ) -> Result<()> {
     // `None` = never refreshed yet, so the first poll happens immediately.
     let mut last_vdevs_auto_refresh: Option<Instant> = None;
@@ -133,6 +134,9 @@ fn event_loop(
                 app.refresh_vdevs(host.runner.clone(), pool);
                 last_vdevs_auto_refresh = Some(Instant::now());
             }
+        }
+        if let (Some(interval), Some(host)) = (auto_refresh, inventory.hosts.get(app.selected_host)) {
+            app.auto_refresh(host.runner.clone(), Instant::now(), interval);
         }
         for section in refreshes {
             if let Some(host) = inventory.hosts.get(app.selected_host) {

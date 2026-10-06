@@ -24,7 +24,7 @@ fn run() -> error::Result<()> {
     let resolved = ui::theme::resolve(config.ui.theme.as_deref(), &ui::theme::ThemeEnv::from_process())?;
     ui::theme::apply_color_policy();
     let inventory = hosts::HostInventory::from_config(&config);
-    ui::run_app(inventory, &config_path, resolved)
+    ui::run_app(inventory, &config_path, resolved, config.ui.auto_refresh_interval())
 }
 
 fn check_root() -> error::Result<()> {

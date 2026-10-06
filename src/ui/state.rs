@@ -250,6 +250,12 @@ pub struct App {
     /// in-flight one completes — see `refresh_pools` et al. and the
     /// pending-refresh handling in `drain_worker_messages`.
     pending_refresh: HashSet<(Section, usize)>,
+    /// In-flight refreshes that were started by the periodic auto-refresh
+    /// rather than the user: they don't show the "refreshing..." indicator
+    /// and a successful one doesn't wipe a status message the user is reading.
+    quiet_refresh: HashSet<(Section, usize)>,
+    /// When each `(section, host)` was last auto-refreshed.
+    last_auto_refresh: HashMap<(Section, usize), Instant>,
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
 }
@@ -308,6 +314,8 @@ impl App {
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
+            quiet_refresh: HashSet::new(),
+            last_auto_refresh: HashMap::new(),
             tx,
             rx,
         }
@@ -342,7 +350,7 @@ impl App {
     /// Used only for the coarse "refreshing..." indicator in the
     /// sidebar title.
     pub fn is_loading(&self) -> bool {
-        self.in_flight.iter().any(|(section, _)| *section != Section::Vdevs)
+        self.in_flight.iter().any(|key| key.0 != Section::Vdevs && !self.quiet_refresh.contains(key))
     }
 
     fn is_refreshing(&self, section: Section, host: usize) -> bool {
@@ -353,8 +361,55 @@ impl App {
         self.in_flight.insert((section, host));
     }
 
-    fn end_refresh(&mut self, section: Section, host: usize) {
+    /// Returns whether the refresh that just finished was a quiet (auto) one.
+    fn end_refresh(&mut self, section: Section, host: usize) -> bool {
         self.in_flight.remove(&(section, host));
+        self.quiet_refresh.remove(&(section, host))
+    }
+
+    /// A manual refresh result clears whatever status message was showing; a quiet
+    /// (auto) one only clears a stale error, so "scrub started" is not wiped every
+    /// interval but a "host unreachable" error does go away once the host answers.
+    fn clear_status_after_refresh(&mut self, quiet: bool) {
+        if !quiet || self.status_is_error() {
+            self.status_message = None;
+        }
+    }
+
+    /// The list section the periodic refresh should keep fresh right now, if any:
+    /// the one on screen, and only while nothing (a modal, a picker, a pool
+    /// drill-down, which has its own faster poll) could be mid-interaction with it.
+    /// Hosts has nothing to refresh and Shares only changes when the user changes it.
+    pub fn auto_refresh_section(&self) -> Option<Section> {
+        if self.modal.is_some() || self.picker.is_some() || self.drilled_pool.is_some() {
+            return None;
+        }
+        match self.current_section() {
+            section @ (Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks) => Some(section),
+            _ => None,
+        }
+    }
+
+    /// Refreshes the visible list section if `interval` has passed since it was last
+    /// auto-refreshed (immediately the first time it is shown on this host).
+    pub fn auto_refresh(&mut self, runner: Arc<dyn CommandRunner>, now: Instant, interval: Duration) {
+        let Some(section) = self.auto_refresh_section() else { return };
+        let key = (section, self.selected_host);
+        if self.last_auto_refresh.get(&key).is_some_and(|last| now.duration_since(*last) < interval) {
+            return;
+        }
+        self.last_auto_refresh.insert(key, now);
+        let already_running = self.is_refreshing(section, key.1);
+        match section {
+            Section::Pools => self.refresh_pools(runner),
+            Section::Datasets => self.refresh_datasets(runner),
+            Section::Snapshots => self.refresh_snapshots(runner),
+            Section::Disks => self.refresh_disks(runner),
+            _ => return,
+        }
+        if !already_running {
+            self.quiet_refresh.insert(key);
+        }
     }
 
     /// Sets a failure message (rendered with the theme's `err` style).
@@ -1585,7 +1640,7 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 WorkerMsg::Pools(host, result) => {
-                    self.end_refresh(Section::Pools, host);
+                    let quiet = self.end_refresh(Section::Pools, host);
                     // A refresh request that arrived while this one was in
                     // flight (see `refresh_pools`) is fulfilled by queuing a
                     // fresh one now, rather than staying lost forever.
@@ -1600,9 +1655,10 @@ impl App {
                     }
                     match result {
                         Ok(pools) => {
+                            let previous = self.pools_table.selected().and_then(|i| self.pools.get(i)).map(|p| p.name.clone());
                             self.pools = pools;
-                            clamp_table_selection(&mut self.pools_table, self.pools.len());
-                            self.status_message = None;
+                            pin_selection(&mut self.pools_table, previous, &self.pools, |p| p.name.clone());
+                            self.clear_status_after_refresh(quiet);
                             // The list may have been reordered/resized in a
                             // way that re-points the still-selected index at
                             // a different pool than the one `pool_properties`
@@ -1622,7 +1678,7 @@ impl App {
                     }
                 }
                 WorkerMsg::Datasets(host, result) => {
-                    self.end_refresh(Section::Datasets, host);
+                    let quiet = self.end_refresh(Section::Datasets, host);
                     let had_pending = self.pending_refresh.remove(&(Section::Datasets, host));
                     if host != self.selected_host {
                         continue;
@@ -1632,9 +1688,10 @@ impl App {
                     }
                     match result {
                         Ok(datasets) => {
+                            let previous = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).map(|d| d.name.clone());
                             self.datasets = datasets;
-                            clamp_table_selection(&mut self.datasets_table, self.datasets.len());
-                            self.status_message = None;
+                            pin_selection(&mut self.datasets_table, previous, &self.datasets, |d| d.name.clone());
+                            self.clear_status_after_refresh(quiet);
                             // See the matching comment in the `Pools` arm.
                             if self.dataset_properties_for.is_some() && self.dataset_properties_for != self.selected_dataset_name() {
                                 self.dataset_properties.clear();
@@ -1656,7 +1713,7 @@ impl App {
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => {
-                    self.end_refresh(Section::Snapshots, host);
+                    let quiet = self.end_refresh(Section::Snapshots, host);
                     let had_pending = self.pending_refresh.remove(&(Section::Snapshots, host));
                     if host != self.selected_host {
                         continue;
@@ -1666,15 +1723,16 @@ impl App {
                     }
                     match result {
                         Ok(snapshots) => {
+                            let previous = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)).map(|s| (s.dataset.clone(), s.name.clone()));
                             self.snapshots = snapshots;
-                            clamp_table_selection(&mut self.snapshots_table, self.snapshots.len());
-                            self.status_message = None;
+                            pin_selection(&mut self.snapshots_table, previous, &self.snapshots, |s| (s.dataset.clone(), s.name.clone()));
+                            self.clear_status_after_refresh(quiet);
                         }
                         Err(e) => self.set_error(e.to_string()),
                     }
                 }
                 WorkerMsg::Disks(host, result) => {
-                    self.end_refresh(Section::Disks, host);
+                    let quiet = self.end_refresh(Section::Disks, host);
                     let had_pending = self.pending_refresh.remove(&(Section::Disks, host));
                     if host != self.selected_host {
                         continue;
@@ -1693,9 +1751,10 @@ impl App {
                             self.selected_disks.retain(|name| {
                                 disks.iter().any(|d| &d.name == name && d.membership == DiskMembership::Available)
                             });
+                            let previous = self.disks_table.selected().and_then(|i| self.disks.get(i)).map(|d| d.name.clone());
                             self.disks = disks;
-                            clamp_table_selection(&mut self.disks_table, self.disks.len());
-                            self.status_message = None;
+                            pin_selection(&mut self.disks_table, previous, &self.disks, |d| d.name.clone());
+                            self.clear_status_after_refresh(quiet);
                         }
                         Err(e) => self.set_error(e.to_string()),
                     }
@@ -2371,6 +2430,20 @@ fn move_table_selection(state: &mut TableState, len: usize, forward: bool) {
         }
     };
     state.select(Some(next));
+}
+
+/// After a list is replaced, keeps the selection on the same item (by identity) even if
+/// it moved; falls back to clamping the index when the item is gone or nothing was selected.
+/// This is what makes a background refresh safe: a keypress still acts on the row the
+/// user was looking at, never on whatever slid into its index.
+fn pin_selection<T, K: PartialEq>(state: &mut TableState, previous: Option<K>, items: &[T], key: impl Fn(&T) -> K) {
+    if let Some(previous) = previous {
+        if let Some(index) = items.iter().position(|item| key(item) == previous) {
+            state.select(Some(index));
+            return;
+        }
+    }
+    clamp_table_selection(state, items.len());
 }
 
 /// Pulls a `TableState`'s selection back into range after the
@@ -7127,6 +7200,174 @@ mod tests {
         app.shares_table.select(Some(1));
         app.handle_key(KeyCode::Up);
         assert_eq!(app.shares_table.selected(), Some(1));
+    }
+
+    // ---- auto refresh -----------------------------------------------------
+
+    const TEN: Duration = Duration::from_secs(10);
+
+    fn runner(out: &str) -> Arc<dyn CommandRunner> {
+        Arc::new(FakeRunner::new(out))
+    }
+
+    #[test]
+    fn auto_refresh_targets_only_the_visible_list_sections() {
+        for (section, expected) in [
+            (Section::Hosts, None),
+            (Section::Pools, Some(Section::Pools)),
+            (Section::Datasets, Some(Section::Datasets)),
+            (Section::Snapshots, Some(Section::Snapshots)),
+            (Section::Disks, Some(Section::Disks)),
+            (Section::Shares, None),
+        ] {
+            assert_eq!(in_section(section).auto_refresh_section(), expected, "{section:?}");
+        }
+    }
+
+    #[test]
+    fn auto_refresh_never_runs_under_a_modal_a_picker_or_a_pool_drill_down() {
+        let mut app = in_section(Section::Pools);
+        app.drilled_pool = Some("tank".to_string());
+        assert_eq!(app.auto_refresh_section(), None, "the vdev view has its own faster poll");
+        app.drilled_pool = None;
+        app.modal = Some(Modal::Info { title: "t".to_string(), body: "b".to_string() });
+        assert_eq!(app.auto_refresh_section(), None);
+        app.modal = None;
+        app.picker = Some(crate::ui::picker::PickerState {
+            values: vec![],
+            filter: String::new(),
+            selected: 0,
+            checked: HashSet::new(),
+            multi_select: false,
+            load: crate::ui::picker::PickerLoad::Ready,
+            note: None,
+            account: None,
+        });
+        assert_eq!(app.auto_refresh_section(), None);
+    }
+
+    #[test]
+    fn auto_refresh_fires_immediately_then_waits_for_the_interval() {
+        let mut app = in_section(Section::Pools);
+        let t0 = Instant::now();
+        app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), t0, TEN);
+        wait_until(&mut app, |a| !a.pools.is_empty());
+        assert_eq!(app.pools.len(), 1, "first call refreshes straight away");
+
+        app.pools.clear();
+        app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), t0 + Duration::from_secs(9), TEN);
+        std::thread::sleep(Duration::from_millis(100));
+        app.drain_worker_messages();
+        assert!(app.pools.is_empty(), "9s < 10s: not due yet");
+
+        app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), t0 + TEN, TEN);
+        wait_until(&mut app, |a| !a.pools.is_empty());
+        assert_eq!(app.pools.len(), 1, "due at exactly the interval");
+    }
+
+    #[test]
+    fn auto_refresh_tracks_each_section_and_host_separately() {
+        let mut app = in_section(Section::Pools);
+        let t0 = Instant::now();
+        app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), t0, TEN);
+        wait_until(&mut app, |a| !a.pools.is_empty());
+        // Switching to Snapshots right after must not be held back by Pools' timer.
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.auto_refresh(runner("tank/a@s1\t10\n"), t0 + Duration::from_secs(1), TEN);
+        wait_until(&mut app, |a| !a.snapshots.is_empty());
+        assert_eq!(app.snapshots.len(), 1);
+    }
+
+    #[test]
+    fn an_auto_refresh_is_quiet_but_a_manual_one_shows_the_loading_indicator() {
+        let mut app = in_section(Section::Pools);
+        app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), Instant::now(), TEN);
+        assert!(!app.is_loading(), "background polling must not flash the refreshing indicator");
+        wait_until(&mut app, |a| !a.pools.is_empty());
+        app.refresh_pools(runner("tank\t100\t10\t90\tONLINE\n"));
+        assert!(app.is_loading());
+        wait_until(&mut app, |a| !a.is_loading());
+        assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn a_quiet_refresh_keeps_an_informational_status_but_a_manual_one_clears_it() {
+        let mut app = in_section(Section::Pools);
+        app.status_message = Some("scrub started on 'tank'".to_string());
+        app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), Instant::now(), TEN);
+        wait_until(&mut app, |a| !a.pools.is_empty());
+        assert_eq!(app.status_message.as_deref(), Some("scrub started on 'tank'"));
+
+        app.refresh_pools(runner("tank\t100\t10\t90\tONLINE\n"));
+        wait_until(&mut app, |a| a.status_message.is_none());
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn a_quiet_refresh_clears_a_stale_error_once_the_host_answers() {
+        let mut app = in_section(Section::Pools);
+        app.set_error("connection refused".to_string());
+        app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), Instant::now(), TEN);
+        wait_until(&mut app, |a| !a.pools.is_empty());
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_selection_on_the_same_item_when_the_list_reorders() {
+        let mut app = in_section(Section::Pools);
+        app.pools = vec![pool_fixture("alpha"), pool_fixture("bravo"), pool_fixture("charlie")];
+        app.pools_table.select(Some(1)); // bravo
+        let reordered = vec![pool_fixture("new"), pool_fixture("alpha"), pool_fixture("charlie"), pool_fixture("bravo")];
+        app.tx.send(WorkerMsg::Pools(0, Ok(reordered))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.pools_table.selected(), Some(3));
+        assert_eq!(app.selected_pool_name().as_deref(), Some("bravo"), "a keypress must still act on bravo");
+    }
+
+    #[test]
+    fn a_refresh_falls_back_to_clamping_when_the_selected_item_is_gone() {
+        let mut app = in_section(Section::Pools);
+        app.pools = vec![pool_fixture("alpha"), pool_fixture("bravo"), pool_fixture("charlie")];
+        app.pools_table.select(Some(2));
+        app.tx.send(WorkerMsg::Pools(0, Ok(vec![pool_fixture("alpha")]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.pools_table.selected(), Some(0));
+    }
+
+    #[test]
+    fn selection_is_pinned_by_identity_in_datasets_snapshots_and_disks_too() {
+        let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: None };
+        let mut app = in_section(Section::Datasets);
+        app.datasets = vec![ds("tank/a"), ds("tank/b")];
+        app.datasets_table.select(Some(1));
+        app.tx.send(WorkerMsg::Datasets(0, Ok(vec![ds("tank/0"), ds("tank/a"), ds("tank/b")]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.selected_dataset_name().as_deref(), Some("tank/b"));
+
+        let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 1 };
+        app.snapshots = vec![snap("tank/a", "s1"), snap("tank/b", "s1")];
+        app.snapshots_table.select(Some(1)); // tank/b@s1: same snapshot name as another dataset's
+        app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![snap("tank/b", "s1"), snap("tank/a", "s1")]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.snapshots_table.selected(), Some(0), "identity is dataset@name, not just the name");
+
+        let disk = |n: &str| DiskInfo { name: n.to_string(), size: 1, ..Default::default() };
+        app.disks = vec![disk("da0"), disk("da1")];
+        app.disks_table.select(Some(1));
+        app.tx.send(WorkerMsg::Disks(0, Ok(vec![disk("da9"), disk("da0"), disk("da1")]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.disks_table.selected(), Some(2));
+    }
+
+    #[test]
+    fn auto_refresh_starts_the_refresh_that_belongs_to_the_visible_section() {
+        for section in [Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks] {
+            let mut app = in_section(section);
+            app.auto_refresh(runner(""), Instant::now(), TEN);
+            assert!(app.in_flight.contains(&(section, 0)), "{section:?} refresh not started");
+            assert_eq!(app.in_flight.len(), 1, "only the visible section is refreshed ({section:?})");
+            assert!(app.quiet_refresh.contains(&(section, 0)), "{section:?} should be quiet");
+        }
     }
 }
 

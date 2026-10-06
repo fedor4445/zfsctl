@@ -47,6 +47,15 @@ theme = "ansi"   # ansi (default) | mono | solarized-dark | solarized-light
 - `solarized-dark` / `solarized-light` use the Solarized palette (a tribute to Sun, who gave us ZFS). They want a truecolor terminal (`COLORTERM=truecolor`); otherwise Solarized's 256-color approximations are used and a note says so at startup.
 - An unrecognized value is a startup error that lists the valid names.
 
+### Auto-refresh
+
+While you sit on Pools, Datasets, Snapshots or Disks, that list refreshes itself in the background (every 10 seconds by default, and straight away the first time you open it). Shares, Hosts, open modals/pickers and a pool's vdev view (which polls every 2 seconds on its own) are not touched. Your selection follows the item you had selected by name, so a refresh never changes which row a keypress acts on, and background refreshes don't flash the "refreshing" indicator or wipe a status message you're reading (a stale error does clear once the host answers). `r` still refreshes on demand.
+
+```toml
+[ui]
+auto_refresh_secs = 10   # seconds between refreshes; 0 turns it off
+```
+
 ### Remote host setup: unprivileged SSH + sudo
 
 `ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (the one exception is the read-only `getent passwd` / `getent group` account lookups for the F2 picker, which run over SSH without sudo; if the SSH key is locked to a forced command, that command must allow them too) (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the commands `zfsctl` ever runs, not full root.

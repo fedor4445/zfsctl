@@ -18,11 +18,25 @@ pub struct UiConfig {
     /// `ui::theme::resolve`, not here, so the error can list the choices.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub theme: Option<String>,
+    /// Seconds between background refreshes of the list you are looking at.
+    /// Unset means `DEFAULT_AUTO_REFRESH_SECS`; `0` turns auto-refresh off.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub auto_refresh_secs: Option<u64>,
 }
+
+pub const DEFAULT_AUTO_REFRESH_SECS: u64 = 10;
 
 impl UiConfig {
     fn is_default(&self) -> bool {
-        self.theme.is_none()
+        self.theme.is_none() && self.auto_refresh_secs.is_none()
+    }
+
+    /// The auto-refresh period, or `None` when it is switched off (`0`).
+    pub fn auto_refresh_interval(&self) -> Option<std::time::Duration> {
+        match self.auto_refresh_secs.unwrap_or(DEFAULT_AUTO_REFRESH_SECS) {
+            0 => None,
+            secs => Some(std::time::Duration::from_secs(secs)),
+        }
     }
 }
 
@@ -123,9 +137,27 @@ mod tests {
         let path = dir.path().join("config.toml");
         let config = Config {
             hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) }],
-            ui: UiConfig { theme: Some("mono".to_string()) },
+            ui: UiConfig { theme: Some("mono".to_string()), auto_refresh_secs: None },
         };
         config.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn auto_refresh_defaults_to_ten_seconds_and_zero_turns_it_off() {
+        use std::time::Duration;
+        let ui = |secs| UiConfig { theme: None, auto_refresh_secs: secs };
+        assert_eq!(ui(None).auto_refresh_interval(), Some(Duration::from_secs(10)));
+        assert_eq!(ui(Some(30)).auto_refresh_interval(), Some(Duration::from_secs(30)));
+        assert_eq!(ui(Some(0)).auto_refresh_interval(), None);
+    }
+
+    #[test]
+    fn auto_refresh_secs_parses_from_toml_and_is_only_written_back_when_set() {
+        let config: Config = toml::from_str("[ui]\nauto_refresh_secs = 0\n").unwrap();
+        assert_eq!(config.ui.auto_refresh_interval(), None);
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert!(text.contains("auto_refresh_secs = 0"), "{text}");
+        assert!(!toml::to_string_pretty(&Config::default()).unwrap().contains("auto_refresh"));
     }
 }
