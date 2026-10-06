@@ -140,6 +140,10 @@ mod tests {
             catch_up: true,
             enabled: true,
             created_at: None,
+            dataset: None,
+            recursive: false,
+            prefix: None,
+            keep: None,
         }
     }
 

@@ -2257,6 +2257,10 @@ fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path
             catch_up,
             enabled: true,
             created_at: Some(now),
+            dataset: None,
+            recursive: false,
+            prefix: None,
+            keep: None,
         },
     };
     Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
@@ -7343,7 +7347,7 @@ mod tests {
     }
 
     fn scrub_job(id: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None }
     }
 
     #[test]
