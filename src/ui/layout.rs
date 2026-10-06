@@ -663,7 +663,7 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
             Row::new(vec![j.id.clone(), j.host.clone(), j.pool.clone().unwrap_or_default(), schedule_label(&j.schedule), next, last_text]).style(style)
         })
         .collect();
-    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(10), Constraint::Length(21), Constraint::Length(14), Constraint::Min(10)];
+    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(10), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Job", "Host", "Pool", "Schedule", "Next run", "Last"]))
         .block(block)
@@ -1322,6 +1322,15 @@ mod tests {
         for want in ["Job", "Host", "Pool", "Schedule", "Next run", "Last", "scrub-local-tank", "Weekly, Sunday 03:00", "*/10 * * * *", "ok 2h ago", "never"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    #[test]
+    fn the_next_run_column_is_wide_enough_for_the_whole_time() {
+        let (mut app, _dir) = jobs_app(&[a_job("a", "* * * * *")]);
+        let before = crate::ui::jobs::next_run_text("* * * * *", &chrono::Local::now());
+        let text = render(&mut app, 120, 30).join("\n");
+        let after = crate::ui::jobs::next_run_text("* * * * *", &chrono::Local::now());
+        assert!(text.contains(&before) || text.contains(&after), "the next-run time is cut off (wanted {before:?} or {after:?}):\n{text}");
     }
 
     #[test]
