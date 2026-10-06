@@ -160,12 +160,10 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if selected {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("s", "Snapshot", 2));
-                if app.shares_loaded && app.nfs_available != Some(false) {
-                    v.push(h("N", "NFS share", 3));
-                }
-                if app.shares_loaded && app.samba_available != Some(false) && app.selected_dataset_mountpoint().is_some() {
-                    v.push(h("M", "SMB share", 3));
-                }
+                // Always advertised: when a share can't be created the key
+                // explains why (status message) instead of silently vanishing.
+                v.push(h("N", "NFS share", 3));
+                v.push(h("M", "SMB share", 3));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -398,6 +396,12 @@ mod tests {
         a
     }
 
+    fn datasets_none_selected() -> App {
+        let mut a = datasets_middle(true);
+        a.datasets_table.select(None);
+        a
+    }
+
     fn datasets_right(tab: DatasetDetailTab) -> App {
         let mut a = datasets_middle(false);
         a.pane_focus = PaneFocus::Right;
@@ -472,6 +476,7 @@ mod tests {
             ("vdevs, mirror group selected", drilled_group_selected()),
             ("datasets middle", datasets_middle(false)),
             ("datasets middle, shares loaded", datasets_middle(true)),
+            ("datasets middle, nothing selected", datasets_none_selected()),
             ("datasets right: properties", datasets_right(DatasetDetailTab::Properties)),
             ("datasets right: permissions", datasets_right(DatasetDetailTab::Permissions)),
             ("datasets right: acl", datasets_right(DatasetDetailTab::Acl)),
@@ -484,9 +489,12 @@ mod tests {
 
     // ---- fingerprint ----------------------------------------------
 
-    /// Everything a key press can change, EXCEPT `status_message`. A key
-    /// that only sets a status message ("select a disk first…") is, for
-    /// the hint bar's purposes, a no-op: it must not be advertised.
+    /// Everything a key press can change. `status` is included only by
+    /// `fingerprint_with_status` (used for the "advertised keys do something"
+    /// guard: a key that explains why it can't act, e.g. "NFS server not
+    /// available", counts as doing something). The "unadvertised keys are
+    /// no-ops" guard uses plain `fingerprint`, which leaves `status` out, as
+    /// several unadvertised keys already set informational messages.
     #[derive(Debug, PartialEq)]
     struct Fingerprint {
         modal_open: bool,
@@ -499,6 +507,7 @@ mod tests {
         quit: bool,
         selected_disks: Vec<String>,
         selections: Vec<Option<usize>>,
+        status: Option<String>,
     }
 
     fn fingerprint(a: &App) -> Fingerprint {
@@ -513,6 +522,7 @@ mod tests {
             drilled: a.drilled_pool.clone(),
             host: a.selected_host,
             quit: a.should_quit,
+            status: None,
             selected_disks: disks,
             selections: vec![
                 a.pools_table.selected(),
@@ -527,6 +537,10 @@ mod tests {
                 a.acl_entries_table.selected(),
             ],
         }
+    }
+
+    fn fingerprint_with_status(a: &App) -> Fingerprint {
+        Fingerprint { status: a.status_message.clone(), ..fingerprint(a) }
     }
 
     /// Maps a hint's displayed key to the real key it stands for, or
@@ -557,10 +571,10 @@ mod tests {
             for hint in hints(&app) {
                 let Some(code) = key_code(hint.key) else { continue };
                 let mut probe = scenarios().into_iter().find(|(n, _)| *n == name).unwrap().1;
-                let before = fingerprint(&probe);
+                let before = fingerprint_with_status(&probe);
                 probe.handle_key(code);
                 assert_ne!(
-                    fingerprint(&probe),
+                    fingerprint_with_status(&probe),
                     before,
                     "scenario '{name}' advertises '{} {}' but pressing {code:?} changes nothing",
                     hint.key,
@@ -583,9 +597,11 @@ mod tests {
                     continue;
                 }
                 let mut probe = scenarios().into_iter().find(|(n, _)| *n == name).unwrap().1;
-                let before = fingerprint(&probe);
+                // N/M explain refusals via status messages, so for them a status change counts too.
+                let fp = if ch == 'N' || ch == 'M' { fingerprint_with_status } else { fingerprint };
+                let before = fp(&probe);
                 probe.handle_key(code);
-                assert_eq!(fingerprint(&probe), before, "scenario '{name}' does NOT advertise {ch:?} yet pressing it changes state");
+                assert_eq!(fp(&probe), before, "scenario '{name}' does NOT advertise {ch:?} yet pressing it changes state");
             }
             // Enter, when not advertised, must also be inert.
             if !advertised.contains(&KeyCode::Enter) {
@@ -604,15 +620,23 @@ mod tests {
     }
 
     #[test]
-    fn datasets_middle_advertises_smb_share_only_when_it_can_work() {
-        let mut a = datasets_middle(true);
-        a.samba_available = Some(true);
-        assert!(keys(&a).contains(&"M"));
-        a.samba_available = Some(false);
-        assert!(!keys(&a).contains(&"M"));
-        let mut b = datasets_middle(false);
-        b.samba_available = Some(true);
-        assert!(!keys(&b).contains(&"M"), "not before shares have loaded");
+    fn datasets_middle_always_advertises_nfs_and_smb_share_when_a_dataset_is_selected() {
+        for loaded in [false, true] {
+            for nfs in [None, Some(true), Some(false)] {
+                for smb in [None, Some(true), Some(false)] {
+                    for mp in [None, Some("/tank/a".to_string())] {
+                        let mut a = datasets_middle(loaded);
+                        a.nfs_available = nfs;
+                        a.samba_available = smb;
+                        a.datasets[0].mountpoint = mp.clone();
+                        let ks = keys(&a);
+                        assert!(ks.contains(&"N") && ks.contains(&"M"), "loaded={loaded} nfs={nfs:?} smb={smb:?} mp={mp:?}: {ks:?}");
+                    }
+                }
+            }
+        }
+        let ks = keys(&datasets_none_selected());
+        assert!(!ks.contains(&"N") && !ks.contains(&"M"), "{ks:?}");
     }
 
     #[test]
