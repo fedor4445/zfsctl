@@ -141,6 +141,9 @@ Checked 2026-10-06 on 15.1-RELEASE-p4 (`scratch/data`) and 16.0-CURRENT (`zroot/
 - Destroying a held snapshot fails with `cannot destroy snapshot dataset@name: it's being held. Run 'zfs holds -r ...' to see holders.`
 - `zfs destroy -r -- dataset@name` works after the hold is released.
 
+- **Daemon, 2026-10-06 (hub, 15.1-RELEASE):** an every-minute job on `scratch/data` with `prefix = "live"`, `keep = 3` produced `Ok: created live-...; pruned 0` for three runs, then `pruned 1` on each later run; exactly three `live-*` snapshots remained, and a hand-made `manual-keepme` and the older `snap1/2/4` survived. With the oldest `live-*` held, the next run was `Failed: created ...; pruned 1; could not destroy live-...: ... it's being held ...` and the other excess snapshot was still pruned. All test snapshots were destroyed afterwards.
+- **TUI, same day (driven through a pty on the hub):** `N` opens the snapshot form with the defaults; F2 on Dataset lists the hub's real datasets; the saved job shows `scratch/data` in the Target column and `keep 24  prefix auto` in the panel; `Enter` re-opens it in the snapshot form; a second job with the same host, dataset and prefix is refused with `Job '...' already snapshots scratch/data with prefix 'auto': they would prune each other. Use another prefix.`; `d` deletes it.
+
 ## Delivery
 
 One implementation plan: the job model and validation, the run and retention logic, the daemon dispatch, the TUI form and keys, then docs and the live check.
