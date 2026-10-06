@@ -440,8 +440,8 @@ mod tests {
         let mut a = base();
         go(&mut a, Section::Disks);
         a.disks = vec![
-            DiskInfo { name: "da0".to_string(), size: 1, membership: DiskMembership::Available },
-            DiskInfo { name: "da1".to_string(), size: 1, membership: DiskMembership::Available },
+            DiskInfo { name: "da0".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },
+            DiskInfo { name: "da1".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },
         ];
         a.disks_table.select(Some(0));
         if selected {

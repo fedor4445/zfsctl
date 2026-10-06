@@ -459,7 +459,33 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
+    use crate::zfs::disk::{human_size, DiskMedia};
     let theme = app.theme.clone();
+    // Name, Size and Status are never dropped; Type, Model, Serial are
+    // added only while they fit (one gap per column), so the first to go
+    // on a narrow terminal is Serial, then Model, then Type.
+    const NAME_W: u16 = 18;
+    const SIZE_W: u16 = 8;
+    const STATUS_MIN: u16 = 20;
+    const TYPE_W: u16 = 9;
+    const MODEL_W: u16 = 24;
+    const SERIAL_W: u16 = 20;
+    let inner = area.width.saturating_sub(2);
+    let mut used = NAME_W + SIZE_W + STATUS_MIN + 3;
+    let mut show_type = false;
+    let mut show_model = false;
+    let mut show_serial = false;
+    if used + TYPE_W < inner {
+        show_type = true;
+        used += TYPE_W + 1;
+        if used + MODEL_W < inner {
+            show_model = true;
+            used += MODEL_W + 1;
+            if used + SERIAL_W < inner {
+                show_serial = true;
+            }
+        }
+    }
     let rows = app.disks.iter().map(|d| {
         let marker = if app.selected_disks.contains(&d.name) { "[x]" } else { "[ ]" };
         let status = match &d.membership {
@@ -470,15 +496,45 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
             DiskMembership::Available => Style::default(),
             DiskMembership::InPool { .. } => theme.dim(),
         };
-        Row::new(vec![format!("{marker} {}", d.name), d.size.to_string(), status]).style(style)
+        let mut cells = vec![format!("{marker} {}", d.name), human_size(d.size)];
+        if show_type {
+            cells.push(match d.media {
+                DiskMedia::Ssd => "SSD".to_string(),
+                DiskMedia::Hdd(rpm) => format!("HDD {rpm}"),
+                DiskMedia::Unknown => String::new(),
+            });
+        }
+        if show_model {
+            cells.push(sanitise_for_display(d.model.as_deref().unwrap_or("")));
+        }
+        if show_serial {
+            cells.push(sanitise_for_display(d.serial.as_deref().unwrap_or("")));
+        }
+        cells.push(status);
+        Row::new(cells).style(style)
     });
-    let widths = [Constraint::Length(18), Constraint::Length(14), Constraint::Min(20)];
+    let mut widths = vec![Constraint::Length(NAME_W), Constraint::Length(SIZE_W)];
+    let mut headers = vec!["Name", "Size"];
+    if show_type {
+        widths.push(Constraint::Length(TYPE_W));
+        headers.push("Type");
+    }
+    if show_model {
+        widths.push(Constraint::Length(MODEL_W));
+        headers.push("Model");
+    }
+    if show_serial {
+        widths.push(Constraint::Length(SERIAL_W));
+        headers.push("Serial");
+    }
+    widths.push(Constraint::Min(STATUS_MIN));
+    headers.push("Status");
     let title = format!(
         "Disks — {} ('r' refresh, Space select, 'n' create pool, 'a' add vdev, Esc clear selection)",
         app.active_host_name()
     );
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Name", "Size", "Status"]))
+        .header(Row::new(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.disks_table);
@@ -695,7 +751,7 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
 /// Replaces every control character (newline, tab, ESC, ...) with a space
 /// and collapses runs of whitespace, so text that may carry raw remote
 /// stderr renders on one line and cannot inject terminal escapes.
-fn sanitise_for_display(s: &str) -> String {
+pub(crate) fn sanitise_for_display(s: &str) -> String {
     let spaced: String = s
         .chars()
         .map(|c| {
@@ -822,6 +878,46 @@ mod tests {
         terminal.draw(|f| draw(f, app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    fn identity_disk(name: &str, model: &str, serial: &str) -> crate::zfs::disk::DiskInfo {
+        crate::zfs::disk::DiskInfo {
+            name: name.to_string(),
+            size: 4_000_787_030_016,
+            model: Some(model.to_string()),
+            serial: Some(serial.to_string()),
+            media: crate::zfs::disk::DiskMedia::Hdd(5400),
+            ..Default::default()
+        }
+    }
+
+    fn app_in_disks() -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Disks).unwrap();
+        app.disks = vec![identity_disk("ada1", "WDC WD40EFRX-68N32N0", "WD-WCC7K1234567")];
+        app.disks_table.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn disks_table_shows_type_model_serial_and_human_size_when_wide() {
+        let mut app = app_in_disks();
+        let text = render(&mut app, 160, 24).join("\n");
+        for want in ["Type", "Model", "Serial", "HDD 5400", "WDC WD40EFRX-68N32N0", "WD-WCC7K1234567", "3.6T", "available"] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(!text.contains("4000787030016"), "raw bytes must be gone");
+    }
+
+    #[test]
+    fn disks_table_drops_serial_and_model_but_keeps_name_size_status_when_narrow() {
+        let mut app = app_in_disks();
+        let text = render(&mut app, 80, 24).join("\n");
+        for want in ["Name", "ada1", "Size", "3.6T", "Status", "available"] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(!text.contains("Serial") && !text.contains("WD-WCC7K1234567"), "serial must drop first:\n{text}");
+        assert!(!text.contains("Model") && !text.contains("WDC WD40"), "model must drop next:\n{text}");
     }
 
     fn pool(name: &str, allocated: u64, size: u64, health: PoolHealth) -> Pool {

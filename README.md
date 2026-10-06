@@ -177,7 +177,7 @@ shown, and that order is also the position number `d`/`n` operate on.
 
 ### Disks
 
-- `Up` / `Down`: select a disk
+- `Up` / `Down`: select a disk (the table shows each disk's human-readable size, SSD/HDD type and rpm, model and serial so you can tell identical-looking drives apart — Serial, then Model, then Type are dropped on narrow terminals — and the create-pool / add-vdev forms list each selected disk's identity)
 - `Space`: toggle-select the highlighted disk (only if it's not already claimed by a pool)
 - `n`: create a new pool from the selected disk(s) (prompts for name and redundancy — blank for a stripe, or `mirror`/`raidz1`/`raidz2`/`raidz3`)
 - `a`: add a vdev to an existing pool from the selected disk(s) (prompts for the target pool name and redundancy, same as above)
