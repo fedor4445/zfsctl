@@ -37,9 +37,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
         .areas(body_area);
-    // Hosts, Pools, Datasets, Snapshots, Disks and a drilled pool give the bottom half of the center
+    // Every list section and a drilled pool give the bottom half of the center
     // column to a metrics panel; the sidebar keeps its full height.
-    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks);
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares);
     let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
@@ -58,7 +58,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Some(MetricsTarget::Disk { name, .. }) => app.disks.iter().find(|d| &d.name == name),
             _ => None,
         };
-        crate::ui::metrics::draw(f, &app.metrics, app.active_host_name(), health.as_ref(), disk, &app.theme, area);
+        let share = match app.metrics.target() {
+            Some(MetricsTarget::Share { dataset, smb_name }) => app.shares.iter().find(|s| match (s, smb_name) {
+                (Share::Nfs { dataset: d, .. }, None) => d == dataset,
+                (Share::Smb { dataset: d, name, .. }, Some(n)) => d == dataset && name == n,
+                _ => false,
+            }),
+            _ => None,
+        };
+        let ctx = crate::ui::metrics::Context { host_name: app.active_host_name(), health: health.as_ref(), disk, share };
+        crate::ui::metrics::draw(f, &app.metrics, &ctx, &app.theme, area);
     }
     draw_status_line(f, &status_text, status_style, gauge, &app.theme, status_area);
     let hint_line = crate::ui::hints::hint_line(&crate::ui::hints::hints(app), area.width as usize, &app.theme);
@@ -562,7 +571,7 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(table, area, &mut app.disks_table);
 }
 
-fn smb_access_label(guest_ok: bool, valid_user: Option<&str>) -> String {
+pub(crate) fn smb_access_label(guest_ok: bool, valid_user: Option<&str>) -> String {
     match (guest_ok, valid_user) {
         (true, _) => "guest".to_string(),
         (false, Some(u)) => format!("user={u}"),
@@ -1028,7 +1037,7 @@ mod tests {
         let io = PoolIo { read_bps: 88_080_384, read_ops: 840, ..PoolIo::default() };
         app.metrics.apply(
             &MetricsTarget::Pool("tank".to_string()),
-            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None, disk: None }),
+            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None, disk: None, share: None }),
             std::time::Instant::now(),
         );
         let rows = render(&mut app, 100, 30);
@@ -1060,7 +1069,7 @@ mod tests {
         };
         app.metrics.apply(
             &MetricsTarget::Host,
-            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host), snapshot: None, disk: None }),
+            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host), snapshot: None, disk: None, share: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1094,7 +1103,7 @@ mod tests {
         };
         app.metrics.apply(
             &target,
-            Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(detail), disk: None }),
+            Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(detail), disk: None, share: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1126,7 +1135,7 @@ mod tests {
         let live = DiskLive { state: Some("DEGRADED".to_string()), errors: Some(ErrorCounts { read: 1, write: 0, cksum: 2 }), busy_percent: Some(12.0), queue: Some(2) };
         app.metrics.apply(
             &target,
-            Ok(TargetSample { pool: PoolSample { io, ..PoolSample::default() }, space: None, host: None, snapshot: None, disk: Some(live) }),
+            Ok(TargetSample { pool: PoolSample { io, ..PoolSample::default() }, space: None, host: None, snapshot: None, disk: Some(live), share: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1136,11 +1145,56 @@ mod tests {
     }
 
     #[test]
-    fn sections_without_a_selected_object_or_on_tiny_terminals_have_no_metrics_panel() {
+    fn the_shares_section_shows_access_clients_and_space_for_nfs_and_smb() {
+        use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolSample, TargetSample};
+        use crate::zfs::share::Share;
+        use crate::zfs::share_detail::ShareLive;
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+        app.shares = vec![
+            Share::Nfs { dataset: "tank/a".to_string(), raw: "x".to_string(), networks: vec!["10.0.0.0/24".to_string()], hosts: vec![], read_only: true, root: Some("root".to_string()) },
+            Share::Smb { dataset: "tank/b".to_string(), name: "bee".to_string(), path: "/b".to_string(), valid_user: Some("carol".to_string()), read_only: false, guest_ok: false },
+        ];
+        let space = DatasetSpace { used: 1 << 30, available: 3 << 30, quota: 10 << 30, compression: "lz4".to_string(), compress_ratio: 1.5, ..DatasetSpace::default() };
+        let sample = |clients| {
+            Ok(TargetSample {
+                pool: PoolSample::default(),
+                space: Some(space.clone()),
+                host: None,
+                snapshot: None,
+                disk: None,
+                share: Some(ShareLive { mountpoint: Some("/tank/a".to_string()), clients }),
+            })
+        };
+        // NFS row
+        app.shares_table.select(Some(0));
+        let nfs = MetricsTarget::Share { dataset: "tank/a".to_string(), smb_name: None };
+        assert_eq!(app.metrics_target(), Some(nfs.clone()));
+        app.metrics.retarget(Some(nfs.clone()));
+        app.metrics.apply(&nfs, sample(Some(vec!["10.0.0.7".to_string(), "10.0.0.8".to_string()])), std::time::Instant::now());
+        let text = render(&mut app, 120, 30).join("\n");
+        for want in ["Metrics — NFS share tank/a", "10.0.0.0/24  ro  root=root", "/tank/a", "2: 10.0.0.7, 10.0.0.8", "25%", "Quota    10.0G", "lz4 1.50x"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        // SMB row, host won't say who is connected
+        app.shares_table.select(Some(1));
+        let smb = MetricsTarget::Share { dataset: "tank/b".to_string(), smb_name: Some("bee".to_string()) };
+        assert_eq!(app.metrics_target(), Some(smb.clone()));
+        app.metrics.retarget(Some(smb.clone()));
+        app.metrics.apply(&smb, sample(None), std::time::Instant::now());
+        let text = render(&mut app, 120, 30).join("\n");
+        for want in ["SMB share \\\\bee", "user=carol  rw", "unavailable"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn tiny_terminals_have_no_metrics_panel_and_an_empty_list_says_nothing_is_selected() {
         let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
         assert!(!render(&mut app, 100, 12).join("\n").contains("Metrics"), "too short for a panel");
         app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
-        assert!(!render(&mut app, 100, 30).join("\n").contains("Metrics"));
+        let text = render(&mut app, 100, 30).join("\n");
+        assert!(text.contains("nothing selected"), "{text}");
     }
 
     #[test]

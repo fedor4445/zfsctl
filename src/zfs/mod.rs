@@ -8,6 +8,7 @@ pub mod permission;
 pub mod pool;
 pub mod property;
 pub mod share;
+pub mod share_detail;
 pub mod smb;
 pub mod snapshot;
 pub mod snapshot_detail;

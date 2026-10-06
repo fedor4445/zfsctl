@@ -213,6 +213,8 @@ pub enum MetricsTarget {
     Snapshot(String),
     /// A disk and, if it belongs to one, its pool (whose status gives its health).
     Disk { name: String, pool: Option<String> },
+    /// A share on `dataset`; `smb_name` is `Some` for SMB and `None` for NFS.
+    Share { dataset: String, smb_name: Option<String> },
 }
 
 impl MetricsTarget {
@@ -221,7 +223,7 @@ impl MetricsTarget {
     pub fn pool(&self) -> Option<&str> {
         match self {
             MetricsTarget::Pool(p) => Some(p),
-            MetricsTarget::Dataset(d) => Some(d.split('/').next().unwrap_or(d)),
+            MetricsTarget::Dataset(d) | MetricsTarget::Share { dataset: d, .. } => Some(d.split('/').next().unwrap_or(d)),
             MetricsTarget::Host | MetricsTarget::Snapshot(_) | MetricsTarget::Disk { .. } => None,
         }
     }
@@ -238,12 +240,14 @@ pub struct TargetSample {
     pub snapshot: Option<super::snapshot_detail::SnapshotDetail>,
     /// Present only for a disk target; `pool.io` is then that disk's activity.
     pub disk: Option<super::disk_detail::DiskLive>,
+    /// Present only for a share target (alongside `space`).
+    pub share: Option<super::share_detail::ShareLive>,
 }
 
 /// One full panel refresh. Blocks for about a second; run it off the UI thread.
 pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Result<TargetSample> {
     let Some(pool_name) = target.pool() else {
-        let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None, disk: None };
+        let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None, disk: None, share: None };
         if let MetricsTarget::Snapshot(name) = target {
             sample.snapshot = Some(super::snapshot_detail::sample_snapshot(runner, name)?);
         } else if let MetricsTarget::Disk { name, pool } = target {
@@ -259,10 +263,14 @@ pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Resu
     };
     let pool = sample_pool(runner, pool_name)?;
     let space = match target {
-        MetricsTarget::Dataset(d) => Some(fetch_dataset_space(runner, d)?),
+        MetricsTarget::Dataset(d) | MetricsTarget::Share { dataset: d, .. } => Some(fetch_dataset_space(runner, d)?),
         _ => None,
     };
-    Ok(TargetSample { pool, space, host: None, snapshot: None, disk: None })
+    let share = match target {
+        MetricsTarget::Share { dataset, smb_name } => Some(super::share_detail::sample_share(runner, dataset, smb_name.as_deref())),
+        _ => None,
+    };
+    Ok(TargetSample { pool, space, host: None, snapshot: None, disk: None, share })
 }
 
 #[cfg(test)]

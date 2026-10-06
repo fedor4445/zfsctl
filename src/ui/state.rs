@@ -435,6 +435,10 @@ impl App {
                     crate::zfs::disk::DiskMembership::Available => None,
                 },
             }),
+            Section::Shares => self.shares_table.selected().and_then(|i| self.shares.get(i)).map(|share| match share {
+                crate::zfs::share::Share::Nfs { dataset, .. } => MetricsTarget::Share { dataset: dataset.clone(), smb_name: None },
+                crate::zfs::share::Share::Smb { dataset, name, .. } => MetricsTarget::Share { dataset: dataset.clone(), smb_name: Some(name.clone()) },
+            }),
             Section::Snapshots => self
                 .snapshots_table
                 .selected()
