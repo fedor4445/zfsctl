@@ -350,7 +350,7 @@ mod tests {
         let runner = FakeRunner::new("")
             .route("getent", "passwd", "root:*:0:0::/root:/bin/sh\n")
             .route("getent", "group", "wheel:*:0:root\n");
-        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner) }] };
+        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner), ssh_target: None }] };
         app.pending_account_fetch = vec![0];
         apply_pending_account_fetches(&mut app, &inventory);
         assert!(app.pending_account_fetch.is_empty());

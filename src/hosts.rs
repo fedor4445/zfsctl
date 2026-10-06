@@ -9,6 +9,8 @@ use std::sync::Arc;
 pub struct Host {
     pub name: String,
     pub runner: Arc<dyn CommandRunner>,
+    /// SSH destination this host is reached at; `None` for the local host.
+    pub ssh_target: Option<String>,
 }
 
 pub struct HostInventory {
@@ -22,6 +24,7 @@ impl HostInventory {
         let mut hosts = vec![Host {
             name: "local".to_string(),
             runner: Arc::new(LocalRunner),
+            ssh_target: None,
         }];
         for host_cfg in &config.hosts {
             let runner: Arc<dyn CommandRunner> = match &host_cfg.ssh_target {
@@ -31,6 +34,7 @@ impl HostInventory {
             hosts.push(Host {
                 name: host_cfg.name.clone(),
                 runner,
+                ssh_target: host_cfg.ssh_target.clone(),
             });
         }
         HostInventory { hosts }
@@ -51,6 +55,7 @@ impl HostInventory {
         self.hosts.push(Host {
             name: name.clone(),
             runner: Arc::new(SshRunner::new(target.clone())),
+            ssh_target: Some(target.clone()),
         });
         let mut config = Config::load(config_path)?;
         config.hosts.push(HostConfig { name, ssh_target: Some(target) });
@@ -122,6 +127,29 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(inventory.hosts.len(), 2, "the inventory push must never be rolled back, even when persisting fails");
         assert_eq!(inventory.hosts[1].name, "newhost");
+    }
+
+    #[test]
+    fn hosts_remember_their_ssh_target_and_the_local_host_has_none() {
+        let config = Config {
+            hosts: vec![
+                HostConfig { name: "backup".to_string(), ssh_target: Some("fbsd@backup.example.com".to_string()) },
+                HostConfig { name: "alias".to_string(), ssh_target: None },
+            ],
+            ..Default::default()
+        };
+        let inventory = HostInventory::from_config(&config);
+        assert_eq!(inventory.hosts[0].ssh_target, None, "the synthetic local host");
+        assert_eq!(inventory.hosts[1].ssh_target.as_deref(), Some("fbsd@backup.example.com"));
+        assert_eq!(inventory.hosts[2].ssh_target, None, "a configured host without a target is local");
+    }
+
+    #[test]
+    fn a_host_added_at_runtime_remembers_its_ssh_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inventory = HostInventory::from_config(&Config::default());
+        inventory.apply_new_host(&dir.path().join("config.toml"), "newhost".to_string(), "fbsd@newhost".to_string()).unwrap();
+        assert_eq!(inventory.hosts[1].ssh_target.as_deref(), Some("fbsd@newhost"));
     }
 
     #[test]
