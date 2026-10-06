@@ -9,9 +9,16 @@ exclude_re = [
     "<impl Display",
     "tracing::",
     "in describe$",
+    # Terminal-bound glue (raw mode, event polling, process entry); exercised by driving the
+    # real binary under a pty, not by unit tests
+    "src/ui/mod\\.rs:\\d+:\\d+: replace (run_app|event_loop) ",
+    "src/ui/mod\\.rs:.* in (run_app|event_loop)$",
+    "src/main\\.rs:",
     # Equivalent mutants (no test can distinguish them); line numbers are matched on purpose
     # the on/off shortcut is redundant, both values round-trip through the parser anyway
     "share\\.rs:181:.* in sharenfs_editable_losslessly",
+    # PaneFocus has two variants, so forcing this guard true only re-sets Middle to Middle
+    "state\\.rs:538:.* in App::handle_key",
     # a u64 never reaches the unit-overflow guard
     "disk\\.rs:81:.* in human_size",
 ]

@@ -6014,6 +6014,7 @@ mod tests {
         app.handle_modal_key(KeyCode::F(2));
         app.handle_picker_key(KeyCode::Char(' '));
         assert!(app.picker.as_ref().unwrap().checked.is_empty());
+        assert!(app.picker.as_ref().unwrap().filter.is_empty(), "Space must not leak into the type-to-filter text");
     }
 
     #[test]
@@ -6717,4 +6718,408 @@ mod tests {
             other => panic!("{other:?}"),
         }
     }
+
+    // ---- mutation-testing gap fillers ------------------------------------
+
+    fn wait_until(app: &mut App, mut done: impl FnMut(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if done(app) || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn is_loading_ignores_the_vdevs_auto_refresh_but_counts_everything_else() {
+        let mut app = App::new(vec!["local".to_string()]);
+        assert!(!app.is_loading());
+        app.in_flight.insert((Section::Vdevs, 0));
+        assert!(!app.is_loading(), "the background vdev poll must not show the refreshing indicator");
+        app.in_flight.insert((Section::Pools, 0));
+        assert!(app.is_loading());
+    }
+
+    #[test]
+    fn active_host_name_is_the_selected_host_or_a_question_mark() {
+        let mut app = App::new(vec!["local".to_string(), "other".to_string()]);
+        assert_eq!(app.active_host_name(), "local");
+        app.selected_host = 1;
+        assert_eq!(app.active_host_name(), "other");
+        app.selected_host = 7;
+        assert_eq!(app.active_host_name(), "?");
+    }
+
+    #[test]
+    fn focused_form_value_reads_the_focused_field_and_is_empty_without_a_form() {
+        let mut app = App::new(vec!["local".to_string()]);
+        assert_eq!(app.focused_form_value(), "");
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![
+                FormField { label: "a".to_string(), value: "first".to_string() },
+                FormField { label: "b".to_string(), value: "second".to_string() },
+            ],
+            focused: 1,
+            description: None,
+            kind: FormKind::AddHost,
+        });
+        assert_eq!(app.focused_form_value(), "second");
+        if let Some(Modal::Form { focused, .. }) = app.modal.as_mut() {
+            *focused = 9;
+        }
+        assert_eq!(app.focused_form_value(), "", "out-of-range focus reads as empty");
+    }
+
+    #[test]
+    fn a_cache_entry_exactly_ttl_old_is_stale() {
+        let mut app = smb_form_app(1);
+        let now = Instant::now();
+        app.account_cache.insert(1, (now - ACCOUNT_CACHE_TTL, accounts_fixture()));
+        let mut picker = crate::ui::picker::PickerState {
+            values: vec![],
+            filter: String::new(),
+            selected: 0,
+            checked: std::collections::HashSet::new(),
+            multi_select: false,
+            load: crate::ui::picker::PickerLoad::Loading,
+            note: None,
+            account: None,
+        };
+        app.open_account_picker(&mut picker, 1, "", now);
+        assert_eq!(picker.load, crate::ui::picker::PickerLoad::Loading, "age == TTL is not fresh");
+        assert_eq!(app.pending_account_fetch, vec![1]);
+    }
+
+    #[test]
+    fn refresh_datasets_populates_datasets_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data\t100\t200\t100\t/tank/data\tfilesystem\tyes\n"));
+        app.refresh_datasets(runner);
+        wait_until(&mut app, |a| !a.datasets.is_empty());
+        assert_eq!(app.datasets.len(), 1);
+        assert_eq!(app.datasets[0].name, "tank/data");
+        assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn refresh_snapshots_populates_snapshots_from_fake_runner() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data@s1\t10\n"));
+        app.refresh_snapshots(runner);
+        wait_until(&mut app, |a| !a.snapshots.is_empty());
+        assert_eq!(app.snapshots.len(), 1);
+        assert_eq!(app.snapshots[0].name, "s1");
+        assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn a_disk_refresh_drops_selected_disks_that_are_missing_or_no_longer_available() {
+        let mut app = App::new(vec!["local".to_string()]);
+        for n in ["da0", "da1", "da2"] {
+            app.selected_disks.insert(n.to_string());
+        }
+        let disk = |name: &str, membership| DiskInfo { name: name.to_string(), size: 1, membership, ..Default::default() };
+        let in_use = DiskMembership::InPool { pool: "tank".to_string(), vdev: "mirror-0".to_string() };
+        app.tx.send(WorkerMsg::Disks(0, Ok(vec![disk("da0", DiskMembership::Available), disk("da1", in_use)]))).unwrap();
+        app.drain_worker_messages();
+        let mut kept: Vec<_> = app.selected_disks.iter().cloned().collect();
+        kept.sort();
+        assert_eq!(kept, vec!["da0"], "da1 is in use, da2 vanished");
+    }
+
+    fn app_with_dataset_detail_for(selected: &str) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{n}")) };
+        app.datasets = vec![ds("tank/a"), ds("tank/b")];
+        app.datasets_table.select(Some(if selected == "tank/a" { 0 } else { 1 }));
+        app.dataset_properties = vec![Property { name: "atime".to_string(), value: "on".to_string(), source: PropertySource::Local }];
+        app.dataset_properties_for = Some("tank/a".to_string());
+        app.dataset_permissions = vec![PermissionRow::CreateTime { perms: vec!["mount".to_string()] }];
+        app.dataset_permissions_for = Some("tank/a".to_string());
+        app.acl_entries_for = Some("/tank/a".to_string());
+        app.acl_entries = vec![crate::acl::AclEntry {
+            tag: crate::acl::AclTag::Owner,
+            permissions: vec!["read_data".to_string()],
+            flags: vec![],
+            entry_type: crate::acl::AclEntryType::Allow,
+        }];
+        app
+    }
+
+    #[test]
+    fn a_dataset_list_refresh_keeps_right_pane_data_that_still_belongs_to_the_selection() {
+        let mut app = app_with_dataset_detail_for("tank/a");
+        let same = vec![Dataset { name: "tank/a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/a".to_string()) }];
+        app.tx.send(WorkerMsg::Datasets(0, Ok(same))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.dataset_properties.len(), 1);
+        assert_eq!(app.dataset_permissions.len(), 1);
+        assert_eq!(app.acl_entries.len(), 1);
+        assert!(app.dataset_properties_for.is_some() && app.dataset_permissions_for.is_some() && app.acl_entries_for.is_some());
+    }
+
+    #[test]
+    fn a_dataset_list_refresh_that_moves_the_selection_clears_each_right_pane_cache() {
+        let mut app = app_with_dataset_detail_for("tank/a");
+        let moved = vec![Dataset { name: "tank/z".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/z".to_string()) }];
+        app.tx.send(WorkerMsg::Datasets(0, Ok(moved))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.dataset_properties.is_empty() && app.dataset_properties_for.is_none());
+        assert!(app.dataset_permissions.is_empty() && app.dataset_permissions_for.is_none());
+        assert!(app.acl_entries.is_empty() && app.acl_entries_for.is_none());
+    }
+
+    #[test]
+    fn parse_recipient_field_needs_a_name_after_user_and_group_prefixes() {
+        use crate::zfs::permission::Recipient;
+        assert_eq!(parse_recipient_field("user:bob"), Some(Recipient::User("bob".to_string())));
+        assert_eq!(parse_recipient_field("group:wheel"), Some(Recipient::Group("wheel".to_string())));
+        assert_eq!(parse_recipient_field("user:"), None);
+        assert_eq!(parse_recipient_field("group:"), None);
+        assert_eq!(parse_recipient_field("everyone"), Some(Recipient::Everyone));
+        assert_eq!(parse_recipient_field("bob"), None);
+    }
+
+    #[test]
+    fn move_table_selection_wraps_and_steps_by_one_in_both_directions() {
+        let mut t = TableState::default();
+        move_table_selection(&mut t, 0, true);
+        assert_eq!(t.selected(), None);
+        move_table_selection(&mut t, 5, true);
+        assert_eq!(t.selected(), Some(0));
+        move_table_selection(&mut t, 5, true);
+        assert_eq!(t.selected(), Some(1));
+        t.select(Some(4));
+        move_table_selection(&mut t, 5, true);
+        assert_eq!(t.selected(), Some(0), "forward wraps");
+        move_table_selection(&mut t, 5, false);
+        assert_eq!(t.selected(), Some(4), "backward from the first row wraps");
+        move_table_selection(&mut t, 5, false);
+        assert_eq!(t.selected(), Some(3));
+        t.select(None);
+        move_table_selection(&mut t, 5, false);
+        assert_eq!(t.selected(), Some(4), "backward from no selection lands on the last row");
+    }
+
+    #[test]
+    fn help_text_documents_the_global_keys() {
+        let text = help_text();
+        assert!(text.starts_with("Global"));
+        assert!(text.contains("Tab / Shift+Tab"));
+    }
+
+    #[test]
+    fn back_tab_steps_one_section_back_and_wraps_to_the_last() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = 2;
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.selected_section, 1);
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.selected_section, 0);
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.selected_section, app.sections.len() - 1);
+    }
+
+    #[test]
+    fn tab_and_back_tab_do_nothing_while_drilled_into_a_pool() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        app.drilled_pool = Some("tank".to_string());
+        let before = app.selected_section;
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.selected_section, before);
+        app.handle_key(KeyCode::BackTab);
+        assert_eq!(app.selected_section, before);
+    }
+
+    #[test]
+    fn esc_only_clears_selected_disks_in_the_disks_section_and_only_when_some_are_selected() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_disks.insert("da0".to_string());
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        app.status_message = Some("hello".to_string());
+        app.handle_key(KeyCode::Esc);
+        assert!(app.status_message.is_none(), "Esc outside Disks dismisses the status message");
+        assert_eq!(app.selected_disks.len(), 1, "and leaves the disk selection alone");
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Disks).unwrap();
+        app.selected_disks.clear();
+        app.status_message = Some("hello".to_string());
+        app.handle_key(KeyCode::Esc);
+        assert!(app.status_message.is_none(), "with no disks selected Esc still dismisses the message");
+    }
+
+    fn in_section(section: Section) -> App {
+        let mut app = App::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
+        app.pane_focus = PaneFocus::Middle;
+        app
+    }
+
+    fn two_props() -> Vec<Property> {
+        ["x", "y"].iter().map(|n| Property { name: (*n).to_string(), value: "v".to_string(), source: PropertySource::Local }).collect()
+    }
+
+    fn pool_fixture(name: &str) -> crate::zfs::pool::Pool {
+        crate::zfs::pool::Pool { name: name.to_string(), size: 1, allocated: 0, free: 1, health: crate::zfs::pool::PoolHealth::Online }
+    }
+
+    /// Presses Up with the table at row 1 and checks it moved to row 0, while
+    /// every other table in `others` was left alone.
+    fn up_moves(app: &mut App, table: fn(&mut App) -> &mut TableState, others: &[fn(&mut App) -> &mut TableState]) {
+        table(app).select(Some(1));
+        for o in others {
+            o(app).select(Some(1));
+        }
+        app.handle_key(KeyCode::Up);
+        assert_eq!(table(app).selected(), Some(0));
+        for o in others {
+            assert_eq!(o(app).selected(), Some(1), "Up must only move the table the user is looking at");
+        }
+    }
+
+    fn down_moves(app: &mut App, table: fn(&mut App) -> &mut TableState) {
+        table(app).select(Some(0));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(table(app).selected(), Some(1));
+    }
+
+    #[test]
+    fn up_steps_back_through_hosts_and_wraps() {
+        let mut app = in_section(Section::Hosts);
+        app.selected_host = 2;
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.selected_host, 1);
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.selected_host, 0);
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.selected_host, 2);
+    }
+
+    #[test]
+    fn up_and_down_move_the_vdev_rows_when_drilled_and_the_pool_rows_when_not() {
+        let vdev = |n: &str| crate::zfs::pool::VdevLine { depth: 0, name: n.to_string(), health: crate::zfs::pool::PoolHealth::Online };
+        let mut app = in_section(Section::Pools);
+        app.pools = vec![pool_fixture("tank"), pool_fixture("scratch")];
+        app.vdevs = vec![vdev("tank"), vdev("da0")];
+        up_moves(&mut app, |a| &mut a.pools_table, &[|a| &mut a.vdevs_table]);
+        down_moves(&mut app, |a| &mut a.pools_table);
+        app.drilled_pool = Some("tank".to_string());
+        up_moves(&mut app, |a| &mut a.vdevs_table, &[|a| &mut a.pools_table]);
+        down_moves(&mut app, |a| &mut a.vdevs_table);
+    }
+
+    #[test]
+    fn up_and_down_move_the_pool_property_rows_in_the_right_pane() {
+        let mut app = in_section(Section::Pools);
+        app.pools = vec![pool_fixture("tank"), pool_fixture("scratch")];
+        app.pool_properties = two_props();
+        app.pane_focus = PaneFocus::Right;
+        up_moves(&mut app, |a| &mut a.pool_properties_table, &[|a| &mut a.pools_table]);
+        down_moves(&mut app, |a| &mut a.pool_properties_table);
+    }
+
+    #[test]
+    fn up_and_down_move_the_row_list_of_the_active_dataset_detail_tab() {
+        let mut app = in_section(Section::Datasets);
+        let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{n}")) };
+        app.datasets = vec![ds("tank/a"), ds("tank/b")];
+        app.dataset_properties = two_props();
+        app.dataset_permissions = vec![
+            PermissionRow::CreateTime { perms: vec!["mount".to_string()] },
+            PermissionRow::CreateTime { perms: vec!["create".to_string()] },
+        ];
+        let entry = |tag| crate::acl::AclEntry { tag, permissions: vec![], flags: vec![], entry_type: crate::acl::AclEntryType::Allow };
+        app.acl_entries = vec![entry(crate::acl::AclTag::Owner), entry(crate::acl::AclTag::Everyone)];
+        up_moves(&mut app, |a| &mut a.datasets_table, &[]); // a row change legitimately resets the detail pane
+        down_moves(&mut app, |a| &mut a.datasets_table);
+        // Moving the dataset row cleared the detail lists; refill them for the right-pane checks.
+        app.dataset_properties = two_props();
+        app.dataset_permissions = vec![
+            PermissionRow::CreateTime { perms: vec!["mount".to_string()] },
+            PermissionRow::CreateTime { perms: vec!["create".to_string()] },
+        ];
+        app.acl_entries = vec![entry(crate::acl::AclTag::Owner), entry(crate::acl::AclTag::Everyone)];
+        app.pane_focus = PaneFocus::Right;
+        app.dataset_detail_tab = DatasetDetailTab::Properties;
+        up_moves(&mut app, |a| &mut a.dataset_properties_table, &[|a| &mut a.datasets_table, |a| &mut a.dataset_permissions_table, |a| &mut a.acl_entries_table]);
+        down_moves(&mut app, |a| &mut a.dataset_properties_table);
+        app.dataset_detail_tab = DatasetDetailTab::Permissions;
+        up_moves(&mut app, |a| &mut a.dataset_permissions_table, &[|a| &mut a.dataset_properties_table, |a| &mut a.acl_entries_table]);
+        down_moves(&mut app, |a| &mut a.dataset_permissions_table);
+        app.dataset_detail_tab = DatasetDetailTab::Acl;
+        up_moves(&mut app, |a| &mut a.acl_entries_table, &[|a| &mut a.dataset_properties_table, |a| &mut a.dataset_permissions_table]);
+        down_moves(&mut app, |a| &mut a.acl_entries_table);
+    }
+
+    #[test]
+    fn up_and_down_move_the_snapshot_disk_and_share_rows() {
+        let mut app = in_section(Section::Snapshots);
+        let snap = |n: &str| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: n.to_string(), used: 1 };
+        app.snapshots = vec![snap("s1"), snap("s2")];
+        up_moves(&mut app, |a| &mut a.snapshots_table, &[|a| &mut a.disks_table, |a| &mut a.shares_table]);
+        down_moves(&mut app, |a| &mut a.snapshots_table);
+
+        let mut app = in_section(Section::Disks);
+        app.disks = vec![
+            DiskInfo { name: "da0".to_string(), size: 1, ..Default::default() },
+            DiskInfo { name: "da1".to_string(), size: 1, ..Default::default() },
+        ];
+        up_moves(&mut app, |a| &mut a.disks_table, &[|a| &mut a.snapshots_table, |a| &mut a.shares_table]);
+        down_moves(&mut app, |a| &mut a.disks_table);
+
+        let mut app = in_section(Section::Shares);
+        app.shares = vec![smb("tank/a"), smb("tank/b")];
+        up_moves(&mut app, |a| &mut a.shares_table, &[|a| &mut a.snapshots_table, |a| &mut a.disks_table]);
+        down_moves(&mut app, |a| &mut a.shares_table);
+    }
+
+    #[test]
+    fn n_and_a_only_ask_for_a_disk_selection_in_the_disks_section() {
+        for section in [Section::Snapshots, Section::Shares] {
+            let mut app = in_section(section);
+            app.handle_key(KeyCode::Char('n'));
+            app.handle_key(KeyCode::Char('a'));
+            assert!(app.status_message.is_none(), "{section:?}: {:?}", app.status_message);
+            assert!(app.modal.is_none());
+        }
+        let mut app = in_section(Section::Disks);
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(app.status_message.as_deref(), Some("select at least one disk with Space first"));
+        app.status_message = None;
+        app.handle_key(KeyCode::Char('a'));
+        assert_eq!(app.status_message.as_deref(), Some("select at least one disk with Space first"));
+    }
+
+    #[test]
+    fn removing_an_acl_entry_needs_the_selection_to_be_inside_the_list() {
+        let mut app = in_section(Section::Datasets);
+        app.datasets = vec![Dataset { name: "tank/a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/a".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.pane_focus = PaneFocus::Right;
+        app.dataset_detail_tab = DatasetDetailTab::Acl;
+        app.acl_entries = vec![crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec![], flags: vec![], entry_type: crate::acl::AclEntryType::Allow }];
+        app.acl_entries_table.select(Some(1)); // one past the last entry
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none());
+        app.acl_entries_table.select(Some(0));
+        app.handle_key(KeyCode::Char('d'));
+        assert!(matches!(app.modal, Some(Modal::Confirm { .. })));
+    }
+
+    #[test]
+    fn up_and_down_on_an_empty_hosts_list_do_not_fall_through_to_another_sections_rows() {
+        let mut app = App::new(vec![]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
+        app.shares = vec![smb("tank/a"), smb("tank/b")];
+        app.shares_table.select(Some(0));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.shares_table.selected(), Some(0));
+        app.shares_table.select(Some(1));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.shares_table.selected(), Some(1));
+    }
 }
+

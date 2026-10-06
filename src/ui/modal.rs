@@ -289,7 +289,9 @@ mod tests {
             share: crate::zfs::smb::SmbShare { name: "a".into(), dataset: "tank/a".into(), path: "/tank/a".into(), valid_user: Some("bob".into()), read_only: false, guest_ok: false },
             password: Some(Secret("hunter2".to_string())),
         };
-        assert!(!format!("{call:?}").contains("hunter2"));
+        let shown = format!("{call:?}");
+        assert!(!shown.contains("hunter2"));
+        assert!(shown.contains("Secret(***)"), "the redaction marker must be printed, not nothing: {shown}");
     }
 
     #[test]

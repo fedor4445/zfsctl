@@ -881,4 +881,166 @@ mod tests {
         let plain = line.spans.iter().find(|s| s.content == "s").unwrap();
         assert_ne!(plain.style, Style::new());
     }
+
+    fn empty_every_list(a: &mut App) {
+        a.hosts.clear();
+        a.vdevs.clear();
+        a.pools.clear();
+        a.pool_properties.clear();
+        a.datasets.clear();
+        a.dataset_properties.clear();
+        a.dataset_permissions.clear();
+        a.acl_entries.clear();
+        a.snapshots.clear();
+        a.disks.clear();
+        a.shares.clear();
+    }
+
+    #[test]
+    fn the_move_hint_is_shown_only_while_the_list_has_rows() {
+        for (name, mut app) in scenarios() {
+            let before = keys(&app).contains(&"↑↓");
+            if name != "pools middle, empty" {
+                assert!(before, "{name} should advertise ↑↓ with rows present");
+            }
+            empty_every_list(&mut app);
+            assert!(!keys(&app).contains(&"↑↓"), "{name} must not advertise ↑↓ over an empty list");
+        }
+    }
+
+    #[test]
+    fn acl_remove_is_advertised_only_when_the_selection_is_a_real_entry() {
+        let mut a = datasets_right(DatasetDetailTab::Acl);
+        assert!(keys(&a).contains(&"d"));
+        a.acl_entries_table.select(Some(a.acl_entries.len()));
+        assert!(!keys(&a).contains(&"d"), "selection one past the last entry is not an entry");
+        a.acl_entries_table.select(None);
+        assert!(!keys(&a).contains(&"d"));
+    }
+
+    #[test]
+    fn fit_keeps_hints_that_exactly_fill_the_width_and_drops_one_when_a_column_short() {
+        assert_eq!(fit(&sample(), 47), sample());
+        assert_eq!(fit(&sample(), 46).len(), 4);
+    }
+
+    #[test]
+    fn hint_line_separates_hints_with_two_spaces_and_never_leads_with_one() {
+        let theme = crate::ui::theme::Theme::ansi();
+        let text: String = hint_line(&sample(), 200, &theme).spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "s Scrub  d Destroy  Tab Section  ? Help  q Quit");
+    }
+
+    // ---- guards hold when every list is populated -----------------------
+
+    /// Fills every list and selects row 0 in every table without moving the
+    /// section, pane, tab or drill-down, so a handler that fires outside its
+    /// own section has real data to act on.
+    fn populate_everything(a: &mut App, with_selected_disks: bool) {
+        a.pools = vec![pool("tank"), pool("scratch")];
+        a.datasets = vec![dataset("tank/a"), dataset("tank/b")];
+        a.snapshots = vec![
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1 },
+        ];
+        a.disks = vec![
+            DiskInfo { name: "da0".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },
+            DiskInfo { name: "da1".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },
+        ];
+        a.shares = vec![smb("tank/b"), smb("tank/c")];
+        a.vdevs = vec![
+            VdevLine { depth: 0, name: "tank".to_string(), health: PoolHealth::Online },
+            VdevLine { depth: 1, name: "da0".to_string(), health: PoolHealth::Online },
+        ];
+        a.pool_properties = vec![prop("autoexpand"), prop("comment")];
+        a.dataset_properties = vec![prop("compression"), prop("atime")];
+        a.dataset_permissions = vec![
+            PermissionRow::CreateTime { perms: vec!["mount".to_string()] },
+            PermissionRow::Set { name: "s1".to_string(), perms: vec!["create".to_string()] },
+        ];
+        a.acl_entries_for = Some("/tank/a".to_string());
+        a.acl_entries = vec![
+            AclEntry { tag: AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: AclEntryType::Allow },
+            AclEntry { tag: AclTag::Everyone, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: AclEntryType::Allow },
+        ];
+        for table in [
+            &mut a.pools_table,
+            &mut a.datasets_table,
+            &mut a.snapshots_table,
+            &mut a.disks_table,
+            &mut a.shares_table,
+            &mut a.vdevs_table,
+            &mut a.pool_properties_table,
+            &mut a.dataset_properties_table,
+            &mut a.dataset_permissions_table,
+            &mut a.acl_entries_table,
+        ] {
+            table.select(Some(0));
+        }
+        if with_selected_disks {
+            a.selected_disks.insert("da0".to_string());
+        }
+    }
+
+    fn every_probe_key() -> Vec<KeyCode> {
+        let mut keys: Vec<KeyCode> = (b' '..=b'~').map(|b| KeyCode::Char(char::from(b))).collect();
+        keys.extend([KeyCode::Enter, KeyCode::Esc, KeyCode::Tab, KeyCode::BackTab, KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right, KeyCode::Backspace]);
+        keys
+    }
+
+    fn populated_scenarios() -> Vec<(String, App)> {
+        let mut out = Vec::new();
+        for with_disks in [false, true] {
+            for (name, mut app) in scenarios() {
+                populate_everything(&mut app, with_disks);
+                out.push((format!("{name}{}", if with_disks { " +selected disks" } else { "" }), app));
+            }
+        }
+        out
+    }
+
+    fn rebuild_populated(name: &str) -> App {
+        populated_scenarios().into_iter().find(|(n, _)| n == name).unwrap().1
+    }
+
+    #[test]
+    fn unadvertised_keys_stay_inert_even_when_every_list_is_populated() {
+        for (name, app) in populated_scenarios() {
+            let advertised: Vec<KeyCode> = hints(&app).iter().filter_map(|h| key_code(h.key)).collect();
+            let brackets = advertised.contains(&KeyCode::Char(']'));
+            for code in every_probe_key() {
+                let bracket = matches!(code, KeyCode::Char('[' | ']'));
+                // `r` lives in the event loop; Down/Up/Tab/BackTab/Left/Right navigate in many panes
+                // without being listed individually, and `?`/`A`/`q` are global.
+                if advertised.contains(&code) || (bracket && brackets) {
+                    continue;
+                }
+                if matches!(code, KeyCode::Down | KeyCode::Up | KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right | KeyCode::Char('?' | 'A' | 'q')) {
+                    continue;
+                }
+                let mut probe = rebuild_populated(&name);
+                // Backing out of a focused pane or a drill-down is real, unlisted navigation.
+                if matches!(code, KeyCode::Esc | KeyCode::Backspace) && (probe.pane_focus == PaneFocus::Right || probe.drilled_pool.is_some()) {
+                    continue;
+                }
+                let before = fingerprint(&probe);
+                probe.handle_key(code);
+                // Esc may legitimately clear a status message; it is excluded from `fingerprint`.
+                assert_eq!(fingerprint(&probe), before, "scenario '{name}' does not advertise {code:?} yet pressing it changes state");
+            }
+        }
+    }
+
+    #[test]
+    fn every_advertised_key_does_something_even_when_every_list_is_populated() {
+        for (name, app) in populated_scenarios() {
+            for hint in hints(&app) {
+                let Some(code) = key_code(hint.key) else { continue };
+                let mut probe = rebuild_populated(&name);
+                let before = fingerprint_with_status(&probe);
+                probe.handle_key(code);
+                assert_ne!(fingerprint_with_status(&probe), before, "scenario '{name}' advertises '{} {}' but {code:?} changes nothing", hint.key, hint.label);
+            }
+        }
+    }
 }
