@@ -320,6 +320,11 @@ fn event_loop(
                 }
             }
         }
+        for action in std::mem::take(&mut app.pending_mutations) {
+            if let Some(host) = inventory.hosts.get(action.host) {
+                app.dispatch_mutation(action, host.runner.clone());
+            }
+        }
         if app.pending_shell {
             app.pending_shell = false;
             if let Some(host) = inventory.hosts.get(app.selected_host) {

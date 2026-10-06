@@ -245,6 +245,9 @@ pub struct App {
     /// Set by `!`; the event loop takes it, because only it owns the terminal
     /// and can suspend the TUI to run a shell.
     pub pending_shell: bool,
+    /// Mutations to run on the next tick without a confirmation step (for example enabling or
+    /// disabling a job). The event loop drains this; `handle_key` cannot return an action itself.
+    pub pending_mutations: Vec<PendingAction>,
     pub account_cache: HashMap<usize, (Instant, crate::zfs::accounts::HostAccounts)>,
     pub account_fetch_in_flight: HashMap<usize, Instant>,
     pub pending_account_fetch: Vec<usize>,
@@ -326,6 +329,7 @@ impl App {
             should_quit: false,
             pending_new_hosts: Vec::new(),
             pending_shell: false,
+            pending_mutations: Vec::new(),
             account_cache: HashMap::new(),
             account_fetch_in_flight: HashMap::new(),
             pending_account_fetch: Vec::new(),
@@ -1172,6 +1176,24 @@ impl App {
             KeyCode::Enter if self.current_section() == Section::Jobs => {
                 if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).cloned() {
                     self.modal = Some(self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")));
+                }
+            }
+            KeyCode::Char(' ') if self.current_section() == Section::Jobs => {
+                if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)) {
+                    let enable = !job.enabled;
+                    self.status_message = Some(format!("{} job '{}'…", if enable { "Enabling" } else { "Disabling" }, job.id));
+                    self.pending_mutations.push(PendingAction {
+                        host: self.selected_host,
+                        section: Section::Jobs,
+                        call: MutationCall::SetJobEnabled { state_dir: self.state_dir.clone(), id: job.id.clone(), enabled: enable },
+                    });
+                }
+            }
+            KeyCode::Char('d') if self.current_section() == Section::Jobs => {
+                if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)) {
+                    let prompt = format!("Delete job '{}'? It stops running; its past runs stay in the history. (y/n)", job.id);
+                    let call = MutationCall::DeleteJob { state_dir: self.state_dir.clone(), id: job.id.clone() };
+                    self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
                 }
             }
             KeyCode::Down if self.current_section() == Section::Jobs => {
@@ -2745,6 +2767,13 @@ Disks
 Shares
   Enter            edit the selected share
   d                remove the selected share
+
+Jobs
+  Up / Down        select a scheduled job
+  Enter            edit the job (host, pool, schedule, catch up)
+  n                new scrub job (or press J on a pool in Pools)
+  Space            enable / disable the job
+  d                delete the job (y/n; its past runs stay in the history)
 
 Press any key to close."
         .to_string()
@@ -7511,6 +7540,69 @@ mod tests {
         app.handle_modal_key(KeyCode::Tab);
         app.handle_modal_key(KeyCode::F(2));
         assert!(app.picker.is_none());
+    }
+
+    fn selected_jobs_app(jobs_list: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with_jobs(jobs_list);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        (app, dir)
+    }
+
+    #[test]
+    fn space_on_a_job_queues_a_disable_then_an_enable_and_says_what_it_is_doing() {
+        let (mut app, _dir) = selected_jobs_app(&[scrub_job("a")]);
+        app.handle_key(KeyCode::Char(' '));
+        let [action] = app.pending_mutations.as_slice() else { panic!("{:?}", app.pending_mutations) };
+        assert_eq!(action.section, Section::Jobs);
+        assert!(matches!(&action.call, MutationCall::SetJobEnabled { id, enabled: false, .. } if id == "a"), "{:?}", action.call);
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Disabling job 'a'")), "{:?}", app.status_message);
+        app.pending_mutations.clear();
+        app.jobs_view.jobs[0].enabled = false;
+        app.handle_key(KeyCode::Char(' '));
+        assert!(matches!(&app.pending_mutations[0].call, MutationCall::SetJobEnabled { enabled: true, .. }));
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Enabling job 'a'")), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn space_with_no_job_selected_does_nothing() {
+        let (mut app, _dir) = app_with_jobs(&[scrub_job("a")]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Char(' '));
+        assert!(app.pending_mutations.is_empty());
+    }
+
+    #[test]
+    fn d_on_a_job_asks_for_a_warning_confirmation_and_deletes_only_that_job() {
+        let (mut app, _dir) = selected_jobs_app(&[scrub_job("a"), scrub_job("b")]);
+        app.handle_key(KeyCode::Char('d'));
+        let Some(Modal::Confirm { prompt, action }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("Delete job 'a'") && prompt.contains("history"), "{prompt}");
+        assert_eq!(action.call.tone(), crate::ui::modal::Tone::Warn);
+        let action = app.handle_modal_key(KeyCode::Char('y')).expect("confirmed");
+        assert_eq!(action.section, Section::Jobs);
+        assert!(matches!(&action.call, MutationCall::DeleteJob { id, .. } if id == "a"), "{:?}", action.call);
+    }
+
+    #[test]
+    fn d_with_no_job_selected_opens_nothing_and_n_cancels_a_delete() {
+        let (mut app, _dir) = app_with_jobs(&[scrub_job("a")]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none());
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.handle_modal_key(KeyCode::Char('n')).is_none());
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn help_text_documents_the_jobs_keys() {
+        let text = help_text();
+        let jobs = &text[text.find("\nJobs\n").expect("a Jobs block")..];
+        for want in ["Enter", "Space", "  d ", "  n ", "history"] {
+            assert!(jobs.contains(want), "missing {want:?} in the Jobs block:\n{jobs}");
+        }
     }
 
     #[test]
