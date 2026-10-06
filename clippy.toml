@@ -1,0 +1,4 @@
+# Tests may unwrap/index freely
+allow-unwrap-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true

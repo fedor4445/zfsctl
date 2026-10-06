@@ -1,0 +1,16 @@
+# cargo-mutants config: `cargo mutants` (or `cargo mutants --in-diff <file>`)
+# A surviving mutant = behaviour no test pins down.
+test_tool = "cargo"
+additional_cargo_test_args = []
+# Pure styling/geometry carries no logic worth mutating (ui/state.rs does, so it stays in)
+exclude_re = [
+    "impl (Debug|Display) for",
+    "<impl Debug",
+    "<impl Display",
+    "tracing::",
+    "in describe$",
+]
+exclude_globs = [
+    "src/ui/theme.rs",
+    "src/ui/layout.rs",
+]
