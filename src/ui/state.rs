@@ -579,7 +579,7 @@ impl App {
                 if let Some(i) = self.vdevs_table.selected() {
                     if let Some(vdev) = self.vdevs.get(i) {
                         if crate::zfs::pool::is_leaf_disk(&vdev.name) {
-                            let pool = self.drilled_pool.clone().unwrap();
+                            let Some(pool) = self.drilled_pool.clone() else { return };
                             self.modal = Some(Modal::Form {
                                 title: format!("Replace disk '{}' in pool '{pool}'", vdev.name),
                                 fields: vec![FormField { label: "New device".to_string(), value: String::new() }],
@@ -594,7 +594,7 @@ impl App {
                 }
             }
             KeyCode::Char('a') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
-                let pool = self.drilled_pool.clone().unwrap();
+                let Some(pool) = self.drilled_pool.clone() else { return };
                 self.modal = Some(Modal::Form {
                     title: format!("Add vdev to pool '{pool}'"),
                     fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3)".to_string(), value: String::new() }],
@@ -1098,7 +1098,7 @@ impl App {
             self.status_message = Some("select a disk (not a mirror/raidz group) to offline/online it".to_string());
             return;
         }
-        let pool = self.drilled_pool.clone().unwrap();
+        let Some(pool) = self.drilled_pool.clone() else { return };
         let disk = vdev.name.clone();
         let (verb, call) = if online {
             ("Online", MutationCall::OnlineDisk { pool: pool.clone(), disk: disk.clone() })
