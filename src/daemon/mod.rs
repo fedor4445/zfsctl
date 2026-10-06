@@ -68,12 +68,16 @@ impl Shared {
                     self.notify(&due.job, &outcome);
                 }
             }
-            Work::Resume { job, run } => {
+            Work::Resume { job, run, then } => {
                 let Some(runner) = self.runner(&job.host) else { return };
                 log(&format!("re-attaching to {} (run {})", job.id, run.run_id));
                 if let Some(outcome) = scrub::resume_scrub(&ctx, runner.as_ref(), &job, &run) {
                     log(&format!("{} {:?}: {}", outcome.job_id, outcome.result, outcome.message));
                     self.notify(&job, &outcome);
+                    // The catch-up waits for the resumed run to end, so the two never race for the pool.
+                    if let Some(due) = then {
+                        self.execute(Work::Run(due));
+                    }
                 }
             }
             Work::Orphan(run) => {
@@ -237,6 +241,25 @@ mod tests {
         let runs = history::runs(&shared.history.read());
         assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Failed)));
         assert!(runs[0].message.starts_with("lost:"));
+    }
+
+    #[test]
+    fn a_resumed_run_finishes_before_its_queued_catch_up_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        // Every `zpool` call fails, so the resumed run is closed as failed and the catch-up fails at its pre-check.
+        let shared = shared(&dir, FakeRunner::failing("cannot open 'tank': no such pool", 1), None);
+        let started = Event { job_id: "scrub-tank".into(), run_id: "old-run".into(), event: EventKind::Started, at: shared.clock.now(), scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: Some("old".into()) };
+        shared.history.append(&started).unwrap();
+        let run = history::runs(&shared.history.read()).remove(0);
+        let mut catch_up = due();
+        catch_up.catch_up = true;
+        shared.execute(Work::Resume { job: job(), run, then: Some(catch_up) });
+        let order: Vec<String> = shared.history.read().into_iter().filter(|e| e.event != EventKind::Started).map(|e| e.run_id).collect();
+        assert_eq!(order.len(), 2, "{order:?}");
+        assert_eq!(order[0], "old-run", "the resumed run is closed first");
+        assert_ne!(order[1], "old-run");
+        let runs = history::runs(&shared.history.read());
+        assert!(runs.iter().any(|r| r.catch_up && r.result == Some(RunResult::Failed)), "the catch-up then ran: {runs:?}");
     }
 
     #[test]

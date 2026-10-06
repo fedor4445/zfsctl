@@ -48,7 +48,9 @@ pub enum Work {
     /// A scheduled (or catch-up) run.
     Run(Due),
     /// A scrub started earlier and never seen to finish: keep watching it.
-    Resume { job: Job, run: Run },
+    /// `then` is a catch-up for the same job, run only after the resumed run
+    /// ends: started on its own it would race the resumed run for the pool.
+    Resume { job: Job, run: Run, then: Option<Due> },
     /// A running run whose job no longer exists or can no longer run.
     Orphan(Run),
 }
@@ -59,6 +61,11 @@ pub struct Engine<Tz: TimeZone> {
     scheduler: Scheduler<Tz>,
     jobs_mtime: Option<SystemTime>,
     last_prune: DateTime<Utc>,
+    /// Runs found unfinished at startup that have not been handed out yet. A
+    /// `jobs.toml` that cannot be read must not condemn them as lost.
+    pending: Vec<Run>,
+    /// Whether the startup catch-up has been done (it waits for a readable `jobs.toml`).
+    caught_up: bool,
     /// Jobs that cannot run, with the reason, for the log and the TUI.
     pub unsupported: Vec<Unsupported>,
     /// The last problem reading `jobs.toml`, if the file is currently bad.
@@ -71,23 +78,23 @@ fn mtime(paths: &Paths) -> Option<SystemTime> {
 
 impl<Tz: TimeZone> Engine<Tz> {
     pub fn new(paths: Paths, tz: Tz, hosts: Vec<String>, now: DateTime<Utc>) -> Self {
-        Engine { paths, hosts, scheduler: Scheduler::new(tz), jobs_mtime: None, last_prune: now, unsupported: Vec::new(), load_error: None }
+        Engine { paths, hosts, scheduler: Scheduler::new(tz), jobs_mtime: None, last_prune: now, pending: Vec::new(), caught_up: false, unsupported: Vec::new(), load_error: None }
     }
 
     /// Reads `jobs.toml` and swaps the job set in. A bad file keeps the job
     /// set already in place (it never empties the schedule). Returns the jobs
-    /// that were read so the caller can look runs up by id.
-    fn reload(&mut self, now: DateTime<Utc>, last_scheduled: &std::collections::HashMap<String, DateTime<Utc>>) -> Vec<Job> {
+    /// that were read, or `None` when the file could not be read.
+    fn reload(&mut self, now: DateTime<Utc>, last_scheduled: &std::collections::HashMap<String, DateTime<Utc>>) -> Option<Vec<Job>> {
         self.jobs_mtime = mtime(&self.paths);
         match jobs::load(&self.paths.jobs()) {
             Ok(list) => {
                 self.load_error = None;
                 self.unsupported = self.scheduler.reload(list.clone(), &self.hosts, last_scheduled, now);
-                list
+                Some(list)
             }
             Err(e) => {
                 self.load_error = Some(e.to_string());
-                Vec::new()
+                None
             }
         }
     }
@@ -96,36 +103,61 @@ impl<Tz: TimeZone> Engine<Tz> {
         history::last_scheduled(&history::runs(&History::new(self.paths.history()).read()))
     }
 
+    /// Hands out the runs that were unfinished at startup, now that the jobs are
+    /// known: a run whose job still exists is resumed (with its catch-up queued
+    /// behind it), one whose job is gone is closed as lost.
+    fn hand_out_pending(&mut self, jobs: &[Job], catch_ups: &mut Vec<Due>) -> Vec<Work> {
+        let mut work = Vec::new();
+        for run in std::mem::take(&mut self.pending) {
+            match jobs.iter().find(|j| j.id == run.job_id && jobs::resolve(j, &self.hosts).is_ok()) {
+                Some(job) => {
+                    let then = catch_ups.iter().position(|d| d.job.id == job.id).map(|i| catch_ups.remove(i));
+                    work.push(Work::Resume { job: job.clone(), run, then });
+                }
+                None => work.push(Work::Orphan(run)),
+            }
+        }
+        work
+    }
+
+    /// Everything to do after a successful read of `jobs.toml`: hand out
+    /// unfinished runs, and on the first successful read catch up missed slots.
+    fn after_load(&mut self, jobs: &[Job], now: DateTime<Utc>) -> Vec<Work> {
+        let mut catch_ups = if self.caught_up { Vec::new() } else { self.scheduler.catch_up(now) };
+        self.caught_up = true;
+        let mut work = self.hand_out_pending(jobs, &mut catch_ups);
+        work.extend(catch_ups.into_iter().map(Work::Run));
+        work
+    }
+
     /// Everything to do when the daemon starts: re-attach to unfinished runs
     /// and catch up on missed slots.
     pub fn start(&mut self, now: DateTime<Utc>) -> Vec<Work> {
         let _ = History::new(self.paths.history()).prune(KEEP_RUNS);
+        self.pending = history::runs(&History::new(self.paths.history()).read()).into_iter().filter(|r| r.result.is_none()).collect();
         let last = self.last_scheduled();
-        let loaded = self.reload(now, &last);
-        let mut work = Vec::new();
-        let unfinished: Vec<Run> = history::runs(&History::new(self.paths.history()).read()).into_iter().filter(|r| r.result.is_none()).collect();
-        for run in unfinished {
-            match loaded.iter().find(|j| j.id == run.job_id && jobs::resolve(j, &self.hosts).is_ok()) {
-                Some(job) => work.push(Work::Resume { job: job.clone(), run }),
-                None => work.push(Work::Orphan(run)),
-            }
+        match self.reload(now, &last) {
+            Some(jobs) => self.after_load(&jobs, now),
+            None => Vec::new(),
         }
-        work.extend(self.scheduler.catch_up(now).into_iter().map(Work::Run));
-        work
     }
 
     /// One tick: pick up an edited `jobs.toml`, fire what is due, prune daily.
     pub fn step(&mut self, now: DateTime<Utc>) -> Vec<Work> {
+        let mut work = Vec::new();
         let current = mtime(&self.paths);
         if current != self.jobs_mtime {
             let last = self.last_scheduled();
-            self.reload(now, &last);
+            if let Some(jobs) = self.reload(now, &last) {
+                work = self.after_load(&jobs, now);
+            }
         }
         if now - self.last_prune >= PRUNE_EVERY {
             self.last_prune = now;
             let _ = History::new(self.paths.history()).prune(KEEP_RUNS);
         }
-        self.scheduler.tick(now).into_iter().map(Work::Run).collect()
+        work.extend(self.scheduler.tick(now).into_iter().map(Work::Run));
+        work
     }
 
     #[cfg(test)]
@@ -193,8 +225,59 @@ mod tests {
         h.append(&started("j", "r1", "2026-10-07T03:00:00Z")).unwrap();
         h.append(&started("deleted", "r2", "2026-10-07T03:00:00Z")).unwrap();
         let work = engine(&dir, "2026-10-07T04:00:00Z").start(at("2026-10-07T04:00:00Z"));
-        assert!(work.iter().any(|w| matches!(w, Work::Resume { job, run } if job.id == "j" && run.run_id == "r1")), "{work:?}");
+        assert!(work.iter().any(|w| matches!(w, Work::Resume { job, run, .. } if job.id == "j" && run.run_id == "r1")), "{work:?}");
         assert!(work.iter().any(|w| matches!(w, Work::Orphan(run) if run.run_id == "r2")), "{work:?}");
+    }
+
+    #[test]
+    fn a_bad_jobs_file_at_startup_leaves_unfinished_runs_alone_until_the_file_is_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::write(paths.jobs(), "this is [[[ not toml").unwrap();
+        let h = History::new(paths.history());
+        h.append(&started("j", "r1", "2026-10-07T03:00:00Z")).unwrap();
+        h.append(&started("gone", "r2", "2026-10-07T03:00:00Z")).unwrap();
+        let mut e = engine(&dir, "2026-10-07T04:00:00Z");
+        assert!(e.start(at("2026-10-07T04:00:00Z")).is_empty(), "an unreadable file is not proof that the jobs are gone");
+        assert!(history::runs(&h.read()).iter().all(|r| r.result.is_none()), "no healthy run was recorded as lost");
+        jobs::save(&paths.jobs(), &[job("j", "0 3 * * *")]).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options().write(true).open(paths.jobs()).unwrap().set_modified(later).unwrap();
+        let work = e.step(at("2026-10-07T04:00:05Z"));
+        assert!(work.iter().any(|w| matches!(w, Work::Resume { job, run, .. } if job.id == "j" && run.run_id == "r1")), "{work:?}");
+        assert!(work.iter().any(|w| matches!(w, Work::Orphan(run) if run.run_id == "r2")), "{work:?}");
+        assert!(e.step(at("2026-10-07T04:00:06Z")).is_empty(), "each unfinished run is handed out once");
+    }
+
+    #[test]
+    fn a_resumed_run_and_a_catch_up_for_the_same_job_are_one_sequential_piece_of_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        jobs::save(&paths.jobs(), &[job("j", "0 3 * * 0")]).unwrap();
+        History::new(paths.history()).append(&started("j", "r1", "2026-09-27T03:00:00Z")).unwrap();
+        let work = engine(&dir, "2026-10-07T12:00:00Z").start(at("2026-10-07T12:00:00Z"));
+        let [Work::Resume { job, run, then }] = work.as_slice() else { panic!("expected a single Resume, got {work:?}") };
+        assert_eq!((job.id.as_str(), run.run_id.as_str()), ("j", "r1"));
+        let due = then.as_ref().expect("the missed slot is caught up after the resumed run ends");
+        assert_eq!((due.scheduled_for, due.catch_up), (at("2026-10-04T03:00:00Z"), true));
+    }
+
+    #[test]
+    fn the_catch_up_after_a_bad_start_happens_once_the_file_is_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::write(paths.jobs(), "[[[").unwrap();
+        let mut e = engine(&dir, "2026-10-07T12:00:00Z");
+        assert!(e.start(at("2026-10-07T12:00:00Z")).is_empty());
+        let mut j = job("j", "0 3 * * 0");
+        j.created_at = Some(at("2026-09-01T00:00:00Z"));
+        jobs::save(&paths.jobs(), &[j]).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options().write(true).open(paths.jobs()).unwrap().set_modified(later).unwrap();
+        let work = e.step(at("2026-10-07T12:00:05Z"));
+        let [Work::Run(due)] = work.as_slice() else { panic!("{work:?}") };
+        assert!(due.catch_up);
+        assert!(e.step(at("2026-10-07T12:00:06Z")).is_empty(), "the catch-up is offered once");
     }
 
     #[test]
