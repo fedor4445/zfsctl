@@ -132,7 +132,7 @@ pub enum WorkerMsg {
     /// as `DatasetPermissions`.
     DatasetAcl(usize, String, Result<Vec<crate::acl::AclEntry>>),
     /// The target is what the sample was taken for; `MetricsView::apply` drops it if the panel has moved on.
-    Metrics(usize, crate::zfs::metrics::MetricsTarget, Result<crate::zfs::metrics::TargetSample>),
+    Metrics(usize, crate::zfs::metrics::MetricsTarget, Box<Result<crate::zfs::metrics::TargetSample>>),
     MutationDone(usize, Section, Result<()>),
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
@@ -425,6 +425,7 @@ impl App {
             return Some(MetricsTarget::Pool(pool.clone()));
         }
         match self.current_section() {
+            Section::Hosts => (!self.hosts.is_empty()).then_some(MetricsTarget::Host),
             Section::Pools => self.selected_pool_name().map(MetricsTarget::Pool),
             Section::Datasets => self.selected_dataset_name().map(MetricsTarget::Dataset),
             _ => None,
@@ -444,7 +445,7 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = crate::zfs::metrics::sample_target(runner.as_ref(), &target);
-            let _ = tx.send(WorkerMsg::Metrics(host, target, result));
+            let _ = tx.send(WorkerMsg::Metrics(host, target, Box::new(result)));
         });
     }
 
@@ -1850,7 +1851,7 @@ impl App {
                 }
                 WorkerMsg::Metrics(host, target, result) => {
                     if host == self.selected_host {
-                        self.metrics.apply(&target, result, Instant::now());
+                        self.metrics.apply(&target, *result, Instant::now());
                     }
                 }
                 WorkerMsg::PoolProperties(host, pool, result) => {

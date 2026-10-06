@@ -4,6 +4,7 @@
 use crate::error::Result;
 use crate::ui::theme::Theme;
 use crate::zfs::disk::human_size;
+use crate::zfs::host::HostSummary;
 use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolFacts, PoolIo, TargetSample};
 use crate::zfs::pool::PoolHealth;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -29,6 +30,7 @@ pub struct MetricsView {
     io_history: VecDeque<PoolIo>,
     facts: Option<PoolFacts>,
     space: Option<DatasetSpace>,
+    host: Option<HostSummary>,
     error: Option<String>,
     in_flight: bool,
     last_finished: Option<Instant>,
@@ -42,12 +44,13 @@ impl MetricsView {
         if self.target == wanted {
             return;
         }
-        let same_pool = matches!((&self.target, &wanted), (Some(a), Some(b)) if a.pool() == b.pool());
+        let same_pool = matches!((&self.target, &wanted), (Some(a), Some(b)) if a.pool().is_some() && a.pool() == b.pool());
         if !same_pool {
             self.io_history.clear();
             self.facts = None;
         }
         self.space = None;
+        self.host = None;
         self.error = None;
         self.last_finished = None;
         self.target = wanted;
@@ -81,6 +84,7 @@ impl MetricsView {
                 self.io_history.push_back(sample.pool.io);
                 self.facts = Some(sample.pool.facts);
                 self.space = sample.space;
+                self.host = sample.host;
                 self.error = None;
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -131,6 +135,44 @@ fn pool_lines(health: Option<&PoolHealth>, facts: &PoolFacts, theme: &Theme) -> 
     lines
 }
 
+fn duration_text(secs: u64) -> String {
+    let (d, h, m) = (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
+}
+
+fn host_lines(h: &HostSummary, theme: &Theme) -> Vec<Line<'static>> {
+    let dash = || "-".to_string();
+    let (alloc, size) = h.capacity();
+    let unhealthy = h.unhealthy();
+    let pools = if unhealthy == 0 { format!("{} (all ONLINE)", h.pools.len()) } else { format!("{}, {unhealthy} not ONLINE", h.pools.len()) };
+    let pools_style = if unhealthy == 0 { Style::default() } else { theme.err };
+    let arc = h.arc.as_ref().map_or_else(dash, |a| {
+        let hit = a.hit_percent().map_or_else(dash, |p| format!("{p:.1}%"));
+        format!("{} / {}  hit {hit}", human_size(a.size), human_size(a.max))
+    });
+    let load = h.load.map_or_else(dash, |[a, b, c]| format!("{a:.2} {b:.2} {c:.2}"));
+    let up = h.uptime_secs.map_or_else(dash, duration_text);
+    let rtt = h.rtt_ms.map_or_else(dash, |ms| format!("{ms}ms"));
+    let status = h.status.clone().unwrap_or_else(dash);
+    let status_style = if status.contains("healthy") { Style::default() } else { theme.warn };
+    vec![
+        Line::from(format!("OS      {}", h.os.clone().unwrap_or_else(dash))),
+        Line::from(format!("ZFS     {}", h.zfs_version.clone().unwrap_or_else(dash))),
+        Line::from(format!("Up      {up}   rtt {rtt}")),
+        Line::from(Span::styled(format!("Pools   {pools}"), pools_style)),
+        Line::from(format!("Space   {}  {} / {}", percent(alloc, size), human_size(alloc), human_size(size))),
+        Line::from(format!("ARC     {arc}")),
+        Line::from(format!("Load    {load}")),
+        Line::from(Span::styled(format!("Status  {status}"), status_style)),
+    ]
+}
+
 fn dataset_lines(s: &DatasetSpace) -> Vec<Line<'static>> {
     let total = s.used.saturating_add(s.available);
     vec![
@@ -153,10 +195,11 @@ fn draw_rate(f: &mut Frame, area: Rect, label: &str, history: &[u64], ops: u64, 
     f.render_widget(Sparkline::default().data(tail).style(style), spark);
 }
 
-pub fn draw(f: &mut Frame, view: &MetricsView, health: Option<&PoolHealth>, theme: &Theme, area: Rect) {
+pub fn draw(f: &mut Frame, view: &MetricsView, host_name: &str, health: Option<&PoolHealth>, theme: &Theme, area: Rect) {
     let title = match &view.target {
         Some(MetricsTarget::Pool(p)) => format!("Metrics — {p}"),
-        Some(MetricsTarget::Dataset(d)) => format!("Metrics — {d} (I/O of pool {})", view.target.as_ref().map_or("", |t| t.pool())),
+        Some(MetricsTarget::Dataset(d)) => format!("Metrics — {d} (I/O of pool {})", view.target.as_ref().and_then(MetricsTarget::pool).unwrap_or("")),
+        Some(MetricsTarget::Host) => format!("Metrics — host {host_name} (all pools)"),
         None => "Metrics".to_string(),
     };
     let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(false)).title(title);
@@ -172,18 +215,14 @@ pub fn draw(f: &mut Frame, view: &MetricsView, health: Option<&PoolHealth>, them
 }
 
 fn draw_body(f: &mut Frame, view: &MetricsView, health: Option<&PoolHealth>, theme: &Theme, area: Rect) {
+    if let (Some(host), Some(last)) = (&view.host, view.io_history.back()) {
+        draw_graphs_and_text(f, view, last, host_lines(host, theme), theme, area);
+        return;
+    }
     let (Some(facts), Some(last)) = (&view.facts, view.io_history.back()) else {
         f.render_widget(Paragraph::new("sampling…").style(theme.dim()), area);
         return;
     };
-    let [read, write, text] = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(30), Constraint::Percentage(40)])
-        .areas(area);
-    let reads: Vec<u64> = view.io_history.iter().map(|s| s.read_bps).collect();
-    let writes: Vec<u64> = view.io_history.iter().map(|s| s.write_bps).collect();
-    draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
-    draw_rate(f, write, "Write", &writes, last.write_ops, last.write_latency_ns, theme.warn);
     let mut lines = match &view.space {
         Some(space) => dataset_lines(space),
         None => Vec::new(),
@@ -197,6 +236,18 @@ fn draw_body(f: &mut Frame, view: &MetricsView, health: Option<&PoolHealth>, the
         let health_text = health.map_or("?".to_string(), |h| format!("{h:?}").to_uppercase());
         lines.push(Line::from(format!("Pool    {health_text}  errs {}", e.total())));
     }
+    draw_graphs_and_text(f, view, last, lines, theme, area);
+}
+
+fn draw_graphs_and_text(f: &mut Frame, view: &MetricsView, last: &PoolIo, lines: Vec<Line<'static>>, theme: &Theme, area: Rect) {
+    let [read, write, text] = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(30), Constraint::Percentage(40)])
+        .areas(area);
+    let reads: Vec<u64> = view.io_history.iter().map(|s| s.read_bps).collect();
+    let writes: Vec<u64> = view.io_history.iter().map(|s| s.write_bps).collect();
+    draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
+    draw_rate(f, write, "Write", &writes, last.write_ops, last.write_latency_ns, theme.warn);
     f.render_widget(Paragraph::new(lines), text);
 }
 
@@ -213,7 +264,7 @@ mod tests {
     #[allow(clippy::unnecessary_wraps)] // handed straight to `apply`, which takes a Result
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
-        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None })
+        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None })
     }
 
     #[test]
@@ -249,6 +300,16 @@ mod tests {
         assert!(v.space.is_none());
         v.retarget(Some(MetricsTarget::Dataset("other/a".into())));
         assert!(v.io_history.is_empty() && v.facts.is_none());
+    }
+
+    #[test]
+    fn a_host_target_never_shares_history_with_a_pool() {
+        let now = Instant::now();
+        let mut v = MetricsView::default();
+        v.retarget(Some(MetricsTarget::Host));
+        v.apply(&MetricsTarget::Host, sample(5), now);
+        v.retarget(Some(pool("tank")));
+        assert!(v.io_history.is_empty(), "all-pools totals must not seed one pool's graph");
     }
 
     #[test]

@@ -36,9 +36,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
         .areas(body_area);
-    // Pools, Datasets and a drilled pool give the bottom half of the center
+    // Hosts, Pools, Datasets and a drilled pool give the bottom half of the center
     // column to a metrics panel; the sidebar keeps its full height.
-    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Pools | Section::Datasets);
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets);
     let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
@@ -52,8 +52,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_sidebar(f, app, sidebar_area);
     draw_main(f, app, main_area);
     if let Some(area) = metrics_area {
-        let health = app.metrics.target().and_then(|t| app.pools.iter().find(|p| p.name == t.pool())).map(|p| p.health.clone());
-        crate::ui::metrics::draw(f, &app.metrics, health.as_ref(), &app.theme, area);
+        let health = app.metrics.target().and_then(|t| app.pools.iter().find(|p| Some(p.name.as_str()) == t.pool())).map(|p| p.health.clone());
+        crate::ui::metrics::draw(f, &app.metrics, app.active_host_name(), health.as_ref(), &app.theme, area);
     }
     draw_status_line(f, &status_text, status_style, gauge, &app.theme, status_area);
     let hint_line = crate::ui::hints::hint_line(&crate::ui::hints::hints(app), area.width as usize, &app.theme);
@@ -1023,7 +1023,7 @@ mod tests {
         let io = PoolIo { read_bps: 88_080_384, read_ops: 840, ..PoolIo::default() };
         app.metrics.apply(
             &MetricsTarget::Pool("tank".to_string()),
-            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None }),
+            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None }),
             std::time::Instant::now(),
         );
         let rows = render(&mut app, 100, 30);
@@ -1035,6 +1035,34 @@ mod tests {
         assert!(text.contains("ONLINE"), "{text}");
         assert!(rows[..panel].iter().any(|r| r.contains("Pools —")), "the lists stay above the panel");
         assert!(rows[panel].starts_with('│'), "the sidebar keeps its full height beside the panel: {:?}", rows[panel]);
+    }
+
+    #[test]
+    fn the_hosts_section_shows_a_whole_host_summary() {
+        use crate::zfs::host::{ArcStats, HostSummary};
+        use crate::zfs::metrics::{MetricsTarget, PoolFacts, PoolIo, PoolSample, TargetSample};
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+        app.pools = vec![pool("tank", 10, 100, PoolHealth::Online), pool("old", 50, 100, PoolHealth::Degraded)];
+        app.metrics.retarget(Some(MetricsTarget::Host));
+        let host = HostSummary {
+            os: Some("FreeBSD 15.1-RELEASE".to_string()),
+            uptime_secs: Some(90_000),
+            load: Some([0.5, 0.25, 0.1]),
+            arc: Some(ArcStats { size: 1 << 30, max: 4 << 30, hits: 99, misses: 1 }),
+            pools: app.pools.clone(),
+            status: Some("all pools are healthy".to_string()),
+            ..HostSummary::default()
+        };
+        app.metrics.apply(
+            &MetricsTarget::Host,
+            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host) }),
+            std::time::Instant::now(),
+        );
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("Metrics — host local (all pools)"), "{text}");
+        for want in ["FreeBSD 15.1-RELEASE", "1d 1h", "1 not ONLINE", "hit 99.0%", "0.50 0.25 0.10", "all pools are healthy"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
     }
 
     #[test]

@@ -207,15 +207,18 @@ pub fn fetch_dataset_space(runner: &dyn CommandRunner, dataset: &str) -> Result<
 pub enum MetricsTarget {
     Pool(String),
     Dataset(String),
+    /// The selected host as a whole (Hosts section).
+    Host,
 }
 
 impl MetricsTarget {
     /// The pool whose I/O the panel graphs: a dataset has no iostat of its
-    /// own, so it shows its pool's.
-    pub fn pool(&self) -> &str {
+    /// own, so it shows its pool's. A host graphs all its pools together.
+    pub fn pool(&self) -> Option<&str> {
         match self {
-            MetricsTarget::Pool(p) => p,
-            MetricsTarget::Dataset(d) => d.split('/').next().unwrap_or(d),
+            MetricsTarget::Pool(p) => Some(p),
+            MetricsTarget::Dataset(d) => Some(d.split('/').next().unwrap_or(d)),
+            MetricsTarget::Host => None,
         }
     }
 }
@@ -225,16 +228,22 @@ pub struct TargetSample {
     pub pool: PoolSample,
     /// Present only for a dataset target.
     pub space: Option<DatasetSpace>,
+    /// Present only for a host target; `pool.io` is then the all-pools total.
+    pub host: Option<super::host::HostSummary>,
 }
 
 /// One full panel refresh. Blocks for about a second; run it off the UI thread.
 pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Result<TargetSample> {
-    let pool = sample_pool(runner, target.pool())?;
-    let space = match target {
-        MetricsTarget::Pool(_) => None,
-        MetricsTarget::Dataset(d) => Some(fetch_dataset_space(runner, d)?),
+    let Some(pool_name) = target.pool() else {
+        let (host, io) = super::host::sample_host(runner)?;
+        return Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: Some(host) });
     };
-    Ok(TargetSample { pool, space })
+    let pool = sample_pool(runner, pool_name)?;
+    let space = match target {
+        MetricsTarget::Dataset(d) => Some(fetch_dataset_space(runner, d)?),
+        _ => None,
+    };
+    Ok(TargetSample { pool, space, host: None })
 }
 
 #[cfg(test)]
@@ -244,9 +253,10 @@ mod tests {
 
     #[test]
     fn a_dataset_target_graphs_its_pools_io() {
-        assert_eq!(MetricsTarget::Dataset("tank/a/b".into()).pool(), "tank");
-        assert_eq!(MetricsTarget::Dataset("tank".into()).pool(), "tank");
-        assert_eq!(MetricsTarget::Pool("tank".into()).pool(), "tank");
+        assert_eq!(MetricsTarget::Dataset("tank/a/b".into()).pool(), Some("tank"));
+        assert_eq!(MetricsTarget::Dataset("tank".into()).pool(), Some("tank"));
+        assert_eq!(MetricsTarget::Pool("tank".into()).pool(), Some("tank"));
+        assert_eq!(MetricsTarget::Host.pool(), None);
     }
 
     #[test]
