@@ -125,6 +125,9 @@ fn run_shell_session(
     ssh_target: Option<&str>,
     signals: &shell::ShellSignals,
 ) -> Result<shell::ShellOutcome> {
+    // ratatui hides the cursor on every frame that sets none, and leaving the
+    // alternate screen does not bring it back; the shell would run with an invisible cursor.
+    let _ = terminal.show_cursor();
     let suspended = disable_raw_mode().and_then(|()| execute!(std::io::stdout(), LeaveAlternateScreen));
     let outcome = match suspended {
         Ok(()) => shell::run_shell(host_name, ssh_target, signals),
