@@ -26,13 +26,19 @@ pub fn is_own(prefix: &str, name: &str) -> bool {
     digits(date, 8) && digits(time, 6)
 }
 
+/// The lock a snapshot run holds. It includes the prefix, so an hourly and a daily job on one
+/// dataset that fall due in the same tick both run; `@` cannot start a pool name, so the key never
+/// collides with a scrub's `(host, pool)` lock.
+pub fn lock_key(dataset: &str, prefix: &str) -> String {
+    format!("@{dataset}@{prefix}")
+}
+
 pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
     let dataset = job.dataset.clone().unwrap_or_default();
     let prefix = effective_prefix(job).to_string();
     let keep = job.keep.unwrap_or(1).max(1) as usize;
     let slot = Slot { scheduled_for: Some(scheduled_for), catch_up };
-    // `@` cannot start a pool name, so this key never collides with a scrub's `(host, pool)` lock.
-    let Some(_guard) = ctx.locks.try_acquire(&job.host, &format!("@{dataset}")) else {
+    let Some(_guard) = ctx.locks.try_acquire(&job.host, &lock_key(&dataset, &prefix)) else {
         return finish(ctx, job, run_id, EventKind::Skipped, RunResult::Skipped, "skipped: already running".to_string(), slot);
     };
     let name = snapshot_name(&prefix, ctx.clock.now());
@@ -52,13 +58,15 @@ pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, schedu
         Ok(listed) => listed,
         Err(e) => return finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("created {name}; could not list snapshots: {e}"), slot),
     };
-    // Newest first. A recursive listing repeats each name once per descendant.
-    let mut own: Vec<String> = listed.into_iter().filter(|s| is_own(&prefix, &s.name)).map(|s| s.name).collect();
+    // Newest first. Only names on the job's own dataset count (a recursive listing also returns
+    // descendants' snapshots, which may belong to another job), and the snapshot just taken is never
+    // a candidate, even if a clock that stepped backwards makes another name sort after it.
+    let mut own: Vec<String> = listed.into_iter().filter(|s| s.dataset == dataset && s.name != name && is_own(&prefix, &s.name)).map(|s| s.name).collect();
     own.sort_unstable_by(|a, b| b.cmp(a));
     own.dedup();
     let (mut pruned, mut failures) = (0_usize, Vec::new());
     // Oldest first, so a failure part-way leaves the newest of the excess in place.
-    for old in own.iter().skip(keep).rev() {
+    for old in own.iter().skip(keep.saturating_sub(1)).rev() {
         match destroy_snapshot_with(runner, &dataset, old, job.recursive) {
             Ok(()) => pruned += 1,
             Err(e) => failures.push(format!("{old}: {e}")),
@@ -204,13 +212,21 @@ mod tests {
         "tank/data@hourly-20261006T140000Z",
     ];
 
+    /// What `zfs list` shows after the run's own snapshot was taken: the five old ones plus `NEW`.
+    fn with_new() -> Vec<String> {
+        FIVE.iter().map(|s| (*s).to_string()).chain(std::iter::once(format!("tank/data@{NEW}"))).collect()
+    }
+
     #[test]
     fn raising_keep_prunes_nothing_and_lowering_it_prunes_the_excess_oldest_first() {
-        let roomy = Zfs::new(&FIVE);
+        let listing = with_new();
+        let refs: Vec<&str> = listing.iter().map(String::as_str).collect();
+        let roomy = Zfs::new(&refs);
         run(&roomy, &Job::test_snapshot("s", "tank/data", "hourly", 10));
         assert!(roomy.destroyed().is_empty());
-        let tight = Zfs::new(&FIVE);
-        run(&tight, &Job::test_snapshot("s", "tank/data", "hourly", 2));
+        // keep = 3 counts the new snapshot: it and the two newest old ones stay.
+        let tight = Zfs::new(&refs);
+        run(&tight, &Job::test_snapshot("s", "tank/data", "hourly", 3));
         assert_eq!(tight.destroyed(), vec!["tank/data@hourly-20261006T100000Z", "tank/data@hourly-20261006T110000Z", "tank/data@hourly-20261006T120000Z"]);
     }
 
@@ -270,10 +286,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let history = History::new(dir.path().join("history.jsonl"));
         let (clock, locks, stop) = (FixedClock(now()), Locks::default(), AtomicBool::new(false));
-        let _held = locks.try_acquire("local", "@tank/data").unwrap();
+        let _held = locks.try_acquire("local", &lock_key("tank/data", "hourly")).unwrap();
         let ctx = Context { history: &history, clock: &clock, locks: &locks, poll: Duration::from_secs(1), stop: &stop };
         let outcome = run_snapshot(&ctx, &zfs, &Job::test_snapshot("s", "tank/data", "hourly", 1), now(), false, "r");
         assert_eq!(outcome.result, RunResult::Skipped);
         assert!(zfs.calls().is_empty());
+    }
+
+    #[test]
+    fn the_lock_is_per_dataset_and_prefix_so_hourly_and_daily_tiers_do_not_block_each_other() {
+        assert_ne!(lock_key("tank/data", "hourly"), lock_key("tank/data", "daily"));
+        assert_ne!(lock_key("tank/data", "hourly"), lock_key("tank/other", "hourly"));
+        assert_eq!(lock_key("tank/data", "hourly"), lock_key("tank/data", "hourly"));
+        assert!(lock_key("tank", "x").starts_with('@'), "never collides with a scrub's pool-name key");
+    }
+
+    #[test]
+    fn the_snapshot_just_created_is_never_pruned_even_if_an_own_name_sorts_after_it() {
+        let zfs = Zfs::new(&["tank/data@hourly-20991231T000000Z", &format!("tank/data@{NEW}")]);
+        let (outcome, _) = run(&zfs, &Job::test_snapshot("s", "tank/data", "hourly", 1));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(!zfs.destroyed().iter().any(|d| d.ends_with(NEW)), "{:?}", zfs.destroyed());
+    }
+
+    #[test]
+    fn a_recursive_job_counts_and_prunes_only_names_that_exist_on_its_own_dataset() {
+        let zfs = Zfs::new(&[
+            "tank@hourly-20261006T100000Z",
+            "tank@hourly-20261006T110000Z",
+            // Another job's snapshots, present only on a child, newer than the parent's own.
+            "tank/data@hourly-20261006T180000Z",
+            "tank/data@hourly-20261006T190000Z",
+            &format!("tank@{NEW}"),
+        ]);
+        let mut job = Job::test_snapshot("s", "tank", "hourly", 2);
+        job.recursive = true;
+        let (outcome, _) = run(&zfs, &job);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(zfs.destroyed(), vec!["tank@hourly-20261006T100000Z"], "child-only names are neither counted nor destroyed");
     }
 }

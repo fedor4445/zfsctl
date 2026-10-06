@@ -1192,6 +1192,11 @@ impl App {
             KeyCode::Char(' ') if self.current_section() == Section::Jobs => {
                 if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)) {
                     let enable = !job.enabled;
+                    let as_enabled = crate::jobs::Job { enabled: true, ..job.clone() };
+                    if let Some(other) = enable.then(|| crate::jobs::clashing_job(&self.jobs_view.jobs, &as_enabled)).flatten() {
+                        self.set_error(format!("Cannot enable '{}': it clashes with enabled job '{}' (same host, prefix and overlapping dataset): they would prune each other", job.id, other.id));
+                        return;
+                    }
                     self.status_message = Some(format!("{} job '{}'…", if enable { "Enabling" } else { "Disabling" }, job.id));
                     self.pending_mutations.push(PendingAction {
                         host: self.selected_host,
@@ -8338,5 +8343,30 @@ mod tests {
         app.handle_modal_key(KeyCode::Tab); // Catch up
         app.handle_modal_key(KeyCode::F(2));
         assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn space_refuses_to_enable_a_snapshot_job_that_clashes_with_an_enabled_one() {
+        let mut a = crate::jobs::Job::test_snapshot("a", "tank/data", "hourly", 3);
+        a.enabled = false;
+        let b = crate::jobs::Job::test_snapshot("b", "tank/data", "hourly", 48);
+        let (mut app, _dir) = app_with_jobs(&[a, b]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char(' '));
+        assert!(app.pending_mutations.is_empty(), "{:?}", app.pending_mutations);
+        let msg = app.status_message.clone().unwrap_or_default();
+        assert!(msg.contains("'b'") && msg.contains("prune each other"), "{msg}");
+    }
+
+    #[test]
+    fn space_still_enables_a_job_with_no_clash() {
+        let mut a = crate::jobs::Job::test_snapshot("a", "tank/data", "hourly", 3);
+        a.enabled = false;
+        let (mut app, _dir) = app_with_jobs(&[a]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char(' '));
+        assert_eq!(app.pending_mutations.len(), 1);
     }
 }

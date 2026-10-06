@@ -74,7 +74,7 @@ schedule = "0 * * * *"
 - `keep >= 1`;
 - a known host and a parseable schedule, as for scrub.
 
-It also rejects **two enabled snapshot jobs on the same host, dataset and prefix**: they would prune each other. The later one in `jobs.toml` is reported unsupported with that reason, the same way an unsupported kind is.
+It also rejects **two enabled snapshot jobs on the same host and prefix whose datasets are equal or where a recursive job covers the other** (a recursive job sees and destroys with `-r` its descendants' same-named snapshots): they would prune each other. A flagged job never blocks a later one, and `Space` refuses to enable a job that would clash. The run lock is per dataset **and prefix**; retention counts and destroys only names on the job's own dataset and never the snapshot just taken. The later one in `jobs.toml` is reported unsupported with that reason, the same way an unsupported kind is.
 
 ### Snapshot names
 
