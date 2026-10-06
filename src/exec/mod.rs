@@ -22,6 +22,11 @@ pub trait CommandRunner: Send + Sync {
     /// then closes it. Needed for `smbpasswd -s` (password on stdin, never
     /// an argument) and for writing a file via `tee`.
     fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput>;
+    /// Runs `cmd` WITHOUT privilege escalation: over SSH this omits the
+    /// `sudo -n` prefix every other call carries; locally it is the same as
+    /// `run`. For read-only lookups that need no privilege (e.g.
+    /// `getent passwd`). Never use it for anything that mutates state.
+    fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput>;
 }
 
 /// Shared by `LocalRunner` and `SshRunner`. Stdin is written from a
@@ -82,6 +87,7 @@ pub mod test_support {
     pub struct FakeRunner {
         pub calls: Mutex<Vec<(String, Vec<String>)>>,
         pub stdin_calls: Mutex<Vec<(String, String)>>,
+        pub unprivileged_calls: Mutex<Vec<(String, Vec<String>)>>,
         pub response: CommandOutput,
         routes: std::collections::HashMap<(String, String), CommandOutput>,
     }
@@ -91,6 +97,7 @@ pub mod test_support {
             FakeRunner {
                 calls: Mutex::new(Vec::new()),
                 stdin_calls: Mutex::new(Vec::new()),
+                unprivileged_calls: Mutex::new(Vec::new()),
                 response: CommandOutput {
                     stdout: stdout.to_string(),
                     stderr: String::new(),
@@ -104,6 +111,7 @@ pub mod test_support {
             FakeRunner {
                 calls: Mutex::new(Vec::new()),
                 stdin_calls: Mutex::new(Vec::new()),
+                unprivileged_calls: Mutex::new(Vec::new()),
                 response: CommandOutput {
                     stdout: String::new(),
                     stderr: stderr.to_string(),
@@ -159,6 +167,11 @@ pub mod test_support {
             Ok(self.response.clone())
         }
 
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            self.unprivileged_calls.lock().unwrap().push((cmd.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            self.run(cmd, args)
+        }
+
         fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
             self.stdin_calls.lock().unwrap().push((cmd.to_string(), stdin.to_string()));
             let mut out = self.run(cmd, args)?;
@@ -176,6 +189,17 @@ pub mod test_support {
 mod tests {
     use super::test_support::FakeRunner;
     use super::CommandRunner;
+
+    #[test]
+    fn fake_runner_records_unprivileged_calls_separately_and_honours_routes() {
+        let runner = FakeRunner::new("").route("getent", "passwd", "root:*:0:0::/root:/bin/sh\n");
+        runner.run("zfs", &["list"]).unwrap();
+        let out = runner.run_unprivileged("getent", &["passwd"]).unwrap();
+        assert_eq!(out.stdout, "root:*:0:0::/root:/bin/sh\n");
+        assert_eq!(runner.unprivileged_calls.lock().unwrap().len(), 1);
+        assert_eq!(runner.unprivileged_calls.lock().unwrap()[0].0, "getent");
+        assert_eq!(runner.calls.lock().unwrap().len(), 2, "also recorded in the general call log");
+    }
 
     #[test]
     fn fake_runner_records_stdin_and_honours_failure_routes() {

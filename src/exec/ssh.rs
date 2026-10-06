@@ -34,7 +34,17 @@ impl SshRunner {
     /// substitution risk doesn't apply here the way it would running
     /// these commands directly, unprivileged.
     fn build_args(&self, cmd: &str, args: &[&str]) -> Vec<String> {
-        let mut remote = "sudo -n ".to_string();
+        self.build_args_with(cmd, args, true)
+    }
+
+    /// Same as `build_args` but without the `sudo -n` prefix; see
+    /// `CommandRunner::run_unprivileged`.
+    fn build_args_unprivileged(&self, cmd: &str, args: &[&str]) -> Vec<String> {
+        self.build_args_with(cmd, args, false)
+    }
+
+    fn build_args_with(&self, cmd: &str, args: &[&str], sudo: bool) -> Vec<String> {
+        let mut remote = if sudo { "sudo -n ".to_string() } else { String::new() };
         remote.push_str(&shell_quote(cmd));
         for arg in args {
             remote.push(' ');
@@ -49,6 +59,21 @@ impl SshRunner {
             self.host.clone(),
             remote,
         ]
+    }
+
+    fn run_ssh(&self, ssh_args: Vec<String>) -> Result<CommandOutput> {
+        let output = Command::new("ssh")
+            .args(&ssh_args)
+            .output()
+            .map_err(|source| AppError::Spawn {
+                cmd: "ssh".to_string(),
+                source,
+            })?;
+        Ok(CommandOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        })
     }
 }
 
@@ -65,19 +90,11 @@ fn shell_quote(s: &str) -> String {
 
 impl CommandRunner for SshRunner {
     fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
-        let ssh_args = self.build_args(cmd, args);
-        let output = Command::new("ssh")
-            .args(&ssh_args)
-            .output()
-            .map_err(|source| AppError::Spawn {
-                cmd: "ssh".to_string(),
-                source,
-            })?;
-        Ok(CommandOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            status: output.status.code().unwrap_or(-1),
-        })
+        self.run_ssh(self.build_args(cmd, args))
+    }
+
+    fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+        self.run_ssh(self.build_args_unprivileged(cmd, args))
     }
 
     fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
@@ -90,6 +107,23 @@ impl CommandRunner for SshRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unprivileged_args_have_the_same_options_and_quoting_but_no_sudo() {
+        let runner = SshRunner::new("backup-host");
+        let privileged = runner.build_args("getent", &["passwd"]);
+        let unprivileged = runner.build_args_unprivileged("getent", &["passwd"]);
+        assert_eq!(privileged.last().unwrap(), "sudo -n getent passwd");
+        assert_eq!(unprivileged.last().unwrap(), "getent passwd");
+        assert_eq!(privileged[..privileged.len() - 1], unprivileged[..unprivileged.len() - 1], "same ssh options, `--`, and host");
+    }
+
+    #[test]
+    fn unprivileged_args_still_quote_unsafe_arguments() {
+        let runner = SshRunner::new("h");
+        let args = runner.build_args_unprivileged("echo", &["a b; rm -rf /"]);
+        assert_eq!(args.last().unwrap(), "echo 'a b; rm -rf /'");
+    }
 
     #[test]
     fn builds_simple_command_unquoted() {
