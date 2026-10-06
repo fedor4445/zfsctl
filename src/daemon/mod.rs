@@ -10,13 +10,15 @@ pub mod scrub;
 
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
+use crate::config::Config;
 use crate::hosts::HostInventory;
 use chrono::Utc;
 use engine::{Engine, Paths, Work};
 use history::{Event, EventKind, History, RunResult};
 use scrub::{Clock, Context, Locks, Outcome, SystemClock};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 /// How often a running scrub is polled for completion.
@@ -29,17 +31,44 @@ fn log(message: &str) {
 /// What every job thread shares.
 struct Shared {
     history: History,
-    hosts: Vec<(String, Arc<dyn CommandRunner>)>,
+    /// Replaced when `config.toml` changes, so jobs see hosts added after the daemon started.
+    hosts: RwLock<Vec<(String, Arc<dyn CommandRunner>)>>,
     locks: Locks,
     clock: Arc<dyn Clock + Send + Sync>,
     poll: Duration,
-    notify_command: Option<String>,
+    notify_command: RwLock<Option<String>>,
     stop: Arc<AtomicBool>,
+}
+
+/// The parts of `config.toml` the daemon uses.
+struct Loaded {
+    hosts: Vec<(String, Arc<dyn CommandRunner>)>,
+    notify_command: Option<String>,
+}
+
+/// Reads the hosts (always including `local`) and the notify command from `config.toml`.
+fn load_hosts(config_path: &Path) -> Result<Loaded> {
+    let config = Config::load(config_path)?;
+    let inventory = HostInventory::from_config(&config);
+    let hosts = inventory.hosts.iter().map(|h| (h.name.clone(), Arc::clone(&h.runner))).collect();
+    Ok(Loaded { hosts, notify_command: config.daemon.notify_command })
+}
+
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 impl Shared {
     fn runner(&self, host: &str) -> Option<Arc<dyn CommandRunner>> {
-        self.hosts.iter().find(|(name, _)| name == host).map(|(_, r)| Arc::clone(r))
+        self.hosts.read().unwrap_or_else(PoisonError::into_inner).iter().find(|(name, _)| name == host).map(|(_, r)| Arc::clone(r))
+    }
+
+    /// Swaps in a freshly loaded config; returns the host names now known.
+    fn apply(&self, loaded: Loaded) -> Vec<String> {
+        let names = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
+        *self.hosts.write().unwrap_or_else(PoisonError::into_inner) = loaded.hosts;
+        *self.notify_command.write().unwrap_or_else(PoisonError::into_inner) = loaded.notify_command;
+        names
     }
 
     /// Runs the notify command for a failed run; a failing hook is only logged.
@@ -47,9 +76,9 @@ impl Shared {
         if outcome.result != RunResult::Failed {
             return;
         }
-        let Some(command) = &self.notify_command else { return };
+        let Some(command) = self.notify_command.read().unwrap_or_else(PoisonError::into_inner).clone() else { return };
         let notice = notify::Notice { job: job.id.clone(), host: job.host.clone(), kind: job.kind.clone(), result: "failed".to_string(), message: outcome.message.clone() };
-        match notify::run(command, &notice, notify::TIMEOUT) {
+        match notify::run(&command, &notice, notify::TIMEOUT) {
             Ok(()) => log(&format!("notified about {}", job.id)),
             Err(e) => log(&format!("notify command for {} {e}", job.id)),
         }
@@ -108,16 +137,25 @@ fn dispatch(shared: &Arc<Shared>, work: Vec<Work>) {
 }
 
 /// Runs the scheduler until `stop` is set. Refuses to start if another daemon is alive.
-pub fn run(inventory: &HostInventory, notify_command: Option<String>, paths: Paths, stop: &Arc<AtomicBool>) -> Result<()> {
+pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<()> {
     paths.ensure_dir().map_err(|e| AppError::Config(format!("creating {}: {e}", paths.dir.display())))?;
     let now = Utc::now();
     let heartbeat_path = paths.heartbeat();
     if let Some(pid) = heartbeat::live_other_instance(heartbeat::read(&heartbeat_path).as_ref(), now, std::process::id(), heartbeat::process_alive) {
         return Err(AppError::Config(format!("another zfsctl daemon is already running (pid {pid})")));
     }
-    let hosts: Vec<(String, Arc<dyn CommandRunner>)> = inventory.hosts.iter().map(|h| (h.name.clone(), Arc::clone(&h.runner))).collect();
-    let names: Vec<String> = hosts.iter().map(|(n, _)| n.clone()).collect();
-    let shared = Arc::new(Shared { history: History::new(paths.history()), hosts, locks: Locks::default(), clock: Arc::new(SystemClock), poll: POLL, notify_command, stop: Arc::clone(stop) });
+    let loaded = load_hosts(config_path)?;
+    let names: Vec<String> = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
+    let shared = Arc::new(Shared {
+        history: History::new(paths.history()),
+        hosts: RwLock::new(loaded.hosts),
+        locks: Locks::default(),
+        clock: Arc::new(SystemClock),
+        poll: POLL,
+        notify_command: RwLock::new(loaded.notify_command),
+        stop: Arc::clone(stop),
+    });
+    let mut config_mtime = modified(config_path);
     let mut engine = Engine::new(paths, chrono::Local, names, now);
     let started_at = now;
 
@@ -135,6 +173,18 @@ pub fn run(inventory: &HostInventory, notify_command: Option<String>, paths: Pat
                 log(&problem);
             }
             last_problem = Some(problem);
+        }
+        let current = modified(config_path);
+        if current != config_mtime {
+            config_mtime = current;
+            match load_hosts(config_path) {
+                Ok(loaded) => {
+                    let names = shared.apply(loaded);
+                    log(&format!("config.toml reloaded: hosts {}", names.join(", ")));
+                    engine.set_hosts(names);
+                }
+                Err(e) => log(&format!("config.toml problem, keeping the previous hosts and notify command: {e}")),
+            }
         }
         let before = engine.load_error.clone();
         let work = engine.step(now);
@@ -185,11 +235,11 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-10-07T03:00:00Z").unwrap().with_timezone(&Utc);
         Shared {
             history: History::new(dir.path().join("history.jsonl")),
-            hosts: vec![("local".to_string(), Arc::new(runner) as Arc<dyn CommandRunner>)],
+            hosts: RwLock::new(vec![("local".to_string(), Arc::new(runner) as Arc<dyn CommandRunner>)]),
             locks: Locks::default(),
             clock: Arc::new(FixedClock(Mutex::new(now))),
             poll: Duration::from_secs(30),
-            notify_command: notify,
+            notify_command: RwLock::new(notify),
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -263,6 +313,31 @@ mod tests {
     }
 
     #[test]
+    fn load_hosts_reads_the_hosts_and_the_notify_command_from_config_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[hosts]]\nname = \"fbsd16\"\nssh_target = \"fbsd@172.16.10.60\"\n\n[daemon]\nnotify_command = \"true\"\n").unwrap();
+        let loaded = load_hosts(&path).unwrap();
+        assert_eq!(loaded.hosts.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec!["local", "fbsd16"]);
+        assert_eq!(loaded.notify_command.as_deref(), Some("true"));
+        std::fs::write(&path, "not [[[ toml").unwrap();
+        assert!(load_hosts(&path).is_err(), "a bad file is an error so the caller keeps the previous hosts");
+        assert_eq!(load_hosts(&dir.path().join("missing.toml")).unwrap().hosts.len(), 1, "no file: just the local host");
+    }
+
+    #[test]
+    fn applying_a_new_config_swaps_the_hosts_and_the_notify_command_for_running_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        assert!(shared.runner("later").is_none());
+        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()) };
+        let names = shared.apply(loaded);
+        assert_eq!(names, vec!["local", "later"]);
+        assert!(shared.runner("later").is_some());
+        assert_eq!(shared.notify_command.read().unwrap().as_deref(), Some("true"));
+    }
+
+    #[test]
     fn work_for_an_unknown_host_is_ignored_not_a_panic() {
         let dir = tempfile::tempdir().unwrap();
         let shared = shared(&dir, FakeRunner::new(""), None);
@@ -279,8 +354,7 @@ mod tests {
         // A heartbeat from this very process, as if another daemon were running here.
         let other = heartbeat::Heartbeat { pid: 1, started_at: Utc::now(), last_tick: Utc::now() };
         heartbeat::write(&paths.heartbeat(), &other).unwrap();
-        let inventory = HostInventory { hosts: Vec::new() };
-        let err = run(&inventory, None, paths, &Arc::new(AtomicBool::new(true))).unwrap_err();
+        let err = run(&dir.path().join("config.toml"), paths, &Arc::new(AtomicBool::new(true))).unwrap_err();
         assert!(err.to_string().contains("another zfsctl daemon is already running (pid 1)"), "{err}");
     }
 
@@ -290,7 +364,7 @@ mod tests {
         let paths = Paths::new(dir.path());
         let hb = paths.heartbeat();
         let stop = Arc::new(AtomicBool::new(false));
-        let inventory = HostInventory { hosts: Vec::new() };
+        let config_path = dir.path().join("config.toml");
         let stopper = Arc::clone(&stop);
         let watch_path = hb.clone();
         let watcher = std::thread::spawn(move || {
@@ -303,7 +377,7 @@ mod tests {
             stopper.store(true, Ordering::SeqCst);
             seen
         });
-        run(&inventory, None, paths, &stop).unwrap();
+        run(&config_path, paths, &stop).unwrap();
         let seen = watcher.join().unwrap().expect("a heartbeat appeared while the daemon ran");
         assert_eq!(seen.pid, std::process::id());
         assert!(!hb.exists(), "removed on a clean stop, so the TUI shows 'not running' at once");

@@ -160,6 +160,13 @@ impl<Tz: TimeZone> Engine<Tz> {
         work
     }
 
+    /// Replaces the known host names (after `config.toml` changed) and makes the
+    /// next tick re-read the jobs, so a job that was waiting for a host can start.
+    pub fn set_hosts(&mut self, hosts: Vec<String>) {
+        self.hosts = hosts;
+        self.jobs_mtime = None;
+    }
+
     #[cfg(test)]
     pub fn next_time(&self, id: &str) -> Option<DateTime<Utc>> {
         self.scheduler.next_time(id)
@@ -309,6 +316,22 @@ mod tests {
         std::fs::File::options().write(true).open(paths.jobs()).unwrap().set_modified(later).unwrap();
         assert_eq!(e.step(at("2026-10-07T03:00:00Z")).len(), 1, "the previous job set still fires");
         assert!(e.load_error.as_deref().is_some_and(|m| m.contains("parsing")), "{:?}", e.load_error);
+    }
+
+    #[test]
+    fn a_job_for_a_host_added_later_becomes_runnable_once_the_host_list_is_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut later = job("j", "0 3 * * *");
+        later.host = "later".into();
+        later.created_at = Some(at("2026-10-07T01:00:00Z"));
+        jobs::save(&Paths::new(dir.path()).jobs(), &[later]).unwrap();
+        let mut e = engine(&dir, "2026-10-07T02:00:00Z");
+        assert!(e.start(at("2026-10-07T02:00:00Z")).is_empty());
+        assert_eq!(e.unsupported.len(), 1, "the host is not known yet");
+        e.set_hosts(vec!["local".to_string(), "later".to_string()]);
+        assert!(e.step(at("2026-10-07T02:00:05Z")).is_empty());
+        assert!(e.unsupported.is_empty(), "{:?}", e.unsupported);
+        assert_eq!(e.next_time("j"), Some(at("2026-10-07T03:00:00Z")));
     }
 
     #[test]

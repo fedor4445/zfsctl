@@ -235,7 +235,7 @@ service zfsctl start
 
 `daemon(8)` detaches it, writes `/var/run/zfsctl.pid`, sends output to `/var/log/zfsctl.log`, and restarts it ten seconds after a crash. `zfsctl_binary`, `zfsctl_state_dir` and `zfsctl_log` in `rc.conf` override the binary path, the state directory and the log.
 
-**State** lives in `/var/db/zfsctl/` (root only): `jobs.toml` (the jobs), `history.jsonl` (one JSON line per run event) and `daemon.json` (a heartbeat rewritten every second; older than 10 seconds means the daemon is not running). The daemon notices an edited `jobs.toml` within a second and keeps the previous schedule if the new file does not parse.
+**State** lives in `/var/db/zfsctl/` (root only): `jobs.toml` (the jobs), `history.jsonl` (one JSON line per run event) and `daemon.json` (a heartbeat rewritten every second; older than 10 seconds means the daemon is not running). The daemon notices an edited `jobs.toml` within a second and keeps the previous schedule if the new file does not parse. It also re-reads `config.toml` within a second, so a host added in the TUI (or a changed `notify_command`) takes effect without a restart; a `config.toml` that does not parse is logged and the previous hosts are kept.
 
 **A job** is one `[[jobs]]` table:
 

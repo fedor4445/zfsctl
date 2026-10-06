@@ -39,15 +39,15 @@ fn run() -> error::Result<()> {
     let command = parse_args(&args)?;
     check_root()?;
     let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
-    let config = config::Config::load(&config_path)?;
-    let inventory = hosts::HostInventory::from_config(&config);
     if let Command::Daemon { state_dir } = command {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
             signal_hook::flag::register(signal, std::sync::Arc::clone(&stop)).map_err(|e| error::AppError::Config(format!("installing signal handlers: {e}")))?;
         }
-        return daemon::run(&inventory, config.daemon.notify_command.clone(), daemon::engine::Paths::new(state_dir), &stop);
+        return daemon::run(&config_path, daemon::engine::Paths::new(state_dir), &stop);
     }
+    let config = config::Config::load(&config_path)?;
+    let inventory = hosts::HostInventory::from_config(&config);
     // Resolved before the terminal enters raw mode, so a bad `theme`
     // value prints a plain error and exits instead of garbling the screen.
     let resolved = ui::theme::resolve(config.ui.theme.as_deref(), &ui::theme::ThemeEnv::from_process())?;
