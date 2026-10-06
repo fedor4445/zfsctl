@@ -30,6 +30,10 @@ pub enum MutationCall {
     RemoveAclEntry { path: String, position: usize },
     SetSmbShare { share: crate::zfs::smb::SmbShare, password: Option<Secret> },
     RemoveSmbShare { dataset: String },
+    /// Creates or replaces a scheduled job in `<state_dir>/jobs.toml`. Local file edits: the runner is not used.
+    SaveJob { state_dir: std::path::PathBuf, job: Box<crate::jobs::Job> },
+    DeleteJob { state_dir: std::path::PathBuf, id: String },
+    SetJobEnabled { state_dir: std::path::PathBuf, id: String, enabled: bool },
 }
 
 /// A password held only until it is piped to `smbpasswd`. `Debug` never
@@ -65,7 +69,8 @@ impl MutationCall {
             | MutationCall::ReplaceDisk { .. }
             | MutationCall::UnallowPermission { .. }
             | MutationCall::RemoveAclEntry { .. }
-            | MutationCall::RemoveSmbShare { .. } => Tone::Warn,
+            | MutationCall::RemoveSmbShare { .. }
+            | MutationCall::DeleteJob { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
             | MutationCall::ResilverPool { .. }
             | MutationCall::OnlineDisk { .. }
@@ -76,6 +81,8 @@ impl MutationCall {
             | MutationCall::AllowPermission { .. }
             | MutationCall::AddAclEntry { .. }
             | MutationCall::SetPoolProperty { .. }
+            | MutationCall::SaveJob { .. }
+            | MutationCall::SetJobEnabled { .. }
             | MutationCall::SetSmbShare { .. }
             | MutationCall::SetDatasetProperty { .. } => Tone::Neutral,
         }
@@ -105,6 +112,9 @@ impl MutationCall {
             MutationCall::RemoveAclEntry { .. } => "REMOVE ACL ENTRY",
             MutationCall::SetSmbShare { .. } => "SET SMB SHARE",
             MutationCall::RemoveSmbShare { .. } => "REMOVE SMB SHARE",
+            MutationCall::SaveJob { .. } => "SAVE JOB",
+            MutationCall::DeleteJob { .. } => "DELETE JOB",
+            MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
         }
     }
 }
@@ -149,6 +159,9 @@ impl MutationCall {
                 crate::zfs::smb::set_share(runner, share, password.as_ref().map(|p| p.0.as_str()))
             }
             MutationCall::RemoveSmbShare { dataset } => crate::zfs::smb::remove_share(runner, dataset),
+            MutationCall::SaveJob { state_dir, job } => crate::jobs::upsert(&state_dir.join("jobs.toml"), job.as_ref().clone()),
+            MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
+            MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
         }
     }
 }
@@ -282,6 +295,33 @@ pub enum Modal {
 mod tests {
     use super::*;
     use crate::exec::test_support::FakeRunner;
+
+    fn job(id: &str) -> crate::jobs::Job {
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None }
+    }
+
+    #[test]
+    fn job_mutations_edit_jobs_toml_and_never_touch_the_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        let runner = FakeRunner::new("");
+        let state_dir = dir.path().to_path_buf();
+        MutationCall::SaveJob { state_dir: state_dir.clone(), job: Box::new(job("a")) }.run(&runner).unwrap();
+        MutationCall::SaveJob { state_dir: state_dir.clone(), job: Box::new(job("b")) }.run(&runner).unwrap();
+        MutationCall::SetJobEnabled { state_dir: state_dir.clone(), id: "a".into(), enabled: false }.run(&runner).unwrap();
+        assert_eq!(crate::jobs::load(&path).unwrap().iter().map(|j| j.enabled).collect::<Vec<_>>(), vec![false, true]);
+        MutationCall::DeleteJob { state_dir, id: "a".into() }.run(&runner).unwrap();
+        assert_eq!(crate::jobs::load(&path).unwrap().iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+        assert!(runner.calls.lock().unwrap().is_empty(), "no command was run: these are local file edits");
+    }
+
+    #[test]
+    fn only_deleting_a_job_asks_for_a_warning_confirmation() {
+        let state_dir = std::path::PathBuf::from("/x");
+        assert_eq!(MutationCall::DeleteJob { state_dir: state_dir.clone(), id: "a".into() }.tone(), Tone::Warn);
+        assert_eq!(MutationCall::SaveJob { state_dir: state_dir.clone(), job: Box::new(job("a")) }.tone(), Tone::Neutral);
+        assert_eq!(MutationCall::SetJobEnabled { state_dir, id: "a".into(), enabled: true }.tone(), Tone::Neutral);
+    }
 
     #[test]
     fn secret_never_appears_in_debug_output() {
