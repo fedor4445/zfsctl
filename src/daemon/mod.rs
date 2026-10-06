@@ -24,8 +24,18 @@ use std::time::Duration;
 /// How often a running scrub is polled for completion.
 const POLL: Duration = Duration::from_secs(30);
 
+/// A log timestamp: second precision with the zone offset, e.g. `2026-10-06T11:43:16-04:00`.
+fn stamp<Tz: chrono::TimeZone>(t: &chrono::DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
+/// Logs in the hub's local time, the zone its schedules are written in. (The
+/// history file stays in UTC: it is machine data.)
 fn log(message: &str) {
-    eprintln!("{} {message}", Utc::now().to_rfc3339());
+    eprintln!("{} {message}", stamp(&chrono::Local::now()));
 }
 
 /// What every job thread shares.
@@ -335,6 +345,14 @@ mod tests {
         assert_eq!(names, vec!["local", "later"]);
         assert!(shared.runner("later").is_some());
         assert_eq!(shared.notify_command.read().unwrap().as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn log_lines_are_stamped_in_the_given_zone_to_the_second() {
+        let when = chrono::DateTime::parse_from_rfc3339("2026-10-06T15:43:16.472Z").unwrap();
+        let eastern = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+        assert_eq!(stamp(&when.with_timezone(&eastern)), "2026-10-06T11:43:16-04:00");
+        assert_eq!(stamp(&when.with_timezone(&Utc)), "2026-10-06T15:43:16+00:00");
     }
 
     #[test]
