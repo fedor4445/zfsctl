@@ -151,7 +151,7 @@ fn observe(runner: &dyn CommandRunner, pool: &str) -> Observation {
     }
 }
 
-fn event(job: &Job, run_id: &str, kind: EventKind, at: DateTime<Utc>) -> Event {
+pub(super) fn event(job: &Job, run_id: &str, kind: EventKind, at: DateTime<Utc>) -> Event {
     Event { job_id: job.id.clone(), run_id: run_id.to_string(), event: kind, at, scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }
 }
 
@@ -159,13 +159,13 @@ const NO_SLOT: Slot = Slot { scheduled_for: None, catch_up: false };
 
 /// The scheduled slot a run is for, recorded on its closing event.
 #[derive(Clone, Copy)]
-struct Slot {
-    scheduled_for: Option<DateTime<Utc>>,
-    catch_up: bool,
+pub(super) struct Slot {
+    pub(super) scheduled_for: Option<DateTime<Utc>>,
+    pub(super) catch_up: bool,
 }
 
 /// Records the end of a run and returns what to report.
-fn finish(ctx: &Context, job: &Job, run_id: &str, kind: EventKind, result: RunResult, message: String, slot: Slot) -> Outcome {
+pub(super) fn finish(ctx: &Context, job: &Job, run_id: &str, kind: EventKind, result: RunResult, message: String, slot: Slot) -> Outcome {
     let mut e = event(job, run_id, kind, ctx.clock.now());
     e.result = Some(result);
     e.message.clone_from(&message);
@@ -316,7 +316,7 @@ mod tests {
     }
 
     fn job() -> Job {
-        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None }
     }
 
     struct Rig {

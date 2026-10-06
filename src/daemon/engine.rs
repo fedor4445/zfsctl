@@ -109,7 +109,7 @@ impl<Tz: TimeZone> Engine<Tz> {
     fn hand_out_pending(&mut self, jobs: &[Job], catch_ups: &mut Vec<Due>) -> Vec<Work> {
         let mut work = Vec::new();
         for run in std::mem::take(&mut self.pending) {
-            match jobs.iter().find(|j| j.id == run.job_id && jobs::resolve(j, &self.hosts).is_ok()) {
+            match jobs.iter().find(|j| j.id == run.job_id && j.kind == jobs::KIND_SCRUB && jobs::resolve(j, &self.hosts).is_ok()) {
                 Some(job) => {
                     let then = catch_ups.iter().position(|d| d.job.id == job.id).map(|i| catch_ups.remove(i));
                     work.push(Work::Resume { job: Box::new(job.clone()), run: Box::new(run), then: then.map(Box::new) });
@@ -184,7 +184,7 @@ mod tests {
     }
 
     fn job(id: &str, schedule: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: Some(at("2026-09-01T00:00:00Z")) }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: Some(at("2026-09-01T00:00:00Z")), dataset: None, recursive: false, prefix: None, keep: None }
     }
 
     fn engine(dir: &tempfile::TempDir, now: &str) -> Engine<Utc> {
@@ -363,5 +363,16 @@ mod tests {
         assert_eq!(history::runs(&h.read()).len(), KEEP_RUNS + 5, "not yet a day");
         let _ = e.step(at("2026-10-08T00:00:01Z"));
         assert_eq!(history::runs(&h.read()).len(), KEEP_RUNS);
+    }
+
+    #[test]
+    fn an_unfinished_snapshot_run_is_closed_as_lost_not_resumed_as_a_scrub() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        jobs::save(&paths.jobs(), &[Job::test_snapshot("snap", "tank/data", "hourly", 3)]).unwrap();
+        History::new(paths.history()).append(&started("snap", "r1", "2026-10-07T03:00:00Z")).unwrap();
+        let work = engine(&dir, "2026-10-07T04:00:00Z").start(at("2026-10-07T04:00:00Z"));
+        assert!(work.iter().any(|w| matches!(w, Work::Orphan(run) if run.run_id == "r1")), "{work:?}");
+        assert!(!work.iter().any(|w| matches!(w, Work::Resume { .. })), "{work:?}");
     }
 }

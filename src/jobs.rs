@@ -13,6 +13,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 pub const KIND_SCRUB: &str = "scrub";
+pub const KIND_SNAPSHOT: &str = "snapshot";
+/// The snapshot name prefix a job without one uses.
+pub const DEFAULT_PREFIX: &str = "auto";
 
 fn yes() -> bool {
     true
@@ -27,6 +30,18 @@ pub struct Job {
     /// The pool a scrub job runs on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
+    /// The dataset a snapshot job snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset: Option<String>,
+    /// `zfs snapshot -r`, and pruning across the whole tree.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recursive: bool,
+    /// The snapshot name prefix; only snapshots named `<prefix>-<timestamp>` are ever pruned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// How many of the job's own snapshots to keep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<u32>,
     /// A five-field cron expression, in the hub's local time zone.
     pub schedule: String,
     #[serde(default = "yes")]
@@ -80,18 +95,95 @@ pub fn save(path: &Path, jobs: &[Job]) -> Result<()> {
     std::fs::rename(&tmp, path).map_err(|e| io("replacing", e))
 }
 
+/// Whether `s` can be a dataset name for a job: ZFS name characters only, no `@`, no leading
+/// `-` or `/`, no trailing `/`. Checked here so a hand-edited `jobs.toml` can never put an
+/// option or a shell-looking string on a `zfs` command line.
+pub fn valid_dataset(s: &str) -> bool {
+    !s.is_empty() && !s.starts_with(['-', '/']) && !s.ends_with('/') && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.' | '/'))
+}
+
+pub fn valid_prefix(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+pub fn effective_prefix(job: &Job) -> &str {
+    job.prefix.as_deref().unwrap_or(DEFAULT_PREFIX)
+}
+
+fn check_snapshot_fields(job: &Job) -> std::result::Result<(), String> {
+    if !job.dataset.as_deref().is_some_and(valid_dataset) {
+        return Err("a snapshot job needs a dataset like tank/data".to_string());
+    }
+    if !valid_prefix(effective_prefix(job)) {
+        return Err("the snapshot prefix may only use letters, digits, _ - and .".to_string());
+    }
+    if job.keep.is_none_or(|k| k == 0) {
+        return Err("a snapshot job needs keep of at least 1".to_string());
+    }
+    Ok(())
+}
+
 /// Whether the daemon can run `job`: its schedule if so, or the reason it cannot.
 pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedule, String> {
-    if job.kind != KIND_SCRUB {
-        return Err(format!("unsupported job kind '{}'", job.kind));
-    }
-    if job.pool.as_deref().is_none_or(str::is_empty) {
-        return Err("a scrub job needs a pool".to_string());
+    match job.kind.as_str() {
+        KIND_SCRUB => {
+            if job.pool.as_deref().is_none_or(str::is_empty) {
+                return Err("a scrub job needs a pool".to_string());
+            }
+        }
+        KIND_SNAPSHOT => check_snapshot_fields(job)?,
+        other => return Err(format!("unsupported job kind '{other}'")),
     }
     if !known_hosts.iter().any(|h| h == &job.host) {
         return Err(format!("host '{}' is not in config.toml", job.host));
     }
     Schedule::parse(&job.schedule).map_err(|e| format!("bad schedule: {e}"))
+}
+
+/// Whether `ancestor` is a proper ancestor dataset of `descendant` (`tank` of `tank/data`, but not
+/// `tank/data` of `tank/database`).
+fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
+    descendant.strip_prefix(ancestor).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether two enabled, well-formed snapshot jobs would prune each other's snapshots: same host and
+/// prefix, and datasets that are equal or where a recursive job covers the other's dataset (a
+/// recursive job sees, and destroys with `-r`, the same-named snapshots of its descendants).
+fn clashes(a: &Job, b: &Job) -> bool {
+    let live = |j: &Job| j.enabled && j.kind == KIND_SNAPSHOT && check_snapshot_fields(j).is_ok();
+    if !live(a) || !live(b) || a.host != b.host || effective_prefix(a) != effective_prefix(b) {
+        return false;
+    }
+    let (da, db) = (a.dataset.as_deref().unwrap_or(""), b.dataset.as_deref().unwrap_or(""));
+    da == db || (a.recursive && is_ancestor(da, db)) || (b.recursive && is_ancestor(db, da))
+}
+
+/// Another job in `jobs` that `candidate` would clash with, if any.
+pub fn clashing_job<'a>(jobs: &'a [Job], candidate: &Job) -> Option<&'a Job> {
+    jobs.iter().find(|j| j.id != candidate.id && clashes(j, candidate))
+}
+
+/// For each snapshot job that clashes with an *earlier* job that can itself run, why it cannot
+/// run. A job that is flagged never blocks a later one, so only the first of a group runs.
+pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<String, String> {
+    let mut accepted: Vec<&Job> = Vec::new();
+    let mut reasons = std::collections::HashMap::new();
+    for job in jobs {
+        match accepted.iter().find(|earlier| clashes(earlier, job)) {
+            Some(earlier) => {
+                reasons.insert(job.id.clone(), format!("same host and prefix as job '{}' on an overlapping dataset: they would prune each other", earlier.id));
+            }
+            None => accepted.push(job),
+        }
+    }
+    reasons
+}
+
+#[cfg(test)]
+impl Job {
+    pub fn test_snapshot(id: &str, dataset: &str, prefix: &str, keep: u32) -> Job {
+        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+    }
 }
 
 /// Re-reads `jobs.toml`, applies `change`, and saves. Reading first means a hand edit made
@@ -146,6 +238,10 @@ mod tests {
             catch_up: true,
             enabled: true,
             created_at: None,
+            dataset: None,
+            recursive: false,
+            prefix: None,
+            keep: None,
         }
     }
 
@@ -273,5 +369,99 @@ mod tests {
         let mut bad = scrub("c");
         bad.schedule = "61 * * * *".to_string();
         assert!(resolve(&bad, &hosts()).unwrap_err().starts_with("bad schedule:"));
+    }
+
+    #[test]
+    fn a_snapshot_job_round_trips_and_a_scrub_job_serializes_exactly_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        let mut snap = Job::test_snapshot("s", "tank/data", "hourly", 24);
+        snap.recursive = true;
+        let plain = scrub("x");
+        save(&path, &[plain.clone(), snap.clone()]).unwrap();
+        assert_eq!(load(&path).unwrap(), vec![plain.clone(), snap]);
+        let text = toml::to_string_pretty(&JobFile { jobs: vec![plain] }).unwrap();
+        for absent in ["dataset", "recursive", "prefix", "keep"] {
+            assert!(!text.contains(absent), "{absent} leaked into a scrub job:\n{text}");
+        }
+    }
+
+    #[test]
+    fn resolve_accepts_a_good_snapshot_job_and_rejects_each_bad_field() {
+        let hosts = vec!["local".to_string()];
+        assert!(resolve(&Job::test_snapshot("s", "tank/data", "hourly", 3), &hosts).is_ok());
+        let bad = |f: &dyn Fn(&mut Job)| {
+            let mut j = Job::test_snapshot("s", "tank/data", "hourly", 3);
+            f(&mut j);
+            resolve(&j, &hosts).unwrap_err()
+        };
+        assert!(bad(&|j| j.dataset = None).contains("dataset"));
+        assert!(bad(&|j| j.dataset = Some(String::new())).contains("dataset"));
+        for evil in ["-rf", "tank/a@b", "tank/a b", "tank/data;x", "/tank", "tank/"] {
+            assert!(bad(&|j| j.dataset = Some(evil.to_string())).contains("dataset"), "{evil}");
+        }
+        assert!(bad(&|j| j.prefix = Some("a b".into())).contains("prefix"));
+        assert!(bad(&|j| j.prefix = Some(String::new())).contains("prefix"));
+        assert!(bad(&|j| j.keep = Some(0)).contains("keep"));
+        assert!(bad(&|j| j.keep = None).contains("keep"));
+        assert!(bad(&|j| j.host = "nope".into()).contains("host"));
+        assert!(bad(&|j| j.schedule = "x".into()).contains("schedule"));
+    }
+
+    #[test]
+    fn a_missing_prefix_means_auto() {
+        let mut j = Job::test_snapshot("s", "tank/data", "hourly", 3);
+        j.prefix = None;
+        assert_eq!(effective_prefix(&j), "auto");
+        assert!(resolve(&j, &["local".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn two_enabled_snapshot_jobs_on_one_host_dataset_and_prefix_clash_but_other_combinations_do_not() {
+        let a = Job::test_snapshot("a", "tank/data", "hourly", 3);
+        let b = Job::test_snapshot("b", "tank/data", "hourly", 5);
+        let other_prefix = Job::test_snapshot("c", "tank/data", "daily", 5);
+        let other_dataset = Job::test_snapshot("d", "tank/other", "hourly", 5);
+        let mut disabled = Job::test_snapshot("e", "tank/data", "hourly", 5);
+        disabled.enabled = false;
+        let all = vec![a.clone(), b.clone(), other_prefix, other_dataset, disabled];
+        let reasons = duplicate_prefix_reasons(&all);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons["b"].contains("'a'"), "{reasons:?}");
+        assert_eq!(clashing_job(&all, &b).map(|j| j.id.as_str()), Some("a"));
+        let mut edited = a.clone();
+        edited.keep = Some(9);
+        assert!(clashing_job(&[a], &edited).is_none(), "a job never clashes with itself");
+    }
+
+    #[test]
+    fn a_recursive_job_clashes_with_a_job_on_a_descendant_that_shares_its_prefix() {
+        let mut parent = Job::test_snapshot("p", "tank", "auto", 7);
+        parent.recursive = true;
+        let child = Job::test_snapshot("c", "tank/data", "auto", 24);
+        assert_eq!(clashing_job(&[parent.clone()], &child).map(|j| j.id.as_str()), Some("p"));
+        assert_eq!(clashing_job(std::slice::from_ref(&child), &parent).map(|j| j.id.as_str()), Some("c"));
+        assert!(duplicate_prefix_reasons(&[parent.clone(), child.clone()]).contains_key("c"));
+        // A different prefix, a non-recursive parent, a sibling, and a dataset that only shares a name prefix do not clash.
+        let mut other_prefix = child.clone();
+        other_prefix.prefix = Some("hourly".into());
+        assert!(clashing_job(&[parent.clone()], &other_prefix).is_none());
+        let flat_parent = Job::test_snapshot("fp", "tank", "auto", 7);
+        assert!(clashing_job(&[flat_parent], &child).is_none());
+        let sibling = Job::test_snapshot("s", "tank/other", "auto", 7);
+        assert!(clashing_job(std::slice::from_ref(&child), &sibling).is_none());
+        drop(parent);
+        let mut parent2 = Job::test_snapshot("p2", "tank/data", "auto", 7);
+        parent2.recursive = true;
+        assert!(clashing_job(&[parent2], &Job::test_snapshot("l2", "tank/database", "auto", 7)).is_none(), "tank/database is not under tank/data");
+    }
+
+    #[test]
+    fn a_job_flagged_as_clashing_does_not_make_later_jobs_clash_with_it() {
+        let a = Job::test_snapshot("a", "tank/data", "hourly", 1);
+        let b = Job::test_snapshot("b", "tank/data", "hourly", 1);
+        let c = Job::test_snapshot("c", "tank/data", "hourly", 1);
+        let reasons = duplicate_prefix_reasons(&[a, b, c]);
+        assert!(reasons["b"].contains("'a'") && reasons["c"].contains("'a'"), "{reasons:?}");
     }
 }

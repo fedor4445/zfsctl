@@ -171,6 +171,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 // explains why (status message) instead of silently vanishing.
                 v.push(h("N", "NFS share", 3));
                 v.push(h("M", "SMB share", 3));
+                v.push(h("J", "Snapshot job", 3));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -257,7 +258,8 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("Space", if job.enabled { "Disable" } else { "Enable" }, 2));
                 v.push(h("d", "Delete", 2).tone(Tone::Warn));
             }
-            v.push(h("n", "New job", 2));
+            v.push(h("n", "New scrub job", 2));
+            v.push(h("N", "New snapshot job", 3));
             v.push(h("r", "Refresh", 4));
         }
         // Never in `App::sections`; listed so a future section forces a decision here.
@@ -480,7 +482,7 @@ mod tests {
     fn jobs(with_selection: bool) -> App {
         let mut a = base();
         go(&mut a, Section::Jobs);
-        let job = |id: &str, enabled: bool| crate::jobs::Job { id: id.to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled, created_at: None };
+        let job = |id: &str, enabled: bool| crate::jobs::Job { id: id.to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled, created_at: None, dataset: None, recursive: false, prefix: None, keep: None };
         a.jobs_view.jobs = vec![job("a", true), job("b", false)];
         a.jobs_table.select(if with_selection { Some(0) } else { None });
         a
@@ -490,7 +492,7 @@ mod tests {
     fn the_jobs_section_advertises_edit_enable_or_disable_delete_and_new_for_the_selected_job() {
         let selected = jobs(true);
         let labels: Vec<(&str, &str)> = hints(&selected).iter().map(|h| (h.key, h.label)).collect();
-        for want in [("Enter", "Edit"), ("Space", "Disable"), ("d", "Delete"), ("n", "New job")] {
+        for want in [("Enter", "Edit"), ("Space", "Disable"), ("d", "Delete"), ("n", "New scrub job"), ("N", "New snapshot job")] {
             assert!(labels.contains(&want), "{labels:?}");
         }
         let mut second = jobs(true);
@@ -1001,8 +1003,8 @@ mod tests {
         ];
         a.shares = vec![smb("tank/b"), smb("tank/c")];
         a.jobs_view.jobs = vec![
-            crate::jobs::Job { id: "a".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: true, created_at: None },
-            crate::jobs::Job { id: "b".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: false, created_at: None },
+            crate::jobs::Job { id: "a".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None },
+            crate::jobs::Job { id: "b".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: false, created_at: None, dataset: None, recursive: false, prefix: None, keep: None },
         ];
         a.vdevs = vec![
             VdevLine { depth: 0, name: "tank".to_string(), health: PoolHealth::Online },

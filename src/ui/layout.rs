@@ -625,6 +625,9 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
         None => info.extend(preview_lines(&job.schedule, &chrono::Local::now()).into_iter().skip(1).map(Line::from)),
     }
     info.push(Line::from(format!("{}  catch up {}", if job.enabled { "enabled" } else { "disabled" }, if job.catch_up { "yes" } else { "no" })));
+    if job.kind == crate::jobs::KIND_SNAPSHOT {
+        info.push(Line::from(format!("keep {}  prefix {}{}", job.keep.unwrap_or(0), crate::jobs::effective_prefix(job), if job.recursive { "  recursive" } else { "" })));
+    }
     f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
 }
 
@@ -643,7 +646,7 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(Line::from(title));
     if app.jobs_view.loaded && app.jobs_view.jobs.is_empty() {
-        let text = "No scheduled jobs. Press 'n' to add one, or 'J' on a pool in the Pools section.";
+        let text = "No scheduled jobs. Press 'n' for a scrub job or 'N' for a snapshot job, or 'J' on a pool (Pools) or a dataset (Datasets).";
         f.render_widget(Paragraph::new(text).style(theme.dim()).wrap(Wrap { trim: false }).block(block), area);
         return;
     }
@@ -660,12 +663,12 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 (next_run_text(&j.schedule, &local_now), last_result_text(last, now), Style::default())
             };
-            Row::new(vec![j.id.clone(), j.host.clone(), j.pool.clone().unwrap_or_default(), schedule_label(&j.schedule), next, last_text]).style(style)
+            Row::new(vec![j.id.clone(), j.host.clone(), j.pool.clone().or_else(|| j.dataset.clone()).unwrap_or_default(), schedule_label(&j.schedule), next, last_text]).style(style)
         })
         .collect();
-    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(10), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
+    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(14), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Job", "Host", "Pool", "Schedule", "Next run", "Last"]))
+        .header(Row::new(vec!["Job", "Host", "Target", "Schedule", "Next run", "Last"]))
         .block(block)
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.jobs_table);
@@ -720,6 +723,7 @@ fn confirm_block(theme: &Theme, tone: Tone, label: &str, neutral_title: &str, ri
 fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField]) -> Vec<String> {
     match kind {
         crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        crate::ui::modal::FormKind::SnapshotJob { .. } => crate::ui::jobs::preview_lines(fields.get(5).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         _ => Vec::new(),
     }
 }
@@ -834,7 +838,7 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
     const PICKER_WIDTH_PERCENT: u16 = 50;
     if picker.load != crate::ui::picker::PickerLoad::Ready {
         use crate::ui::picker::PickerLoad;
-        let what = if picker.pool_host.is_some() { "pools" } else { "accounts" };
+        let what = if picker.pool_host.is_some() { "names" } else { "accounts" };
         let body = match &picker.load {
             PickerLoad::Failed(msg) => {
                 format!("Could not load {what}: {}\n\nEsc to close", sanitise_for_display(msg))
@@ -1309,7 +1313,7 @@ mod tests {
     }
 
     fn a_job(id: &str, schedule: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None }
     }
 
     #[test]
@@ -1320,7 +1324,7 @@ mod tests {
         h.append(&crate::daemon::history::Event { job_id: "scrub-local-tank".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Finished, at: when, scheduled_for: Some(when), result: Some(crate::daemon::history::RunResult::Ok), message: String::new(), catch_up: false, summary: None }).unwrap();
         app.refresh_jobs();
         let text = render(&mut app, 120, 30).join("\n");
-        for want in ["Job", "Host", "Pool", "Schedule", "Next run", "Last", "scrub-local-tank", "Weekly, Sunday 03:00", "*/10 * * * *", "ok 2h ago", "never"] {
+        for want in ["Job", "Host", "Target", "Schedule", "Next run", "Last", "scrub-local-tank", "Weekly, Sunday 03:00", "*/10 * * * *", "ok 2h ago", "never"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
     }
@@ -1341,7 +1345,7 @@ mod tests {
         let mut bad = a_job("bad", "0 3 * * 0");
         bad.host = "gone".into();
         let (mut app, _dir) = jobs_app(&[off, bad]);
-        let text = render(&mut app, 140, 30).join("\n");
+        let text = render(&mut app, 150, 30).join("\n");
         assert!(text.contains("disabled"), "{text}");
         assert!(text.contains("'gone' is not in config.toml"), "{text}");
     }
@@ -1768,4 +1772,23 @@ mod tests {
         assert_eq!(super::picker_title("wh", false), "Pick — filter 'wh' (Enter OK, Esc cancel)");
     }
 
+    #[test]
+    fn a_snapshot_job_shows_its_dataset_as_the_target_and_its_keep_prefix_and_recursion_in_the_panel() {
+        let mut snap = crate::jobs::Job::test_snapshot("s", "tank/data", "hourly", 24);
+        snap.recursive = true;
+        let (mut app, _dir) = jobs_app(&[snap]);
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 130, 34).join("\n");
+        assert!(text.contains("Target"), "{text}");
+        assert!(text.contains("tank/data"), "{text}");
+        assert!(text.contains("keep 24") && text.contains("hourly") && text.contains("recursive"), "{text}");
+    }
+
+    #[test]
+    fn the_snapshot_forms_preview_follows_its_schedule_field() {
+        let (mut app, _dir) = jobs_app(&[]);
+        app.handle_key(crossterm::event::KeyCode::Char('N'));
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("New snapshot job") && text.contains("Hourly") && text.contains("Next:"), "the default 0 * * * * is the Hourly preset:\n{text}");
+    }
 }

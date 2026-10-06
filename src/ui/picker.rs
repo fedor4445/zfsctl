@@ -22,6 +22,13 @@ pub enum AccountField {
     AclRecipient,
 }
 
+/// What a live-fetched name picker lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveNames {
+    Pools,
+    Datasets,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerLoad {
     Ready,
@@ -166,19 +173,24 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
             pool_host: None,
         });
     }
-    if let FormKind::Job { hosts, .. } = kind {
+    let job_form = match kind {
+        FormKind::Job { hosts, .. } => Some((hosts, 2)),
+        FormKind::SnapshotJob { hosts, .. } => Some((hosts, 5)),
+        _ => None,
+    };
+    if let Some((hosts, schedule_field)) = job_form {
         if field_index == 1 {
             // The host is whatever the form's Host field says at F2 time; `open_pool_picker` fills it in.
             return Some(PickerState { values: Vec::new(), filter: String::new(), selected: 0, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Loading, note: None, account: None, pool_host: Some(0) });
         }
-        let (values, selected) = match field_index {
-            0 => (hosts.clone(), hosts.iter().position(|h| h == current_value.trim()).unwrap_or(0)),
-            2 => {
-                let presets = crate::ui::jobs::preset_values();
-                let selected = presets.iter().position(|p| crate::ui::jobs::insert_text(p) == current_value.trim()).unwrap_or(0);
-                (presets, selected)
-            }
-            _ => return None,
+        let (values, selected) = if field_index == 0 {
+            (hosts.clone(), hosts.iter().position(|h| h == current_value.trim()).unwrap_or(0))
+        } else if field_index == schedule_field {
+            let presets = crate::ui::jobs::preset_values();
+            let selected = presets.iter().position(|p| crate::ui::jobs::insert_text(p) == current_value.trim()).unwrap_or(0);
+            (presets, selected)
+        } else {
+            return None;
         };
         return Some(PickerState { values, filter: String::new(), selected, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Ready, note: None, account: None, pool_host: None });
     }
