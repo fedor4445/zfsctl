@@ -1067,16 +1067,23 @@ impl App {
     }
 
     /// One identity line per selected disk (by name lookup in
-    /// `self.disks`; a disk that vanished shows just its name).
+    /// `self.disks`; a disk that vanished shows just its name). At most
+    /// `MAX_IDENTITY_LINES` are listed, then `+K more selected`, so the
+    /// form's input fields can never be pushed out of a small popup.
     fn selected_disk_identities(&self, names: &[String]) -> String {
-        names
+        const MAX_IDENTITY_LINES: usize = 6;
+        let mut lines: Vec<String> = names
             .iter()
+            .take(MAX_IDENTITY_LINES)
             .map(|n| match self.disks.iter().find(|d| &d.name == n) {
                 Some(d) => crate::ui::layout::sanitise_for_display(&d.identity_line()),
                 None => crate::ui::layout::sanitise_for_display(n),
             })
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect();
+        if names.len() > MAX_IDENTITY_LINES {
+            lines.push(format!("+{} more selected", names.len() - MAX_IDENTITY_LINES));
+        }
+        lines.join("\n")
     }
 
     /// Shared by the offline/online disk action keys: looks up the
@@ -4815,6 +4822,46 @@ mod tests {
             assert_eq!(lines.len(), 3, "one line per selected disk: {d:?}");
             assert!(lines[0].starts_with("da0") && lines[1].starts_with("da1"));
             assert_eq!(lines[2], "gone9", "unknown disk shows just its name");
+        }
+    }
+
+    fn app_with_selected_disks(disks: Vec<crate::zfs::disk::DiskInfo>) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        } // -> Disks
+        for d in &disks {
+            app.selected_disks.insert(d.name.clone());
+        }
+        app.disks = disks;
+        app
+    }
+
+    #[test]
+    fn disk_form_description_caps_at_six_lines_plus_more_selected() {
+        let disks: Vec<_> = (0..8).map(|i| identity_disk(&format!("da{i}"), "Model", "SN")).collect();
+        let app = app_with_selected_disks(disks);
+        let names: Vec<String> = (0..8).map(|i| format!("da{i}")).collect();
+        let d = app.selected_disk_identities(&names);
+        let lines: Vec<&str> = d.lines().collect();
+        assert_eq!(lines.len(), 7, "{d:?}");
+        assert!(lines[5].starts_with("da5") && lines[6] == "+2 more selected", "{d:?}");
+        let six: Vec<String> = names[..6].to_vec();
+        assert_eq!(app.selected_disk_identities(&six).lines().count(), 6, "exactly six: no suffix");
+    }
+
+    #[test]
+    fn disk_form_description_strips_escapes_newlines_and_bidi_from_model_and_serial() {
+        let evil = identity_disk("da0", "Ev\u{1b}[31mil\nModel\u{202e}X", "SN\u{7}\u{9b}1");
+        for key in ['n', 'a'] {
+            let mut app = app_with_selected_disks(vec![evil.clone()]);
+            app.handle_key(KeyCode::Char(key));
+            let Some(Modal::Form { description: Some(d), .. }) = &app.modal else { panic!("no form") };
+            assert_eq!(d.lines().count(), 1, "{d:?}");
+            for bad in ['\u{1b}', '\n', '\u{202e}', '\u{7}', '\u{9b}'] {
+                assert!(!d.contains(bad), "{bad:?} leaked into {d:?}");
+            }
+            assert!(d.contains("Model") && d.contains("SN"));
         }
     }
 

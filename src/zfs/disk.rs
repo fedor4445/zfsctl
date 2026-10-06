@@ -65,8 +65,10 @@ impl DiskInfo {
     }
 }
 
-/// 1024-based size in geom's style: `256M`, `3.6T`, `5.0G` — no decimal
-/// once the number reaches three digits.
+/// 1024-based size in geom's style: `256M`, `3.6T`, `5.0G` — one decimal
+/// below 100, none from 100 up. Rounding happens before the unit is
+/// chosen, so values that round up to 1024 promote to the next unit
+/// (`1.0M`, not `1024K`) and 99.96 prints as `100`, not `100.0`.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [char; 6] = ['K', 'M', 'G', 'T', 'P', 'E'];
     if bytes < 1024 {
@@ -74,14 +76,18 @@ pub fn human_size(bytes: u64) -> String {
     }
     let mut value = bytes as f64 / 1024.0;
     let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if value >= 100.0 {
-        format!("{value:.0}{}", UNITS[unit])
-    } else {
-        format!("{value:.1}{}", UNITS[unit])
+    loop {
+        let rounded = if value >= 99.95 { value.round() } else { (value * 10.0).round() / 10.0 };
+        if rounded >= 1024.0 && unit < UNITS.len() - 1 {
+            value /= 1024.0;
+            unit += 1;
+            continue;
+        }
+        return if rounded >= 100.0 {
+            format!("{rounded:.0}{}", UNITS[unit])
+        } else {
+            format!("{rounded:.1}{}", UNITS[unit])
+        };
     }
 }
 
@@ -534,5 +540,52 @@ Providers:
         assert_eq!(human_size(4_000_787_030_016), "3.6T");
         assert_eq!(human_size(48_318_382_080), "45.0G");
         assert_eq!(human_size(u64::MAX), "16.0E");
+    }
+
+    #[test]
+    fn human_size_rounds_before_choosing_the_unit() {
+        assert_eq!(human_size(1023), "1023B");
+        assert_eq!(human_size(1024 * 1024 - 1), "1.0M");
+        assert_eq!(human_size(1024u64.pow(3) - 1), "1.0G");
+        assert_eq!(human_size((99.96 * 1024.0) as u64), "100K");
+        assert_eq!(human_size(256 * 1024 * 1024), "256M");
+        let _ = human_size(u64::MAX);
+    }
+
+    #[test]
+    fn ident_and_rotationrate_first_occurrence_win() {
+        let out = "Geom name: a0\n1. Name: a0\n   ident: FIRST\n   rotationrate: 7200\n2. Name: a0p1\n   ident: SECOND\n   rotationrate: 0\n";
+        let d = &parse_disk_list(out)[0];
+        assert_eq!(d.serial.as_deref(), Some("FIRST"));
+        assert_eq!(d.media, DiskMedia::Hdd(7200));
+    }
+
+    #[test]
+    fn rotationrate_zero_after_nonzero_keeps_the_first() {
+        let out = "Geom name: a0\n   rotationrate: 5400\n   rotationrate: 0\n";
+        assert_eq!(parse_disk_list(out)[0].media, DiskMedia::Hdd(5400));
+    }
+
+    #[test]
+    fn fields_in_a_different_order_still_parse() {
+        let out = "Geom name: a0\n   rotationrate: 0\n   ident: SN9\n   descr: Some Model\n   Mediasize: 1024 (1.0K)\n";
+        let d = &parse_disk_list(out)[0];
+        assert_eq!((d.size, d.model.as_deref(), d.serial.as_deref(), d.media.clone()), (1024, Some("Some Model"), Some("SN9"), DiskMedia::Ssd));
+    }
+
+    #[test]
+    fn crlf_line_endings_parse() {
+        let out = "Geom name: a0\r\n   Mediasize: 2048 (2.0K)\r\n   descr: M X\r\n   ident: S1\r\n   rotationrate: 7200\r\n";
+        let d = &parse_disk_list(out)[0];
+        assert_eq!(d.name, "a0");
+        assert_eq!((d.size, d.model.as_deref(), d.serial.as_deref(), d.media.clone()), (2048, Some("M X"), Some("S1"), DiskMedia::Hdd(7200)));
+    }
+
+    #[test]
+    fn bare_rotationrate_number_is_hdd_and_ident_keeps_inner_spaces() {
+        let out = "Geom name: a0\n   rotationrate: 7200\n   ident: AB  CD EF\n";
+        let d = &parse_disk_list(out)[0];
+        assert_eq!(d.media, DiskMedia::Hdd(7200));
+        assert_eq!(d.serial.as_deref(), Some("AB  CD EF"));
     }
 }

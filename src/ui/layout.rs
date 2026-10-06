@@ -468,7 +468,7 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
     const SIZE_W: u16 = 8;
     const STATUS_MIN: u16 = 20;
     const TYPE_W: u16 = 9;
-    const MODEL_W: u16 = 24;
+    const MODEL_W: u16 = 30;
     const SERIAL_W: u16 = 20;
     let inner = area.width.saturating_sub(2);
     let mut used = NAME_W + SIZE_W + STATUS_MIN + 3;
@@ -613,7 +613,13 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
                 .sum();
             match description {
                 // +1 blank separator line between the description and the fields.
-                Some(desc) => wrapped_line_count(desc, inner_width) + 1 + fields_lines,
+                // Word wrapping can need more rows than the byte-based
+                // estimate, so the description gets the same ~25% + 1 row
+                // margin as the picker popup (clamped to the terminal below).
+                Some(desc) => {
+                    let d = wrapped_line_count(desc, inner_width);
+                    d + d / 4 + 1 + 1 + fields_lines
+                }
                 None => fields_lines,
             }
         }
@@ -621,7 +627,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     };
     // +2 for the top/bottom border; floor of 5 so a one-line prompt
     // doesn't render a cramped, near-invisible box.
-    let popup_height = (content_lines + 2).max(5);
+    let popup_height = (content_lines + 2).max(5).min(area.height);
 
     let popup_area = centered_rect(MODAL_WIDTH_PERCENT, popup_height, area);
     f.render_widget(Clear, popup_area);
@@ -918,6 +924,65 @@ mod tests {
         }
         assert!(!text.contains("Serial") && !text.contains("WD-WCC7K1234567"), "serial must drop first:\n{text}");
         assert!(!text.contains("Model") && !text.contains("WDC WD40"), "model must drop next:\n{text}");
+    }
+
+    #[test]
+    fn disks_table_columns_drop_in_order_serial_model_type_at_every_width() {
+        let mut app = app_in_disks();
+        app.disks[0].model = Some("Samsung SSD 970 EVO Plus 1TB".to_string());
+        // (terminal width, type, model, serial); the sidebar takes ~22 columns
+        for (w, ty, model, serial) in [(60u16, false, false, false), (80, false, false, false), (100, true, false, false), (120, true, true, false), (160, true, true, true)] {
+            let text = render(&mut app, w, 24).join("\n");
+            // At 60 columns the sidebar leaves the table so little room
+            // that Name is squeezed; the headers must still all be there.
+            let wants: &[&str] = if w < 80 { &["Name", "Size", "3.6T", "Status"] } else { &["Name", "ada1", "Size", "3.6T", "Status", "available"] };
+            for want in wants {
+                assert!(text.contains(want), "{w}: missing {want:?} in:\n{text}");
+            }
+            assert_eq!(text.contains("Type"), ty, "{w} type:\n{text}");
+            assert_eq!(text.contains("Samsung SSD 970 EVO Plus 1TB"), model, "{w} full model:\n{text}");
+            assert_eq!(text.contains("WD-WCC7K1234567"), serial, "{w} serial:\n{text}");
+        }
+    }
+
+    fn app_with_form_and_disks(n: usize, w: u16, h: u16) -> Vec<String> {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Disks).unwrap();
+        app.disks = (0..n)
+            .map(|i| identity_disk(&format!("da{i}"), &format!("Some Very Long Manufacturer Model Name {i}"), &format!("SERIAL-NUMBER-{i:04}-ABCDEFGH")))
+            .collect();
+        for d in &app.disks {
+            app.selected_disks.insert(d.name.clone());
+        }
+        app.disks_table.select(Some(0));
+        app.handle_key(crossterm::event::KeyCode::Char('n'));
+        render(&mut app, w, h)
+    }
+
+    #[test]
+    fn create_pool_form_with_six_long_identity_lines_still_shows_last_field_at_80x24() {
+        let text = app_with_form_and_disks(6, 80, 24).join("\n");
+        assert!(text.contains("Redundancy"), "last input field clipped:\n{text}");
+        assert!(text.contains("Name:"), "{text}");
+    }
+
+    #[test]
+    fn create_pool_form_with_eight_disks_shows_overflow_line_and_last_field() {
+        let text = app_with_form_and_disks(8, 80, 24).join("\n");
+        assert!(text.contains("+2 more selected") && text.contains("Redundancy"), "{text}");
+    }
+
+    #[test]
+    fn disks_table_strips_escapes_newlines_and_bidi_from_model_and_serial() {
+        let mut app = app_in_disks();
+        app.disks[0].model = Some("Ev\u{1b}[31mil\nModel\u{202e}X".to_string());
+        app.disks[0].serial = Some("SN\u{7}\u{9b}1".to_string());
+        let rows = render(&mut app, 160, 24);
+        let text = rows.join("\n");
+        for bad in ['\u{1b}', '\u{202e}', '\u{7}', '\u{9b}'] {
+            assert!(!text.contains(bad), "{bad:?} leaked:\n{text}");
+        }
+        assert!(text.contains("Model") && text.contains("SN"), "{text}");
     }
 
     fn pool(name: &str, allocated: u64, size: u64, health: PoolHealth) -> Pool {
