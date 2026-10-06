@@ -814,6 +814,7 @@ dependencies = [
  "nix",
  "ratatui",
  "serde",
+ "signal-hook",
  "tempfile",
  "thiserror",
  "toml",
