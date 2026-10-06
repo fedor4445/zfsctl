@@ -122,7 +122,16 @@ impl Shared {
         };
         let flag = Arc::new(AtomicBool::new(false));
         let key = cancel::file_name(&job.id);
-        self.cancels.lock().unwrap_or_else(PoisonError::into_inner).insert(key.clone(), Arc::clone(&flag));
+        {
+            // A slot that falls due while this job's previous transfer is still running must not
+            // replace (and later remove) that transfer's cancel flag.
+            let mut running = self.cancels.lock().unwrap_or_else(PoisonError::into_inner);
+            if running.contains_key(&key) {
+                let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
+                return scrub::finish(ctx, job, run_id, EventKind::Skipped, RunResult::Skipped, "skipped: already running".to_string(), slot);
+            }
+            running.insert(key.clone(), Arc::clone(&flag));
+        }
         let env = replicate::Env { ctx, progress_dir: &self.progress_dir, cancel: &flag };
         let outcome = replicate::run_replicate(&env, src.as_ref(), dst.as_ref(), job, due.scheduled_for, due.catch_up, run_id);
         self.cancels.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
@@ -523,5 +532,20 @@ mod tests {
         clear_runtime_files(&paths);
         assert!(progress::read_all(&paths.progress_dir()).is_empty());
         assert!(cancel::take_requests(&paths.cancel_dir()).is_empty());
+    }
+
+    #[test]
+    fn a_second_slot_of_a_running_replication_is_skipped_and_leaves_the_running_ones_cancel_flag_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let job = Job::test_replicate("repl", "tank/data", "hourly", "local", "backup/data");
+        let running = Arc::new(AtomicBool::new(false));
+        shared.cancels.lock().unwrap().insert(cancel::file_name("repl"), Arc::clone(&running));
+        shared.execute(Work::Run(Due { job, scheduled_for: shared.clock.now(), catch_up: false }));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Skipped)));
+        assert!(runs[0].message.contains("already running"), "{}", runs[0].message);
+        let map = shared.cancels.lock().unwrap();
+        assert!(map.get(&cancel::file_name("repl")).is_some_and(|f| Arc::ptr_eq(f, &running)), "the running transfer stays cancellable");
     }
 }

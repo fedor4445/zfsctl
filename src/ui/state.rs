@@ -2349,7 +2349,7 @@ impl App {
                 FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
             ],
             focused: 0,
-            description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally; nothing is destroyed or mounted.".to_string()),
+            description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally. The destination is received unmounted and rolled back only if Force is y.".to_string()),
             kind: FormKind::ReplicateJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }

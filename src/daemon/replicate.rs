@@ -25,6 +25,8 @@ struct Chosen {
     dry: Vec<String>,
     label: String,
     resumed: bool,
+    /// Sent from a base snapshot, so `force` has a base to roll the destination back to.
+    incremental: bool,
 }
 
 /// A command's stderr as one line: its lines joined, without the sender's `warning:` noise (the
@@ -43,16 +45,18 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
     let failed = |msg: String| finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, msg, slot);
     let skipped = |msg: String| finish(ctx, job, run_id, EventKind::Skipped, RunResult::Skipped, msg, slot);
 
-    // `#` cannot appear in a pool name, so these never collide with a scrub's or a snapshot's lock key.
-    let Some(_src_guard) = ctx.locks.try_acquire(&job.host, &format!("#src@{dataset}")) else { return skipped("skipped: already running".to_string()) };
-    let Some(_dst_guard) = ctx.locks.try_acquire(&dest_host, &format!("#dst@{dest_ds}")) else { return skipped("skipped: the destination is busy".to_string()) };
+    // Only the destination is locked: two jobs may send from one dataset to different destinations
+    // (ZFS allows concurrent sends), while an overlapping slot of the same job, or two jobs aimed at
+    // one destination, collide here. `#` cannot appear in a pool name, so the key never collides
+    // with a scrub's or a snapshot's lock key.
+    let Some(_dst_guard) = ctx.locks.try_acquire(&dest_host, &format!("#dst@{dest_ds}")) else { return skipped("skipped: already running".to_string()) };
 
     let token = match resume_token(dst, &dest_ds) {
         Ok(t) => t,
         Err(e) => return failed(e.to_string()),
     };
     let chosen = if let Some(token) = token {
-        Chosen { send: resume_send_args(&token, false), dry: resume_send_args(&token, true), label: "resumed an interrupted transfer".to_string(), resumed: true }
+        Chosen { send: resume_send_args(&token, false), dry: resume_send_args(&token, true), label: "resumed an interrupted transfer".to_string(), resumed: true, incremental: false }
     } else {
         let source = match list_snapshot_infos(src, &dataset) {
             Ok(s) => s,
@@ -73,6 +77,7 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
                     None => format!("sent {new} (full)"),
                 },
                 resumed: false,
+                incremental: base.is_some(),
             },
         }
     };
@@ -82,7 +87,9 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
     let total = src.run("zfs", &dry).ok().and_then(|out| parse_send_size(&out.stdout));
 
     let send_refs: Vec<&str> = chosen.send.iter().map(String::as_str).collect();
-    let recv = receive_args(&dest_ds, job.force);
+    // `-F` rolls a destination back to the incremental base; on a full stream it would instead
+    // overwrite whatever dataset is already there, so a full send is never forced.
+    let recv = receive_args(&dest_ds, job.force && (chosen.incremental || chosen.resumed));
     let recv_refs: Vec<&str> = recv.iter().map(String::as_str).collect();
     let (send_cmd, recv_cmd) = match (src.command("zfs", &send_refs), dst.command("zfs", &recv_refs)) {
         (Ok(s), Ok(r)) => (s, r),
@@ -106,7 +113,10 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
         return finish(ctx, job, run_id, EventKind::Finished, RunResult::Cancelled, format!("cancelled after {}; the next run resumes", progress::human_bytes(transfer.bytes)), slot);
     }
     if !transfer.recv_ok || !transfer.send_ok {
-        let (side, text) = if transfer.recv_ok { ("send", message_of(&transfer.send_stderr)) } else { ("receive", message_of(&transfer.recv_stderr)) };
+        // When the send failed with something to say, that is the cause: the receive then only
+        // complains about a stream that was cut off.
+        let send_text = message_of(&transfer.send_stderr);
+        let (side, text) = if !transfer.send_ok && (transfer.recv_ok || !send_text.is_empty()) { ("send", send_text) } else { ("receive", message_of(&transfer.recv_stderr)) };
         let mut message = if text.is_empty() { format!("{side} failed") } else { format!("{side} failed: {text}") };
         if chosen.resumed {
             let _ = write!(message, ". If the transfer cannot be continued, discard it with `zfs receive -A {dest_ds}` on {dest_host}");
@@ -268,13 +278,49 @@ mod tests {
     }
 
     #[test]
-    fn force_adds_dash_capital_f_to_the_receive_and_nothing_else_does() {
+    fn force_adds_dash_capital_f_to_an_incremental_receive_and_nothing_else_does() {
+        let rig = Rig::new();
+        let mut forced = job();
+        forced.force = true;
+        let (src, dst) = (Host::new(&src_listing()), Host::new(&format!("backup/data@{A}\t1\t5\n")));
+        rig.run(&src, &dst, &forced);
+        assert_eq!(dst.commands(), vec![vec!["receive", "-s", "-u", "-F", "--", "backup/data"]]);
+        let (src, dst) = (Host::new(&src_listing()), Host::new(&format!("backup/data@{A}\t1\t5\n")));
+        rig.run(&src, &dst, &job());
+        assert_eq!(dst.commands(), vec![vec!["receive", "-s", "-u", "--", "backup/data"]], "no force, no -F");
+    }
+
+    #[test]
+    fn force_never_turns_a_full_send_into_an_overwrite_of_an_existing_dataset() {
         let rig = Rig::new();
         let mut forced = job();
         forced.force = true;
         let (src, dst) = (Host::new(&src_listing()), Host::new(""));
         rig.run(&src, &dst, &forced);
-        assert_eq!(dst.commands(), vec![vec!["receive", "-s", "-u", "-F", "--", "backup/data"]]);
+        assert_eq!(dst.commands(), vec![vec!["receive", "-s", "-u", "--", "backup/data"]]);
+    }
+
+    #[test]
+    fn two_jobs_from_one_source_dataset_do_not_block_each_other() {
+        let rig = Rig::new();
+        let _another_job_sending_from_the_same_dataset = rig.locks.try_acquire("local", "#src@tank/data");
+        let (src, dst) = (Host::new(&src_listing()), Host::new(""));
+        let (outcome, _) = rig.run(&src, &dst, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+    }
+
+    #[test]
+    fn when_the_send_fails_first_its_message_wins_over_the_receives_complaint_about_a_cut_off_stream() {
+        let rig = Rig::new();
+        let mut src = Host::new("");
+        src.send_script = "echo \"cannot resume send: 'x' is no longer the same snapshot\" >&2; exit 1".into();
+        let mut dst = Host::new("");
+        dst.token = "1-abc\n".into();
+        dst.recv_script = "cat > /dev/null; echo 'cannot receive: failed to read from stream' >&2; exit 1".into();
+        let (outcome, _) = rig.run(&src, &dst, &job());
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("no longer the same snapshot"), "{}", outcome.message);
+        assert!(outcome.message.contains("zfs receive -A backup/data"), "{}", outcome.message);
     }
 
     #[test]

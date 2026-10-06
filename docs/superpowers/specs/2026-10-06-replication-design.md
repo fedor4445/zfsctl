@@ -78,7 +78,7 @@ schedule = "0 4 * * *"
 
 ### Validation (`jobs::resolve`)
 
-For a replicate job: `dataset` and `prefix` valid as for snapshot jobs; `host` known; if `dest_host == "file"` then `dest_dir` is an absolute path with no `..` component, no NUL and only `A-Za-z0-9_-./ ` (no leading `-`), and `dest_dataset` is unset; otherwise `dest_host` is a known host, `dest_dataset` a valid dataset, and `dest_dir` unset. Source and destination must not be the same host and dataset. Two enabled replicate jobs may not share a destination (same `dest_host` and `dest_dataset`, or the same `dest_dir`): they would corrupt each other's incrementals. A clash flags the later job, like snapshot jobs.
+For a replicate job: `dataset` and `prefix` valid as for snapshot jobs; `host` known; if `dest_host == "file"` then `dest_dir` is an absolute path with no `..` component, no NUL and only `A-Za-z0-9_-./ ` (no leading `-`), and `dest_dataset` is unset; otherwise `dest_host` is a known host, `dest_dataset` a valid dataset, and `dest_dir` unset. Source and destination must not be the same host and dataset. (Review ruling: only the destination is locked at run time, so two jobs may send from one source dataset to different destinations; `force` applies only to incremental or resumed receives, never to a full send.) Two enabled replicate jobs may not share a destination (same `dest_host` and `dest_dataset`, or the same `dest_dir`): they would corrupt each other's incrementals. A clash flags the later job, like snapshot jobs.
 
 ### The runner can hand out a command
 

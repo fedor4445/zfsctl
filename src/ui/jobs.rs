@@ -212,9 +212,10 @@ impl JobsView {
         self.progress.iter().find(|p| p.job_id == job_id)
     }
 
-    /// Whether the job's latest run has started and not finished.
+    /// Whether any run of the job has started and not finished. (Not just the latest: a slot that
+    /// falls due during a long transfer is recorded as skipped and would otherwise hide it.)
     pub fn is_running(&self, job_id: &str) -> bool {
-        self.last_run(job_id).is_some_and(|r| r.result.is_none())
+        self.runs.iter().any(|r| r.job_id == job_id && r.result.is_none())
     }
 
     /// The most recently started run of `id`.
@@ -487,5 +488,18 @@ mod tests {
         let h = History::new(dir.path().join("history.jsonl"));
         h.append(&event("r", "r1", EventKind::Started, "2026-10-06T09:00:00Z", None)).unwrap();
         assert!(load(dir.path(), &["local".to_string(), "fbsd16".to_string()], None).is_running("r"));
+    }
+
+    #[test]
+    fn a_job_is_running_while_any_of_its_runs_is_unfinished_even_if_a_later_slot_was_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        jobs::save(&dir.path().join("jobs.toml"), &[Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")]).unwrap();
+        let h = History::new(dir.path().join("history.jsonl"));
+        h.append(&event("r", "r1", EventKind::Started, "2026-10-06T09:00:00Z", None)).unwrap();
+        h.append(&event("r", "r2", EventKind::Skipped, "2026-10-06T10:00:00Z", Some(RunResult::Skipped))).unwrap();
+        let view = load(dir.path(), &["local".to_string(), "fbsd16".to_string()], None);
+        assert!(view.is_running("r"), "the 09:00 transfer is still going");
+        h.append(&event("r", "r1", EventKind::Finished, "2026-10-06T11:00:00Z", Some(RunResult::Ok))).unwrap();
+        assert!(!load(dir.path(), &["local".to_string(), "fbsd16".to_string()], None).is_running("r"));
     }
 }
