@@ -889,38 +889,38 @@ impl App {
                 }
             }
             KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                // Only act (or explain) when a dataset row is selected; with no
+                // selection the key is not advertised and must be inert.
+                let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return; };
                 if !self.shares_loaded {
                     self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
                 } else if self.nfs_available == Some(false) {
-                    self.status_message = Some("NFS server not available on this host".to_string());
-                } else if let Some(i) = self.datasets_table.selected() {
-                    if let Some(ds) = self.datasets.get(i) {
-                        let existing = self.shares.iter().find(|s| matches!(s, crate::zfs::share::Share::Nfs { dataset, .. } if dataset == &ds.name));
-                        let placeholder = crate::zfs::share::Share::Nfs {
-                            dataset: ds.name.clone(),
-                            raw: "off".to_string(),
-                            networks: vec![],
-                            hosts: vec![],
-                            read_only: false,
-                            root: None,
-                        };
-                        self.modal = Some(share_edit_modal(existing.unwrap_or(&placeholder), self.selected_host));
-                    }
+                    self.status_message = Some("NFS server not available on this host (nfsd is not running)".to_string());
+                } else {
+                    let existing = self.shares.iter().find(|s| matches!(s, crate::zfs::share::Share::Nfs { dataset, .. } if dataset == &ds.name));
+                    let placeholder = crate::zfs::share::Share::Nfs {
+                        dataset: ds.name.clone(),
+                        raw: "off".to_string(),
+                        networks: vec![],
+                        hosts: vec![],
+                        read_only: false,
+                        root: None,
+                    };
+                    self.modal = Some(share_edit_modal(existing.unwrap_or(&placeholder), self.selected_host));
                 }
             }
             KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return; };
                 if !self.shares_loaded {
                     self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
                 } else if self.samba_available == Some(false) {
                     self.status_message = Some("Samba (smbd) is not running on this host".to_string());
-                } else if let Some(i) = self.datasets_table.selected() {
-                    if let Some(ds) = self.datasets.get(i) {
-                        match &ds.mountpoint {
-                            None => self.status_message = Some(format!("'{}' has no mounted mountpoint to share", ds.name)),
-                            Some(path) => {
-                                let existing = self.shares.iter().find(|s| matches!(s, crate::zfs::share::Share::Smb { dataset, .. } if dataset == &ds.name));
-                                self.modal = Some(smb_edit_modal(existing, &ds.name, path, self.selected_host));
-                            }
+                } else {
+                    match &ds.mountpoint {
+                        None => self.status_message = Some(format!("'{}' has no mounted mountpoint to share", ds.name)),
+                        Some(path) => {
+                            let existing = self.shares.iter().find(|s| matches!(s, crate::zfs::share::Share::Smb { dataset, .. } if dataset == &ds.name));
+                            self.modal = Some(smb_edit_modal(existing, &ds.name, path, self.selected_host));
                         }
                     }
                 }
@@ -5026,15 +5026,28 @@ mod tests {
     fn shift_m_is_refused_without_a_mountpoint_before_shares_load_or_when_smbd_is_down() {
         let mut app = datasets_app_with_mount(None);
         app.handle_key(KeyCode::Char('M'));
-        assert!(app.modal.is_none() && app.status_message.is_some());
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message.as_deref(), Some("'tank/media' has no mounted mountpoint to share"));
         let mut app = datasets_app_with_mount(Some("/tank/media"));
         app.shares_loaded = false;
         app.handle_key(KeyCode::Char('M'));
-        assert!(app.modal.is_none() && app.status_message.is_some());
+        assert!(app.modal.is_none());
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Press 'r' in the Shares section")));
         let mut app = datasets_app_with_mount(Some("/tank/media"));
         app.samba_available = Some(false);
         app.handle_key(KeyCode::Char('M'));
-        assert!(app.modal.is_none() && app.status_message.is_some());
+        assert!(app.modal.is_none());
+        assert_eq!(app.status_message.as_deref(), Some("Samba (smbd) is not running on this host"));
+    }
+
+    #[test]
+    fn shift_n_and_m_with_no_dataset_selected_are_inert() {
+        for key in ['N', 'M'] {
+            let mut app = datasets_app_with_mount(Some("/tank/media"));
+            app.datasets_table.select(None);
+            app.handle_key(KeyCode::Char(key));
+            assert!(app.modal.is_none() && app.status_message.is_none(), "{key}");
+        }
     }
 
     /// Feeds each value then Enter through `handle_modal_key` (Enter
@@ -5243,7 +5256,19 @@ mod tests {
         app.shares_loaded = true;
         app.handle_key(KeyCode::Char('N'));
         assert!(app.modal.is_none());
-        assert_eq!(app.status_message, Some("NFS server not available on this host".to_string()));
+        assert_eq!(app.status_message, Some("NFS server not available on this host (nfsd is not running)".to_string()));
+    }
+
+    #[test]
+    fn handle_key_shift_n_with_unloaded_shares_names_the_fix() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+        app.datasets_table.select(Some(0));
+        app.handle_key(KeyCode::Char('N'));
+        assert!(app.modal.is_none());
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Press 'r' in the Shares section")));
     }
 
     #[test]

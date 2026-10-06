@@ -165,8 +165,8 @@ shown, and that order is also the position number `d`/`n` operate on.
 - `n`: create a new dataset (prompts for name)
 - `d`: destroy the selected dataset (type the dataset's name to confirm)
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
-- `M`: create/edit a managed SMB share for the selected (mounted) dataset (see Shares → SMB shares)
-- `N`: create/edit an NFS share for the selected dataset (prompts for networks, hosts, read-only, and root user mapping — all optional; press `r` in the Shares section at least once first, so zfsctl knows the dataset's current share state before offering to change it)
+- `M`: create/edit a managed SMB share for the selected (mounted) dataset (see Shares → SMB shares). Always shown; if smbd isn't running, the dataset isn't mounted, or shares aren't loaded yet, it says so in the status line instead
+- `N`: create/edit an NFS share for the selected dataset (always shown; if nfsd isn't running it says so in the status line instead; prompts for networks, hosts, read-only, and root user mapping — all optional; press `r` in the Shares section at least once first, so zfsctl knows the dataset's current share state before offering to change it)
 
 ### Snapshots
 
