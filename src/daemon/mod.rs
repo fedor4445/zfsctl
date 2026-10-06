@@ -417,4 +417,14 @@ mod tests {
         assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Ok)));
         assert!(runs[0].message.starts_with("created hourly-20261007T030000Z"), "{}", runs[0].message);
     }
+
+    #[test]
+    fn a_cancelled_run_does_not_notify() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("notified");
+        let shared = shared(&dir, FakeRunner::new(""), Some(format!("touch {}", out.display())));
+        let outcome = Outcome { job_id: "j".into(), result: RunResult::Cancelled, message: "cancelled".into() };
+        shared.notify(&job(), &outcome);
+        assert!(!out.exists());
+    }
 }

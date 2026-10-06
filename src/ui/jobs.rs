@@ -60,6 +60,7 @@ where
         Some(RunResult::Ok) => "ok",
         Some(RunResult::Failed) => "failed",
         Some(RunResult::Skipped) => "skipped",
+        Some(RunResult::Cancelled) => "cancelled",
     };
     let duration = run.finished_at.map_or_else(|| "-".to_string(), |end| duration_text((end - run.started_at).num_seconds()));
     let mut line = format!("{when}  {word:<7}  {duration}");
@@ -153,6 +154,7 @@ pub fn last_result_text(run: Option<&Run>, now: DateTime<Utc>) -> String {
         RunResult::Ok => "ok",
         RunResult::Failed => "failed",
         RunResult::Skipped => "skipped",
+        RunResult::Cancelled => "cancelled",
     };
     format!("{word} {}", age_text(now, run.finished_at.unwrap_or(run.started_at)))
 }
@@ -432,5 +434,18 @@ mod tests {
         assert_eq!(new_snapshot_job_id("local", "tank/data", "hourly", &[]), "snap-local-tank-data-hourly");
         let taken = vec!["snap-local-tank-data-hourly".to_string()];
         assert_eq!(new_snapshot_job_id("local", "tank/data", "hourly", &taken), "snap-local-tank-data-hourly-2");
+    }
+
+    #[test]
+    fn a_cancelled_run_reads_as_cancelled_and_is_not_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        jobs::save(&dir.path().join("jobs.toml"), &[job("a")]).unwrap();
+        let h = History::new(dir.path().join("history.jsonl"));
+        h.append(&event("a", "r1", EventKind::Finished, "2026-10-06T09:30:00Z", Some(RunResult::Cancelled))).unwrap();
+        let view = load(dir.path(), &hosts(), None);
+        assert_eq!(view.failed_count(), 0, "a deliberate cancel is not a failure");
+        let run = view.last_run("a").unwrap();
+        assert!(last_result_text(Some(run), at("2026-10-06T09:35:00Z")).starts_with("cancelled"));
+        assert!(run_summary(run, &Utc).contains("cancelled"));
     }
 }
