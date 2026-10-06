@@ -6,7 +6,7 @@
 use signal_hook::consts::{SIGINT, SIGQUIT};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// How the shell session ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -51,13 +51,24 @@ pub struct ShellSignals {
     default_active: Arc<AtomicBool>,
 }
 
+static INSTALLED: OnceLock<ShellSignals> = OnceLock::new();
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+
 impl ShellSignals {
-    pub fn install() -> std::io::Result<Self> {
+    /// Registers the guard once for the whole process and returns it. Every
+    /// call after the first returns the same instance: a handler registered
+    /// by `signal-hook` is never unregistered, so a second registration with
+    /// its own flag would stay armed with the default action forever.
+    pub fn install() -> std::io::Result<&'static ShellSignals> {
+        let _serialized = INSTALL_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(existing) = INSTALLED.get() {
+            return Ok(existing);
+        }
         let default_active = Arc::new(AtomicBool::new(true));
         for signal in [SIGINT, SIGQUIT] {
             signal_hook::flag::register_conditional_default(signal, Arc::clone(&default_active))?;
         }
-        Ok(ShellSignals { default_active })
+        Ok(INSTALLED.get_or_init(|| ShellSignals { default_active }))
     }
 
     /// Ignores SIGINT/SIGQUIT until the returned guard is dropped.
@@ -100,6 +111,10 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
+    /// The guard flag is process-wide, as in production, so tests that toggle
+    /// it must not overlap.
+    static FLAG_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn args(c: &Command) -> Vec<String> {
         c.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
     }
@@ -141,20 +156,23 @@ mod tests {
 
     #[test]
     fn running_a_child_maps_exit_and_spawn_failure() {
+        let _serial = FLAG_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let signals = ShellSignals::install().unwrap();
         let mut ok = Command::new("sh");
         ok.args(["-c", "exit 3"]);
-        assert_eq!(run_command(ok, false, &signals), ShellOutcome::Finished);
+        assert_eq!(run_command(ok, false, signals), ShellOutcome::Finished);
         let mut gone = Command::new("sh");
         gone.args(["-c", "exit 255"]);
-        assert_eq!(run_command(gone, true, &signals), ShellOutcome::ConnectFailed);
+        assert_eq!(run_command(gone, true, signals), ShellOutcome::ConnectFailed);
         let missing = Command::new("/nonexistent/zfsctl-shell");
-        assert!(matches!(run_command(missing, false, &signals), ShellOutcome::SpawnFailed(_)));
+        assert!(matches!(run_command(missing, false, signals), ShellOutcome::SpawnFailed(_)));
     }
 
     #[test]
     fn sigint_is_swallowed_only_while_suspended_and_the_guard_is_restored() {
+        let _serial = FLAG_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let signals = ShellSignals::install().unwrap();
+        assert!(std::ptr::eq(signals, ShellSignals::install().unwrap()), "install is idempotent: one guard per process");
         assert!(signals.default_active.load(Ordering::SeqCst), "default behavior is on until a shell runs");
         {
             let _guard = signals.suspend();
