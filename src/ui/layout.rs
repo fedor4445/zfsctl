@@ -614,6 +614,17 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     }
 }
 
+/// Title of a ready picker popup. `Space toggle` is only mentioned for
+/// multi-select pickers; in a single-select picker Space does nothing.
+fn picker_title(filter: &str, multi_select: bool) -> String {
+    let keys = if multi_select { "Space toggle, Enter OK, Esc cancel" } else { "Enter OK, Esc cancel" };
+    if filter.is_empty() {
+        format!("Pick a value (type filter, {keys})")
+    } else {
+        format!("Pick — filter '{filter}' ({keys})")
+    }
+}
+
 /// Renders on top of `draw_modal`'s output whenever `app.picker` is
 /// `Some` -- the form underneath stays drawn exactly as `draw_modal`
 /// left it; this is a second, smaller popup layered above it.
@@ -660,11 +671,7 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
         })
         .collect();
 
-    let mut title = if picker.filter.is_empty() {
-        "Pick a value (type filter, Space toggle, Enter OK, Esc cancel)".to_string()
-    } else {
-        format!("Pick — filter '{}' (Space toggle, Enter OK, Esc cancel)", picker.filter)
-    };
+    let mut title = picker_title(&picker.filter, picker.multi_select);
     if let Some(note) = &picker.note {
         let inner = popup_area.width.saturating_sub(2) as usize;
         title = format!("{title} — {}", truncate_with_ellipsis(&sanitise_for_display(note), inner));
@@ -1121,4 +1128,12 @@ mod tests {
         assert!(rows.contains("Esc to close"), "{rows}");
         assert!(rows.contains("ENDMARK"), "{rows}");
     }
+    #[test]
+    fn picker_title_mentions_space_only_for_multi_select() {
+        assert_eq!(super::picker_title("", true), "Pick a value (type filter, Space toggle, Enter OK, Esc cancel)");
+        assert_eq!(super::picker_title("", false), "Pick a value (type filter, Enter OK, Esc cancel)");
+        assert_eq!(super::picker_title("wh", true), "Pick — filter 'wh' (Space toggle, Enter OK, Esc cancel)");
+        assert_eq!(super::picker_title("wh", false), "Pick — filter 'wh' (Enter OK, Esc cancel)");
+    }
+
 }
