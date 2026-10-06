@@ -116,6 +116,26 @@ fn apply_pending_account_fetches(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Leaves the TUI, runs a shell on the host, and puts the TUI back. The
+/// terminal is restored even when the shell could not be started, so a
+/// failure here can never strand the operator in a half-set-up terminal.
+fn run_shell_session(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    host_name: &str,
+    ssh_target: Option<&str>,
+    signals: &shell::ShellSignals,
+) -> Result<shell::ShellOutcome> {
+    let suspended = disable_raw_mode().and_then(|()| execute!(std::io::stdout(), LeaveAlternateScreen));
+    let outcome = match suspended {
+        Ok(()) => shell::run_shell(host_name, ssh_target, signals),
+        Err(e) => shell::ShellOutcome::SpawnFailed(format!("suspending the terminal: {e}")),
+    };
+    enable_raw_mode().map_err(|e| AppError::Config(format!("re-enabling raw mode: {e}")))?;
+    execute!(std::io::stdout(), EnterAlternateScreen).map_err(|e| AppError::Config(format!("re-entering the alternate screen: {e}")))?;
+    terminal.clear().map_err(|e| AppError::Config(format!("clearing the screen: {e}")))?;
+    Ok(outcome)
+}
+
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -125,6 +145,7 @@ fn event_loop(
 ) -> Result<()> {
     // `None` = never refreshed yet, so the first poll happens immediately.
     let mut last_vdevs_auto_refresh: Option<Instant> = None;
+    let signals = shell::ShellSignals::install().map_err(|e| e.to_string());
     loop {
         let refreshes = app.drain_worker_messages();
         apply_pending_new_hosts(app, inventory, config_path);
@@ -289,6 +310,24 @@ fn event_loop(
                             }
                         }
                     }
+                }
+            }
+        }
+        if app.pending_shell {
+            app.pending_shell = false;
+            if let Some(host) = inventory.hosts.get(app.selected_host) {
+                match &signals {
+                    Err(e) => app.set_error(format!("cannot open a shell: {e}")),
+                    Ok(signals) => match run_shell_session(terminal, &host.name, host.ssh_target.as_deref(), signals)? {
+                        shell::ShellOutcome::Finished => {
+                            app.status_message = None;
+                            // The shell may have changed ZFS state. Only a finished shell
+                            // refreshes: a refresh would wipe a failure message.
+                            app.refresh_visible(host.runner.clone());
+                        }
+                        shell::ShellOutcome::ConnectFailed => app.set_error(format!("could not open a shell on {}", host.name)),
+                        shell::ShellOutcome::SpawnFailed(e) => app.set_error(format!("could not start a shell on {}: {e}", host.name)),
+                    },
                 }
             }
         }
