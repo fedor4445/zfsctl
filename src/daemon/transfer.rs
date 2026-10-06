@@ -55,8 +55,8 @@ pub fn pump(mut send: Command, mut recv: Command, cancel: &AtomicBool, mut on_pr
     let send_log = drain_stderr(&mut sender);
     let recv_log = drain_stderr(&mut receiver);
 
-    let counted = Arc::new(AtomicU64::new(0));
-    let counter = Arc::clone(&counted);
+    let total_bytes = Arc::new(AtomicU64::new(0));
+    let counter = Arc::clone(&total_bytes);
     let copier = std::thread::spawn(move || {
         let mut buf = vec![0_u8; BUFFER];
         loop {
@@ -81,11 +81,11 @@ pub fn pump(mut send: Command, mut recv: Command, cancel: &AtomicBool, mut on_pr
             let _ = receiver.kill();
             break;
         }
-        on_progress(counted.load(Ordering::Relaxed));
+        on_progress(total_bytes.load(Ordering::Relaxed));
         std::thread::sleep(TICK);
     }
     let _ = copier.join();
-    on_progress(counted.load(Ordering::Relaxed));
+    on_progress(total_bytes.load(Ordering::Relaxed));
 
     let recv_status = receiver.wait()?;
     if !recv_status.success() {
@@ -94,7 +94,7 @@ pub fn pump(mut send: Command, mut recv: Command, cancel: &AtomicBool, mut on_pr
     }
     let send_status = sender.wait()?;
     Ok(Transfer {
-        bytes: counted.load(Ordering::Relaxed),
+        bytes: total_bytes.load(Ordering::Relaxed),
         cancelled,
         // A killed send is simply not ok; callers check `cancelled` first, and when the receive
         // failed they report the receive's message first.
