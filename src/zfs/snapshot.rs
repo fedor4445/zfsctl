@@ -19,18 +19,18 @@ pub fn parse_snapshot_list(output: &str) -> Result<Vec<Snapshot>> {
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() != 2 {
+            let &[full_name, used] = fields.as_slice() else {
                 return Err(AppError::Parse(format!(
                     "expected 2 fields in snapshot list line: {line:?}"
                 )));
-            }
-            let (dataset, name) = fields[0]
+            };
+            let (dataset, name) = full_name
                 .split_once('@')
                 .ok_or_else(|| AppError::Parse(format!("missing '@' in snapshot name: {line:?}")))?;
             Ok(Snapshot {
                 dataset: dataset.to_string(),
                 name: name.to_string(),
-                used: super::parse_numeric_or_dash(fields[1])
+                used: super::parse_numeric_or_dash(used)
                     .ok_or_else(|| AppError::Parse(format!("bad used in: {line:?}")))?,
             })
         })

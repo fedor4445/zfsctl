@@ -314,7 +314,8 @@ impl App {
     }
 
     pub fn current_section(&self) -> Section {
-        self.sections[self.selected_section]
+        // `selected_section` is always in range; Hosts (the first section) is the harmless fallback.
+        self.sections.get(self.selected_section).copied().unwrap_or(Section::Hosts)
     }
 
     /// Clears a completed scrub/resilver status once it's been shown
@@ -1171,8 +1172,8 @@ impl App {
                         self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                         None
                     } else if matches!(kind, FormKind::AddHost) {
-                        let name = fields[0].value.trim().to_string();
-                        let target = fields[1].value.trim().to_string();
+                        let name = field_value(&fields, 0).trim().to_string();
+                        let target = field_value(&fields, 1).trim().to_string();
                         let name_lower = name.to_lowercase();
                         let is_duplicate = self.hosts.iter().any(|h| h.eq_ignore_ascii_case(&name)) || self.pending_probes.contains(&name_lower);
                         if name.is_empty() || target.is_empty() {
@@ -1208,19 +1209,23 @@ impl App {
                     }
                 }
                 KeyCode::Backspace => {
-                    fields[focused].value.pop();
+                    if let Some(field) = fields.get_mut(focused) {
+                        field.value.pop();
+                    }
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
                 KeyCode::Char(c) => {
-                    fields[focused].value.push(c);
+                    if let Some(field) = fields.get_mut(focused) {
+                        field.value.push(c);
+                    }
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
                 KeyCode::F(2) => {
-                    if let Some(mut picker) = build_picker_state(&kind, focused, &fields[focused].value) {
+                    if let Some(mut picker) = build_picker_state(&kind, focused, field_value(&fields, focused)) {
                         if let Some((host, _)) = picker.account {
-                            self.open_account_picker(&mut picker, host, &fields[focused].value, Instant::now());
+                            self.open_account_picker(&mut picker, host, field_value(&fields, focused), Instant::now());
                         }
                         self.picker = Some(picker);
                     }
@@ -1951,11 +1956,17 @@ fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
 /// positionally per `FormKind`'s documented field order. Returns `None`
 /// if a required field is empty — the caller keeps the form modal open
 /// in that case rather than losing the user's input.
+/// The text of form field `index`; a missing field reads as empty, which every caller
+/// already treats as "not filled in" (forms are built with a fixed field count per kind).
+fn field_value(fields: &[FormField], index: usize) -> &str {
+    fields.get(index).map_or("", |f| f.value.as_str())
+}
+
 fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<PendingAction> {
     match kind {
         FormKind::CreatePool { host } => {
-            let name = fields[0].value.trim();
-            let vdev_spec_raw = fields[1].value.trim();
+            let name = field_value(fields, 0).trim();
+            let vdev_spec_raw = field_value(fields, 1).trim();
             if name.is_empty() || vdev_spec_raw.is_empty() {
                 return None;
             }
@@ -1967,11 +1978,11 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::CreatePoolFromDisks { host, disks } => {
-            let name = fields[0].value.trim();
+            let name = field_value(fields, 0).trim();
             if name.is_empty() {
                 return None;
             }
-            let redundancy = fields[1].value.trim();
+            let redundancy = field_value(fields, 1).trim();
             Some(PendingAction {
                 host: *host,
                 section: Section::Pools,
@@ -1979,7 +1990,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::AddVdev { host, pool } => {
-            let vdev_spec_raw = fields[0].value.trim();
+            let vdev_spec_raw = field_value(fields, 0).trim();
             if vdev_spec_raw.is_empty() {
                 return None;
             }
@@ -1991,11 +2002,11 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::AddVdevFromDisks { host, disks } => {
-            let pool = fields[0].value.trim();
+            let pool = field_value(fields, 0).trim();
             if pool.is_empty() {
                 return None;
             }
-            let redundancy = fields[1].value.trim();
+            let redundancy = field_value(fields, 1).trim();
             Some(PendingAction {
                 host: *host,
                 section: Section::Vdevs,
@@ -2003,7 +2014,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::ReplaceDisk { host, pool, old_disk } => {
-            let new_disk = fields[0].value.trim();
+            let new_disk = field_value(fields, 0).trim();
             if new_disk.is_empty() {
                 return None;
             }
@@ -2018,7 +2029,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::EditPoolProperty { host, pool, key } => {
-            let value = fields[0].value.clone();
+            let value = field_value(fields, 0).to_string();
             Some(PendingAction {
                 host: *host,
                 section: Section::PoolProperties,
@@ -2026,7 +2037,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::CreateDataset { host } => {
-            let name = fields[0].value.trim();
+            let name = field_value(fields, 0).trim();
             if name.is_empty() {
                 return None;
             }
@@ -2037,7 +2048,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::EditDatasetProperty { host, dataset, key } => {
-            let value = fields[0].value.clone();
+            let value = field_value(fields, 0).to_string();
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetProperties,
@@ -2045,7 +2056,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::CreateSnapshot { host, dataset } => {
-            let name = fields[0].value.trim();
+            let name = field_value(fields, 0).trim();
             if name.is_empty() {
                 return None;
             }
@@ -2056,10 +2067,10 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::ShareNfs { host, dataset } => {
-            let networks: Vec<String> = fields[0].value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let hosts: Vec<String> = fields[1].value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let read_only = fields[2].value.trim().to_lowercase().starts_with('y');
-            let root = fields[3].value.trim();
+            let networks: Vec<String> = field_value(fields, 0).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let hosts: Vec<String> = field_value(fields, 1).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let read_only = field_value(fields, 2).trim().to_lowercase().starts_with('y');
+            let root = field_value(fields, 3).trim();
             let root = if root.is_empty() { None } else { Some(root) };
             let value = crate::zfs::share::assemble_sharenfs(&networks, &hosts, read_only, root);
             Some(PendingAction {
@@ -2069,9 +2080,9 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::GrantPermission { host, dataset } => {
-            let recipient = parse_recipient_field(&fields[0].value)?;
-            let scope = parse_scope_field(&fields[1].value)?;
-            let perms = parse_required_perms_field(&fields[2].value)?;
+            let recipient = parse_recipient_field(&field_value(fields, 0))?;
+            let scope = parse_scope_field(&field_value(fields, 1))?;
+            let perms = parse_required_perms_field(&field_value(fields, 2))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2083,11 +2094,11 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::GrantPermissionSet { host, dataset } => {
-            let name = fields[0].value.trim();
+            let name = field_value(fields, 0).trim();
             if name.is_empty() {
                 return None;
             }
-            let perms = parse_required_perms_field(&fields[1].value)?;
+            let perms = parse_required_perms_field(&field_value(fields, 1))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2099,7 +2110,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::GrantCreateTimePermission { host, dataset } => {
-            let perms = parse_required_perms_field(&fields[0].value)?;
+            let perms = parse_required_perms_field(&field_value(fields, 0))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2107,7 +2118,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::RevokePermissions { host, dataset, target } => {
-            let perms = parse_required_perms_field(&fields[0].value)?;
+            let perms = parse_required_perms_field(&field_value(fields, 0))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2115,10 +2126,10 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::AddAclEntry { host, path, position } => {
-            let tag = parse_acl_recipient_field(&fields[0].value)?;
-            let permissions = parse_required_perms_field(&fields[1].value)?;
-            let flags = parse_optional_flags_field(&fields[2].value);
-            let entry_type = parse_acl_type_field(&fields[3].value)?;
+            let tag = parse_acl_recipient_field(&field_value(fields, 0))?;
+            let permissions = parse_required_perms_field(&field_value(fields, 1))?;
+            let flags = parse_optional_flags_field(&field_value(fields, 2));
+            let entry_type = parse_acl_type_field(&field_value(fields, 3))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetAcl,
@@ -2173,15 +2184,15 @@ fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs:
     let FormKind::ShareSmb { host, dataset, path, existing_user } = kind else {
         return Err("not an SMB form".to_string());
     };
-    let name = fields[0].value.trim();
+    let name = field_value(fields, 0).trim();
     crate::zfs::smb::validate_share_name(name)?;
-    let user = fields[1].value.trim();
+    let user = field_value(fields, 1).trim();
     if !user.is_empty() {
         crate::zfs::smb::validate_user(user)?;
     }
-    let password = &fields[2].value; // verbatim: spaces can be part of a password
-    let read_only = fields[3].value.trim().to_lowercase().starts_with('y');
-    let guest_ok = fields[4].value.trim().to_lowercase().starts_with('y');
+    let password = field_value(fields, 2); // verbatim: spaces can be part of a password
+    let read_only = field_value(fields, 3).trim().to_lowercase().starts_with('y');
+    let guest_ok = field_value(fields, 4).trim().to_lowercase().starts_with('y');
     if guest_ok && !user.is_empty() {
         return Err("Guest access can't be combined with a Valid user".to_string());
     }
@@ -2198,7 +2209,7 @@ fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs:
             return Err("A Samba password is required when setting or changing the valid user".to_string());
         }
     } else {
-        Some(crate::ui::modal::Secret(password.clone()))
+        Some(crate::ui::modal::Secret(password.to_string()))
     };
     Ok(PendingAction {
         host: *host,

@@ -83,11 +83,8 @@ pub fn human_size(bytes: u64) -> String {
             unit += 1;
             continue;
         }
-        return if rounded >= 100.0 {
-            format!("{rounded:.0}{}", UNITS[unit])
-        } else {
-            format!("{rounded:.1}{}", UNITS[unit])
-        };
+        let letter = UNITS.get(unit).copied().unwrap_or('E');
+        return if rounded >= 100.0 { format!("{rounded:.0}{letter}") } else { format!("{rounded:.1}{letter}") };
     }
 }
 

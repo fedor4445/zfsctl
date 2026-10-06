@@ -153,10 +153,9 @@ fn parse_shares(output: &str) -> Vec<Share> {
     let mut by_dataset: BTreeMap<String, String> = BTreeMap::new();
     for line in output.lines() {
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 4 {
+        let &[dataset, property, value, _] = fields.as_slice() else {
             continue;
-        }
-        let (dataset, property, value) = (fields[0], fields[1], fields[2]);
+        };
         if property == "sharenfs" {
             by_dataset.insert(dataset.to_string(), value.to_string());
         }

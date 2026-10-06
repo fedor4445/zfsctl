@@ -27,21 +27,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let gauge_rows = if gauge.is_some() { 1 } else { 0 };
     let status_height = text_rows + gauge_rows;
 
-    let outer = Layout::default()
+    let [body_area, status_area, hint_area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(status_height), Constraint::Length(1)])
-        .split(area);
+        .areas(area);
 
-    let chunks = Layout::default()
+    let [sidebar_area, main_area] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
-        .split(outer[0]);
+        .areas(body_area);
 
-    draw_sidebar(f, app, chunks[0]);
-    draw_main(f, app, chunks[1]);
-    draw_status_line(f, &status_text, status_style, gauge, &app.theme, outer[1]);
+    draw_sidebar(f, app, sidebar_area);
+    draw_main(f, app, main_area);
+    draw_status_line(f, &status_text, status_style, gauge, &app.theme, status_area);
     let hint_line = crate::ui::hints::hint_line(&crate::ui::hints::hints(app), area.width as usize, &app.theme);
-    f.render_widget(Paragraph::new(hint_line), outer[2]);
+    f.render_widget(Paragraph::new(hint_line), hint_area);
 
     if let Some(modal) = app.modal.clone() {
         draw_modal(f, &modal, &app.theme, area);
@@ -96,16 +96,16 @@ fn draw_status_line(f: &mut Frame, text: &str, style: Style, gauge: Option<(f64,
         f.render_widget(Paragraph::new(text).style(style).wrap(Wrap { trim: false }), area);
         return;
     };
-    let rows = Layout::default()
+    let [text_area, gauge_area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(area);
-    f.render_widget(Paragraph::new(text).style(style).wrap(Wrap { trim: false }), rows[0]);
+        .areas(area);
+    f.render_widget(Paragraph::new(text).style(style).wrap(Wrap { trim: false }), text_area);
     let progress = Gauge::default()
         .gauge_style(theme.info)
         .ratio((percent / 100.0).clamp(0.0, 1.0))
         .label(label);
-    f.render_widget(progress, rows[1]);
+    f.render_widget(progress, gauge_area);
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -142,20 +142,20 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         draw_vdevs(f, app, area);
         return;
     }
-    let section = app.sections[app.selected_section];
+    let section = app.current_section();
     if section == Section::Pools || section == Section::Datasets {
-        let panes = Layout::default()
+        let [left, right] = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(area);
+            .areas(area);
         match section {
             Section::Pools => {
-                draw_pools(f, app, panes[0]);
-                draw_pool_properties(f, app, panes[1]);
+                draw_pools(f, app, left);
+                draw_pool_properties(f, app, right);
             }
             Section::Datasets => {
-                draw_datasets(f, app, panes[0]);
-                draw_dataset_properties(f, app, panes[1]);
+                draw_datasets(f, app, left);
+                draw_dataset_properties(f, app, right);
             }
             _ => unreachable!("only Pools/Datasets reach this branch"),
         }
@@ -189,15 +189,15 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let list_area = if app.hosts.len() == 1 {
-        let chunks = Layout::default()
+        let [list_part, hint_part] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(4)])
-            .split(area);
+            .areas(area);
         let hint = Paragraph::new("Only this host is configured. Press 'n' to add another host.".to_string())
             .wrap(Wrap { trim: false })
             .style(theme.dim());
-        f.render_widget(hint, chunks[1]);
-        chunks[0]
+        f.render_widget(hint, hint_part);
+        list_part
     } else {
         area
     };
@@ -808,18 +808,19 @@ fn wrapped_line_count(text: &str, width: u16) -> u16 {
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let height = height.min(area.height);
     let margin = area.height.saturating_sub(height) / 2;
-    let vertical = Layout::default()
+    let [_, middle_row, _] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(margin), Constraint::Length(height), Constraint::Min(0)])
-        .split(area);
-    Layout::default()
+        .areas(area);
+    let [_, popup, _] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage((100 - percent_x) / 2),
             Constraint::Percentage(percent_x),
             Constraint::Percentage((100 - percent_x) / 2),
         ])
-        .split(vertical[1])[1]
+        .areas(middle_row);
+    popup
 }
 
 /// The border style for a Pools/Datasets split-pane block: the theme's

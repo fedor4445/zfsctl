@@ -46,20 +46,20 @@ pub fn parse_pool_list(output: &str) -> Result<Vec<Pool>> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() != 5 {
+            let &[name, size, alloc, free, health] = fields.as_slice() else {
                 return Err(AppError::Parse(format!(
                     "expected 5 fields in zpool list line: {line:?}"
                 )));
-            }
+            };
             Ok(Pool {
-                name: fields[0].to_string(),
-                size: super::parse_numeric_or_dash(fields[1])
+                name: name.to_string(),
+                size: super::parse_numeric_or_dash(size)
                     .ok_or_else(|| AppError::Parse(format!("bad size in: {line:?}")))?,
-                allocated: super::parse_numeric_or_dash(fields[2])
+                allocated: super::parse_numeric_or_dash(alloc)
                     .ok_or_else(|| AppError::Parse(format!("bad alloc in: {line:?}")))?,
-                free: super::parse_numeric_or_dash(fields[3])
+                free: super::parse_numeric_or_dash(free)
                     .ok_or_else(|| AppError::Parse(format!("bad free in: {line:?}")))?,
-                health: PoolHealth::parse(fields[4]),
+                health: PoolHealth::parse(health),
             })
         })
         .collect()
@@ -157,10 +157,12 @@ pub enum ScanStatus {
 /// wording differences between resilver/scrub/cancel summaries.
 fn scan_summary_reports_errors(line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    for (i, word) in words.iter().enumerate() {
-        if (*word == "errors" || *word == "error") && i > 0 {
-            if let Ok(count) = words[i - 1].parse::<u64>() {
-                return count > 0;
+    for pair in words.windows(2) {
+        if let &[previous, word] = pair {
+            if word == "errors" || word == "error" {
+                if let Ok(count) = previous.parse::<u64>() {
+                    return count > 0;
+                }
             }
         }
     }
@@ -199,7 +201,7 @@ fn parse_percent_and_eta(line: &str) -> Option<(f64, Option<String>)> {
 pub fn parse_pool_scan_status(output: &str) -> Option<ScanStatus> {
     let lines: Vec<&str> = output.lines().collect();
     let scan_idx = lines.iter().position(|l| l.trim_start().starts_with("scan:"))?;
-    let summary = lines[scan_idx].trim_start().strip_prefix("scan:")?.trim().to_string();
+    let summary = lines.get(scan_idx)?.trim_start().strip_prefix("scan:")?.trim().to_string();
     if summary.is_empty() || summary == "none requested" {
         return None;
     }
@@ -212,7 +214,7 @@ pub fn parse_pool_scan_status(output: &str) -> Option<ScanStatus> {
         // progress line.
         let mut percent_done = None;
         let mut eta = None;
-        for line in &lines[scan_idx + 1..] {
+        for line in lines.iter().skip(scan_idx + 1) {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 break;

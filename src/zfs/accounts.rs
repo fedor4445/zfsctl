@@ -28,11 +28,11 @@ fn parse_colon_lines(output: &str, id_field: usize, min_fields: usize) -> Vec<Ac
             if fields.len() < min_fields {
                 return None;
             }
-            let name = fields[0];
+            let name = *fields.first()?;
             if name.is_empty() || name.starts_with('+') || name.starts_with('-') || name.chars().any(char::is_control) {
                 return None;
             }
-            let id = fields[id_field].parse::<u32>().ok()?;
+            let id = fields.get(id_field)?.parse::<u32>().ok()?;
             Some(Account { name: name.to_string(), id })
         })
         .collect()

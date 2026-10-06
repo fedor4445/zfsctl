@@ -152,15 +152,15 @@ pub fn parse_property_list(output: &str) -> Result<Vec<Property>> {
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() != 4 {
+            let &[_, name, value, source] = fields.as_slice() else {
                 return Err(AppError::Parse(format!(
                     "expected 4 fields in get-all property line: {line:?}"
                 )));
-            }
+            };
             Ok(Property {
-                name: fields[1].to_string(),
-                value: fields[2].to_string(),
-                source: PropertySource::parse(fields[3]),
+                name: name.to_string(),
+                value: value.to_string(),
+                source: PropertySource::parse(source),
             })
         })
         .collect()

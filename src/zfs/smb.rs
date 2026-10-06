@@ -87,7 +87,10 @@ fn finish(p: Partial, out: &mut Vec<SmbShare>) -> Result<()> {
 pub fn parse_managed(conf: &str) -> Result<Vec<SmbShare>> {
     let Some(span) = locate_block(conf)? else { return Ok(Vec::new()) };
     let lines: Vec<&str> = conf[span.start..span.end].lines().collect();
-    let body = &lines[1..lines.len() - 1];
+    // `locate_block` guarantees the start and end marker lines, so there are always two to strip.
+    let Some(body) = lines.split_first().and_then(|(_, rest)| rest.split_last()).map(|(_, body)| body) else {
+        return Err(smb_err("managed block has no marker lines"));
+    };
     let mut shares = Vec::new();
     let mut current: Option<Partial> = None;
     for raw in body {

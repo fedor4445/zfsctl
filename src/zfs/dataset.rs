@@ -50,26 +50,26 @@ pub fn parse_dataset_list(output: &str) -> Result<Vec<Dataset>> {
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() != 7 {
+            let &[name, used, available, referenced, mountpoint, kind, mounted] = fields.as_slice() else {
                 return Err(AppError::Parse(format!(
                     "expected 7 fields in zfs list line: {line:?}"
                 )));
-            }
-            let mountpoint = match (fields[4], fields[6]) {
+            };
+            let mountpoint = match (mountpoint, mounted) {
                 ("-", _) | ("none", _) | ("legacy", _) => None,
                 (mp, "yes") => Some(mp.to_string()),
                 (_, _) => None,
             };
             Ok(Dataset {
-                name: fields[0].to_string(),
-                used: super::parse_numeric_or_dash(fields[1])
+                name: name.to_string(),
+                used: super::parse_numeric_or_dash(used)
                     .ok_or_else(|| AppError::Parse(format!("bad used in: {line:?}")))?,
-                available: super::parse_numeric_or_dash(fields[2])
+                available: super::parse_numeric_or_dash(available)
                     .ok_or_else(|| AppError::Parse(format!("bad avail in: {line:?}")))?,
-                referenced: super::parse_numeric_or_dash(fields[3])
+                referenced: super::parse_numeric_or_dash(referenced)
                     .ok_or_else(|| AppError::Parse(format!("bad refer in: {line:?}")))?,
                 mountpoint,
-                kind: DatasetKind::parse(fields[5]),
+                kind: DatasetKind::parse(kind),
             })
         })
         .collect()
