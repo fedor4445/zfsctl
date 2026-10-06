@@ -95,60 +95,6 @@ pub fn rollback_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) 
     Ok(())
 }
 
-/// Returns true if `s` contains only characters valid in a ZFS
-/// dataset/snapshot name (alphanumerics, `_-./:@`). This is enforced
-/// here, not merely assumed, because `replicate_snapshot` interpolates
-/// `source`/`dest_dataset` directly into a shell command line — an
-/// unvalidated value containing shell metacharacters (`;`, `` ` ``,
-/// `$(...)`, `|`, etc.) would be a command-injection vector.
-fn is_safe_zfs_target(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.' | '/' | '@'))
-}
-
-/// Returns true if `s` contains only characters valid in an SSH
-/// destination (hostname/IP, optional `user@`, optional `:port`, or a
-/// bracketed IPv6 literal). Same rationale as `is_safe_zfs_target`:
-/// `host` is interpolated into the same shell command line.
-fn is_safe_host(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | ':' | '[' | ']'))
-}
-
-/// Replicates `source` (a `dataset@snapshot` name) to `dest_dataset`.
-/// `dest_host` is the SSH destination for the receiving side, or `None`
-/// to receive locally on the same host that `runner` targets.
-pub fn replicate_snapshot(
-    runner: &dyn CommandRunner,
-    source: &str,
-    dest_host: Option<&str>,
-    dest_dataset: &str,
-) -> Result<()> {
-    if !is_safe_zfs_target(source) {
-        return Err(AppError::Parse(format!("invalid snapshot name for replication: {source:?}")));
-    }
-    if !is_safe_zfs_target(dest_dataset) {
-        return Err(AppError::Parse(format!("invalid destination dataset name for replication: {dest_dataset:?}")));
-    }
-    if let Some(host) = dest_host {
-        if !is_safe_host(host) {
-            return Err(AppError::Parse(format!("invalid destination host for replication: {host:?}")));
-        }
-    }
-
-    // `--` before each caller-supplied value stops the receiving command
-    // from treating a value that starts with `-` as an option flag
-    // (argument injection) — applies to `zfs send`/`zfs receive` and, for
-    // the remote leg, to `ssh` itself.
-    let pipeline = match dest_host {
-        None => format!("zfs send -- {source} | zfs receive -- {dest_dataset}"),
-        Some(host) => format!("zfs send -- {source} | ssh -- {host} zfs receive -- {dest_dataset}"),
-    };
-    super::run_checked(runner, "sh", &["-c", &pipeline], &pipeline)?;
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -242,67 +188,11 @@ tank/data@2026-09-04\t2000
     }
 
     #[test]
-    fn replicate_snapshot_surfaces_command_failure() {
-        let runner = FakeRunner::failing("broken pipe", 1);
-        let result = replicate_snapshot(&runner, "tank/data@snap1", None, "backup/data");
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn guards_against_dataset_names_that_look_like_flags() {
         let runner = FakeRunner::new("");
         destroy_snapshot(&runner, "-r", "snap1").unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the target so zfs cannot parse it as an option");
-    }
-
-    #[test]
-    fn replicate_snapshot_local_destination_builds_expected_pipeline() {
-        let runner = FakeRunner::new("");
-        replicate_snapshot(&runner, "tank/data@snap1", None, "backup/data").unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(
-            calls[0],
-            ("sh".to_string(), vec!["-c".to_string(), "zfs send -- tank/data@snap1 | zfs receive -- backup/data".to_string()])
-        );
-    }
-
-    #[test]
-    fn replicate_snapshot_remote_destination_builds_expected_pipeline() {
-        let runner = FakeRunner::new("");
-        replicate_snapshot(&runner, "tank/data@snap1", Some("backup-host"), "backup/data").unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(
-            calls[0],
-            (
-                "sh".to_string(),
-                vec!["-c".to_string(), "zfs send -- tank/data@snap1 | ssh -- backup-host zfs receive -- backup/data".to_string()]
-            )
-        );
-    }
-
-    #[test]
-    fn replicate_snapshot_rejects_source_with_shell_metacharacters() {
-        let runner = FakeRunner::new("");
-        let result = replicate_snapshot(&runner, "tank/data@snap1; rm -rf /", None, "backup/data");
-        assert!(result.is_err());
-        assert!(runner.calls.lock().unwrap().is_empty(), "must reject before ever running a command");
-    }
-
-    #[test]
-    fn replicate_snapshot_rejects_dest_dataset_with_shell_metacharacters() {
-        let runner = FakeRunner::new("");
-        let result = replicate_snapshot(&runner, "tank/data@snap1", None, "backup/data`whoami`");
-        assert!(result.is_err());
-        assert!(runner.calls.lock().unwrap().is_empty(), "must reject before ever running a command");
-    }
-
-    #[test]
-    fn replicate_snapshot_rejects_host_with_shell_metacharacters() {
-        let runner = FakeRunner::new("");
-        let result = replicate_snapshot(&runner, "tank/data@snap1", Some("host; rm -rf /"), "backup/data");
-        assert!(result.is_err());
-        assert!(runner.calls.lock().unwrap().is_empty(), "must reject before ever running a command");
     }
 
     fn args_of(runner: &FakeRunner) -> Vec<Vec<String>> {
