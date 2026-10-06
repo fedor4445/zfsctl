@@ -118,6 +118,7 @@ On the four account fields (SMB valid user, NFS "Root user mapping" (users only)
 - `d`: destroy the selected pool (type the pool's name to confirm)
 - `s`: scrub the selected pool (y/n confirm)
 - `R`: resilver the selected pool (y/n confirm)
+- `J`: schedule a recurring scrub of the selected pool (opens the job form with host and pool filled in; see **Scheduled jobs** below)
 
 ### Pool/Dataset properties pane (right pane, `Right` to focus)
 
@@ -220,9 +221,19 @@ FreeBSD's `sharesmb` ZFS property doesn't work (`zfs set sharesmb=on` prints "No
 - **Removing a share** (`d` in Shares) deletes its stanza but leaves the user's Samba password in place, since the same user may also back a hand-written share.
 - SMB shares are only listed while `smbd` is running; a config or parse error shows in the Shares status line while NFS rows still render.
 
+### Jobs
+
+The Jobs section lists the scheduled jobs of every host (it is global, not per host). Its title says whether the daemon is running; the status line shows `N jobs failed` from any section while an enabled job's latest run failed.
+
+- `Up` / `Down`: select a job; the bottom panel shows its last 8 runs, its schedule and its next three run times
+- `n`: new scrub job (host, pool, schedule, catch up; `F2` lists the configured hosts and schedule presets, and the form previews the next three run times as you type)
+- `Enter`: edit the selected job (its id, creation time and enabled flag are kept)
+- `Space`: enable or disable the selected job
+- `d`: delete the selected job (y/n; its past runs stay in the history until pruned)
+
 ## Scheduled jobs (`zfsctl daemon`)
 
-`zfsctl daemon` runs scheduled jobs on the hub, unattended. It must run as root, like the TUI, and reaches other hosts over the same SSH + sudo path, so it needs no new sudoers entries. The only job kind so far is **scrub**: run `zpool scrub` on a pool of any configured host on a cron schedule, watch it to completion, and record the result. (A Jobs section in the TUI to manage these comes later; until then edit `jobs.toml` by hand.)
+`zfsctl daemon` runs scheduled jobs on the hub, unattended. It must run as root, like the TUI, and reaches other hosts over the same SSH + sudo path, so it needs no new sudoers entries. The only job kind so far is **scrub**: run `zpool scrub` on a pool of any configured host on a cron schedule, watch it to completion, and record the result. Manage jobs from the **Jobs** section of the TUI (see its keys above, or `J` on a pool in Pools), or edit `jobs.toml` by hand: the daemon notices either within a second. The TUI only reads the state directory, so it must run on the hub (as root) to see the daemon's jobs.
 
 **Install the service.** Copy the binary and the rc script, then enable it:
 
