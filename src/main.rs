@@ -4,6 +4,7 @@ mod daemon;
 mod error;
 mod exec;
 mod hosts;
+mod jobs;
 mod ui;
 mod zfs;
 
