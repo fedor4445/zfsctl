@@ -106,17 +106,29 @@ where
     vec![describe(expr), format!("Next: {next}")]
 }
 
-/// `scrub-<host>-<pool>`, made safe for a file key, with `-2`, `-3`, ... added if taken.
-pub fn new_job_id(host: &str, pool: &str, existing: &[String]) -> String {
-    let safe = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '-' }).collect::<String>();
-    let base = format!("scrub-{}-{}", safe(host), safe(pool));
-    let mut candidate = base.clone();
+fn safe_key(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '-' }).collect()
+}
+
+/// `base`, with `-2`, `-3`, ... added until it is not in `existing`.
+fn unique(base: &str, existing: &[String]) -> String {
+    let mut candidate = base.to_string();
     let mut n = 1_u32;
     while existing.contains(&candidate) {
         n += 1;
         candidate = format!("{base}-{n}");
     }
     candidate
+}
+
+/// `scrub-<host>-<pool>`, made safe for a file key, with `-2`, `-3`, ... added if taken.
+pub fn new_job_id(host: &str, pool: &str, existing: &[String]) -> String {
+    unique(&format!("scrub-{}-{}", safe_key(host), safe_key(pool)), existing)
+}
+
+/// `snap-<host>-<dataset>-<prefix>`, made safe the same way.
+pub fn new_snapshot_job_id(host: &str, dataset: &str, prefix: &str, existing: &[String]) -> String {
+    unique(&format!("snap-{}-{}-{}", safe_key(host), safe_key(dataset), safe_key(prefix)), existing)
 }
 
 /// `just now`, `45m ago`, `3h ago`, `2d ago`. A time in the future reads as `just now`.
@@ -413,5 +425,12 @@ mod tests {
         let view = load(dir.path(), &["local".to_string()], None);
         assert!(!view.unsupported.contains_key("a"));
         assert!(view.unsupported["b"].contains("prune each other"));
+    }
+
+    #[test]
+    fn snapshot_job_ids_are_safe_file_keys_and_unique() {
+        assert_eq!(new_snapshot_job_id("local", "tank/data", "hourly", &[]), "snap-local-tank-data-hourly");
+        let taken = vec!["snap-local-tank-data-hourly".to_string()];
+        assert_eq!(new_snapshot_job_id("local", "tank/data", "hourly", &taken), "snap-local-tank-data-hourly-2");
     }
 }

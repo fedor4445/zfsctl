@@ -194,6 +194,10 @@ pub enum FormKind {
     /// host picker and for validation); `existing` is the job being edited, if any; `taken_ids`
     /// are the job ids already in use, so a new job can be named without a collision.
     Job { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, taken_ids: Vec<String> },
+    /// Fields: `[host, dataset, recursive (y/n), prefix, keep, schedule, catch_up (y/n)]`. `jobs`
+    /// is every current job, so the form can refuse a prefix another job already uses on the
+    /// same host and dataset and can name a new job without a collision.
+    SnapshotJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
     /// Fields: `[name, vdev_spec]`.
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.

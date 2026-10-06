@@ -1177,9 +1177,16 @@ impl App {
             KeyCode::Char('n') if self.current_section() == Section::Jobs => {
                 self.modal = Some(self.job_form(None, ""));
             }
+            KeyCode::Char('N') if self.current_section() == Section::Jobs => {
+                self.modal = Some(self.snapshot_job_form(None, ""));
+            }
+            KeyCode::Char('J') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => match self.selected_dataset_name() {
+                Some(dataset) => self.modal = Some(self.snapshot_job_form(None, &dataset)),
+                None => self.status_message = Some("Select a dataset first, then press J to schedule snapshots of it".to_string()),
+            },
             KeyCode::Enter if self.current_section() == Section::Jobs => {
                 if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).cloned() {
-                    self.modal = Some(self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")));
+                    self.modal = Some(if job.kind == crate::jobs::KIND_SNAPSHOT { self.snapshot_job_form(Some(job), "") } else { self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")) });
                 }
             }
             KeyCode::Char(' ') if self.current_section() == Section::Jobs => {
@@ -1407,6 +1414,18 @@ impl App {
                         }
                     } else if matches!(kind, FormKind::Job { .. }) {
                         match build_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
+                            Ok(mut action) => {
+                                action.host = self.selected_host;
+                                Some(action)
+                            }
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
+                        }
+                    } else if matches!(kind, FormKind::SnapshotJob { .. }) {
+                        match build_snapshot_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
                                 action.host = self.selected_host;
                                 Some(action)
@@ -2227,6 +2246,85 @@ impl App {
     }
 }
 
+impl App {
+    fn snapshot_job_form(&self, existing: Option<crate::jobs::Job>, dataset: &str) -> Modal {
+        let yn = |b: bool| if b { "y" } else { "n" }.to_string();
+        let (title, host, dataset, recursive, prefix, keep, schedule, catch_up) = match &existing {
+            Some(j) => (format!("Edit snapshot job '{}'", j.id), j.host.clone(), j.dataset.clone().unwrap_or_default(), j.recursive, crate::jobs::effective_prefix(j).to_string(), j.keep.unwrap_or(1), j.schedule.clone(), j.catch_up),
+            None => ("New snapshot job".to_string(), self.active_host_name().to_string(), dataset.to_string(), false, crate::jobs::DEFAULT_PREFIX.to_string(), 24, "0 * * * *".to_string(), true),
+        };
+        Modal::Form {
+            title,
+            fields: vec![
+                FormField { label: "Host".to_string(), value: host },
+                FormField { label: "Dataset".to_string(), value: dataset },
+                FormField { label: "Recursive (y/n)".to_string(), value: yn(recursive) },
+                FormField { label: "Prefix".to_string(), value: prefix },
+                FormField { label: "Keep (newest N)".to_string(), value: keep.to_string() },
+                FormField { label: "Schedule".to_string(), value: schedule },
+                FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
+            ],
+            focused: 0,
+            description: Some("Only snapshots named <prefix>-<timestamp> made by this job are ever pruned.".to_string()),
+            kind: FormKind::SnapshotJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+        }
+    }
+}
+
+/// Turns a submitted snapshot-job form into a save, or says what is wrong. It refuses exactly
+/// what the daemon would refuse (`jobs::resolve`) plus a prefix another job already uses.
+fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+    let FormKind::SnapshotJob { hosts, existing, jobs } = kind else { return Err("not a snapshot job form".to_string()) };
+    let host = field_value(fields, 0).trim();
+    if !hosts.iter().any(|h| h == host) {
+        return Err(format!("Unknown host '{host}'. Configured hosts: {}", hosts.join(", ")));
+    }
+    let dataset = field_value(fields, 1).trim();
+    if !crate::jobs::valid_dataset(dataset) {
+        return Err("Dataset must look like tank/data (letters, digits and _ - : . /)".to_string());
+    }
+    let yes_no = |label: &str, raw: &str, blank: bool| match raw.trim().to_lowercase().as_str() {
+        "" => Ok(blank),
+        "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        other => Err(format!("{label} must be y or n, not '{other}'")),
+    };
+    let recursive = yes_no("Recursive", field_value(fields, 2), false)?;
+    let prefix = match field_value(fields, 3).trim() {
+        "" => crate::jobs::DEFAULT_PREFIX,
+        p => p,
+    };
+    if !crate::jobs::valid_prefix(prefix) {
+        return Err("Prefix may only use letters, digits, _ - and .".to_string());
+    }
+    let keep: u32 = field_value(fields, 4).trim().parse().ok().filter(|k| *k >= 1).ok_or_else(|| "Keep must be a whole number, at least 1".to_string())?;
+    let schedule = field_value(fields, 5).trim();
+    crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
+    let catch_up = yes_no("Catch up", field_value(fields, 6), true)?;
+    let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+    let job = match existing {
+        Some(old) => crate::jobs::Job { host: host.to_string(), dataset: Some(dataset.to_string()), recursive, prefix: Some(prefix.to_string()), keep: Some(keep), schedule: schedule.to_string(), catch_up, ..(**old).clone() },
+        None => crate::jobs::Job {
+            id: crate::ui::jobs::new_snapshot_job_id(host, dataset, prefix, &taken),
+            host: host.to_string(),
+            kind: crate::jobs::KIND_SNAPSHOT.to_string(),
+            pool: None,
+            dataset: Some(dataset.to_string()),
+            recursive,
+            prefix: Some(prefix.to_string()),
+            keep: Some(keep),
+            schedule: schedule.to_string(),
+            catch_up,
+            enabled: true,
+            created_at: Some(now),
+        },
+    };
+    if let Some(other) = crate::jobs::clashing_job(jobs, &job) {
+        return Err(format!("Job '{}' already snapshots {dataset} with prefix '{prefix}': they would prune each other. Use another prefix.", other.id));
+    }
+    Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
+}
+
 /// Turns a submitted job form into a save, or says what is wrong with it. An edit keeps the
 /// job's id, creation time and enabled flag; a new job gets a fresh id and `created_at = now`.
 fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
@@ -2491,7 +2589,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::Job { .. } => None,
+        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } => None,
     }
 }
 
@@ -8109,5 +8207,95 @@ mod tests {
         assert!(app.shares_loaded);
         assert_eq!(app.status_message.as_deref(), Some("share created"));
     }
-}
 
+    #[test]
+    fn n_in_jobs_opens_a_blank_snapshot_form_with_sensible_defaults() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.handle_key(KeyCode::Char('N'));
+        assert_eq!(form_values(&app), ["local", "", "n", "auto", "24", "0 * * * *", "y"]);
+    }
+
+    #[test]
+    fn j_on_a_dataset_prefills_the_snapshot_form() {
+        let mut app = datasets_app_with_mount(Some("/tank/media"));
+        app.handle_key(KeyCode::Char('J'));
+        assert_eq!(form_values(&app)[1], "tank/media");
+    }
+
+    #[test]
+    fn enter_on_a_snapshot_job_edits_it_in_the_snapshot_form() {
+        let (mut app, _dir) = app_with_jobs(&[crate::jobs::Job::test_snapshot("s", "tank/data", "hourly", 7)]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(form_values(&app), ["local", "tank/data", "n", "hourly", "7", "0 * * * *", "y"]);
+    }
+
+    fn snapshot_kind(existing: Option<crate::jobs::Job>, jobs: Vec<crate::jobs::Job>) -> FormKind {
+        FormKind::SnapshotJob { hosts: vec!["local".to_string()], existing: existing.map(Box::new), jobs }
+    }
+
+    fn snap_fields(values: [&str; 7]) -> Vec<FormField> {
+        values.iter().map(|v| FormField { label: String::new(), value: (*v).to_string() }).collect()
+    }
+
+    fn snap_err(values: [&str; 7], jobs: Vec<crate::jobs::Job>) -> String {
+        build_snapshot_job_action(&snapshot_kind(None, jobs), &snap_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err()
+    }
+
+    #[test]
+    fn a_valid_snapshot_form_builds_a_save_of_a_new_job_with_a_fresh_id_and_creation_time() {
+        let now = at_utc("2026-10-06T12:00:00Z");
+        let action = build_snapshot_job_action(&snapshot_kind(None, vec![]), &snap_fields(["local", " tank/data ", "y", "hourly", "24", "0 * * * *", "y"]), std::path::Path::new("/state"), now).unwrap();
+        assert_eq!(action.section, Section::Jobs);
+        let MutationCall::SaveJob { state_dir, job } = action.call else { panic!("{:?}", action.call) };
+        assert_eq!(state_dir, std::path::PathBuf::from("/state"));
+        assert_eq!((job.id.as_str(), job.kind.as_str(), job.dataset.as_deref(), job.recursive, job.prefix.as_deref(), job.keep), ("snap-local-tank-data-hourly", crate::jobs::KIND_SNAPSHOT, Some("tank/data"), true, Some("hourly"), Some(24)));
+        assert!(job.pool.is_none() && job.catch_up && job.enabled);
+        assert_eq!(job.created_at, Some(now));
+    }
+
+    #[test]
+    fn blank_prefix_and_blank_yes_no_fields_take_their_defaults() {
+        let now = at_utc("2026-10-06T12:00:00Z");
+        let action = build_snapshot_job_action(&snapshot_kind(None, vec![]), &snap_fields(["local", "tank", "", "", "3", "0 * * * *", ""]), std::path::Path::new("/s"), now).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        assert_eq!((job.recursive, job.prefix.as_deref(), job.catch_up), (false, Some("auto"), true));
+    }
+
+    #[test]
+    fn an_edited_snapshot_job_keeps_its_id_creation_time_and_enabled_flag() {
+        let mut existing = crate::jobs::Job::test_snapshot("keep-me", "tank/data", "hourly", 3);
+        existing.enabled = false;
+        existing.created_at = Some(at_utc("2026-01-01T00:00:00Z"));
+        let kind = snapshot_kind(Some(existing.clone()), vec![existing]);
+        let action = build_snapshot_job_action(&kind, &snap_fields(["local", "tank/other", "n", "daily", "9", "0 2 * * *", "n"]), std::path::Path::new("/s"), at_utc("2026-10-06T12:00:00Z")).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        assert_eq!((job.id.as_str(), job.enabled, job.created_at), ("keep-me", false, Some(at_utc("2026-01-01T00:00:00Z"))));
+        assert_eq!((job.dataset.as_deref(), job.prefix.as_deref(), job.keep, job.catch_up), (Some("tank/other"), Some("daily"), Some(9), false));
+    }
+
+    #[test]
+    fn the_snapshot_form_refuses_what_the_daemon_would_refuse() {
+        let good = ["local", "tank/data", "n", "hourly", "24", "0 * * * *", "y"];
+        assert!(build_snapshot_job_action(&snapshot_kind(None, vec![]), &snap_fields(good), std::path::Path::new("/x"), chrono::Utc::now()).is_ok());
+        assert!(snap_err(["nope", "tank/data", "n", "hourly", "24", "0 * * * *", "y"], vec![]).contains("Unknown host"));
+        assert!(snap_err(["local", "", "n", "hourly", "24", "0 * * * *", "y"], vec![]).contains("Dataset"));
+        assert!(snap_err(["local", "-rf", "n", "hourly", "24", "0 * * * *", "y"], vec![]).contains("Dataset"));
+        assert!(snap_err(["local", "tank/data", "maybe", "hourly", "24", "0 * * * *", "y"], vec![]).contains("Recursive"));
+        assert!(snap_err(["local", "tank/data", "n", "a b", "24", "0 * * * *", "y"], vec![]).contains("Prefix"));
+        assert!(snap_err(["local", "tank/data", "n", "hourly", "0", "0 * * * *", "y"], vec![]).contains("Keep"));
+        assert!(snap_err(["local", "tank/data", "n", "hourly", "x", "0 * * * *", "y"], vec![]).contains("Keep"));
+        assert!(snap_err(["local", "tank/data", "n", "hourly", "24", "bogus", "y"], vec![]).contains("Schedule"));
+        assert!(snap_err(["local", "tank/data", "n", "hourly", "24", "0 * * * *", "q"], vec![]).contains("Catch up"));
+    }
+
+    #[test]
+    fn the_snapshot_form_refuses_a_prefix_another_job_already_uses_on_that_dataset() {
+        let other = crate::jobs::Job::test_snapshot("other", "tank/data", "hourly", 5);
+        assert!(snap_err(["local", "tank/data", "n", "hourly", "24", "0 * * * *", "y"], vec![other.clone()]).contains("other"));
+        // Editing that same job is fine, as is a different prefix.
+        let kind = snapshot_kind(Some(other.clone()), vec![other]);
+        assert!(build_snapshot_job_action(&kind, &snap_fields(["local", "tank/data", "n", "hourly", "9", "0 * * * *", "y"]), std::path::Path::new("/x"), chrono::Utc::now()).is_ok());
+    }
+}

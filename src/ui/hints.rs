@@ -171,6 +171,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 // explains why (status message) instead of silently vanishing.
                 v.push(h("N", "NFS share", 3));
                 v.push(h("M", "SMB share", 3));
+                v.push(h("J", "Snapshot job", 3));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -257,7 +258,8 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("Space", if job.enabled { "Disable" } else { "Enable" }, 2));
                 v.push(h("d", "Delete", 2).tone(Tone::Warn));
             }
-            v.push(h("n", "New job", 2));
+            v.push(h("n", "New scrub job", 2));
+            v.push(h("N", "New snapshot job", 3));
             v.push(h("r", "Refresh", 4));
         }
         // Never in `App::sections`; listed so a future section forces a decision here.
@@ -490,7 +492,7 @@ mod tests {
     fn the_jobs_section_advertises_edit_enable_or_disable_delete_and_new_for_the_selected_job() {
         let selected = jobs(true);
         let labels: Vec<(&str, &str)> = hints(&selected).iter().map(|h| (h.key, h.label)).collect();
-        for want in [("Enter", "Edit"), ("Space", "Disable"), ("d", "Delete"), ("n", "New job")] {
+        for want in [("Enter", "Edit"), ("Space", "Disable"), ("d", "Delete"), ("n", "New scrub job"), ("N", "New snapshot job")] {
             assert!(labels.contains(&want), "{labels:?}");
         }
         let mut second = jobs(true);
