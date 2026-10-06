@@ -1,5 +1,6 @@
 mod acl;
 mod config;
+mod daemon;
 mod error;
 mod exec;
 mod hosts;
