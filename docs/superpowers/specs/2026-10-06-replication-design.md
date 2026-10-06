@@ -95,7 +95,7 @@ Under locks on `(source host, source dataset)` and `(dest host, dest dataset)` (
 5. **Transfer.** Spawn `zfs send ...` through the source runner and `zfs receive -s -u [-F] -- <dest>` through the destination runner; a pump thread copies the send's stdout to the receive's stdin. The destination is received **unmounted** (`-u`).
 6. **Finish.** Both exit statuses are checked (the receive's stderr is the message on failure). Success is `Ok: sent <snap> (incremental from <base> | full), <bytes>`.
 
-A destination that changed since the base (new snapshots or writes) makes the receive fail with zfs's own message ("destination has been modified…" or "most recent snapshot … does not match incremental source"), shown as the failure; `force` adds `-F` for jobs that want the destination rolled back to the base.
+A destination that was written to since its newest snapshot makes the receive fail with zfs's own message ("destination has been modified…" or "most recent snapshot … does not match incremental source"), shown as the failure; `force` adds `-F` for jobs that want the destination rolled back to the base.
 
 ### A file run
 
@@ -160,6 +160,20 @@ README: a "Replication" subsection under Scheduled jobs (both example jobs, the 
 - Engine/daemon: dispatch by kind; an unfinished replicate run is closed as lost; startup removes stale progress and `.partial` files.
 - TUI: the form opens, validates with `resolve`'s rules, saves and edits; F2 on each field; `c` writes the cancel file only for a running job; the job panel renders progress; the Target column and hints.
 - **Live (verify empirically, not just via `zfs list`), before and after implementation:** on 15.1 and 16.0-CURRENT confirm the exact output of `zfs send -nvP`, `zfs get -H -p -o value receive_resume_token`, `zfs list -o name,guid,createtxg -d 1`, `zfs receive -s -u`, `zfs send -t`, and the error texts for a modified destination. Then run: a full send hub to VM, an incremental, an up-to-date skip, a cancel mid-transfer and the resume after it (use a few GB of incompressible data on a scratch dataset so the cancel lands mid-transfer), a modified destination with and without `force`, a VM-to-hub pull, and a file target with a restore (`zfs receive < file`) into a scratch dataset, checking the data matches.
+
+### Live results
+
+Checked 2026-10-06 on 15.1-RELEASE (hub, `scratch/repl-*`, piped locally through `sh -c`) and 16.0-CURRENT (VM, `zroot/home/fbsd` -> `zroot/repl-dst`, driven as two separate `ssh ... sudo zfs send` / `sudo zfs receive` processes piped on the workstation: the VM's sudoers does not allow `sh`, which is exactly why the design pipes the processes itself). Identical on both:
+
+- `zfs send -nvP -- ds@snap` prints `full<TAB>ds@snap<TAB>bytes` and `size<TAB>bytes` on **stdout** (nothing on stderr). Incremental: `incremental<TAB>ds@base<TAB>ds@snap<TAB>bytes` then `size<TAB>bytes`. `zfs send -nvP -t <token>` prints a `resume token contents:` nvlist block, then the same `full`/`incremental` and `size` lines, so "the line starting `size<TAB>`" is the stable thing to parse.
+- `zfs send -i @base -- ds@snap` is accepted; `zfs send -t <token>` has no snapshot argument.
+- `zfs list -t snapshot -H -p -o name,guid,createtxg -d 1 ds` prints `ds@name<TAB>guid<TAB>createtxg`. On a missing dataset (list, get or receive -A) the error is `cannot open 'ds': dataset does not exist`.
+- `zfs get -H -p -o value receive_resume_token ds` prints `-` when there is none.
+- `zfs receive -s -u -- ds` leaves the dataset unmounted (`mounted` is `no`) and `receive_resume_token` is `-` after a complete receive.
+- An interrupted receive (stream cut off) fails with `cannot receive incremental stream: checksum mismatch or incomplete stream. Partially received snapshot is saved.` plus a `zfs send -t <token>` hint, and `receive_resume_token` is then a long `1-...` string. Sending with `-t <token>` into the same dataset completes it, after which the token is `-` again.
+- `zfs receive -A ds` with no token: `'ds' does not have any resumable receive state to abort`.
+- A full stream into an existing dataset fails with `cannot receive new filesystem stream: destination 'ds' exists` / `must specify -F to overwrite it`.
+- **A destination is "modified" only when data was written to it since its newest snapshot.** Taking a new, empty snapshot on the destination does *not* stop the next incremental from being received. Writing a file into the (mounted) destination makes the receive fail with `cannot receive incremental stream: destination ds has been modified` / `since most recent snapshot` (two lines), and the same receive with `-F` succeeds, rolling the destination back. The sending side adds `warning: cannot send ...: signal received`, which is noise.
 
 ## Delivery
 
