@@ -69,6 +69,7 @@ impl DiskInfo {
 /// below 100, none from 100 up. Rounding happens before the unit is
 /// chosen, so values that round up to 1024 promote to the next unit
 /// (`1.0M`, not `1024K`) and 99.96 prints as `100`, not `100.0`.
+#[allow(clippy::cast_precision_loss)] // display rounding; sub-byte precision is irrelevant
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [char; 6] = ['K', 'M', 'G', 'T', 'P', 'E'];
     if bytes < 1024 {
@@ -125,7 +126,7 @@ fn parse_disk_list(output: &str) -> Vec<DiskInfo> {
         if !seen_size {
             if let Some(rest) = trimmed.strip_prefix("Mediasize:") {
                 seen_size = true;
-                d.size = rest.trim().split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                d.size = rest.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
                 continue;
             }
         }
@@ -544,7 +545,7 @@ Providers:
         assert_eq!(human_size(1023), "1023B");
         assert_eq!(human_size(1024 * 1024 - 1), "1.0M");
         assert_eq!(human_size(1024u64.pow(3) - 1), "1.0G");
-        assert_eq!(human_size((99.96 * 1024.0) as u64), "100K");
+        assert_eq!(human_size(102_359), "100K");
         assert_eq!(human_size(256 * 1024 * 1024), "256M");
         let _ = human_size(u64::MAX);
     }

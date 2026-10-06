@@ -139,7 +139,7 @@ pub enum WorkerMsg {
     Accounts(usize, Result<crate::zfs::accounts::HostAccounts>),
 }
 
-pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_secs(60);
+pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
 pub const ACCOUNT_FETCH_STUCK_AFTER: Duration = Duration::from_secs(30);
 
 pub struct App {
@@ -369,7 +369,7 @@ impl App {
 
     /// Name of the currently-selected host, for pane titles.
     pub fn active_host_name(&self) -> &str {
-        self.hosts.get(self.selected_host).map(|s| s.as_str()).unwrap_or("?")
+        self.hosts.get(self.selected_host).map_or("?", std::string::String::as_str)
     }
 
     /// The name of the pool currently selected in the middle pane, if
@@ -425,6 +425,9 @@ impl App {
         self.acl_entries_for = None;
     }
 
+    // Arms are ordered by guard precedence, so identical bodies cannot be merged into one `|` arm
+    // without changing which guard wins.
+    #[allow(clippy::match_same_arms)]
     pub fn handle_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char('q') => self.should_quit = true,
@@ -462,9 +465,7 @@ impl App {
             KeyCode::Enter if self.pane_focus == PaneFocus::Right && self.current_section() == Section::Pools => {
                 if let (Some(pool), Some(i)) = (self.selected_pool_name(), self.pool_properties_table.selected()) {
                     if let Some(prop) = self.pool_properties.get(i) {
-                        if !prop.source.is_editable() {
-                            self.status_message = Some(format!("'{}' is a read-only property", prop.name));
-                        } else {
+                        if prop.source.is_editable() {
                             self.modal = Some(Modal::Form {
                                 title: format!("Edit '{}' on pool '{pool}'", prop.name),
                                 fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
@@ -472,6 +473,8 @@ impl App {
                                 description: crate::zfs::property::describe(&prop.name).map(str::to_string),
                                 kind: FormKind::EditPoolProperty { host: self.selected_host, pool, key: prop.name.clone() },
                             });
+                        } else {
+                            self.status_message = Some(format!("'{}' is a read-only property", prop.name));
                         }
                     }
                 }
@@ -483,9 +486,7 @@ impl App {
             {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
-                        if !prop.source.is_editable() {
-                            self.status_message = Some(format!("'{}' is a read-only property", prop.name));
-                        } else {
+                        if prop.source.is_editable() {
                             self.modal = Some(Modal::Form {
                                 title: format!("Edit '{}' on dataset '{dataset}'", prop.name),
                                 fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
@@ -493,6 +494,8 @@ impl App {
                                 description: crate::zfs::property::describe(&prop.name).map(str::to_string),
                                 kind: FormKind::EditDatasetProperty { host: self.selected_host, dataset, key: prop.name.clone() },
                             });
+                        } else {
+                            self.status_message = Some(format!("'{}' is a read-only property", prop.name));
                         }
                     }
                 }
@@ -806,9 +809,7 @@ impl App {
                     && self.dataset_detail_tab == DatasetDetailTab::Acl =>
             {
                 if let Some(path) = self.selected_dataset_mountpoint() {
-                    if self.acl_entries_for.as_deref() != Some(path.as_str()) {
-                        self.status_message = Some("ACL not loaded yet -- press 'r' to refresh before adding an entry".to_string());
-                    } else {
+                    if self.acl_entries_for.as_deref() == Some(path.as_str()) {
                         let position = self.acl_entries.len();
                         self.modal = Some(Modal::Form {
                             title: format!("Add ACL entry on '{path}'"),
@@ -822,6 +823,8 @@ impl App {
                             description: None,
                             kind: FormKind::AddAclEntry { host: self.selected_host, path, position },
                         });
+                    } else {
+                        self.status_message = Some("ACL not loaded yet -- press 'r' to refresh before adding an entry".to_string());
                     }
                 }
             }
@@ -1198,15 +1201,10 @@ impl App {
                                 None
                             }
                         }
-                    } else {
-                        match build_pending_action(&kind, &fields) {
-                            Some(action) => Some(action),
-                            None => {
-                                self.set_error("Could not submit -- check the field values against the hints in their labels".to_string());
-                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
-                                None
-                            }
-                        }
+                    } else if let Some(action) = build_pending_action(&kind, &fields) { Some(action) } else {
+                        self.set_error("Could not submit -- check the field values against the hints in their labels".to_string());
+                        self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                        None
                     }
                 }
                 KeyCode::Backspace => {
@@ -1252,7 +1250,7 @@ impl App {
                 return;
             }
         }
-        let stuck = self.account_fetch_in_flight.get(&host).map_or(true, |t| now.duration_since(*t) >= ACCOUNT_FETCH_STUCK_AFTER);
+        let stuck = self.account_fetch_in_flight.get(&host).is_none_or(|t| now.duration_since(*t) >= ACCOUNT_FETCH_STUCK_AFTER);
         if stuck {
             self.account_fetch_in_flight.insert(host, now);
             self.pending_account_fetch.push(host);
@@ -2081,9 +2079,9 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::GrantPermission { host, dataset } => {
-            let recipient = parse_recipient_field(&field_value(fields, 0))?;
-            let scope = parse_scope_field(&field_value(fields, 1))?;
-            let perms = parse_required_perms_field(&field_value(fields, 2))?;
+            let recipient = parse_recipient_field(field_value(fields, 0))?;
+            let scope = parse_scope_field(field_value(fields, 1))?;
+            let perms = parse_required_perms_field(field_value(fields, 2))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2099,7 +2097,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             if name.is_empty() {
                 return None;
             }
-            let perms = parse_required_perms_field(&field_value(fields, 1))?;
+            let perms = parse_required_perms_field(field_value(fields, 1))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2111,7 +2109,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::GrantCreateTimePermission { host, dataset } => {
-            let perms = parse_required_perms_field(&field_value(fields, 0))?;
+            let perms = parse_required_perms_field(field_value(fields, 0))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2119,7 +2117,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::RevokePermissions { host, dataset, target } => {
-            let perms = parse_required_perms_field(&field_value(fields, 0))?;
+            let perms = parse_required_perms_field(field_value(fields, 0))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetPermissions,
@@ -2127,10 +2125,10 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
             })
         }
         FormKind::AddAclEntry { host, path, position } => {
-            let tag = parse_acl_recipient_field(&field_value(fields, 0))?;
-            let permissions = parse_required_perms_field(&field_value(fields, 1))?;
-            let flags = parse_optional_flags_field(&field_value(fields, 2));
-            let entry_type = parse_acl_type_field(&field_value(fields, 3))?;
+            let tag = parse_acl_recipient_field(field_value(fields, 0))?;
+            let permissions = parse_required_perms_field(field_value(fields, 1))?;
+            let flags = parse_optional_flags_field(field_value(fields, 2));
+            let entry_type = parse_acl_type_field(field_value(fields, 3))?;
             Some(PendingAction {
                 host: *host,
                 section: Section::DatasetAcl,
@@ -2148,23 +2146,20 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         // the match stays exhaustive; it degrades safely (same as any
         // other invalid-for-this-function case) rather than panicking
         // if some future edit ever did route it here by mistake.
-        FormKind::AddHost => None,
+        //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::ShareSmb { .. } => None,
+        FormKind::AddHost | FormKind::ShareSmb { .. } => None,
     }
 }
 
 fn smb_edit_modal(existing: Option<&crate::zfs::share::Share>, dataset: &str, path: &str, host: usize) -> Modal {
-    let (name, user, read_only, existing_user, guest_ok) = match existing {
-        Some(crate::zfs::share::Share::Smb { name, valid_user, read_only, guest_ok, .. }) => {
-            (name.clone(), valid_user.clone().unwrap_or_default(), *read_only, valid_user.clone(), *guest_ok)
-        }
-        _ => {
-            let suggestion = dataset.rsplit('/').next().unwrap_or("").to_string();
-            let suggestion = if crate::zfs::smb::validate_share_name(&suggestion).is_ok() { suggestion } else { String::new() };
-            (suggestion, String::new(), false, None, false)
-        }
+    let (name, user, read_only, existing_user, guest_ok) = if let Some(crate::zfs::share::Share::Smb { name, valid_user, read_only, guest_ok, .. }) = existing {
+        (name.clone(), valid_user.clone().unwrap_or_default(), *read_only, valid_user.clone(), *guest_ok)
+    } else {
+        let suggestion = dataset.rsplit('/').next().unwrap_or("").to_string();
+        let suggestion = if crate::zfs::smb::validate_share_name(&suggestion).is_ok() { suggestion } else { String::new() };
+        (suggestion, String::new(), false, None, false)
     };
     Modal::Form {
         title: format!("SMB share: '{dataset}'"),
@@ -3414,7 +3409,7 @@ mod tests {
     fn clear_stale_scan_status_clears_completed_status_after_the_display_duration() {
         let mut app = App::new(vec!["local".to_string()]);
         app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::Completed { summary: "resilvered 501M in 00:00:32 with 0 errors".to_string(), errors: false });
-        app.pool_scan_status_shown_at = Some(Instant::now() - Duration::from_secs(7));
+        app.pool_scan_status_shown_at = Some(Instant::now().checked_sub(Duration::from_secs(7)).unwrap());
         app.clear_stale_scan_status();
         assert!(app.pool_scan_status.is_none());
     }
@@ -3432,7 +3427,7 @@ mod tests {
     fn clear_stale_scan_status_never_clears_an_in_progress_status() {
         let mut app = App::new(vec!["local".to_string()]);
         app.pool_scan_status = Some(crate::zfs::pool::ScanStatus::InProgress { summary: "resilver in progress".to_string(), percent_done: Some(50.0), eta: None });
-        app.pool_scan_status_shown_at = Some(Instant::now() - Duration::from_secs(999));
+        app.pool_scan_status_shown_at = Some(Instant::now().checked_sub(Duration::from_secs(999)).unwrap());
         app.clear_stale_scan_status();
         assert!(app.pool_scan_status.is_some(), "an in-progress resilver/scrub must stay visible regardless of how long it's been running");
     }
@@ -5083,7 +5078,7 @@ mod tests {
         assert_eq!(app.shares.len(), 1);
         assert_eq!(app.nfs_available, Some(true));
         assert_eq!(app.samba_available, Some(false));
-        assert_eq!(app.shares_loaded, true);
+        assert!(app.shares_loaded);
     }
 
     #[test]
@@ -5119,7 +5114,7 @@ mod tests {
         assert_eq!(app.shares_table.selected(), None);
         assert_eq!(app.nfs_available, None);
         assert_eq!(app.samba_available, None);
-        assert_eq!(app.shares_loaded, false);
+        assert!(!app.shares_loaded);
     }
 
     #[test]
@@ -6574,7 +6569,7 @@ mod tests {
     #[test]
     fn a_stuck_in_flight_marker_older_than_30s_lets_the_next_f2_queue_a_fresh_fetch() {
         let mut app = smb_form_app(1);
-        app.account_fetch_in_flight.insert(1, Instant::now() - Duration::from_secs(31));
+        app.account_fetch_in_flight.insert(1, Instant::now().checked_sub(Duration::from_secs(31)).unwrap());
         press_f2(&mut app);
         assert_eq!(app.pending_account_fetch, vec![1]);
     }
@@ -6594,7 +6589,7 @@ mod tests {
     #[test]
     fn a_cache_older_than_60s_is_treated_as_missing() {
         let mut app = smb_form_app(1);
-        app.account_cache.insert(1, (Instant::now() - Duration::from_secs(61), accounts_fixture()));
+        app.account_cache.insert(1, (Instant::now().checked_sub(Duration::from_secs(61)).unwrap(), accounts_fixture()));
         press_f2(&mut app);
         assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Loading);
         assert_eq!(app.pending_account_fetch, vec![1]);
@@ -6789,7 +6784,7 @@ mod tests {
     fn a_cache_entry_exactly_ttl_old_is_stale() {
         let mut app = smb_form_app(1);
         let now = Instant::now();
-        app.account_cache.insert(1, (now - ACCOUNT_CACHE_TTL, accounts_fixture()));
+        app.account_cache.insert(1, (now.checked_sub(ACCOUNT_CACHE_TTL).unwrap(), accounts_fixture()));
         let mut picker = crate::ui::picker::PickerState {
             values: vec![],
             filter: String::new(),
@@ -6846,7 +6841,7 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{n}")) };
         app.datasets = vec![ds("tank/a"), ds("tank/b")];
-        app.datasets_table.select(Some(if selected == "tank/a" { 0 } else { 1 }));
+        app.datasets_table.select(Some(usize::from(selected != "tank/a")));
         app.dataset_properties = vec![Property { name: "atime".to_string(), value: "on".to_string(), source: PropertySource::Local }];
         app.dataset_properties_for = Some("tank/a".to_string());
         app.dataset_permissions = vec![PermissionRow::CreateTime { perms: vec!["mount".to_string()] }];

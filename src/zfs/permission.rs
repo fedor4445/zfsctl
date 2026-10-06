@@ -87,7 +87,7 @@ fn parse_banner_dataset(line: &str) -> Option<&str> {
 ///
 /// **`zfs allow <dataset>` prints one such block per ancestor dataset
 /// that has delegations too, not just `<dataset>`'s own** (confirmed
-/// against the OpenZFS source: `dsl_deleg_get` walks up the dataset
+/// against the `OpenZFS` source: `dsl_deleg_get` walks up the dataset
 /// tree and `print_fs_perms` loops over every result) — `dataset` is
 /// the name the caller actually asked about, and only the block whose
 /// banner names it is parsed; every other block (an ancestor's own

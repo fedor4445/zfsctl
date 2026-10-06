@@ -24,7 +24,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         wrapped_line_count(&status_text, area.width).clamp(1, STATUS_MAX_ROWS)
     };
-    let gauge_rows = if gauge.is_some() { 1 } else { 0 };
+    let gauge_rows = u16::from(gauge.is_some());
     let status_height = text_rows + gauge_rows;
 
     let [body_area, status_area, hint_area] = Layout::default()
@@ -210,6 +210,13 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
 const POOL_NAME_PREFERRED: u16 = 16;
 const POOL_NAME_MINIMUM: u16 = 8;
 
+#[derive(PartialEq)]
+enum Used {
+    Full,
+    Compact,
+    Hidden,
+}
+
 fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     // Column plan, in priority order. Health always; then a capacity
@@ -220,15 +227,9 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
     // proportional squeeze clips Health to "Heal".
     let inner = area.width.saturating_sub(2);
     // Width the non-Name columns need, counting one gap per column.
-    let needs = |non_name: &[u16]| non_name.iter().sum::<u16>() + non_name.len() as u16;
+    let needs = |non_name: &[u16]| non_name.iter().sum::<u16>() + u16::try_from(non_name.len()).unwrap_or(u16::MAX);
     let mut non_name: Vec<u16> = vec![12];
     let mut headers: Vec<&str> = vec!["Name", "Health"];
-    #[derive(PartialEq)]
-    enum Used {
-        Full,
-        Compact,
-        Hidden,
-    }
     let used = if POOL_NAME_PREFERRED + needs(&[12, 14]) <= inner {
         Used::Full
     } else if POOL_NAME_MINIMUM + needs(&[12, 5]) <= inner {
@@ -460,16 +461,16 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
     use crate::zfs::disk::{human_size, DiskMedia};
-    let theme = app.theme.clone();
-    // Name, Size and Status are never dropped; Type, Model, Serial are
-    // added only while they fit (one gap per column), so the first to go
-    // on a narrow terminal is Serial, then Model, then Type.
     const NAME_W: u16 = 18;
     const SIZE_W: u16 = 8;
     const STATUS_MIN: u16 = 20;
     const TYPE_W: u16 = 9;
     const MODEL_W: u16 = 30;
     const SERIAL_W: u16 = 20;
+    let theme = app.theme.clone();
+    // Name, Size and Status are never dropped; Type, Model, Serial are
+    // added only while they fit (one gap per column), so the first to go
+    // on a narrow terminal is Serial, then Model, then Type.
     let inner = area.width.saturating_sub(2);
     let mut used = NAME_W + SIZE_W + STATUS_MIN + 3;
     let mut show_type = false;
@@ -598,7 +599,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     // percentage of the terminal's height let long prompts or the
     // typed-confirmation input line clip off the bottom of the popup,
     // making it look like typing did nothing.
-    let approx_width = (area.width as u32 * MODAL_WIDTH_PERCENT as u32 / 100) as u16;
+    let approx_width = u16::try_from(u32::from(area.width) * u32::from(MODAL_WIDTH_PERCENT) / 100).unwrap_or(u16::MAX);
     let inner_width = approx_width.saturating_sub(2).max(1);
 
     let content_lines = match modal {
@@ -717,7 +718,7 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
     let filter_lower = picker.filter.to_lowercase();
     let filtered: Vec<&String> = picker.values.iter().filter(|v| v.to_lowercase().contains(&filter_lower)).collect();
 
-    let popup_height = (filtered.len() as u16 + 4).clamp(6, area.height.saturating_sub(4).max(6));
+    let popup_height = (u16::try_from(filtered.len()).unwrap_or(u16::MAX).saturating_add(4)).clamp(6, area.height.saturating_sub(4).max(6));
     let popup_area = centered_rect(PICKER_WIDTH_PERCENT, popup_height, area);
     f.render_widget(Clear, popup_area);
 
@@ -796,7 +797,7 @@ fn failed_popup_height(body: &str, width: u16, max_height: u16) -> u16 {
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
     text.lines()
-        .map(|line| if line.is_empty() { 1 } else { ((line.len() + width - 1) / width) as u16 })
+        .map(|line| if line.is_empty() { 1 } else { u16::try_from(line.len().div_ceil(width)).unwrap_or(u16::MAX) })
         .sum::<u16>()
         .max(1)
 }
@@ -835,7 +836,7 @@ mod tests {
     #[test]
     fn sanitise_for_display_strips_control_characters_and_collapses_lines() {
         let out = super::sanitise_for_display("boom\n\u{1b}[31mred\u{1b}[0m\tbad\r\nend");
-        assert!(!out.chars().any(|c| c.is_control()), "{out:?}");
+        assert!(!out.chars().any(char::is_control), "{out:?}");
         assert_eq!(out, "boom [31mred [0m bad end");
     }
 
@@ -1152,7 +1153,7 @@ mod tests {
     }
 
     fn style_of_symbol(buf: &ratatui::buffer::Buffer, symbol: &str) -> Option<Style> {
-        buf.content().iter().find(|c| c.symbol() == symbol).map(|c| c.style())
+        buf.content().iter().find(|c| c.symbol() == symbol).map(ratatui::buffer::Cell::style)
     }
 
     fn destroy_pool_modal() -> Modal {
@@ -1251,7 +1252,7 @@ mod tests {
             values: vec![],
             filter: String::new(),
             selected: 0,
-            checked: Default::default(),
+            checked: std::collections::HashSet::new(),
             multi_select: false,
             load: crate::ui::picker::PickerLoad::Failed(msg),
             note: None,
@@ -1280,7 +1281,7 @@ mod tests {
             values: vec![],
             filter: String::new(),
             selected: 0,
-            checked: Default::default(),
+            checked: std::collections::HashSet::new(),
             multi_select: false,
             load: crate::ui::picker::PickerLoad::Failed(msg.to_string()),
             note: None,

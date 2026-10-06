@@ -164,7 +164,7 @@ pub mod test_support {
             self.calls
                 .lock()
                 .unwrap()
-                .push((cmd.to_string(), args.iter().map(|s| s.to_string()).collect()));
+                .push((cmd.to_string(), args.iter().map(std::string::ToString::to_string).collect()));
             let first_arg = args.first().copied().unwrap_or("");
             if let Some(routed) = self.routes.get(&(cmd.to_string(), first_arg.to_string())) {
                 return Ok(routed.clone());
@@ -173,7 +173,7 @@ pub mod test_support {
         }
 
         fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
-            self.unprivileged_calls.lock().unwrap().push((cmd.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            self.unprivileged_calls.lock().unwrap().push((cmd.to_string(), args.iter().map(std::string::ToString::to_string).collect()));
             self.run(cmd, args)
         }
 

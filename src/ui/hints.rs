@@ -82,7 +82,7 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
         Modal::Form { fields, focused, kind, .. } => {
             let enter = if focused + 1 < fields.len() { "Next" } else { "Submit" };
             let mut v = vec![h("Enter", enter, 0), h("Tab", "Next field", 2), h("Shift+Tab", "Prev field", 3)];
-            let value = fields.get(*focused).map(|f| f.value.as_str()).unwrap_or("");
+            let value = fields.get(*focused).map_or("", |f| f.value.as_str());
             if build_picker_state(kind, *focused, value).is_some() {
                 v.push(h("F2", "Pick", 1));
             }
@@ -623,7 +623,7 @@ mod tests {
             values: vec![],
             filter: String::new(),
             selected: 0,
-            checked: Default::default(),
+            checked: std::collections::HashSet::new(),
             multi_select: false,
             load,
             note: None,
@@ -651,9 +651,8 @@ mod tests {
         for (kind, idx) in forms {
             let n = match &kind {
                 FormKind::ShareSmb { .. } => 5,
-                FormKind::ShareNfs { .. } => 4,
                 FormKind::GrantPermission { .. } => 3,
-                _ => 4,
+                _ => 4, // ShareNfs and the four-field ACL form
             };
             let fields = (0..n).map(|i| FormField { label: format!("f{i}"), value: String::new() }).collect();
             let mut a = base();
@@ -821,7 +820,7 @@ mod tests {
             values: vec!["a".to_string()],
             filter: String::new(),
             selected: 0,
-            checked: Default::default(),
+            checked: std::collections::HashSet::new(),
             multi_select: true,
             load: crate::ui::picker::PickerLoad::Ready,
             note: None,

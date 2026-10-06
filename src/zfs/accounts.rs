@@ -149,6 +149,6 @@ mod tests {
         let got = fetch_accounts(&r).unwrap();
         assert_eq!(got.users.len(), 5);
         assert!(got.groups.is_empty());
-        assert!(got.group_error.unwrap().contains("2"), "an empty stderr still yields a reason");
+        assert!(got.group_error.unwrap().contains('2'), "an empty stderr still yields a reason");
     }
 }

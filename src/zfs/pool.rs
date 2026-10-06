@@ -92,7 +92,7 @@ pub fn parse_pool_status_vdevs(output: &str) -> Vec<VdevLine> {
             continue;
         }
         // If line has no leading whitespace, we're at a new section
-        if line.chars().next().map(|c| !c.is_whitespace()).unwrap_or(false) {
+        if line.chars().next().is_some_and(|c| !c.is_whitespace()) {
             break;
         }
         if trimmed.starts_with("NAME") && trimmed.contains("STATE") {

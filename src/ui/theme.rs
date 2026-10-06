@@ -130,6 +130,7 @@ impl Theme {
 
     /// Row highlight. Reverse video in every theme: it needs no color, so
     /// it works everywhere, and the accent is reserved for the focused pane.
+    #[allow(clippy::unused_self)] // kept a method so every theme style is read the same way
     pub fn selected_row(&self) -> Style {
         Style::new().add_modifier(Modifier::REVERSED)
     }
@@ -224,7 +225,7 @@ pub fn capacity_pct(allocated: u64, size: u64) -> Option<u8> {
     if size == 0 {
         return None;
     }
-    Some(((allocated as u128 * 100) / size as u128).min(100) as u8)
+    Some(((u128::from(allocated) * 100) / u128::from(size)).min(100) as u8)
 }
 
 pub fn capacity_bar(pct: u8, width: usize) -> String {
@@ -247,7 +248,7 @@ impl ThemeEnv {
     }
 
     fn truecolor(&self) -> bool {
-        matches!(self.colorterm.as_deref(), Some("truecolor") | Some("24bit"))
+        matches!(self.colorterm.as_deref(), Some("truecolor" | "24bit"))
     }
 
     /// Per no-color.org, an empty `NO_COLOR` does not count.
@@ -315,7 +316,7 @@ mod tests {
     fn ansi_theme_uses_only_the_16_ansi_colors() {
         let t = Theme::ansi();
         for s in [t.ok, t.warn, t.err, t.info, t.muted, t.accent, t.danger] {
-            assert!(!matches!(s.fg, Some(Color::Rgb(..)) | Some(Color::Indexed(_))), "{s:?}");
+            assert!(!matches!(s.fg, Some(Color::Rgb(..) | Color::Indexed(_))), "{s:?}");
         }
         // Matches the colour the old hard-coded pane border used.
         assert_eq!(t.accent, Style::new().fg(Color::Cyan));
@@ -489,9 +490,9 @@ mod tests {
         }
     }
 
-    /// crossterm strips every color when NO_COLOR is set, and writes a bare
+    /// crossterm strips every color when `NO_COLOR` is set, and writes a bare
     /// `ESC[;m` (a full SGR reset) in its place, which also wipes the
-    /// bold/reverse ratatui just set. `resolve` already applies NO_COLOR
+    /// bold/reverse ratatui just set. `resolve` already applies `NO_COLOR`
     /// (by choosing `mono`), so an explicitly configured theme must win.
     /// NOTE: touches process env; this is the only test that does.
     #[test]

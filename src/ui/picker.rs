@@ -73,7 +73,7 @@ pub fn fill_account_picker(picker: &mut PickerState, accounts: &HostAccounts, cu
     picker.load = PickerLoad::Ready;
 }
 
-/// Confirmed live via `zfs allow` (no arguments -- OpenZFS prints its
+/// Confirmed live via `zfs allow` (no arguments -- `OpenZFS` prints its
 /// full permission/property usage text) on the real FreeBSD test box,
 /// 2026-10-04. 96 entries: 19 subcommands, 13 quota/user-property
 /// "other" permissions, 64 delegable properties.
@@ -93,7 +93,7 @@ const ZFS_ALLOW_PERMISSIONS: &[&str] = &[
     "volblocksize", "volmode", "volsize", "volthreading", "vscan", "xattr",
 ];
 
-/// The 14 NFSv4 ACE permission names -- matches the vocabulary
+/// The 14 `NFSv4` ACE permission names -- matches the vocabulary
 /// confirmed live against real `getfacl -v` output during the File
 /// ACLs feature (`docs/superpowers/specs/2026-10-03-file-acls-design.md`).
 const ACL_PERMISSIONS: &[&str] = &[
@@ -115,10 +115,10 @@ const ACL_TYPES: &[&str] = &["allow", "deny"];
 /// mean different, non-interchangeable vocabularies.
 pub fn vocabulary_for(kind: &FormKind, field_index: usize) -> Option<(&'static [&'static str], bool)> {
     match (kind, field_index) {
-        (FormKind::GrantPermission { .. }, 2)
-        | (FormKind::GrantPermissionSet { .. }, 1)
-        | (FormKind::GrantCreateTimePermission { .. }, 0)
-        | (FormKind::RevokePermissions { .. }, 0) => Some((ZFS_ALLOW_PERMISSIONS, true)),
+        (FormKind::GrantPermission { .. }, 2) |
+(FormKind::GrantPermissionSet { .. }, 1) |
+(FormKind::GrantCreateTimePermission { .. } | FormKind::RevokePermissions { ..
+}, 0) => Some((ZFS_ALLOW_PERMISSIONS, true)),
         (FormKind::AddAclEntry { .. }, 1) => Some((ACL_PERMISSIONS, true)),
         (FormKind::AddAclEntry { .. }, 2) => Some((ACL_FLAGS, true)),
         (FormKind::AddAclEntry { .. }, 3) => Some((ACL_TYPES, false)),
@@ -145,11 +145,11 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
         });
     }
     let (values, multi_select) = vocabulary_for(kind, field_index)?;
-    let values: Vec<String> = values.iter().map(|s| s.to_string()).collect();
+    let values: Vec<String> = values.iter().map(std::string::ToString::to_string).collect();
     let mut checked = std::collections::HashSet::new();
     let mut selected = 0usize;
     if multi_select {
-        for piece in current_value.split(',').map(|p| p.trim()) {
+        for piece in current_value.split(',').map(str::trim) {
             if values.iter().any(|v| v == piece) {
                 checked.insert(piece.to_string());
             }

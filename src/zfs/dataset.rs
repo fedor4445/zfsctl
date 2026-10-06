@@ -56,7 +56,7 @@ pub fn parse_dataset_list(output: &str) -> Result<Vec<Dataset>> {
                 )));
             };
             let mountpoint = match (mountpoint, mounted) {
-                ("-", _) | ("none", _) | ("legacy", _) => None,
+                ("-" | "none" | "legacy", _) => None,
                 (mp, "yes") => Some(mp.to_string()),
                 (_, _) => None,
             };

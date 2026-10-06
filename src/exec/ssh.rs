@@ -61,9 +61,9 @@ impl SshRunner {
         ]
     }
 
-    fn run_ssh(&self, ssh_args: Vec<String>) -> Result<CommandOutput> {
+    fn run_ssh(ssh_args: &[String]) -> Result<CommandOutput> {
         let output = Command::new("ssh")
-            .args(&ssh_args)
+            .args(ssh_args)
             .output()
             .map_err(|source| AppError::Spawn {
                 cmd: "ssh".to_string(),
@@ -86,11 +86,11 @@ fn shell_quote(s: &str) -> String {
 
 impl CommandRunner for SshRunner {
     fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
-        self.run_ssh(self.build_args(cmd, args))
+        Self::run_ssh(&self.build_args(cmd, args))
     }
 
     fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
-        self.run_ssh(self.build_args_unprivileged(cmd, args))
+        Self::run_ssh(&self.build_args_unprivileged(cmd, args))
     }
 
     fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {

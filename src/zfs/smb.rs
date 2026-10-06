@@ -139,15 +139,17 @@ pub fn parse_managed(conf: &str) -> Result<Vec<SmbShare>> {
 }
 
 fn render_block(shares: &[SmbShare]) -> String {
+    use std::fmt::Write;
+    // Writing to a `String` cannot fail, so the `fmt::Result`s are ignored.
     let mut out = format!("{BLOCK_START}\n");
     for s in shares {
-        out.push_str(&format!("[{}]\n    {DATASET_KEY} = {}\n    path = {}\n", s.name, s.dataset, s.path));
+        let _ = write!(out, "[{}]\n    {DATASET_KEY} = {}\n    path = {}\n", s.name, s.dataset, s.path);
         if let Some(user) = &s.valid_user {
-            out.push_str(&format!("    valid users = {user}\n"));
+            let _ = writeln!(out, "    valid users = {user}");
         } else if s.guest_ok {
             out.push_str("    guest ok = yes\n");
         }
-        out.push_str(&format!("    browseable = yes\n    read only = {}\n", if s.read_only { "yes" } else { "no" }));
+        let _ = write!(out, "    browseable = yes\n    read only = {}\n", if s.read_only { "yes" } else { "no" });
     }
     out.push_str(BLOCK_END);
     out.push('\n');
@@ -159,19 +161,16 @@ fn render_block(shares: &[SmbShare]) -> String {
 /// altered. Refuses a malformed marker layout rather than guessing.
 pub fn render_with_shares(conf: &str, shares: &[SmbShare]) -> Result<String> {
     let block = render_block(shares);
-    match locate_block(conf)? {
-        Some(span) => Ok(format!("{}{}{}", &conf[..span.start], block, &conf[span.end..])),
-        None => {
-            let mut out = conf.to_string();
-            if !out.is_empty() {
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
+    if let Some(span) = locate_block(conf)? { Ok(format!("{}{}{}", &conf[..span.start], block, &conf[span.end..])) } else {
+        let mut out = conf.to_string();
+        if !out.is_empty() {
+            if !out.ends_with('\n') {
                 out.push('\n');
             }
-            out.push_str(&block);
-            Ok(out)
+            out.push('\n');
         }
+        out.push_str(&block);
+        Ok(out)
     }
 }
 

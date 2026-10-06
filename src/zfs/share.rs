@@ -36,7 +36,7 @@ pub struct SharesSnapshot {
 /// Parses a `sharenfs` value using FreeBSD's **native `exports(5)`**
 /// syntax into `(networks, hosts, read_only, root)`.
 ///
-/// **This is not OpenZFS's own cross-platform `sharenfs` mini-language**
+/// **This is not `OpenZFS`'s own cross-platform `sharenfs` mini-language**
 /// (`rw=@net,root=user`, comma-separated) — confirmed live against a
 /// real FreeBSD 15.1 box that `mountd` does not understand that syntax
 /// at all. `mountd`'s own log, verbatim: `"can't get address info for
@@ -49,7 +49,7 @@ pub struct SharesSnapshot {
 /// `rw=`/`ro=`/`root=`. The `zfsprops(7)` text describing `sharenfs`'s
 /// default options (`sec=sys,rw,crossmnt,no_subtree_check`) is Linux
 /// `nfs-utils`/`exportfs(8)` terminology copied into the generic
-/// OpenZFS docs — `crossmnt`/`no_subtree_check` aren't FreeBSD concepts
+/// `OpenZFS` docs — `crossmnt`/`no_subtree_check` aren't FreeBSD concepts
 /// at all, and FreeBSD's `zfs` writes the property value into
 /// `/etc/zfs/exports` essentially as-is, so whatever syntax you set
 /// *is* the `exports(5)` line `mountd` has to parse.
@@ -104,7 +104,7 @@ fn parse_sharenfs_fields(raw: &str) -> (Vec<String>, Vec<String>, bool, Option<S
 
 /// Assembles a `sharenfs` value from structured fields using FreeBSD's
 /// native `exports(5)` syntax — the inverse of `parse_sharenfs_fields`
-/// (see its doc comment for why this isn't OpenZFS's cross-platform
+/// (see its doc comment for why this isn't `OpenZFS`'s cross-platform
 /// mini-language). Every argument empty/false/`None` assembles to plain
 /// `"on"` (share to everyone, read-write, no root-mapping restriction).
 /// One clause per network, plus one clause for the host list if any
@@ -387,13 +387,13 @@ tank/data@snap1\tsharenfs\t-\t-
     #[test]
     fn nfs_server_available_true_when_exit_zero() {
         let runner = FakeRunner::new("nfsd is running as pid 1234.\n");
-        assert_eq!(nfs_server_available(&runner).unwrap(), true);
+        assert!(nfs_server_available(&runner).unwrap());
     }
 
     #[test]
     fn nfs_server_available_false_when_exit_nonzero() {
         let runner = FakeRunner::new("nfsd is not running.\n").with_status(1);
-        assert_eq!(nfs_server_available(&runner).unwrap(), false);
+        assert!(!nfs_server_available(&runner).unwrap());
     }
 
     #[test]
@@ -401,13 +401,13 @@ tank/data@snap1\tsharenfs\t-\t-
         // The real, confirmed case: winbindd down drags onestatus's
         // exit code to nonzero even though smbd itself is fine.
         let runner = FakeRunner::new("nmbd is running as pid 1.\nsmbd is running as pid 2.\nwinbindd is not running.\n").with_status(1);
-        assert_eq!(samba_available(&runner).unwrap(), true);
+        assert!(samba_available(&runner).unwrap());
     }
 
     #[test]
     fn samba_available_false_when_smbd_itself_is_not_running() {
         let runner = FakeRunner::new("nmbd is not running.\nsmbd is not running.\nwinbindd is not running.\n").with_status(1);
-        assert_eq!(samba_available(&runner).unwrap(), false);
+        assert!(!samba_available(&runner).unwrap());
     }
 
     const MANAGED_CONF: &str = "[global]\n  x = y\n\n## zfsctl managed shares -- do not edit by hand -- start\n[media]\n    # zfsctl-dataset = tank/media\n    path = /tank/media\n    valid users = carol\n    browseable = yes\n    read only = no\n## zfsctl managed shares -- do not edit by hand -- end\n";
@@ -420,8 +420,8 @@ tank/data@snap1\tsharenfs\t-\t-
             .route("service", "samba_server", "smbd is running as pid 2.\n")
             .route("cat", crate::zfs::smb::CONF_PATH, MANAGED_CONF);
         let snapshot = list_shares_with_availability(&runner).unwrap();
-        assert_eq!(snapshot.nfs_available, true);
-        assert_eq!(snapshot.samba_available, true);
+        assert!(snapshot.nfs_available);
+        assert!(snapshot.samba_available);
         assert_eq!(snapshot.smb_error, None);
         assert_eq!(snapshot.shares.len(), 2);
         assert_eq!(
