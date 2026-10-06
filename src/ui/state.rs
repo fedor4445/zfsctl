@@ -2712,7 +2712,7 @@ Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
-  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
+  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl

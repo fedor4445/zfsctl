@@ -108,6 +108,23 @@ const ACL_FLAGS: &[&str] = &["file_inherit", "dir_inherit", "inherit_only", "no_
 
 const ACL_TYPES: &[&str] = &["allow", "deny"];
 
+const ON_OFF: &[&str] = &["on", "off"];
+const FAILMODES: &[&str] = &["wait", "continue", "panic"];
+
+/// The redundancy field of the two "from selected disks" forms. Blank means a plain stripe,
+/// which is not a pickable value, so it stays a matter of leaving the field empty.
+const REDUNDANCY: &[&str] = &["mirror", "raidz1", "raidz2", "raidz3"];
+
+/// The pool properties whose value is one of a fixed few, so F2 can offer them. Anything
+/// else (`comment`, `bootfs`, `cachefile`, ...) is free text and gets no picker.
+fn pool_property_values(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        "autoexpand" | "autoreplace" | "autotrim" | "delegation" | "listsnapshots" | "multihost" => Some(ON_OFF),
+        "failmode" => Some(FAILMODES),
+        _ => None,
+    }
+}
+
 /// Maps a form field (identified by its `FormKind` and positional
 /// index) to the picker vocabulary attached to it, if any. Keys on
 /// `(kind, field_index)`, never on a field's label text -- several
@@ -122,6 +139,8 @@ pub fn vocabulary_for(kind: &FormKind, field_index: usize) -> Option<(&'static [
         (FormKind::AddAclEntry { .. }, 1) => Some((ACL_PERMISSIONS, true)),
         (FormKind::AddAclEntry { .. }, 2) => Some((ACL_FLAGS, true)),
         (FormKind::AddAclEntry { .. }, 3) => Some((ACL_TYPES, false)),
+        (FormKind::EditPoolProperty { key, .. }, 0) => pool_property_values(key).map(|v| (v, false)),
+        (FormKind::CreatePoolFromDisks { .. } | FormKind::AddVdevFromDisks { .. }, 1) => Some((REDUNDANCY, false)),
         _ => None,
     }
 }
@@ -190,6 +209,33 @@ mod tests {
     fn vocabulary_for_grant_permission_recipient_field_is_none() {
         let kind = FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
         assert_eq!(vocabulary_for(&kind, 0), None);
+    }
+
+    #[test]
+    fn pool_properties_with_a_fixed_set_of_values_offer_them_and_free_text_ones_do_not() {
+        let edit = |key: &str| FormKind::EditPoolProperty { host: 0, pool: "tank".to_string(), key: key.to_string() };
+        assert_eq!(vocabulary_for(&edit("autoexpand"), 0), Some((&["on", "off"][..], false)));
+        assert_eq!(vocabulary_for(&edit("failmode"), 0), Some((&["wait", "continue", "panic"][..], false)));
+        assert_eq!(vocabulary_for(&edit("comment"), 0), None);
+        assert_eq!(vocabulary_for(&edit("bootfs"), 0), None);
+    }
+
+    #[test]
+    fn the_redundancy_field_of_both_from_disks_forms_offers_the_layouts_but_the_name_field_does_not() {
+        for kind in [
+            FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string()] },
+            FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".to_string()] },
+        ] {
+            assert_eq!(vocabulary_for(&kind, 1), Some((&["mirror", "raidz1", "raidz2", "raidz3"][..], false)));
+            assert_eq!(vocabulary_for(&kind, 0), None);
+        }
+    }
+
+    #[test]
+    fn f2_on_a_pool_property_preselects_its_current_value() {
+        let kind = FormKind::EditPoolProperty { host: 0, pool: "tank".to_string(), key: "failmode".to_string() };
+        let picker = build_picker_state(&kind, 0, "continue").unwrap();
+        assert_eq!(picker.values[picker.selected], "continue");
     }
 
     #[test]
