@@ -39,7 +39,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .areas(body_area);
     // Every list section and a drilled pool give the bottom half of the center
     // column to a metrics panel; the sidebar keeps its full height.
-    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares);
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares | Section::Jobs);
     let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
@@ -52,7 +52,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_sidebar(f, app, sidebar_area);
     draw_main(f, app, main_area);
-    if let Some(area) = metrics_area {
+    if let (Some(area), true) = (metrics_area, app.drilled_pool.is_none() && app.current_section() == Section::Jobs) {
+        draw_jobs_panel(f, app, area);
+    } else if let Some(area) = metrics_area {
         let health = app.metrics.target().and_then(|t| app.pools.iter().find(|p| Some(p.name.as_str()) == t.pool())).map(|p| p.health.clone());
         let disk = match app.metrics.target() {
             Some(MetricsTarget::Disk { name, .. }) => app.disks.iter().find(|d| &d.name == name),
@@ -95,6 +97,13 @@ fn status_bar_content(app: &App) -> (String, Style, Option<(f64, String)>) {
     if let Some(msg) = &app.status_message {
         lines.push(msg.clone());
         if app.status_is_error() {
+            style = app.theme.err;
+        }
+    }
+    let failed = app.jobs_view.failed_count();
+    if failed > 0 {
+        lines.push(format!("{failed} job{} failed — see Jobs", if failed == 1 { "" } else { "s" }));
+        if style == Style::default() {
             style = app.theme.err;
         }
     }
@@ -579,6 +588,44 @@ pub(crate) fn smb_access_label(guest_ok: bool, valid_user: Option<&str>) -> Stri
         (false, Some(u)) => format!("user={u}"),
         (false, None) => "any Samba user".to_string(),
     }
+}
+
+/// The bottom panel of the Jobs section: the selected job's recent runs on the left, its
+/// schedule, next run times and flags on the right. Drawn straight from the loaded data.
+fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
+    use crate::ui::jobs::{preview_lines, run_summary, schedule_label};
+    let theme = &app.theme;
+    let selected = app.jobs_table.selected().and_then(|i| app.jobs_view.jobs.get(i));
+    let title = selected.map_or_else(|| "Job".to_string(), |j| format!("Job — {}", j.id));
+    let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(false)).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let Some(job) = selected else {
+        f.render_widget(Paragraph::new("nothing selected").style(theme.dim()), inner);
+        return;
+    };
+    let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(55), Constraint::Min(0)]).areas(inner);
+
+    let mut runs = vec![Line::styled("Last runs", theme.dim())];
+    let history = app.jobs_view.runs_of(&job.id, 8);
+    if history.is_empty() {
+        runs.push(Line::from("No runs yet"));
+    }
+    for run in history {
+        let style = if run.result == Some(crate::daemon::history::RunResult::Failed) { theme.err } else { Style::default() };
+        runs.push(Line::styled(run_summary(run, &chrono::Local), style));
+    }
+    f.render_widget(Paragraph::new(runs), left);
+
+    let label = schedule_label(&job.schedule);
+    let cron = job.schedule.trim();
+    let mut info = vec![Line::from(if label == cron { cron.to_string() } else { format!("{label}  ({cron})") })];
+    match app.jobs_view.unsupported.get(&job.id) {
+        Some(reason) => info.push(Line::styled(reason.clone(), theme.err)),
+        None => info.extend(preview_lines(&job.schedule, &chrono::Local::now()).into_iter().skip(1).map(Line::from)),
+    }
+    info.push(Line::from(format!("{}  catch up {}", if job.enabled { "enabled" } else { "disabled" }, if job.catch_up { "yes" } else { "no" })));
+    f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
 }
 
 fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1338,6 +1385,66 @@ mod tests {
         let text = render(&mut app, 100, 30).join("\n");
         assert!(text.contains("Schedule error:") && text.contains("outside 0-59"), "{text}");
         assert!(!text.contains("Next:"));
+    }
+
+    fn history_event(job_id: &str, run_id: &str, kind: crate::daemon::history::EventKind, ago_mins: i64, result: Option<crate::daemon::history::RunResult>, message: &str) -> crate::daemon::history::Event {
+        let at = chrono::Utc::now() - chrono::Duration::minutes(ago_mins);
+        crate::daemon::history::Event { job_id: job_id.into(), run_id: run_id.into(), event: kind, at, scheduled_for: Some(at), result, message: message.into(), catch_up: false, summary: None }
+    }
+
+    #[test]
+    fn the_jobs_panel_shows_the_selected_jobs_runs_schedule_next_times_and_flags() {
+        use crate::daemon::history::{EventKind, History, RunResult};
+        let (mut app, dir) = jobs_app(&[a_job("scrub-local-tank", "0 3 * * 0")]);
+        let h = History::new(dir.path().join("history.jsonl"));
+        h.append(&history_event("scrub-local-tank", "r1", EventKind::Started, 300, None, "")).unwrap();
+        h.append(&history_event("scrub-local-tank", "r1", EventKind::Finished, 290, Some(RunResult::Failed), "scrub repaired 12K with 3 errors")).unwrap();
+        h.append(&history_event("scrub-local-tank", "r2", EventKind::Skipped, 10, Some(RunResult::Skipped), "skipped: already scanning")).unwrap();
+        app.refresh_jobs();
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 130, 34).join("\n");
+        for want in ["Job — scrub-local-tank", "Last runs", "failed", "10m 00s", "scrub repaired 12K", "skipped", "skipped: already scanning", "Weekly, Sunday 03:00", "0 3 * * 0", "Next:", "enabled", "catch up"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_jobs_panel_says_when_nothing_is_selected_and_shows_an_unsupported_reason_in_full() {
+        let mut bad = a_job("bad", "0 3 * * 0");
+        bad.host = "somewhere-else".into();
+        let (mut app, _dir) = jobs_app(&[bad]);
+        let text = render(&mut app, 120, 34).join("\n");
+        assert!(text.contains("nothing selected"), "{text}");
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 150, 34).join("\n");
+        assert!(text.contains("host 'somewhere-else' is not in config.toml"), "{text}");
+        assert!(text.contains("No runs yet") || text.contains("never"), "{text}");
+    }
+
+    #[test]
+    fn the_jobs_panel_is_dropped_on_a_short_terminal_so_the_table_keeps_its_height() {
+        let (mut app, _dir) = jobs_app(&[a_job("a", "0 3 * * 0")]);
+        let text = render(&mut app, 120, 12).join("\n");
+        assert!(!text.contains("Last runs"), "{text}");
+    }
+
+    #[test]
+    fn failed_jobs_are_flagged_in_the_status_line_from_any_section() {
+        use crate::daemon::history::{EventKind, History, RunResult};
+        let (mut app, dir) = jobs_app(&[a_job("a", "0 3 * * 0"), a_job("b", "0 3 * * 0")]);
+        let h = History::new(dir.path().join("history.jsonl"));
+        h.append(&history_event("a", "r1", EventKind::Finished, 60, Some(RunResult::Failed), "boom")).unwrap();
+        app.refresh_jobs();
+        app.selected_section = 0;
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("1 job failed"), "{text}");
+        h.append(&history_event("b", "r2", EventKind::Finished, 30, Some(RunResult::Failed), "boom")).unwrap();
+        app.refresh_jobs();
+        assert!(render(&mut app, 120, 30).join("\n").contains("2 jobs failed"));
+        h.append(&history_event("a", "r3", EventKind::Finished, 5, Some(RunResult::Ok), "")).unwrap();
+        h.append(&history_event("b", "r4", EventKind::Finished, 5, Some(RunResult::Ok), "")).unwrap();
+        app.refresh_jobs();
+        assert!(!render(&mut app, 120, 30).join("\n").contains("failed —"), "recovered jobs clear the indicator");
     }
 
     #[test]

@@ -36,6 +36,41 @@ pub fn describe(expr: &str) -> String {
     PRESETS.iter().find(|(cron, _)| *cron == expr).map_or_else(|| "custom schedule".to_string(), |(_, label)| (*label).to_string())
 }
 
+/// `45s`, `3m 05s`, `2h 10m`.
+pub fn duration_text(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {:02}m", secs / 3_600, secs % 3_600 / 60)
+    }
+}
+
+/// One line of a job's run list: when it started (in `tz`), how it ended, how long it took, and
+/// the first line of its message.
+pub fn run_summary<Tz: TimeZone>(run: &Run, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let when = run.started_at.with_timezone(tz).format("%m-%d %H:%M");
+    let word = match run.result {
+        None => "running",
+        Some(RunResult::Ok) => "ok",
+        Some(RunResult::Failed) => "failed",
+        Some(RunResult::Skipped) => "skipped",
+    };
+    let duration = run.finished_at.map_or_else(|| "-".to_string(), |end| duration_text((end - run.started_at).num_seconds()));
+    let mut line = format!("{when}  {word:<7}  {duration}");
+    let message = run.message.lines().next().unwrap_or("").trim();
+    if !message.is_empty() {
+        line.push_str("  ");
+        line.push_str(message);
+    }
+    line
+}
+
 /// The table's schedule column: a preset's name, or the cron text of a custom schedule.
 pub fn schedule_label(expr: &str) -> String {
     let described = describe(expr);
@@ -341,5 +376,32 @@ mod tests {
         assert_eq!(next_run_text("0 3 * * 0", &now), "Sun 10-11 03:00");
         assert_eq!(next_run_text("0 0 31 2 *", &now), "never");
         assert_eq!(next_run_text("bogus", &now), "never");
+    }
+
+    #[test]
+    fn durations_read_in_the_two_largest_units() {
+        assert_eq!(duration_text(0), "0s");
+        assert_eq!(duration_text(45), "45s");
+        assert_eq!(duration_text(185), "3m 05s");
+        assert_eq!(duration_text(7_800), "2h 10m");
+        assert_eq!(duration_text(-5), "0s", "a clock that stepped back is not negative");
+    }
+
+    #[test]
+    fn a_run_summary_shows_when_how_it_ended_how_long_it_took_and_why() {
+        let est = FixedOffset::west_opt(5 * 3600).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        jobs::save(&dir.path().join("jobs.toml"), &[job("a")]).unwrap();
+        let h = History::new(dir.path().join("history.jsonl"));
+        let mut started = event("a", "r1", EventKind::Started, "2026-10-06T08:00:00Z", None);
+        started.message = String::new();
+        h.append(&started).unwrap();
+        let running = load(dir.path(), &hosts(), None);
+        assert_eq!(run_summary(running.last_run("a").unwrap(), &est), "10-06 03:00  running  -");
+        let mut done = event("a", "r1", EventKind::Finished, "2026-10-06T08:03:05Z", Some(RunResult::Failed));
+        done.message = "scrub repaired 12K with 3 errors\nsecond line".into();
+        h.append(&done).unwrap();
+        let finished = load(dir.path(), &hosts(), None);
+        assert_eq!(run_summary(finished.last_run("a").unwrap(), &est), "10-06 03:00  failed   3m 05s  scrub repaired 12K with 3 errors");
     }
 }
