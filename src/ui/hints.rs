@@ -260,6 +260,12 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("n", "New scrub job", 2));
             v.push(h("N", "New snapshot job", 3));
+            v.push(h("R", "New replication job", 3));
+            if let Some(job) = app.jobs_table.selected().and_then(|i| app.jobs_view.jobs.get(i)) {
+                if job.kind == crate::jobs::KIND_REPLICATE && app.jobs_view.is_running(&job.id) {
+                    v.push(h("c", "Cancel transfer", 1).tone(Tone::Warn));
+                }
+            }
             v.push(h("r", "Refresh", 4));
         }
         // Never in `App::sections`; listed so a future section forces a decision here.
@@ -492,7 +498,7 @@ mod tests {
     fn the_jobs_section_advertises_edit_enable_or_disable_delete_and_new_for_the_selected_job() {
         let selected = jobs(true);
         let labels: Vec<(&str, &str)> = hints(&selected).iter().map(|h| (h.key, h.label)).collect();
-        for want in [("Enter", "Edit"), ("Space", "Disable"), ("d", "Delete"), ("n", "New scrub job"), ("N", "New snapshot job")] {
+        for want in [("Enter", "Edit"), ("Space", "Disable"), ("d", "Delete"), ("n", "New scrub job"), ("N", "New snapshot job"), ("R", "New replication job")] {
             assert!(labels.contains(&want), "{labels:?}");
         }
         let mut second = jobs(true);
@@ -1101,5 +1107,17 @@ mod tests {
                 assert_ne!(fingerprint_with_status(&probe), before, "scenario '{name}' advertises '{} {}' but {code:?} changes nothing", hint.key, hint.label);
             }
         }
+    }
+
+    #[test]
+    fn cancel_is_advertised_only_for_a_running_replication() {
+        let mut a = jobs(true);
+        a.jobs_view.jobs = vec![crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")];
+        a.jobs_table.select(Some(0));
+        assert!(!keys(&a).contains(&"c"), "not running");
+        a.jobs_view.runs = vec![crate::daemon::history::Run { job_id: "r".into(), run_id: "r1".into(), started_at: chrono::Utc::now(), scheduled_for: None, finished_at: None, result: None, message: String::new(), catch_up: false, summary: None }];
+        assert!(keys(&a).contains(&"c"));
+        a.jobs_view.jobs = vec![crate::jobs::Job::test_snapshot("r", "tank/data", "hourly", 3)];
+        assert!(!keys(&a).contains(&"c"), "only replications can be cancelled");
     }
 }

@@ -1180,13 +1180,30 @@ impl App {
             KeyCode::Char('N') if self.current_section() == Section::Jobs => {
                 self.modal = Some(self.snapshot_job_form(None, ""));
             }
+            KeyCode::Char('R') if self.current_section() == Section::Jobs => {
+                self.modal = Some(self.replicate_job_form(None));
+            }
+            KeyCode::Char('c') if self.current_section() == Section::Jobs => {
+                if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)) {
+                    if job.kind == crate::jobs::KIND_REPLICATE && self.jobs_view.is_running(&job.id) {
+                        match crate::daemon::cancel::request(&self.state_dir.join("cancel"), &job.id) {
+                            Ok(()) => self.status_message = Some(format!("Cancel requested for '{}'; it stops within a second or two", job.id)),
+                            Err(e) => self.set_error(format!("Could not request the cancel: {e}")),
+                        }
+                    }
+                }
+            }
             KeyCode::Char('J') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => match self.selected_dataset_name() {
                 Some(dataset) => self.modal = Some(self.snapshot_job_form(None, &dataset)),
                 None => self.status_message = Some("Select a dataset first, then press J to schedule snapshots of it".to_string()),
             },
             KeyCode::Enter if self.current_section() == Section::Jobs => {
                 if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).cloned() {
-                    self.modal = Some(if job.kind == crate::jobs::KIND_SNAPSHOT { self.snapshot_job_form(Some(job), "") } else { self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")) });
+                    self.modal = Some(match job.kind.as_str() {
+                        crate::jobs::KIND_SNAPSHOT => self.snapshot_job_form(Some(job), ""),
+                        crate::jobs::KIND_REPLICATE => self.replicate_job_form(Some(job)),
+                        _ => self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")),
+                    });
                 }
             }
             KeyCode::Char(' ') if self.current_section() == Section::Jobs => {
@@ -1194,7 +1211,8 @@ impl App {
                     let enable = !job.enabled;
                     let as_enabled = crate::jobs::Job { enabled: true, ..job.clone() };
                     if let Some(other) = enable.then(|| crate::jobs::clashing_job(&self.jobs_view.jobs, &as_enabled)).flatten() {
-                        self.set_error(format!("Cannot enable '{}': it clashes with enabled job '{}' (same host, prefix and overlapping dataset): they would prune each other", job.id, other.id));
+                        let why = crate::jobs::clash_reason(other, &as_enabled).unwrap_or_default();
+                        self.set_error(format!("Cannot enable '{}': it clashes with enabled job '{}': {why}", job.id, other.id));
                         return;
                     }
                     self.status_message = Some(format!("{} job '{}'…", if enable { "Enabling" } else { "Disabling" }, job.id));
@@ -1441,6 +1459,18 @@ impl App {
                                 None
                             }
                         }
+                    } else if matches!(kind, FormKind::ReplicateJob { .. }) {
+                        match build_replicate_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
+                            Ok(mut action) => {
+                                action.host = self.selected_host;
+                                Some(action)
+                            }
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
+                        }
                     } else if matches!(kind, FormKind::ShareSmb { .. }) {
                         match build_smb_action(&kind, &fields, &self.shares) {
                             Ok(action) => Some(action),
@@ -1476,7 +1506,9 @@ impl App {
                             self.open_account_picker(&mut picker, host, field_value(&fields, focused), Instant::now());
                         }
                         if picker.pool_host.is_some() {
-                            self.open_pool_picker(&mut picker, &kind, field_value(&fields, 0));
+                            // The destination dataset lists the *destination* host's datasets.
+                            let host_field = if matches!(kind, FormKind::ReplicateJob { .. }) && focused == 4 { 3 } else { 0 };
+                            self.open_pool_picker(&mut picker, &kind, field_value(&fields, host_field));
                         }
                         self.picker = Some(picker);
                     }
@@ -1514,9 +1546,13 @@ impl App {
     fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str) {
         let (hosts, what) = match kind {
             FormKind::Job { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Pools),
-            FormKind::SnapshotJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
+            FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
             _ => return,
         };
+        if host_name.trim() == crate::jobs::DEST_FILE {
+            picker.load = crate::ui::picker::PickerLoad::Failed("the destination is a directory on the hub: type its path".to_string());
+            return;
+        }
         match hosts.iter().position(|h| h == host_name.trim()) {
             Some(host) => {
                 picker.pool_host = Some(host);
@@ -2283,6 +2319,98 @@ impl App {
     }
 }
 
+impl App {
+    fn replicate_job_form(&self, existing: Option<crate::jobs::Job>) -> Modal {
+        let yn = |b: bool| if b { "y" } else { "n" }.to_string();
+        let (title, host, dataset, prefix, dest_host, dest, force, schedule, catch_up) = match &existing {
+            Some(j) => (
+                format!("Edit replication job '{}'", j.id),
+                j.host.clone(),
+                j.dataset.clone().unwrap_or_default(),
+                crate::jobs::effective_prefix(j).to_string(),
+                j.dest_host.clone().unwrap_or_default(),
+                j.dest_dataset.clone().or_else(|| j.dest_dir.clone()).unwrap_or_default(),
+                j.force,
+                j.schedule.clone(),
+                j.catch_up,
+            ),
+            None => ("New replication job".to_string(), self.active_host_name().to_string(), String::new(), crate::jobs::DEFAULT_PREFIX.to_string(), String::new(), String::new(), false, "30 * * * *".to_string(), true),
+        };
+        Modal::Form {
+            title,
+            fields: vec![
+                FormField { label: "Source host".to_string(), value: host },
+                FormField { label: "Source dataset".to_string(), value: dataset },
+                FormField { label: "Prefix (snapshots to send)".to_string(), value: prefix },
+                FormField { label: "Destination host (or file)".to_string(), value: dest_host },
+                FormField { label: "Destination dataset (or directory)".to_string(), value: dest },
+                FormField { label: "Force: roll back the destination (y/n)".to_string(), value: yn(force) },
+                FormField { label: "Schedule".to_string(), value: schedule },
+                FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
+            ],
+            focused: 0,
+            description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally; nothing is destroyed or mounted.".to_string()),
+            kind: FormKind::ReplicateJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+        }
+    }
+}
+
+/// Turns a submitted replication form into a save, or says what is wrong. The job is validated
+/// by `jobs::resolve`, exactly as the daemon will validate it, plus the shared-destination rule.
+fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+    let FormKind::ReplicateJob { hosts, existing, jobs } = kind else { return Err("not a replication job form".to_string()) };
+    let yes_no = |label: &str, raw: &str, blank: bool| match raw.trim().to_lowercase().as_str() {
+        "" => Ok(blank),
+        "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        other => Err(format!("{label} must be y or n, not '{other}'")),
+    };
+    let host = field_value(fields, 0).trim();
+    if !hosts.iter().any(|h| h == host) {
+        return Err(format!("Unknown host '{host}'. Configured hosts: {}", hosts.join(", ")));
+    }
+    let dataset = field_value(fields, 1).trim();
+    let prefix = match field_value(fields, 2).trim() {
+        "" => crate::jobs::DEFAULT_PREFIX,
+        p => p,
+    };
+    let dest_host = field_value(fields, 3).trim();
+    let dest = field_value(fields, 4).trim();
+    let force = yes_no("Force", field_value(fields, 5), false)?;
+    let schedule = field_value(fields, 6).trim();
+    crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
+    let catch_up = yes_no("Catch up", field_value(fields, 7), true)?;
+    let to_file = dest_host == crate::jobs::DEST_FILE;
+    let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+    let base = crate::jobs::Job {
+        id: String::new(),
+        host: host.to_string(),
+        kind: crate::jobs::KIND_REPLICATE.to_string(),
+        pool: None,
+        dataset: Some(dataset.to_string()),
+        recursive: false,
+        prefix: Some(prefix.to_string()),
+        keep: None,
+        dest_host: Some(dest_host.to_string()),
+        dest_dataset: (!to_file).then(|| dest.to_string()),
+        dest_dir: to_file.then(|| dest.to_string()),
+        force,
+        schedule: schedule.to_string(),
+        catch_up,
+        enabled: true,
+        created_at: Some(now),
+    };
+    let job = match existing {
+        Some(old) => crate::jobs::Job { id: old.id.clone(), enabled: old.enabled, created_at: old.created_at, ..base },
+        None => crate::jobs::Job { id: crate::ui::jobs::new_replicate_job_id(host, dataset, dest_host, dest, &taken), ..base },
+    };
+    crate::jobs::resolve(&job, hosts)?;
+    if let Some(other) = crate::jobs::clashing_job(jobs, &job) {
+        return Err(format!("Job '{}' cannot run alongside this one: {}", other.id, crate::jobs::clash_reason(other, &job).unwrap_or_default()));
+    }
+    Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
+}
+
 /// Turns a submitted snapshot-job form into a save, or says what is wrong. It refuses exactly
 /// what the daemon would refuse (`jobs::resolve`) plus a prefix another job already uses.
 fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
@@ -2609,7 +2737,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } => None,
+        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
     }
 }
 
@@ -2883,7 +3011,7 @@ Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
-  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
+  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
@@ -2945,6 +3073,8 @@ Jobs
   Enter            edit the job (host, pool, schedule, catch up)
   n                new scrub job (or press J on a pool in Pools)
   N                new snapshot job (or press J on a dataset in Datasets)
+  R                new replication job
+  c                cancel the selected replication while it is running
   Space            enable / disable the job
   d                delete the job (y/n; its past runs stay in the history)
 
@@ -8376,5 +8506,154 @@ mod tests {
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Char(' '));
         assert_eq!(app.pending_mutations.len(), 1);
+    }
+
+    fn repl_kind(existing: Option<crate::jobs::Job>, jobs: Vec<crate::jobs::Job>) -> FormKind {
+        FormKind::ReplicateJob { hosts: vec!["local".to_string(), "fbsd16".to_string()], existing: existing.map(Box::new), jobs }
+    }
+
+    fn repl_fields(values: [&str; 8]) -> Vec<FormField> {
+        values.iter().map(|v| FormField { label: String::new(), value: (*v).to_string() }).collect()
+    }
+
+    fn repl_err(values: [&str; 8], jobs: Vec<crate::jobs::Job>) -> String {
+        build_replicate_job_action(&repl_kind(None, jobs), &repl_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err()
+    }
+
+    const GOOD: [&str; 8] = ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y"];
+
+    #[test]
+    fn big_r_in_jobs_opens_a_blank_replication_form_with_defaults() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.handle_key(KeyCode::Char('R'));
+        assert_eq!(form_values(&app), ["local", "", "auto", "", "", "n", "30 * * * *", "y"]);
+    }
+
+    #[test]
+    fn a_valid_replication_form_builds_a_save_with_a_fresh_id_and_creation_time() {
+        let now = at_utc("2026-10-06T12:00:00Z");
+        let action = build_replicate_job_action(&repl_kind(None, vec![]), &repl_fields(GOOD), std::path::Path::new("/state"), now).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        assert_eq!((job.kind.as_str(), job.host.as_str(), job.dataset.as_deref(), job.prefix.as_deref(), job.dest_host.as_deref(), job.dest_dataset.as_deref(), job.force), (crate::jobs::KIND_REPLICATE, "local", Some("tank/data"), Some("hourly"), Some("fbsd16"), Some("backup/data"), false));
+        assert_eq!(job.id, "repl-local-tank-data-to-fbsd16-backup-data");
+        assert_eq!(job.created_at, Some(now));
+        assert!(job.enabled && job.catch_up && job.pool.is_none() && job.keep.is_none());
+    }
+
+    #[test]
+    fn the_replication_form_refuses_what_the_daemon_would_refuse() {
+        let with = |i: usize, v: &'static str| {
+            let mut vals = GOOD;
+            vals[i] = v;
+            vals
+        };
+        assert!(repl_err(with(0, "nope"), vec![]).contains("host"));
+        assert!(repl_err(with(1, "-rf"), vec![]).contains("source dataset"));
+        assert!(repl_err(with(2, "a b"), vec![]).contains("prefix"));
+        assert!(repl_err(with(3, ""), vec![]).contains("destination host"));
+        assert!(repl_err(with(3, "nope"), vec![]).contains("host"));
+        assert!(repl_err(with(4, "tank/a@b"), vec![]).contains("destination dataset"));
+        assert!(repl_err(with(5, "maybe"), vec![]).contains("Force"));
+        assert!(repl_err(with(6, "bogus"), vec![]).contains("Schedule"));
+        assert!(repl_err(with(7, "q"), vec![]).contains("Catch up"));
+        assert!(repl_err(["fbsd16", "backup/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y"], vec![]).contains("same dataset"));
+        let mut to_file = GOOD;
+        to_file[3] = "file";
+        to_file[4] = "/mnt/usb";
+        assert!(repl_err(to_file, vec![]).contains("not supported"), "this build has no file destinations yet");
+    }
+
+    #[test]
+    fn the_replication_form_refuses_a_destination_another_job_already_uses() {
+        let other = crate::jobs::Job::test_replicate("other", "tank/elsewhere", "hourly", "fbsd16", "backup/data");
+        assert!(repl_err(GOOD, vec![other.clone()]).contains("other"));
+        // Editing that same job is fine.
+        let kind = repl_kind(Some(other.clone()), vec![other]);
+        assert!(build_replicate_job_action(&kind, &repl_fields(GOOD), std::path::Path::new("/x"), chrono::Utc::now()).is_ok());
+    }
+
+    #[test]
+    fn enter_on_a_replicate_job_edits_it_in_the_replication_form() {
+        let (mut app, _dir) = app_with_jobs(&[crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")]);
+        app.hosts = vec!["local".to_string(), "fbsd16".to_string()];
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y"]);
+    }
+
+    #[test]
+    fn f2_on_the_replication_forms_fields_opens_the_right_pickers() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.hosts = vec!["local".to_string(), "fbsd16".to_string()];
+        app.handle_key(KeyCode::Char('R'));
+        app.handle_modal_key(KeyCode::F(2));
+        assert_eq!(app.picker.as_ref().unwrap().values, vec!["local", "fbsd16"], "source host");
+        app.picker = None;
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        assert_eq!(app.pending_pool_fetch, vec![(0, crate::ui::picker::LiveNames::Datasets)], "source dataset: the source host's datasets");
+        app.picker = None;
+        app.pending_pool_fetch.clear();
+        app.handle_modal_key(KeyCode::Tab); // prefix: free text
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.picker.is_none());
+        app.handle_modal_key(KeyCode::Tab); // destination host
+        app.handle_modal_key(KeyCode::F(2));
+        assert_eq!(app.picker.as_ref().unwrap().values, vec!["local", "fbsd16", "file"], "destination host also offers file");
+        app.picker = None;
+        // Type the destination host, then F2 on the destination dataset lists *that* host's datasets.
+        for c in "fbsd16".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        assert_eq!(app.pending_pool_fetch, vec![(1, crate::ui::picker::LiveNames::Datasets)]);
+    }
+
+    #[test]
+    fn f2_on_the_destination_dataset_of_a_file_destination_says_to_type_a_path() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.handle_key(KeyCode::Char('R'));
+        for _ in 0..3 {
+            app.handle_modal_key(KeyCode::Tab);
+        }
+        for c in "file".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(matches!(&app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Failed(m) if m.contains("directory")));
+        assert!(app.pending_pool_fetch.is_empty());
+    }
+
+    #[test]
+    fn space_refuses_to_enable_a_replicate_job_that_clashes_on_its_destination() {
+        let mut a = crate::jobs::Job::test_replicate("a", "tank/one", "hourly", "fbsd16", "backup/data");
+        a.enabled = false;
+        let b = crate::jobs::Job::test_replicate("b", "tank/two", "hourly", "fbsd16", "backup/data");
+        let (mut app, _dir) = app_with_jobs(&[a, b]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char(' '));
+        assert!(app.pending_mutations.is_empty());
+        assert!(app.status_message.clone().unwrap_or_default().contains("same destination"));
+    }
+
+    #[test]
+    fn c_cancels_a_running_replication_and_is_inert_otherwise() {
+        let repl = crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data");
+        let (mut app, dir) = app_with_jobs(&[repl]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('c'));
+        assert!(app.status_message.is_none(), "not running: nothing happens");
+        assert!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")).is_empty());
+        let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
+        h.append(&crate::daemon::history::Event { job_id: "r".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Started, at: chrono::Utc::now(), scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }).unwrap();
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Char('c'));
+        assert_eq!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")), ["r"]);
+        assert!(app.status_message.clone().unwrap_or_default().contains("Cancel requested"));
     }
 }

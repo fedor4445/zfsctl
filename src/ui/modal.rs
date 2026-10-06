@@ -198,6 +198,8 @@ pub enum FormKind {
     /// is every current job, so the form can refuse a prefix another job already uses on the
     /// same host and dataset and can name a new job without a collision.
     SnapshotJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
+    /// Fields: `[source host, source dataset, prefix, destination host (or file), destination dataset (or directory), force (y/n), schedule, catch_up (y/n)]`.
+    ReplicateJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
     /// Fields: `[name, vdev_spec]`.
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.

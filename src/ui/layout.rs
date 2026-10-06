@@ -628,6 +628,17 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
     if job.kind == crate::jobs::KIND_SNAPSHOT {
         info.push(Line::from(format!("keep {}  prefix {}{}", job.keep.unwrap_or(0), crate::jobs::effective_prefix(job), if job.recursive { "  recursive" } else { "" })));
     }
+    if job.kind == crate::jobs::KIND_REPLICATE {
+        let dest = match job.dest_host.as_deref() {
+            Some(crate::jobs::DEST_FILE) => format!("file:{}", job.dest_dir.as_deref().unwrap_or("")),
+            Some(host) => format!("{host}:{}", job.dest_dataset.as_deref().unwrap_or("")),
+            None => String::new(),
+        };
+        info.push(Line::from(format!("to {dest}  prefix {}{}", crate::jobs::effective_prefix(job), if job.force { "  force" } else { "" })));
+        if let Some(p) = app.jobs_view.progress_of(&job.id) {
+            info.push(Line::from(crate::daemon::progress::progress_line(p)));
+        }
+    }
     f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
 }
 
@@ -646,7 +657,7 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(Line::from(title));
     if app.jobs_view.loaded && app.jobs_view.jobs.is_empty() {
-        let text = "No scheduled jobs. Press 'n' for a scrub job or 'N' for a snapshot job, or 'J' on a pool (Pools) or a dataset (Datasets).";
+        let text = "No scheduled jobs. Press 'n' for a scrub job, 'N' for a snapshot job or 'R' for a replication job, or 'J' on a pool (Pools) or a dataset (Datasets).";
         f.render_widget(Paragraph::new(text).style(theme.dim()).wrap(Wrap { trim: false }).block(block), area);
         return;
     }
@@ -724,6 +735,7 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
     match kind {
         crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::SnapshotJob { .. } => crate::ui::jobs::preview_lines(fields.get(5).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        crate::ui::modal::FormKind::ReplicateJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         _ => Vec::new(),
     }
 }
@@ -1790,5 +1802,27 @@ mod tests {
         app.handle_key(crossterm::event::KeyCode::Char('N'));
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("New snapshot job") && text.contains("Hourly") && text.contains("Next:"), "the default 0 * * * * is the Hourly preset:\n{text}");
+    }
+
+    #[test]
+    fn a_replicate_job_shows_its_source_as_the_target_and_destination_prefix_and_progress_in_the_panel() {
+        let repl = crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "local", "backup/data");
+        let (mut app, dir) = jobs_app(&[repl]);
+        let p = crate::daemon::progress::Progress { job_id: "r".into(), bytes: 5, total: Some(10), started_at: chrono::Utc::now(), updated_at: chrono::Utc::now(), rate: None };
+        crate::daemon::progress::write(&dir.path().join("progress"), "run1", &p).unwrap();
+        app.refresh_jobs();
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 130, 34).join("\n");
+        for want in ["tank/data", "to local:backup/data", "prefix hourly", "sent 5 B of 10 B (50%)"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_replication_forms_preview_follows_its_schedule_field() {
+        let (mut app, _dir) = jobs_app(&[]);
+        app.handle_key(crossterm::event::KeyCode::Char('R'));
+        let text = render(&mut app, 120, 34).join("\n");
+        assert!(text.contains("New replication job") && text.contains("Next:"), "{text}");
     }
 }

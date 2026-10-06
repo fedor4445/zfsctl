@@ -127,6 +127,11 @@ pub fn new_job_id(host: &str, pool: &str, existing: &[String]) -> String {
     unique(&format!("scrub-{}-{}", safe_key(host), safe_key(pool)), existing)
 }
 
+/// `repl-<host>-<dataset>-to-<dest host>-<dest>`, made safe the same way.
+pub fn new_replicate_job_id(host: &str, dataset: &str, dest_host: &str, dest: &str, existing: &[String]) -> String {
+    unique(&format!("repl-{}-{}-to-{}-{}", safe_key(host), safe_key(dataset), safe_key(dest_host), safe_key(dest)), existing)
+}
+
 /// `snap-<host>-<dataset>-<prefix>`, made safe the same way.
 pub fn new_snapshot_job_id(host: &str, dataset: &str, prefix: &str, existing: &[String]) -> String {
     unique(&format!("snap-{}-{}-{}", safe_key(host), safe_key(dataset), safe_key(prefix)), existing)
@@ -177,6 +182,8 @@ pub struct JobsView {
     pub error: Option<String>,
     /// False until the first load, so the section does not claim "no jobs" before it has looked.
     pub loaded: bool,
+    /// Live progress of running transfers, read from `<state>/progress`.
+    pub progress: Vec<crate::daemon::progress::Progress>,
 }
 
 /// Reads `jobs.toml`, `history.jsonl` and `daemon.json` from `state_dir`. If
@@ -195,10 +202,21 @@ pub fn load(state_dir: &Path, hosts: &[String], previous: Option<&JobsView>) -> 
         unsupported,
         error,
         loaded: true,
+        progress: crate::daemon::progress::read_all(&state_dir.join("progress")),
     }
 }
 
 impl JobsView {
+    /// The live progress of the job's running transfer, if it has one.
+    pub fn progress_of(&self, job_id: &str) -> Option<&crate::daemon::progress::Progress> {
+        self.progress.iter().find(|p| p.job_id == job_id)
+    }
+
+    /// Whether the job's latest run has started and not finished.
+    pub fn is_running(&self, job_id: &str) -> bool {
+        self.last_run(job_id).is_some_and(|r| r.result.is_none())
+    }
+
     /// The most recently started run of `id`.
     pub fn last_run(&self, id: &str) -> Option<&Run> {
         self.runs.iter().filter(|r| r.job_id == id).max_by_key(|r| r.started_at)
@@ -447,5 +465,27 @@ mod tests {
         let run = view.last_run("a").unwrap();
         assert!(last_result_text(Some(run), at("2026-10-06T09:35:00Z")).starts_with("cancelled"));
         assert!(run_summary(run, &Utc).contains("cancelled"));
+    }
+
+    #[test]
+    fn replicate_job_ids_are_safe_and_unique() {
+        assert_eq!(new_replicate_job_id("local", "tank/data", "fbsd16", "backup/data", &[]), "repl-local-tank-data-to-fbsd16-backup-data");
+        let taken = vec!["repl-local-tank-data-to-fbsd16-backup-data".to_string()];
+        assert_eq!(new_replicate_job_id("local", "tank/data", "fbsd16", "backup/data", &taken), "repl-local-tank-data-to-fbsd16-backup-data-2");
+    }
+
+    #[test]
+    fn load_reads_progress_files_and_knows_which_jobs_are_running() {
+        let dir = tempfile::tempdir().unwrap();
+        jobs::save(&dir.path().join("jobs.toml"), &[Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")]).unwrap();
+        let p = crate::daemon::progress::Progress { job_id: "r".into(), bytes: 5, total: Some(10), started_at: Utc::now(), updated_at: Utc::now(), rate: None };
+        crate::daemon::progress::write(&dir.path().join("progress"), "run1", &p).unwrap();
+        let view = load(dir.path(), &["local".to_string(), "fbsd16".to_string()], None);
+        assert_eq!(view.progress_of("r").map(|p| p.bytes), Some(5));
+        assert!(view.progress_of("other").is_none());
+        assert!(!view.is_running("r"), "no run in the history yet");
+        let h = History::new(dir.path().join("history.jsonl"));
+        h.append(&event("r", "r1", EventKind::Started, "2026-10-06T09:00:00Z", None)).unwrap();
+        assert!(load(dir.path(), &["local".to_string(), "fbsd16".to_string()], None).is_running("r"));
     }
 }
