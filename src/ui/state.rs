@@ -236,6 +236,9 @@ pub struct App {
     /// slot silently lost a second host whose probe resolved in the
     /// same event-loop tick as the first's.
     pub pending_new_hosts: Vec<(String, String)>,
+    /// Set by `!`; the event loop takes it, because only it owns the terminal
+    /// and can suspend the TUI to run a shell.
+    pub pending_shell: bool,
     pub account_cache: HashMap<usize, (Instant, crate::zfs::accounts::HostAccounts)>,
     pub account_fetch_in_flight: HashMap<usize, Instant>,
     pub pending_account_fetch: Vec<usize>,
@@ -312,6 +315,7 @@ impl App {
             status_error: None,
             should_quit: false,
             pending_new_hosts: Vec::new(),
+            pending_shell: false,
             account_cache: HashMap::new(),
             account_fetch_in_flight: HashMap::new(),
             pending_account_fetch: Vec::new(),
@@ -465,6 +469,23 @@ impl App {
         });
     }
 
+    /// Reloads whatever list is on screen, right now. Used after a shell
+    /// session, which may have changed ZFS state behind the TUI's back.
+    pub fn refresh_visible(&mut self, runner: Arc<dyn CommandRunner>) {
+        if let Some(pool) = self.drilled_pool.clone() {
+            self.refresh_vdevs(runner, pool);
+            return;
+        }
+        match self.current_section() {
+            Section::Pools => self.refresh_pools(runner),
+            Section::Datasets => self.refresh_datasets(runner),
+            Section::Snapshots => self.refresh_snapshots(runner),
+            Section::Disks => self.refresh_disks(runner),
+            Section::Shares => self.refresh_shares(runner),
+            _ => {}
+        }
+    }
+
     /// Sets a failure message (rendered with the theme's `err` style).
     pub fn set_error(&mut self, msg: String) {
         self.status_error = Some(msg.clone());
@@ -545,6 +566,10 @@ impl App {
             }
             KeyCode::Char('A') => {
                 self.modal = Some(Modal::Info { title: "About".to_string(), body: about_text() });
+            }
+            KeyCode::Char('!') if self.modal.is_none() && self.picker.is_none() && !self.hosts.is_empty() => {
+                self.pending_shell = true;
+                self.status_message = Some(format!("Opening a shell on {}…", self.active_host_name()));
             }
             KeyCode::Esc | KeyCode::Backspace if self.drilled_pool.is_some() => {
                 self.drilled_pool = None;
@@ -2545,6 +2570,7 @@ Global
   F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal
   ?                this Help screen
+  !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
   A                About
   q                quit
 
@@ -7050,6 +7076,64 @@ mod tests {
         t.select(None);
         move_table_selection(&mut t, 5, false);
         assert_eq!(t.selected(), Some(4), "backward from no selection lands on the last row");
+    }
+
+    #[test]
+    fn bang_requests_a_shell_on_the_selected_host() {
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+        app.selected_host = 1;
+        app.handle_key(KeyCode::Char('!'));
+        assert!(app.pending_shell);
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("fbsd16")), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn bang_works_inside_a_drilled_pool_too() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.drilled_pool = Some("tank".to_string());
+        app.handle_key(KeyCode::Char('!'));
+        assert!(app.pending_shell);
+    }
+
+    #[test]
+    fn bang_is_inert_with_a_modal_open_or_no_hosts() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Info { title: "Help".to_string(), body: String::new() });
+        app.handle_key(KeyCode::Char('!'));
+        assert!(!app.pending_shell, "a modal owns the keyboard");
+        let mut empty = App::new(Vec::new());
+        empty.handle_key(KeyCode::Char('!'));
+        assert!(!empty.pending_shell, "nothing to open a shell on");
+    }
+
+    #[test]
+    fn help_text_documents_the_shell_key() {
+        assert!(help_text().contains("  !  "), "{}", help_text());
+    }
+
+    #[test]
+    fn refresh_visible_reloads_the_list_you_are_looking_at() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank\t100\t10\t90\tONLINE\n"));
+        app.refresh_visible(runner);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.drain_worker_messages();
+            if !app.pools.is_empty() || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.pools.len(), 1);
+    }
+
+    #[test]
+    fn refresh_visible_in_the_hosts_section_does_nothing() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(""));
+        app.refresh_visible(runner);
+        assert!(app.pools.is_empty() && !app.is_loading());
     }
 
     #[test]

@@ -49,6 +49,9 @@ pub fn hints(app: &App) -> Vec<Hint> {
         return modal_hints(modal);
     }
     let mut v = context_hints(app);
+    if !app.hosts.is_empty() {
+        v.push(h("!", "Shell", 8));
+    }
     v.push(h("A", "About", 9));
     v.push(h("?", "Help", 0).pinned());
     v.push(h("q", "Quit", 0).pinned());
@@ -724,6 +727,13 @@ mod tests {
                 assert!(h.pinned, "{name}: {k} must be pinned");
             }
         }
+    }
+
+    #[test]
+    fn the_shell_key_is_advertised_only_when_there_is_a_host_to_open_one_on() {
+        assert!(keys(&pools_middle()).contains(&"!"));
+        let no_hosts = App::new(Vec::new());
+        assert!(!hints(&no_hosts).iter().any(|h| h.key == "!"));
     }
 
     #[test]
