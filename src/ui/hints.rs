@@ -247,6 +247,12 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("r", "Refresh", 4));
         }
+        (Section::Jobs, _) => {
+            if !app.jobs_view.jobs.is_empty() {
+                v.push(h("↑↓", "Move", 1));
+            }
+            v.push(h("r", "Refresh", 4));
+        }
         // Never in `App::sections`; listed so a future section forces a decision here.
         (Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl, _) => {}
     }

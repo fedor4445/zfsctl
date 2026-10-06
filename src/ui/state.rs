@@ -28,6 +28,7 @@ pub enum Section {
     Snapshots,
     Disks,
     Shares,
+    Jobs,
     Vdevs,
     PoolProperties,
     DatasetProperties,
@@ -165,6 +166,11 @@ pub struct App {
     pub selected_disks: HashSet<String>,
     pub shares: Vec<crate::zfs::share::Share>,
     pub shares_table: TableState,
+    pub jobs_view: crate::ui::jobs::JobsView,
+    pub jobs_table: TableState,
+    /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
+    pub state_dir: std::path::PathBuf,
+    last_jobs_refresh: Option<Instant>,
     /// `None` means "not yet checked" — kept distinct from `Some(false)`
     /// so the Shares title doesn't flash a false "unavailable" hint
     /// before the first refresh, consistent with every other section
@@ -270,7 +276,7 @@ impl App {
     pub fn new(hosts: Vec<String>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares],
+            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::Jobs],
             selected_section: 0,
             hosts,
             selected_host: 0,
@@ -285,6 +291,10 @@ impl App {
             selected_disks: HashSet::new(),
             shares: Vec::new(),
             shares_table: TableState::default(),
+            jobs_view: crate::ui::jobs::JobsView::default(),
+            jobs_table: TableState::default(),
+            state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
+            last_jobs_refresh: None,
             nfs_available: None,
             samba_available: None,
             shares_loaded: false,
@@ -482,7 +492,30 @@ impl App {
             Section::Snapshots => self.refresh_snapshots(runner),
             Section::Disks => self.refresh_disks(runner),
             Section::Shares => self.refresh_shares(runner),
+            Section::Jobs => self.refresh_jobs(),
             _ => {}
+        }
+    }
+
+    /// Reloads the Jobs data from the state directory. These are small local files, so
+    /// there is no runner and no thread. The selection stays on the same job.
+    pub fn refresh_jobs(&mut self) {
+        let selected = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).map(|j| j.id.clone());
+        self.jobs_view = crate::ui::jobs::load(&self.state_dir, &self.hosts, Some(&self.jobs_view));
+        match selected.and_then(|id| self.jobs_view.jobs.iter().position(|j| j.id == id)) {
+            Some(i) => self.jobs_table.select(Some(i)),
+            None => clamp_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len()),
+        }
+    }
+
+    /// Refreshes the Jobs data if it is stale: every 2 seconds while the section is on screen
+    /// (so a run's result appears live), every 10 otherwise (so the failed-jobs indicator is
+    /// right from any section). The first call always loads.
+    pub fn refresh_jobs_if_stale(&mut self, now: Instant) {
+        let every = if self.current_section() == Section::Jobs { Duration::from_secs(2) } else { Duration::from_secs(10) };
+        if self.last_jobs_refresh.is_none_or(|t| now.duration_since(t) >= every) {
+            self.last_jobs_refresh = Some(now);
+            self.refresh_jobs();
         }
     }
 
@@ -1126,6 +1159,12 @@ impl App {
             }
             KeyCode::Up if self.current_section() == Section::Shares => {
                 move_table_selection(&mut self.shares_table, self.shares.len(), false);
+            }
+            KeyCode::Down if self.current_section() == Section::Jobs => {
+                move_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Jobs => {
+                move_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len(), false);
             }
             KeyCode::Enter if self.current_section() == Section::Shares => {
                 if let Some(i) = self.shares_table.selected() {
@@ -3117,7 +3156,7 @@ mod tests {
         app.handle_key(KeyCode::BackTab);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Shares);
+        assert_eq!(app.current_section(), Section::Jobs);
     }
 
     #[test]
@@ -3392,9 +3431,7 @@ mod tests {
             Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0 },
             Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0 },
         ];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Shares (wraps backward)
-        app.handle_key(KeyCode::BackTab); // Shares -> Disks
-        app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
         assert_eq!(app.current_section(), Section::Snapshots);
         app.handle_key(KeyCode::Down);
         assert_eq!(app.snapshots_table.selected(), Some(0));
@@ -3924,9 +3961,7 @@ mod tests {
     fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0 }];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Shares (wraps backward)
-        app.handle_key(KeyCode::BackTab); // Shares -> Disks
-        app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
         app.snapshots_table.select(Some(0));
         app.handle_key(KeyCode::Char('d'));
         match app.modal {
@@ -3945,9 +3980,7 @@ mod tests {
     fn handle_key_b_on_snapshots_opens_rollback_confirm_typed_modal() {
         let mut app = App::new(vec!["local".to_string()]);
         app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0 }];
-        app.handle_key(KeyCode::BackTab); // Hosts -> Shares (wraps backward)
-        app.handle_key(KeyCode::BackTab); // Shares -> Disks
-        app.handle_key(KeyCode::BackTab); // Disks -> Snapshots
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
         app.snapshots_table.select(Some(0));
         app.handle_key(KeyCode::Char('b'));
         match app.modal {
@@ -4384,7 +4417,7 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Shares, "must wrap backward from the first section to the last");
+        assert_eq!(app.current_section(), Section::Jobs, "must wrap backward from the first section to the last");
     }
 
     #[test]
@@ -7134,6 +7167,90 @@ mod tests {
         let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(""));
         app.refresh_visible(runner);
         assert!(app.pools.is_empty() && !app.is_loading());
+    }
+
+    fn app_with_jobs(jobs_list: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        crate::jobs::save(&dir.path().join("jobs.toml"), jobs_list).unwrap();
+        let mut app = App::new(vec!["local".to_string()]);
+        app.state_dir = dir.path().to_path_buf();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Jobs).unwrap();
+        (app, dir)
+    }
+
+    fn scrub_job(id: &str) -> crate::jobs::Job {
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None }
+    }
+
+    #[test]
+    fn jobs_is_the_last_section_and_tab_cycles_into_and_out_of_it() {
+        let mut app = App::new(vec!["local".to_string()]);
+        assert_eq!(app.sections.last(), Some(&Section::Jobs));
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.current_section(), Section::Jobs);
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.current_section(), Section::Hosts, "wraps to the first section");
+    }
+
+    #[test]
+    fn refresh_jobs_reads_the_state_dir_and_keeps_the_selection_on_the_same_job() {
+        let (mut app, dir) = app_with_jobs(&[scrub_job("a"), scrub_job("b")]);
+        assert!(!app.jobs_view.loaded);
+        app.refresh_jobs();
+        assert_eq!(app.jobs_view.jobs.len(), 2);
+        app.jobs_table.select(Some(1));
+        // A job is added before "b": "b" moves to row 2 and must stay selected.
+        crate::jobs::save(&dir.path().join("jobs.toml"), &[scrub_job("a"), scrub_job("new"), scrub_job("b")]).unwrap();
+        app.refresh_jobs();
+        assert_eq!(app.jobs_table.selected(), Some(2));
+        // The selected job disappears: the selection clamps instead of dangling.
+        crate::jobs::save(&dir.path().join("jobs.toml"), &[scrub_job("a")]).unwrap();
+        app.refresh_jobs();
+        assert_eq!(app.jobs_table.selected(), Some(0));
+        crate::jobs::save(&dir.path().join("jobs.toml"), &[]).unwrap();
+        app.refresh_jobs();
+        assert_eq!(app.jobs_table.selected(), None);
+    }
+
+    #[test]
+    fn up_and_down_move_the_jobs_selection_and_wrap() {
+        let (mut app, _dir) = app_with_jobs(&[scrub_job("a"), scrub_job("b")]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.jobs_table.selected(), Some(0));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.jobs_table.selected(), Some(1));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.jobs_table.selected(), Some(0));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.jobs_table.selected(), Some(1));
+    }
+
+    #[test]
+    fn jobs_refresh_happens_at_once_then_every_two_seconds_in_the_section_and_ten_elsewhere() {
+        let (mut app, dir) = app_with_jobs(&[scrub_job("a")]);
+        let t0 = Instant::now();
+        app.refresh_jobs_if_stale(t0);
+        assert!(app.jobs_view.loaded, "the first call loads immediately");
+        crate::jobs::save(&dir.path().join("jobs.toml"), &[scrub_job("a"), scrub_job("b")]).unwrap();
+        app.refresh_jobs_if_stale(t0 + Duration::from_secs(1));
+        assert_eq!(app.jobs_view.jobs.len(), 1, "not yet: two seconds apply while the section is on screen");
+        app.refresh_jobs_if_stale(t0 + Duration::from_secs(2));
+        assert_eq!(app.jobs_view.jobs.len(), 2);
+        crate::jobs::save(&dir.path().join("jobs.toml"), &[scrub_job("a")]).unwrap();
+        app.selected_section = 0;
+        app.refresh_jobs_if_stale(t0 + Duration::from_secs(5));
+        assert_eq!(app.jobs_view.jobs.len(), 2, "ten seconds apply from another section");
+        app.refresh_jobs_if_stale(t0 + Duration::from_secs(12));
+        assert_eq!(app.jobs_view.jobs.len(), 1);
+    }
+
+    #[test]
+    fn refresh_visible_in_the_jobs_section_reloads_without_a_runner() {
+        let (mut app, _dir) = app_with_jobs(&[scrub_job("a")]);
+        app.refresh_visible(Arc::new(FakeRunner::new("")));
+        assert_eq!(app.jobs_view.jobs.len(), 1);
     }
 
     #[test]

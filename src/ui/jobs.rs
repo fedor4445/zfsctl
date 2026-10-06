@@ -36,6 +36,20 @@ pub fn describe(expr: &str) -> String {
     PRESETS.iter().find(|(cron, _)| *cron == expr).map_or_else(|| "custom schedule".to_string(), |(_, label)| (*label).to_string())
 }
 
+/// The table's schedule column: a preset's name, or the cron text of a custom schedule.
+pub fn schedule_label(expr: &str) -> String {
+    let described = describe(expr);
+    if described == "custom schedule" { expr.trim().to_string() } else { described }
+}
+
+/// The table's next-run column: day and time in `now`'s zone, or `never`.
+pub fn next_run_text<Tz: TimeZone>(expr: &str, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    Schedule::parse(expr).ok().and_then(|s| s.next_after(now)).map_or_else(|| "never".to_string(), |t| t.format("%a %m-%d %H:%M").to_string())
+}
+
 /// The form's preview under the Schedule field: what the schedule is called
 /// and its next three run times in `now`'s zone, or why it does not parse.
 pub fn preview_lines<Tz: TimeZone>(expr: &str, now: &DateTime<Tz>) -> Vec<String>
@@ -61,10 +75,13 @@ where
 pub fn new_job_id(host: &str, pool: &str, existing: &[String]) -> String {
     let safe = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '-' }).collect::<String>();
     let base = format!("scrub-{}-{}", safe(host), safe(pool));
-    if !existing.contains(&base) {
-        return base;
+    let mut candidate = base.clone();
+    let mut n = 1_u32;
+    while existing.contains(&candidate) {
+        n += 1;
+        candidate = format!("{base}-{n}");
     }
-    (2..).map(|n| format!("{base}-{n}")).find(|candidate| !existing.contains(candidate)).unwrap_or(base)
+    candidate
 }
 
 /// `just now`, `45m ago`, `3h ago`, `2d ago`. A time in the future reads as `just now`.
@@ -309,5 +326,20 @@ mod tests {
         assert_eq!(last_result_text(load(dir.path(), &hosts(), None).last_run("a"), now), "skipped 1h ago");
         h.append(&event("a", "r3", EventKind::Finished, "2026-10-04T11:00:00Z", Some(RunResult::Failed))).unwrap();
         assert_eq!(last_result_text(load(dir.path(), &hosts(), None).last_run("a"), now), "skipped 1h ago", "the newest by start time wins, not by file order");
+    }
+
+    #[test]
+    fn the_table_shows_a_presets_name_or_the_cron_text_of_a_custom_schedule() {
+        assert_eq!(schedule_label("0 3 * * 0"), "Weekly, Sunday 03:00");
+        assert_eq!(schedule_label(" */10 * * * * "), "*/10 * * * *");
+    }
+
+    #[test]
+    fn the_next_run_column_gives_a_day_and_time_or_never() {
+        let est = FixedOffset::west_opt(5 * 3600).unwrap();
+        let now = at("2026-10-06T10:00:00Z").with_timezone(&est);
+        assert_eq!(next_run_text("0 3 * * 0", &now), "Sun 10-11 03:00");
+        assert_eq!(next_run_text("0 0 31 2 *", &now), "never");
+        assert_eq!(next_run_text("bogus", &now), "never");
     }
 }

@@ -152,6 +152,7 @@ fn event_loop(
     let signals = shell::ShellSignals::install().map_err(|e| e.to_string());
     loop {
         let refreshes = app.drain_worker_messages();
+        app.refresh_jobs_if_stale(Instant::now());
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
         app.clear_stale_scan_status();
@@ -176,6 +177,7 @@ fn event_loop(
                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
                     Section::Disks => app.refresh_disks(host.runner.clone()),
                     Section::Shares => app.refresh_shares(host.runner.clone()),
+                    Section::Jobs => app.refresh_jobs(),
                     Section::Vdevs => {
                         if let Some(pool) = app.drilled_pool.clone() {
                             app.refresh_vdevs(host.runner.clone(), pool);
@@ -263,6 +265,7 @@ fn event_loop(
                                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
                                     Section::Disks => app.refresh_disks(host.runner.clone()),
                                     Section::Shares => app.refresh_shares(host.runner.clone()),
+                                    Section::Jobs => app.refresh_jobs(),
                                     Section::Hosts
                                     | Section::Vdevs
                                     | Section::PoolProperties
