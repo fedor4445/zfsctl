@@ -99,6 +99,18 @@ fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_
     }
 }
 
+/// Drains `app.pending_account_fetch` and starts one worker per host.
+/// `App` cannot resolve a host index to a runner, so the event loop does
+/// it (same split as `apply_pending_new_hosts`). An index with no host
+/// (e.g. the inventory changed) is dropped.
+fn apply_pending_account_fetches(app: &mut App, inventory: &HostInventory) {
+    for host in std::mem::take(&mut app.pending_account_fetch) {
+        if let Some(h) = inventory.hosts.get(host) {
+            app.fetch_accounts(h.runner.clone(), host);
+        }
+    }
+}
+
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -109,6 +121,7 @@ fn event_loop(
     loop {
         let refreshes = app.drain_worker_messages();
         apply_pending_new_hosts(app, inventory, config_path);
+        apply_pending_account_fetches(app, inventory);
         app.clear_stale_scan_status();
 
         if last_vdevs_auto_refresh.elapsed() >= VDEVS_AUTO_REFRESH_INTERVAL {
@@ -314,5 +327,33 @@ mod tests {
 
         assert_eq!(app.hosts, vec!["local".to_string()]);
         assert_eq!(inventory.hosts.len(), 1);
+    }
+
+    #[test]
+    fn apply_pending_account_fetches_drains_the_queue_and_spawns_one_fetch_per_host() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let inventory = HostInventory::from_config(&Config::default());
+        app.pending_account_fetch = vec![0];
+        apply_pending_account_fetches(&mut app, &inventory);
+        assert!(app.pending_account_fetch.is_empty());
+        // The local host really runs `getent` and reports back through the channel.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.drain_worker_messages();
+            if app.account_cache.contains_key(&0) || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(app.account_cache.contains_key(&0), "worker result must arrive and be cached");
+    }
+
+    #[test]
+    fn apply_pending_account_fetches_ignores_a_host_index_that_no_longer_exists() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let inventory = HostInventory::from_config(&Config::default());
+        app.pending_account_fetch = vec![9];
+        apply_pending_account_fetches(&mut app, &inventory);
+        assert!(app.pending_account_fetch.is_empty());
     }
 }

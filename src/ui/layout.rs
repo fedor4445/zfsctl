@@ -618,10 +618,27 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
 /// `Some` -- the form underneath stays drawn exactly as `draw_modal`
 /// left it; this is a second, smaller popup layered above it.
 fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &Theme, area: Rect) {
+    const PICKER_WIDTH_PERCENT: u16 = 50;
+    if picker.load != crate::ui::picker::PickerLoad::Ready {
+        let popup_area = centered_rect(PICKER_WIDTH_PERCENT, 7, area);
+        f.render_widget(Clear, popup_area);
+        let body = match &picker.load {
+            crate::ui::picker::PickerLoad::Failed(msg) => {
+                format!("Could not load accounts: {}\n\nEsc to close", sanitise_for_display(msg))
+            }
+            _ => "Loading accounts…\n\nEsc to close".to_string(),
+        };
+        f.render_widget(
+            Paragraph::new(body)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).border_style(theme.accent).title("Pick a value")),
+            popup_area,
+        );
+        return;
+    }
     let filter_lower = picker.filter.to_lowercase();
     let filtered: Vec<&String> = picker.values.iter().filter(|v| v.to_lowercase().contains(&filter_lower)).collect();
 
-    const PICKER_WIDTH_PERCENT: u16 = 50;
     let popup_height = (filtered.len() as u16 + 4).clamp(6, area.height.saturating_sub(4).max(6));
     let popup_area = centered_rect(PICKER_WIDTH_PERCENT, popup_height, area);
     f.render_widget(Clear, popup_area);
@@ -638,11 +655,14 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
         })
         .collect();
 
-    let title = if picker.filter.is_empty() {
+    let mut title = if picker.filter.is_empty() {
         "Pick a value (type filter, Space toggle, Enter OK, Esc cancel)".to_string()
     } else {
         format!("Pick — filter '{}' (Space toggle, Enter OK, Esc cancel)", picker.filter)
     };
+    if let Some(note) = &picker.note {
+        title = format!("{title} — {}", sanitise_for_display(note));
+    }
     // `ListState` (not a manually-painted `i == picker.selected` style
     // per item, and not plain `render_widget`) is what makes ratatui
     // actually scroll the visible window to keep the selected row in
@@ -657,6 +677,14 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
         .block(Block::default().borders(Borders::ALL).border_style(theme.accent).title(title))
         .highlight_style(theme.selected_row());
     f.render_stateful_widget(list, popup_area, &mut list_state);
+}
+
+/// Replaces every control character (newline, tab, ESC, ...) with a space
+/// and collapses runs of whitespace, so text that may carry raw remote
+/// stderr renders on one line and cannot inject terminal escapes.
+fn sanitise_for_display(s: &str) -> String {
+    let spaced: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Conservatively estimates how many terminal rows `text` occupies when
@@ -702,6 +730,13 @@ fn pane_border_style(theme: &Theme, current: PaneFocus, pane: PaneFocus) -> Styl
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sanitise_for_display_strips_control_characters_and_collapses_lines() {
+        let out = super::sanitise_for_display("boom\n\u{1b}[31mred\u{1b}[0m\tbad\r\nend");
+        assert!(!out.chars().any(|c| c.is_control()), "{out:?}");
+        assert_eq!(out, "boom [31mred [0m bad end");
+    }
+
     use super::*;
     use crate::ui::theme::Theme;
     // Explicit (not via `super::*`): Task 7 removes `Color` from the

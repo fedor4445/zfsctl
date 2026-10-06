@@ -82,6 +82,8 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 - `Esc`: dismiss the current status message, back out of a focused properties pane, or (while a modal is open) cancel it
 - `F2` (while a form field with a known value set is focused — `zfs allow`'s Permissions, or the ACL form's Permissions/Flags/Type): open a picker. Type to filter, `Up`/`Down` to move, `Space` to toggle a value (Permissions/Flags — multiple can be checked), `Enter` to confirm (joins every checked value with commas for multi-select, or picks the highlighted single value for Type), `Esc` to cancel without changing the field. A field with no known value set (`Recipient`, `Name`, `Scope`, etc.) ignores `F2`.
 
+On the four account fields (SMB valid user, NFS user/group fields, `zfs allow` recipient, ACL entry subject) `F2` lists the target host's real users and groups, real accounts first. They are fetched on first use and cached for 60 seconds, over SSH without sudo, so no sudoers change is needed. If the lookup fails the popup says so and typing in the field still works.
+
 ### Forms (any modal with text fields to fill in)
 
 - `Tab` / `Down`: move to the next field (wraps from the last field back to the first)

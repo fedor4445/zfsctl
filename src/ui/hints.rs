@@ -56,6 +56,9 @@ pub fn hints(app: &App) -> Vec<Hint> {
 }
 
 fn picker_hints(picker: &PickerState) -> Vec<Hint> {
+    if picker.load != crate::ui::picker::PickerLoad::Ready {
+        return vec![h("Esc", "Close", 0)];
+    }
     let mut v = vec![h("↑↓", "Move", 2), h("type", "Filter", 3)];
     if picker.multi_select {
         v.push(h("Space", "Toggle", 1));
@@ -614,6 +617,52 @@ mod tests {
     }
 
     // ---- content ---------------------------------------------------
+
+    fn picker_with(load: crate::ui::picker::PickerLoad) -> PickerState {
+        PickerState {
+            values: vec![],
+            filter: String::new(),
+            selected: 0,
+            checked: Default::default(),
+            multi_select: false,
+            load,
+            note: None,
+            account: None,
+        }
+    }
+
+    #[test]
+    fn a_loading_or_failed_picker_advertises_only_esc() {
+        for load in [crate::ui::picker::PickerLoad::Loading, crate::ui::picker::PickerLoad::Failed("x".into())] {
+            let mut a = base();
+            a.picker = Some(picker_with(load));
+            assert_eq!(keys(&a), vec!["Esc"]);
+        }
+    }
+
+    #[test]
+    fn f2_is_advertised_on_the_four_live_account_fields_and_actually_opens_a_picker() {
+        let forms: Vec<(FormKind, usize)> = vec![
+            (FormKind::ShareSmb { host: 0, dataset: "d".into(), path: "/d".into(), existing_user: None }, 1),
+            (FormKind::ShareNfs { host: 0, dataset: "d".into() }, 3),
+            (FormKind::GrantPermission { host: 0, dataset: "d".into() }, 0),
+            (FormKind::AddAclEntry { host: 0, path: "/d".into(), position: 0 }, 0),
+        ];
+        for (kind, idx) in forms {
+            let n = match &kind {
+                FormKind::ShareSmb { .. } => 5,
+                FormKind::ShareNfs { .. } => 4,
+                FormKind::GrantPermission { .. } => 3,
+                _ => 4,
+            };
+            let fields = (0..n).map(|i| FormField { label: format!("f{i}"), value: String::new() }).collect();
+            let mut a = base();
+            a.modal = Some(Modal::Form { title: "t".into(), fields, focused: idx, description: None, kind: kind.clone() });
+            assert!(keys(&a).contains(&"F2"), "{kind:?} field {idx}");
+            a.handle_modal_key(KeyCode::F(2));
+            assert!(a.picker.is_some(), "{kind:?} field {idx}: F2 must open a picker");
+        }
+    }
 
     fn keys(app: &App) -> Vec<&'static str> {
         hints(app).iter().map(|h| h.key).collect()

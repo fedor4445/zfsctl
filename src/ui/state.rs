@@ -6535,6 +6535,44 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_picker_accepts_only_esc() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        app.picker.as_mut().unwrap().load = crate::ui::picker::PickerLoad::Failed("x".into());
+        for key in [KeyCode::Char('x'), KeyCode::Down, KeyCode::Enter, KeyCode::Backspace] {
+            app.handle_picker_key(key);
+            assert!(app.picker.is_some(), "{key:?} must not close a Failed picker");
+            assert!(app.picker.as_ref().unwrap().filter.is_empty());
+        }
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[1].value, "root"),
+            other => panic!("form must stay open: {other:?}"),
+        }
+        app.handle_picker_key(KeyCode::Esc);
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn a_cache_aged_59s_is_still_fresh() {
+        let mut app = smb_form_app(1);
+        let aged = Instant::now().checked_sub(Duration::from_secs(59)).expect("monotonic clock far enough along");
+        app.account_cache.insert(1, (aged, accounts_fixture()));
+        press_f2(&mut app);
+        assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Ready);
+        assert!(app.pending_account_fetch.is_empty());
+    }
+
+    #[test]
+    fn an_in_flight_marker_aged_29s_still_blocks_a_requeue() {
+        let mut app = smb_form_app(1);
+        let aged = Instant::now().checked_sub(Duration::from_secs(29)).expect("monotonic clock far enough along");
+        app.account_fetch_in_flight.insert(1, aged);
+        press_f2(&mut app);
+        assert!(app.pending_account_fetch.is_empty());
+        assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Loading);
+    }
+
+    #[test]
     fn selecting_a_live_value_replaces_the_field_text() {
         let mut app = smb_form_app(1);
         app.account_cache.insert(1, (Instant::now(), accounts_fixture()));
