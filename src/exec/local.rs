@@ -25,6 +25,12 @@ impl CommandRunner for LocalRunner {
     fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
         self.run(cmd, args)
     }
+
+    fn command(&self, cmd: &str, args: &[&str]) -> Result<Command> {
+        let mut command = Command::new(cmd);
+        command.args(args);
+        Ok(command)
+    }
 }
 
 #[cfg(test)]
@@ -79,5 +85,12 @@ mod tests {
         let runner = LocalRunner;
         let result = runner.run("definitely-not-a-real-binary-xyz", &[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn command_is_the_unspawned_command_itself() {
+        let cmd = LocalRunner.command("echo", &["hi"]).unwrap();
+        assert_eq!(cmd.get_program(), "echo");
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["hi"]);
     }
 }
