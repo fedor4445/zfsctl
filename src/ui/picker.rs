@@ -1,4 +1,5 @@
 use crate::ui::modal::FormKind;
+use crate::zfs::accounts::HostAccounts;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PickerState {
@@ -7,6 +8,69 @@ pub struct PickerState {
     pub selected: usize,
     pub checked: std::collections::HashSet<String>,
     pub multi_select: bool,
+    pub load: PickerLoad,
+    pub note: Option<String>,
+    pub account: Option<(usize, AccountField)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountField {
+    User,
+    ZfsAllowRecipient,
+    AclRecipient,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PickerLoad {
+    Ready,
+    Loading,
+    Failed(String),
+}
+
+/// Which live account list (and for which host) a form field's picker is
+/// sourced from, if any. Keyed on `(kind, field_index)` like `vocabulary_for`.
+pub fn account_field_for(kind: &FormKind, field_index: usize) -> Option<(usize, AccountField)> {
+    match (kind, field_index) {
+        (FormKind::ShareSmb { host, .. }, 1) | (FormKind::ShareNfs { host, .. }, 3) => Some((*host, AccountField::User)),
+        (FormKind::GrantPermission { host, .. }, 0) => Some((*host, AccountField::ZfsAllowRecipient)),
+        (FormKind::AddAclEntry { host, .. }, 0) => Some((*host, AccountField::AclRecipient)),
+        _ => None,
+    }
+}
+
+/// The displayed list for an account picker. Names that
+/// `smb::validate_user` rejects (spaces, `\`, `$`, a leading `-`, ...) are
+/// never offered: they could be selected and then refused by the form's
+/// own parser.
+pub fn build_values(field: AccountField, accounts: &HostAccounts) -> Vec<String> {
+    let safe = |a: &&crate::zfs::accounts::Account| crate::zfs::smb::validate_user(&a.name).is_ok();
+    let users = accounts.users.iter().filter(safe).map(|a| a.name.clone());
+    let groups = accounts.groups.iter().filter(safe).map(|a| a.name.clone());
+    match field {
+        AccountField::User => users.collect(),
+        AccountField::ZfsAllowRecipient => std::iter::once("everyone".to_string())
+            .chain(users.map(|n| format!("user:{n}")))
+            .chain(groups.map(|n| format!("group:{n}")))
+            .collect(),
+        AccountField::AclRecipient => ["owner", "group", "everyone"]
+            .into_iter()
+            .map(str::to_string)
+            .chain(users.map(|n| format!("user:{n}")))
+            .chain(groups.map(|n| format!("group:{n}")))
+            .collect(),
+    }
+}
+
+pub fn fill_account_picker(picker: &mut PickerState, accounts: &HostAccounts, current_value: &str) {
+    let Some((_, field)) = picker.account else { return };
+    picker.values = build_values(field, accounts);
+    picker.selected = picker.values.iter().position(|v| v == current_value.trim()).unwrap_or(0);
+    let mut notes: Vec<String> = accounts.group_error.iter().map(|e| format!("groups unavailable: {e}")).collect();
+    if picker.values.is_empty() {
+        notes.push("no selectable accounts".to_string());
+    }
+    picker.note = if notes.is_empty() { None } else { Some(notes.join("; ")) };
+    picker.load = PickerLoad::Ready;
 }
 
 /// Confirmed live via `zfs allow` (no arguments -- OpenZFS prints its
@@ -68,6 +132,18 @@ pub fn vocabulary_for(kind: &FormKind, field_index: usize) -> Option<(&'static [
 /// discard what's there. Returns `None` if the field has no attached
 /// vocabulary (the caller treats this as `F2` being a no-op).
 pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &str) -> Option<PickerState> {
+    if let Some((host, field)) = account_field_for(kind, field_index) {
+        return Some(PickerState {
+            values: Vec::new(),
+            filter: String::new(),
+            selected: 0,
+            checked: std::collections::HashSet::new(),
+            multi_select: false,
+            load: PickerLoad::Loading,
+            note: None,
+            account: Some((host, field)),
+        });
+    }
     let (values, multi_select) = vocabulary_for(kind, field_index)?;
     let values: Vec<String> = values.iter().map(|s| s.to_string()).collect();
     let mut checked = std::collections::HashSet::new();
@@ -81,7 +157,7 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
     } else if let Some(idx) = values.iter().position(|v| v == current_value.trim()) {
         selected = idx;
     }
-    Some(PickerState { values, filter: String::new(), selected, checked, multi_select })
+    Some(PickerState { values, filter: String::new(), selected, checked, multi_select, load: PickerLoad::Ready, note: None, account: None })
 }
 
 #[cfg(test)]
@@ -186,7 +262,7 @@ mod tests {
     #[test]
     fn build_picker_state_returns_none_for_a_field_with_no_vocabulary() {
         let kind = FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
-        assert_eq!(build_picker_state(&kind, 0, ""), None);
+        assert_eq!(build_picker_state(&kind, 1, ""), None);
     }
 
     #[test]
@@ -226,5 +302,87 @@ mod tests {
         let kind = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
         let picker = build_picker_state(&kind, 3, "deny").unwrap();
         assert_eq!(picker.selected, 1); // ACL_TYPES = ["allow", "deny"]
+    }
+
+    use crate::zfs::accounts::Account;
+
+    fn acct(name: &str, id: u32) -> Account {
+        Account { name: name.to_string(), id }
+    }
+    fn sample() -> HostAccounts {
+        HostAccounts { users: vec![acct("carol", 1003), acct("root", 0), acct("we ird", 1500)], groups: vec![acct("staff", 1100)], group_error: None }
+    }
+
+    #[test]
+    fn account_field_for_maps_exactly_the_four_live_fields_and_carries_the_host() {
+        let smb = FormKind::ShareSmb { host: 2, dataset: "d".into(), path: "/d".into(), existing_user: None };
+        let nfs = FormKind::ShareNfs { host: 1, dataset: "d".into() };
+        let grant = FormKind::GrantPermission { host: 3, dataset: "d".into() };
+        let acl = FormKind::AddAclEntry { host: 4, path: "/d".into(), position: 0 };
+        assert_eq!(account_field_for(&smb, 1), Some((2, AccountField::User)));
+        assert_eq!(account_field_for(&nfs, 3), Some((1, AccountField::User)));
+        assert_eq!(account_field_for(&grant, 0), Some((3, AccountField::ZfsAllowRecipient)));
+        assert_eq!(account_field_for(&acl, 0), Some((4, AccountField::AclRecipient)));
+        assert_eq!(account_field_for(&smb, 0), None);
+        assert_eq!(account_field_for(&smb, 2), None, "password field");
+        assert_eq!(account_field_for(&nfs, 0), None);
+        assert_eq!(account_field_for(&grant, 1), None);
+        assert_eq!(account_field_for(&acl, 1), None);
+    }
+
+    #[test]
+    fn build_picker_state_for_an_account_field_is_a_loading_single_select_skeleton() {
+        let kind = FormKind::ShareSmb { host: 2, dataset: "d".into(), path: "/d".into(), existing_user: None };
+        let p = build_picker_state(&kind, 1, "").unwrap();
+        assert_eq!(p.load, PickerLoad::Loading);
+        assert!(p.values.is_empty() && !p.multi_select);
+        assert_eq!(p.account, Some((2, AccountField::User)));
+    }
+
+    #[test]
+    fn static_pickers_are_ready_with_no_account() {
+        let kind = FormKind::GrantPermission { host: 0, dataset: "d".into() };
+        let p = build_picker_state(&kind, 2, "").unwrap();
+        assert_eq!((p.load, p.account, p.note), (PickerLoad::Ready, None, None));
+    }
+
+    #[test]
+    fn build_values_orders_and_prefixes_per_field_and_drops_unsafe_names() {
+        let s = sample();
+        assert_eq!(build_values(AccountField::User, &s), vec!["carol", "root"]);
+        assert_eq!(
+            build_values(AccountField::ZfsAllowRecipient, &s),
+            vec!["everyone", "user:carol", "user:root", "group:staff"]
+        );
+        assert_eq!(
+            build_values(AccountField::AclRecipient, &s),
+            vec!["owner", "group", "everyone", "user:carol", "user:root", "group:staff"]
+        );
+    }
+
+    #[test]
+    fn fill_account_picker_sets_values_ready_preselects_the_current_value_and_notes_group_errors() {
+        let mut p = build_picker_state(&FormKind::ShareNfs { host: 0, dataset: "d".into() }, 3, "").unwrap();
+        let mut accounts = sample();
+        accounts.group_error = Some("boom".to_string());
+        fill_account_picker(&mut p, &accounts, " root ");
+        assert_eq!(p.load, PickerLoad::Ready);
+        assert_eq!(p.values, vec!["carol", "root"]);
+        assert_eq!(p.selected, 1, "current text matches 'root'");
+        assert_eq!(p.note.as_deref(), Some("groups unavailable: boom"));
+    }
+
+    #[test]
+    fn fill_account_picker_notes_when_nothing_is_selectable() {
+        let mut p = build_picker_state(&FormKind::ShareNfs { host: 0, dataset: "d".into() }, 3, "").unwrap();
+        let mut accounts = sample();
+        accounts.users.clear();
+        fill_account_picker(&mut p, &accounts, "");
+        assert!(p.values.is_empty());
+        assert_eq!(p.note.as_deref(), Some("no selectable accounts"));
+
+        accounts.group_error = Some("boom".to_string());
+        fill_account_picker(&mut p, &accounts, "");
+        assert_eq!(p.note.as_deref(), Some("groups unavailable: boom; no selectable accounts"));
     }
 }

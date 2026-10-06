@@ -99,6 +99,21 @@ fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_
     }
 }
 
+/// Drains `app.pending_account_fetch` and starts one worker per host.
+/// `App` cannot resolve a host index to a runner, so the event loop does
+/// it (same split as `apply_pending_new_hosts`). An index with no host
+/// (e.g. the inventory changed) is reported as a failed fetch so the picker
+/// shows Failed and the in-flight marker clears.
+fn apply_pending_account_fetches(app: &mut App, inventory: &HostInventory) {
+    for host in std::mem::take(&mut app.pending_account_fetch) {
+        if let Some(h) = inventory.hosts.get(host) {
+            app.fetch_accounts(h.runner.clone(), host);
+        } else {
+            app.fail_account_fetch(host, AppError::Parse(format!("unknown host index {host}")));
+        }
+    }
+}
+
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -109,6 +124,7 @@ fn event_loop(
     loop {
         let refreshes = app.drain_worker_messages();
         apply_pending_new_hosts(app, inventory, config_path);
+        apply_pending_account_fetches(app, inventory);
         app.clear_stale_scan_status();
 
         if last_vdevs_auto_refresh.elapsed() >= VDEVS_AUTO_REFRESH_INTERVAL {
@@ -314,5 +330,53 @@ mod tests {
 
         assert_eq!(app.hosts, vec!["local".to_string()]);
         assert_eq!(inventory.hosts.len(), 1);
+    }
+
+    #[test]
+    fn apply_pending_account_fetches_drains_the_queue_and_spawns_one_fetch_per_host() {
+        use crate::exec::test_support::FakeRunner;
+        use crate::hosts::Host;
+        use std::sync::Arc;
+        let mut app = App::new(vec!["local".to_string()]);
+        let runner = FakeRunner::new("")
+            .route("getent", "passwd", "root:*:0:0::/root:/bin/sh\n")
+            .route("getent", "group", "wheel:*:0:root\n");
+        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner) }] };
+        app.pending_account_fetch = vec![0];
+        apply_pending_account_fetches(&mut app, &inventory);
+        assert!(app.pending_account_fetch.is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.drain_worker_messages();
+            if app.account_cache.contains_key(&0) || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(app.account_cache.contains_key(&0), "worker result must arrive and be cached");
+    }
+
+    #[test]
+    fn apply_pending_account_fetches_fails_the_picker_for_a_host_index_that_no_longer_exists() {
+        use crate::ui::picker::{AccountField, PickerLoad, PickerState};
+        let mut app = App::new(vec!["local".to_string()]);
+        let inventory = HostInventory::from_config(&Config::default());
+        app.picker = Some(PickerState {
+            values: vec![],
+            filter: String::new(),
+            selected: 0,
+            checked: Default::default(),
+            multi_select: false,
+            load: PickerLoad::Loading,
+            note: None,
+            account: Some((9, AccountField::User)),
+        });
+        app.account_fetch_in_flight.insert(9, Instant::now());
+        app.pending_account_fetch = vec![9];
+        apply_pending_account_fetches(&mut app, &inventory);
+        assert!(app.pending_account_fetch.is_empty());
+        app.drain_worker_messages();
+        assert!(matches!(&app.picker.as_ref().unwrap().load, PickerLoad::Failed(m) if m.contains("unknown host index 9")));
+        assert!(app.account_fetch_in_flight.is_empty());
     }
 }

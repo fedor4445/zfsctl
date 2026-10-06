@@ -11,7 +11,7 @@ use crate::zfs::share::SharesSnapshot;
 use crate::zfs::snapshot::Snapshot;
 use crossterm::event::KeyCode;
 use ratatui::widgets::TableState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -135,7 +135,12 @@ pub enum WorkerMsg {
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
     HostProbe(String, String, Result<()>),
+    /// The outcome of a live account fetch for host index `usize`.
+    Accounts(usize, Result<crate::zfs::accounts::HostAccounts>),
 }
+
+pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_secs(60);
+pub const ACCOUNT_FETCH_STUCK_AFTER: Duration = Duration::from_secs(30);
 
 pub struct App {
     pub sections: Vec<Section>,
@@ -228,6 +233,9 @@ pub struct App {
     /// slot silently lost a second host whose probe resolved in the
     /// same event-loop tick as the first's.
     pub pending_new_hosts: Vec<(String, String)>,
+    pub account_cache: HashMap<usize, (Instant, crate::zfs::accounts::HostAccounts)>,
+    pub account_fetch_in_flight: HashMap<usize, Instant>,
+    pub pending_account_fetch: Vec<usize>,
     /// Lowercased names currently being probed (submitted, not yet
     /// resolved) -- checked alongside `self.hosts` so a second
     /// submission of the same name while the first is still
@@ -294,6 +302,9 @@ impl App {
             status_error: None,
             should_quit: false,
             pending_new_hosts: Vec::new(),
+            account_cache: HashMap::new(),
+            account_fetch_in_flight: HashMap::new(),
+            pending_account_fetch: Vec::new(),
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
@@ -1187,7 +1198,10 @@ impl App {
                     None
                 }
                 KeyCode::F(2) => {
-                    if let Some(picker) = build_picker_state(&kind, focused, &fields[focused].value) {
+                    if let Some(mut picker) = build_picker_state(&kind, focused, &fields[focused].value) {
+                        if let Some((host, _)) = picker.account {
+                            self.open_account_picker(&mut picker, host, &fields[focused].value, Instant::now());
+                        }
                         self.picker = Some(picker);
                     }
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
@@ -1202,11 +1216,60 @@ impl App {
         }
     }
 
+    /// Fills `picker` from a fresh cache entry for `host`, or leaves it
+    /// `Loading` and queues one fetch (unless a non-stuck one is already in
+    /// flight). `now` is a parameter so tests can age cache/in-flight entries.
+    fn open_account_picker(&mut self, picker: &mut PickerState, host: usize, current_value: &str, now: Instant) {
+        if let Some((fetched_at, accounts)) = self.account_cache.get(&host) {
+            if now.duration_since(*fetched_at) < ACCOUNT_CACHE_TTL {
+                crate::ui::picker::fill_account_picker(picker, accounts, current_value);
+                return;
+            }
+        }
+        let stuck = self.account_fetch_in_flight.get(&host).map_or(true, |t| now.duration_since(*t) >= ACCOUNT_FETCH_STUCK_AFTER);
+        if stuck {
+            self.account_fetch_in_flight.insert(host, now);
+            self.pending_account_fetch.push(host);
+        }
+    }
+
+    /// Runs the account lookup on a worker thread and reports it as
+    /// `WorkerMsg::Accounts`. Called by the event loop for each queued host
+    /// (`App` cannot resolve a host index to a runner on its own).
+    pub fn fetch_accounts(&mut self, runner: Arc<dyn CommandRunner>, host: usize) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::accounts::fetch_accounts(runner.as_ref());
+            let _ = tx.send(WorkerMsg::Accounts(host, result));
+        });
+    }
+
+    /// Reports a failed account lookup without running one (e.g. the host
+    /// index no longer resolves), through the same channel a worker uses so
+    /// the picker shows Failed and the in-flight marker clears.
+    pub fn fail_account_fetch(&self, host: usize, err: crate::error::AppError) {
+        let _ = self.tx.send(WorkerMsg::Accounts(host, Err(err)));
+    }
+
+    fn focused_form_value(&self) -> String {
+        match &self.modal {
+            Some(Modal::Form { fields, focused, .. }) => fields.get(*focused).map(|f| f.value.clone()).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
     /// Handles a key while `self.picker` is open. Never returns a
     /// `PendingAction` -- a picker only ever edits the still-open
     /// form's focused field, it never submits anything itself.
     pub fn handle_picker_key(&mut self, key: KeyCode) {
         let Some(mut picker) = self.picker.take() else { return };
+        if picker.load != crate::ui::picker::PickerLoad::Ready {
+            // Loading / Failed: nothing to filter or pick; only Esc leaves.
+            if key != KeyCode::Esc {
+                self.picker = Some(picker);
+            }
+            return;
+        }
         let filter_lower = picker.filter.to_lowercase();
         let filtered: Vec<String> = picker.values.iter().filter(|v| v.to_lowercase().contains(&filter_lower)).cloned().collect();
         match key {
@@ -1750,6 +1813,24 @@ impl App {
                             self.status_message = None;
                         }
                         Err(e) => self.set_error(e.to_string()),
+                    }
+                }
+                WorkerMsg::Accounts(host, result) => {
+                    self.account_fetch_in_flight.remove(&host);
+                    let current = self.focused_form_value();
+                    let waiting = |p: &PickerState| p.load == crate::ui::picker::PickerLoad::Loading && p.account.map(|(h, _)| h) == Some(host);
+                    match result {
+                        Ok(accounts) => {
+                            if let Some(p) = self.picker.as_mut().filter(|p| waiting(p)) {
+                                crate::ui::picker::fill_account_picker(p, &accounts, &current);
+                            }
+                            self.account_cache.insert(host, (Instant::now(), accounts));
+                        }
+                        Err(e) => {
+                            if let Some(p) = self.picker.as_mut().filter(|p| waiting(p)) {
+                                p.load = crate::ui::picker::PickerLoad::Failed(e.to_string());
+                            }
+                        }
                     }
                 }
                 WorkerMsg::HostProbe(name, target, result) => {
@@ -5769,7 +5850,8 @@ mod tests {
     #[test]
     fn f2_on_a_field_with_no_vocabulary_is_a_no_op() {
         let mut app = App::new(vec!["local".to_string()]);
-        open_grant_permission_form(&mut app); // focused = 0, Recipient
+        open_grant_permission_form(&mut app); // focused = 0, Recipient (live account picker)
+        app.handle_modal_key(KeyCode::Tab); // -> Scope, no vocabulary
         app.handle_modal_key(KeyCode::F(2));
         assert!(app.picker.is_none());
         assert!(app.modal.is_some());
@@ -6315,5 +6397,217 @@ mod tests {
         app.handle_key(crossterm::event::KeyCode::Esc);
         assert_eq!(app.status_message, None);
         assert!(!app.status_is_error());
+    }
+
+    fn accounts_fixture() -> crate::zfs::accounts::HostAccounts {
+        use crate::zfs::accounts::{Account, HostAccounts};
+        HostAccounts {
+            users: vec![Account { name: "carol".into(), id: 1003 }, Account { name: "root".into(), id: 0 }],
+            groups: vec![Account { name: "staff".into(), id: 1100 }],
+            group_error: None,
+        }
+    }
+
+    /// An App with an SMB share form open on its "Valid user" field (index 1) for `host`.
+    fn smb_form_app(host: usize) -> App {
+        let mut app = App::new(vec!["local".to_string(), "other".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "SMB share".to_string(),
+            fields: vec![
+                FormField { label: "Share name".into(), value: "media".into() },
+                FormField { label: "Valid user".into(), value: "root".into() },
+                FormField { label: "Password".into(), value: String::new() },
+                FormField { label: "Read-only".into(), value: "n".into() },
+                FormField { label: "Guest".into(), value: "n".into() },
+            ],
+            focused: 1,
+            description: None,
+            kind: FormKind::ShareSmb { host, dataset: "tank/a".into(), path: "/tank/a".into(), existing_user: None },
+        });
+        app
+    }
+
+    fn press_f2(app: &mut App) {
+        app.handle_modal_key(KeyCode::F(2));
+    }
+
+    #[test]
+    fn f2_on_an_account_field_with_no_cache_opens_a_loading_picker_and_queues_one_fetch() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        let p = app.picker.as_ref().expect("picker opens");
+        assert_eq!(p.load, crate::ui::picker::PickerLoad::Loading);
+        assert_eq!(app.pending_account_fetch, vec![1]);
+        assert!(app.account_fetch_in_flight.contains_key(&1));
+    }
+
+    #[test]
+    fn a_second_f2_while_the_fetch_is_in_flight_queues_nothing_more() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        app.picker = None;
+        press_f2(&mut app);
+        assert_eq!(app.pending_account_fetch, vec![1]);
+        assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Loading);
+    }
+
+    #[test]
+    fn a_stuck_in_flight_marker_older_than_30s_lets_the_next_f2_queue_a_fresh_fetch() {
+        let mut app = smb_form_app(1);
+        app.account_fetch_in_flight.insert(1, Instant::now() - Duration::from_secs(31));
+        press_f2(&mut app);
+        assert_eq!(app.pending_account_fetch, vec![1]);
+    }
+
+    #[test]
+    fn a_fresh_cache_opens_ready_immediately_and_queues_nothing() {
+        let mut app = smb_form_app(1);
+        app.account_cache.insert(1, (Instant::now(), accounts_fixture()));
+        press_f2(&mut app);
+        let p = app.picker.as_ref().unwrap();
+        assert_eq!(p.load, crate::ui::picker::PickerLoad::Ready);
+        assert_eq!(p.values, vec!["carol", "root"]);
+        assert_eq!(p.selected, 1, "field text 'root' is preselected");
+        assert!(app.pending_account_fetch.is_empty());
+    }
+
+    #[test]
+    fn a_cache_older_than_60s_is_treated_as_missing() {
+        let mut app = smb_form_app(1);
+        app.account_cache.insert(1, (Instant::now() - Duration::from_secs(61), accounts_fixture()));
+        press_f2(&mut app);
+        assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Loading);
+        assert_eq!(app.pending_account_fetch, vec![1]);
+    }
+
+    #[test]
+    fn an_ok_result_fills_the_open_loading_picker_caches_and_clears_in_flight() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        app.tx.send(WorkerMsg::Accounts(1, Ok(accounts_fixture()))).unwrap();
+        app.drain_worker_messages();
+        let p = app.picker.as_ref().unwrap();
+        assert_eq!(p.load, crate::ui::picker::PickerLoad::Ready);
+        assert_eq!(p.values, vec!["carol", "root"]);
+        assert!(app.account_cache.contains_key(&1));
+        assert!(!app.account_fetch_in_flight.contains_key(&1));
+    }
+
+    #[test]
+    fn an_err_result_marks_the_picker_failed_and_is_not_cached() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        let err = crate::error::AppError::Parse("ssh: connect timed out".to_string());
+        app.tx.send(WorkerMsg::Accounts(1, Err(err))).unwrap();
+        app.drain_worker_messages();
+        assert!(matches!(&app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Failed(m) if m.contains("timed out")));
+        assert!(app.account_cache.is_empty());
+        assert!(app.account_fetch_in_flight.is_empty(), "a retry after Esc must be able to queue again");
+    }
+
+    #[test]
+    fn a_result_for_another_host_never_touches_the_open_picker_but_is_cached() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        app.tx.send(WorkerMsg::Accounts(0, Ok(accounts_fixture()))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Loading);
+        assert!(app.account_cache.contains_key(&0));
+    }
+
+    #[test]
+    fn a_late_result_with_no_picker_open_is_cached_and_does_not_open_one() {
+        let mut app = smb_form_app(1);
+        app.tx.send(WorkerMsg::Accounts(1, Ok(accounts_fixture()))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.picker.is_none());
+        assert!(app.account_cache.contains_key(&1));
+    }
+
+    #[test]
+    fn loading_and_failed_pickers_accept_only_esc() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        for key in [KeyCode::Char('x'), KeyCode::Down, KeyCode::Enter, KeyCode::Backspace] {
+            app.handle_picker_key(key);
+            assert!(app.picker.is_some(), "{key:?} must not close or alter a Loading picker");
+            assert!(app.picker.as_ref().unwrap().filter.is_empty());
+        }
+        app.handle_picker_key(KeyCode::Esc);
+        assert!(app.picker.is_none());
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[1].value, "root"),
+            other => panic!("form must stay open: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_picker_accepts_only_esc() {
+        let mut app = smb_form_app(1);
+        press_f2(&mut app);
+        app.picker.as_mut().unwrap().load = crate::ui::picker::PickerLoad::Failed("x".into());
+        for key in [KeyCode::Char('x'), KeyCode::Down, KeyCode::Enter, KeyCode::Backspace] {
+            app.handle_picker_key(key);
+            assert!(app.picker.is_some(), "{key:?} must not close a Failed picker");
+            assert!(app.picker.as_ref().unwrap().filter.is_empty());
+        }
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[1].value, "root"),
+            other => panic!("form must stay open: {other:?}"),
+        }
+        app.handle_picker_key(KeyCode::Esc);
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn a_cache_aged_59s_is_still_fresh() {
+        let mut app = smb_form_app(1);
+        let aged = Instant::now().checked_sub(Duration::from_secs(59)).expect("monotonic clock far enough along");
+        app.account_cache.insert(1, (aged, accounts_fixture()));
+        press_f2(&mut app);
+        assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Ready);
+        assert!(app.pending_account_fetch.is_empty());
+    }
+
+    #[test]
+    fn an_in_flight_marker_aged_29s_still_blocks_a_requeue() {
+        let mut app = smb_form_app(1);
+        let aged = Instant::now().checked_sub(Duration::from_secs(29)).expect("monotonic clock far enough along");
+        app.account_fetch_in_flight.insert(1, aged);
+        press_f2(&mut app);
+        assert!(app.pending_account_fetch.is_empty());
+        assert_eq!(app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Loading);
+    }
+
+    #[test]
+    fn selecting_a_live_value_replaces_the_field_text() {
+        let mut app = smb_form_app(1);
+        app.account_cache.insert(1, (Instant::now(), accounts_fixture()));
+        press_f2(&mut app);
+        app.handle_picker_key(KeyCode::Up); // carol
+        app.handle_picker_key(KeyCode::Enter);
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[1].value, "carol"),
+            other => panic!("{other:?}"),
+        }
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn five_thousand_accounts_fill_and_filter_correctly() {
+        use crate::zfs::accounts::{Account, HostAccounts};
+        let users = (0..5000).map(|i| Account { name: format!("user{i:04}"), id: 2000 + i }).collect();
+        let mut app = smb_form_app(1);
+        app.account_cache.insert(1, (Instant::now(), HostAccounts { users, groups: vec![], group_error: None }));
+        press_f2(&mut app);
+        assert_eq!(app.picker.as_ref().unwrap().values.len(), 5000);
+        for c in "4999".chars() {
+            app.handle_picker_key(KeyCode::Char(c));
+        }
+        app.handle_picker_key(KeyCode::Enter);
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => assert_eq!(fields[1].value, "user4999"),
+            other => panic!("{other:?}"),
+        }
     }
 }

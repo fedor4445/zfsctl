@@ -25,11 +25,22 @@ impl CommandRunner for LocalRunner {
         command.args(args);
         super::run_command_with_stdin(command, cmd, stdin)
     }
+
+    fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+        self.run(cmd, args)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_unprivileged_runs_the_command_directly() {
+        let output = LocalRunner.run_unprivileged("echo", &["hi"]).unwrap();
+        assert_eq!(output.stdout.trim(), "hi");
+        assert!(output.success());
+    }
 
     #[test]
     fn run_with_stdin_feeds_the_child_its_stdin() {

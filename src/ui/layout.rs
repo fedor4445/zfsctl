@@ -618,10 +618,32 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
 /// `Some` -- the form underneath stays drawn exactly as `draw_modal`
 /// left it; this is a second, smaller popup layered above it.
 fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &Theme, area: Rect) {
+    const PICKER_WIDTH_PERCENT: u16 = 50;
+    if picker.load != crate::ui::picker::PickerLoad::Ready {
+        use crate::ui::picker::PickerLoad;
+        let body = match &picker.load {
+            PickerLoad::Failed(msg) => {
+                format!("Could not load accounts: {}\n\nEsc to close", sanitise_for_display(msg))
+            }
+            PickerLoad::Loading => "Loading accounts…\n\nEsc to close".to_string(),
+            PickerLoad::Ready => unreachable!("guarded by the enclosing `!= Ready` check"),
+        };
+        // Width first (it only depends on the percentage), then a height
+        // that fits the wrapped body so the closing hint is never clipped.
+        let width = centered_rect(PICKER_WIDTH_PERCENT, 1, area).width;
+        let popup_area = centered_rect(PICKER_WIDTH_PERCENT, failed_popup_height(&body, width, area.height), area);
+        f.render_widget(Clear, popup_area);
+        f.render_widget(
+            Paragraph::new(body)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).border_style(theme.accent).title("Pick a value")),
+            popup_area,
+        );
+        return;
+    }
     let filter_lower = picker.filter.to_lowercase();
     let filtered: Vec<&String> = picker.values.iter().filter(|v| v.to_lowercase().contains(&filter_lower)).collect();
 
-    const PICKER_WIDTH_PERCENT: u16 = 50;
     let popup_height = (filtered.len() as u16 + 4).clamp(6, area.height.saturating_sub(4).max(6));
     let popup_area = centered_rect(PICKER_WIDTH_PERCENT, popup_height, area);
     f.render_widget(Clear, popup_area);
@@ -638,11 +660,15 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
         })
         .collect();
 
-    let title = if picker.filter.is_empty() {
+    let mut title = if picker.filter.is_empty() {
         "Pick a value (type filter, Space toggle, Enter OK, Esc cancel)".to_string()
     } else {
         format!("Pick — filter '{}' (Space toggle, Enter OK, Esc cancel)", picker.filter)
     };
+    if let Some(note) = &picker.note {
+        let inner = popup_area.width.saturating_sub(2) as usize;
+        title = format!("{title} — {}", truncate_with_ellipsis(&sanitise_for_display(note), inner));
+    }
     // `ListState` (not a manually-painted `i == picker.selected` style
     // per item, and not plain `render_widget`) is what makes ratatui
     // actually scroll the visible window to keep the selected row in
@@ -659,11 +685,45 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
     f.render_stateful_widget(list, popup_area, &mut list_state);
 }
 
-/// Conservatively estimates how many terminal rows `text` occupies when
-/// wrapped at `width` columns. Doesn't replicate `Paragraph`'s exact
-/// word-boundary wrapping, but over-reserves rather than under-reserves
-/// height, which is the safe direction — a popup with a little extra
-/// blank space is harmless, one that clips content is not.
+/// Replaces every control character (newline, tab, ESC, ...) with a space
+/// and collapses runs of whitespace, so text that may carry raw remote
+/// stderr renders on one line and cannot inject terminal escapes.
+fn sanitise_for_display(s: &str) -> String {
+    let spaced: String = s
+        .chars()
+        .map(|c| {
+            let bidi = matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+            if c.is_control() || bidi { ' ' } else { c }
+        })
+        .collect();
+    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Truncates `s` to at most `max` characters, ending in "…" when cut.
+fn truncate_with_ellipsis(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('…');
+    out
+}
+
+/// Height of the Loading/Failed picker popup: the wrapped body plus two
+/// border rows, at least 5, never more than `max_height`. The body estimate
+/// gets a ~25% + 1 row margin because word wrapping can need more rows.
+fn failed_popup_height(body: &str, width: u16, max_height: u16) -> u16 {
+    let inner = width.saturating_sub(2);
+    let lines = wrapped_line_count(body, inner);
+    (lines + lines / 4 + 1 + 2).max(5).min(max_height)
+}
+
+/// Byte-based estimate (ceil(len / width) per line) of how many terminal
+/// rows `text` occupies when wrapped at `width` columns. It does not
+/// replicate `Paragraph`'s word-boundary wrapping, which loses columns at
+/// each break, so it can under-count with word wrapping; callers that must
+/// not clip add a safety margin (see `failed_popup_height`).
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
     text.lines()
@@ -702,6 +762,34 @@ fn pane_border_style(theme: &Theme, current: PaneFocus, pane: PaneFocus) -> Styl
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sanitise_for_display_strips_control_characters_and_collapses_lines() {
+        let out = super::sanitise_for_display("boom\n\u{1b}[31mred\u{1b}[0m\tbad\r\nend");
+        assert!(!out.chars().any(|c| c.is_control()), "{out:?}");
+        assert_eq!(out, "boom [31mred [0m bad end");
+    }
+
+    #[test]
+    fn sanitise_for_display_replaces_bidi_and_format_characters() {
+        let out = super::sanitise_for_display("a\u{202E}b\u{200F}c\u{2066}d\u{2069}e\u{200E}f\u{202A}g");
+        assert_eq!(out, "a b c d e f g");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_cuts_long_text_only() {
+        assert_eq!(super::truncate_with_ellipsis("abc", 3), "abc");
+        assert_eq!(super::truncate_with_ellipsis("abcdef", 4), "abc…");
+    }
+
+    #[test]
+    fn failed_popup_height_fits_body_within_bounds() {
+        assert_eq!(super::failed_popup_height("Loading accounts…\n\nEsc to close", 40, 24), 6);
+        let body = format!("Could not load accounts: {}\n\nEsc to close", "x".repeat(130));
+        let h = super::failed_popup_height(&body, 40, 24);
+        assert!(h >= super::wrapped_line_count(&body, 38) + 2 && h > 5, "{h}");
+        assert_eq!(super::failed_popup_height(&body, 40, 6), 6);
+    }
+
     use super::*;
     use crate::ui::theme::Theme;
     // Explicit (not via `super::*`): Task 7 removes `Color` from the
@@ -984,5 +1072,53 @@ mod tests {
         let mut app = app_in_pools(vec![pool("tank", 31, 100, PoolHealth::Online)]);
         let rows = render(&mut app, 200, 24).join("\n");
         assert!(rows.contains("███░░░░░ 31%") || rows.contains("██░░░░░░ 31%"), "{rows}");
+    }
+
+    #[test]
+    fn a_long_failed_picker_message_keeps_esc_hint_and_the_error_tail_visible() {
+        let mut app = app_in_pools(vec![]);
+        let msg = format!("ssh: connect to host 172.16.10.90 port 22: {} Connection timed out ENDMARK", "y".repeat(80));
+        app.picker = Some(crate::ui::picker::PickerState {
+            values: vec![],
+            filter: String::new(),
+            selected: 0,
+            checked: Default::default(),
+            multi_select: false,
+            load: crate::ui::picker::PickerLoad::Failed(msg),
+            note: None,
+            account: None,
+        });
+        let rows = render(&mut app, 80, 24).join("\n");
+        assert!(rows.contains("Esc to close"), "{rows}");
+        assert!(rows.contains("ENDMARK"), "{rows}");
+    }
+
+    #[test]
+    fn failed_popup_height_reserves_a_word_wrap_margin() {
+        let body = format!("Could not load accounts: {}\n\nEsc to close", "word ".repeat(26));
+        let old = super::wrapped_line_count(&body, 38) + 2;
+        let h = super::failed_popup_height(&body, 40, 24);
+        assert!(h > old, "{h} vs old {old}");
+        assert_eq!(super::failed_popup_height(&body, 40, 3), 3);
+        assert_eq!(super::failed_popup_height(&body, 40, 0), 0);
+    }
+
+    #[test]
+    fn a_realistic_multi_word_ssh_failure_keeps_esc_hint_and_tail_visible() {
+        let mut app = app_in_pools(vec![]);
+        let msg = "Could not load accounts: command 'getent passwd' failed with status 255: fb@172.16.10.90: Permission denied (publickey,password). Warning: Permanently added '172.16.10.90' (ED25519) to the list of known hosts. ENDMARK";
+        app.picker = Some(crate::ui::picker::PickerState {
+            values: vec![],
+            filter: String::new(),
+            selected: 0,
+            checked: Default::default(),
+            multi_select: false,
+            load: crate::ui::picker::PickerLoad::Failed(msg.to_string()),
+            note: None,
+            account: None,
+        });
+        let rows = render(&mut app, 80, 24).join("\n");
+        assert!(rows.contains("Esc to close"), "{rows}");
+        assert!(rows.contains("ENDMARK"), "{rows}");
     }
 }
