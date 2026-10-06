@@ -132,6 +132,15 @@ README: a snapshot job example under Scheduled jobs, the retention rule ("a job 
 - TUI: the form opens, validates with `resolve`'s messages, saves and edits; `J` on a dataset prefills; F2 on Host, Dataset and Schedule; the table and detail pane render the new kind.
 - **Live on the hub (verify empirically, not just via `zfs list`):** confirm on 15.1-RELEASE and 16.0-CURRENT that `zfs snapshot -r` and `zfs destroy -r dataset@snap` behave as assumed (including `--`), then run a real every-minute job on `scratch/data` with `keep = 3` and check that exactly three snapshots remain, that a hand-made snapshot with a different name survives, and that a held snapshot produces a `Failed` run with the others still pruned.
 
+### Live results
+
+Checked 2026-10-06 on 15.1-RELEASE-p4 (`scratch/data`) and 16.0-CURRENT (`zroot/tmp`, a throwaway snapshot), identical on both:
+
+- `zfs snapshot -r -- dataset@name` works; `zfs list -t snapshot -H -p -o name,used -d 1 dataset` lists only that dataset's snapshots, and `-r` lists the tree's.
+- A duplicate snapshot fails with `cannot create snapshot 'dataset@name': dataset already exists` (the run treats `already exists` as a skip).
+- Destroying a held snapshot fails with `cannot destroy snapshot dataset@name: it's being held. Run 'zfs holds -r ...' to see holders.`
+- `zfs destroy -r -- dataset@name` works after the hold is released.
+
 ## Delivery
 
 One implementation plan: the job model and validation, the run and retention logic, the daemon dispatch, the TUI form and keys, then docs and the live check.
