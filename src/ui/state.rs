@@ -2325,6 +2325,10 @@ fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &
             recursive,
             prefix: Some(prefix.to_string()),
             keep: Some(keep),
+            dest_host: None,
+            dest_dataset: None,
+            dest_dir: None,
+            force: false,
             schedule: schedule.to_string(),
             catch_up,
             enabled: true,
@@ -2371,6 +2375,10 @@ fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path
             recursive: false,
             prefix: None,
             keep: None,
+            dest_host: None,
+            dest_dataset: None,
+            dest_dir: None,
+            force: false,
         },
     };
     Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
@@ -7459,7 +7467,7 @@ mod tests {
     }
 
     fn scrub_job(id: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
     }
 
     #[test]

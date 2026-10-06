@@ -14,6 +14,9 @@ use std::path::Path;
 
 pub const KIND_SCRUB: &str = "scrub";
 pub const KIND_SNAPSHOT: &str = "snapshot";
+pub const KIND_REPLICATE: &str = "replicate";
+/// `dest_host` value meaning "write stream files to `dest_dir` on the hub".
+pub const DEST_FILE: &str = "file";
 /// The snapshot name prefix a job without one uses.
 pub const DEFAULT_PREFIX: &str = "auto";
 
@@ -21,6 +24,8 @@ fn yes() -> bool {
     true
 }
 
+// The four bools (`recursive`, `force`, `catch_up`, `enabled`) are independent job flags in `jobs.toml`.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
@@ -42,6 +47,18 @@ pub struct Job {
     /// How many of the job's own snapshots to keep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<u32>,
+    /// A replication job's destination: a configured host name, or `file`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_host: Option<String>,
+    /// The destination dataset on `dest_host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_dataset: Option<String>,
+    /// For `dest_host = "file"`: an absolute directory on the hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_dir: Option<String>,
+    /// Receive with `-F`, rolling the destination back to the incremental base.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
     /// A five-field cron expression, in the hub's local time zone.
     pub schedule: String,
     #[serde(default = "yes")]
@@ -110,6 +127,44 @@ pub fn effective_prefix(job: &Job) -> &str {
     job.prefix.as_deref().unwrap_or(DEFAULT_PREFIX)
 }
 
+/// An absolute hub directory with no `..` component and only plain path characters.
+pub fn valid_dest_dir(s: &str) -> bool {
+    s.len() > 1 && s.starts_with('/') && s.split('/').all(|c| c != "..") && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ' '))
+}
+
+fn check_replicate_fields(job: &Job) -> std::result::Result<(), String> {
+    if !job.dataset.as_deref().is_some_and(valid_dataset) {
+        return Err("a replication job needs a source dataset like tank/data".to_string());
+    }
+    if !valid_prefix(effective_prefix(job)) {
+        return Err("the snapshot prefix may only use letters, digits, _ - and .".to_string());
+    }
+    match job.dest_host.as_deref() {
+        None | Some("") => Err("a replication job needs a destination host (or 'file')".to_string()),
+        Some(DEST_FILE) => {
+            if job.dest_dataset.is_some() {
+                return Err("a file destination takes a dest_dir, not a destination dataset".to_string());
+            }
+            if !job.dest_dir.as_deref().is_some_and(valid_dest_dir) {
+                return Err("a file destination needs an absolute dest_dir on the hub".to_string());
+            }
+            Ok(())
+        }
+        Some(_) => {
+            if !job.dest_dataset.as_deref().is_some_and(valid_dataset) {
+                return Err("a replication job needs a destination dataset like backup/data".to_string());
+            }
+            if job.dest_dir.is_some() {
+                return Err("dest_dir is only for a file destination".to_string());
+            }
+            if job.dest_host.as_deref() == Some(job.host.as_str()) && job.dest_dataset == job.dataset {
+                return Err("the source and destination are the same dataset".to_string());
+            }
+            Ok(())
+        }
+    }
+}
+
 fn check_snapshot_fields(job: &Job) -> std::result::Result<(), String> {
     if !job.dataset.as_deref().is_some_and(valid_dataset) {
         return Err("a snapshot job needs a dataset like tank/data".to_string());
@@ -132,10 +187,19 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
             }
         }
         KIND_SNAPSHOT => check_snapshot_fields(job)?,
+        KIND_REPLICATE => check_replicate_fields(job)?,
         other => return Err(format!("unsupported job kind '{other}'")),
     }
     if !known_hosts.iter().any(|h| h == &job.host) {
         return Err(format!("host '{}' is not in config.toml", job.host));
+    }
+    if job.kind == KIND_REPLICATE {
+        match job.dest_host.as_deref() {
+            // Plan 2 (file targets) removes this refusal.
+            Some(DEST_FILE) => return Err("file destinations are not supported by this build".to_string()),
+            Some(dest) if !known_hosts.iter().any(|h| h == dest) => return Err(format!("destination host '{dest}' is not in config.toml")),
+            _ => {}
+        }
     }
     Schedule::parse(&job.schedule).map_err(|e| format!("bad schedule: {e}"))
 }
@@ -158,20 +222,44 @@ fn clashes(a: &Job, b: &Job) -> bool {
     da == db || (a.recursive && is_ancestor(da, db)) || (b.recursive && is_ancestor(db, da))
 }
 
-/// Another job in `jobs` that `candidate` would clash with, if any.
-pub fn clashing_job<'a>(jobs: &'a [Job], candidate: &Job) -> Option<&'a Job> {
-    jobs.iter().find(|j| j.id != candidate.id && clashes(j, candidate))
+/// Whether two enabled, well-formed replicate jobs write to the same place: their incrementals
+/// would corrupt each other.
+fn dest_clashes(a: &Job, b: &Job) -> bool {
+    let live = |j: &Job| j.enabled && j.kind == KIND_REPLICATE && check_replicate_fields(j).is_ok();
+    if !live(a) || !live(b) || a.dest_host != b.dest_host {
+        return false;
+    }
+    match a.dest_host.as_deref() {
+        Some(DEST_FILE) => a.dest_dir == b.dest_dir,
+        _ => a.dest_dataset == b.dest_dataset,
+    }
 }
 
-/// For each snapshot job that clashes with an *earlier* job that can itself run, why it cannot
-/// run. A job that is flagged never blocks a later one, so only the first of a group runs.
+/// Why `job` cannot run alongside the enabled `earlier` job, if it cannot.
+pub fn clash_reason(earlier: &Job, job: &Job) -> Option<String> {
+    if clashes(earlier, job) {
+        Some(format!("same host and prefix as job '{}' on an overlapping dataset: they would prune each other", earlier.id))
+    } else if dest_clashes(earlier, job) {
+        Some(format!("same destination as job '{}': their incrementals would corrupt each other", earlier.id))
+    } else {
+        None
+    }
+}
+
+/// Another job in `jobs` that `candidate` would clash with, if any.
+pub fn clashing_job<'a>(jobs: &'a [Job], candidate: &Job) -> Option<&'a Job> {
+    jobs.iter().find(|j| j.id != candidate.id && clash_reason(j, candidate).is_some())
+}
+
+/// For each job that clashes with an *earlier* job that can itself run, why it cannot run. A
+/// flagged job never blocks a later one, so only the first of a group runs.
 pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<String, String> {
     let mut accepted: Vec<&Job> = Vec::new();
     let mut reasons = std::collections::HashMap::new();
     for job in jobs {
-        match accepted.iter().find(|earlier| clashes(earlier, job)) {
-            Some(earlier) => {
-                reasons.insert(job.id.clone(), format!("same host and prefix as job '{}' on an overlapping dataset: they would prune each other", earlier.id));
+        match accepted.iter().find_map(|earlier| clash_reason(earlier, job)) {
+            Some(reason) => {
+                reasons.insert(job.id.clone(), reason);
             }
             None => accepted.push(job),
         }
@@ -182,7 +270,11 @@ pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<Strin
 #[cfg(test)]
 impl Job {
     pub fn test_snapshot(id: &str, dataset: &str, prefix: &str, keep: u32) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, force: false, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+    }
+
+    pub fn test_replicate(id: &str, dataset: &str, prefix: &str, dest_host: &str, dest_dataset: &str) -> Job {
+        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, force: false, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 }
 
@@ -242,6 +334,10 @@ mod tests {
             recursive: false,
             prefix: None,
             keep: None,
+            dest_host: None,
+            dest_dataset: None,
+            dest_dir: None,
+            force: false,
         }
     }
 
@@ -291,9 +387,9 @@ mod tests {
     fn an_unknown_kind_still_parses_but_is_not_runnable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("jobs.toml");
-        std::fs::write(&path, "[[jobs]]\nid = \"x\"\nhost = \"local\"\nkind = \"replicate\"\nschedule = \"0 3 * * *\"\n").unwrap();
+        std::fs::write(&path, "[[jobs]]\nid = \"x\"\nhost = \"local\"\nkind = \"restic\"\nschedule = \"0 3 * * *\"\n").unwrap();
         let jobs = load(&path).unwrap();
-        assert_eq!(resolve(&jobs[0], &hosts()).unwrap_err(), "unsupported job kind 'replicate'");
+        assert_eq!(resolve(&jobs[0], &hosts()).unwrap_err(), "unsupported job kind 'restic'");
     }
 
     fn file_with(jobs_list: &[Job]) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -463,5 +559,78 @@ mod tests {
         let c = Job::test_snapshot("c", "tank/data", "hourly", 1);
         let reasons = duplicate_prefix_reasons(&[a, b, c]);
         assert!(reasons["b"].contains("'a'") && reasons["c"].contains("'a'"), "{reasons:?}");
+    }
+
+    #[test]
+    fn a_replicate_job_round_trips_and_other_kinds_serialize_without_its_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        let mut repl = Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data");
+        repl.force = true;
+        let snap = Job::test_snapshot("s", "tank/data", "hourly", 3);
+        save(&path, &[repl.clone(), snap.clone()]).unwrap();
+        assert_eq!(load(&path).unwrap(), vec![repl, snap.clone()]);
+        let text = toml::to_string_pretty(&JobFile { jobs: vec![snap, scrub("x")] }).unwrap();
+        for absent in ["dest_host", "dest_dataset", "dest_dir", "force"] {
+            assert!(!text.contains(absent), "{absent} leaked:\n{text}");
+        }
+    }
+
+    #[test]
+    fn resolve_accepts_a_good_replicate_job_and_rejects_each_bad_field() {
+        let hosts = vec!["local".to_string(), "fbsd16".to_string()];
+        assert!(resolve(&Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data"), &hosts).is_ok());
+        let bad = |f: &dyn Fn(&mut Job)| {
+            let mut j = Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data");
+            f(&mut j);
+            resolve(&j, &hosts).unwrap_err()
+        };
+        assert!(bad(&|j| j.dataset = None).contains("source dataset"));
+        for evil in ["-rf", "tank/a@b", "tank/a b", "tank;x", "/tank"] {
+            assert!(bad(&|j| j.dataset = Some(evil.into())).contains("source dataset"), "{evil}");
+            assert!(bad(&|j| j.dest_dataset = Some(evil.into())).contains("destination dataset"), "{evil}");
+        }
+        assert!(bad(&|j| j.prefix = Some("a b".into())).contains("prefix"));
+        assert!(bad(&|j| j.dest_host = None).contains("destination host"));
+        assert!(bad(&|j| j.dest_host = Some("nope".into())).contains("host"));
+        assert!(bad(&|j| j.dest_dataset = None).contains("destination dataset"));
+        assert!(bad(&|j| j.dest_dir = Some("/mnt/x".into())).contains("dest_dir"));
+        assert!(bad(&|j| { j.host = "fbsd16".into(); j.dest_dataset = j.dataset.clone(); }).contains("same dataset"), "source and destination must differ");
+        assert!(bad(&|j| j.schedule = "x".into()).contains("schedule"));
+    }
+
+    #[test]
+    fn a_file_destination_is_rejected_by_this_build_with_a_clear_reason() {
+        let mut j = Job::test_replicate("r", "tank/data", "hourly", "file", "x");
+        j.dest_dataset = None;
+        j.dest_dir = Some("/mnt/usb/zfsctl".into());
+        let reason = resolve(&j, &["local".to_string()]).unwrap_err();
+        assert!(reason.contains("not supported"), "{reason}");
+    }
+
+    #[test]
+    fn dest_dir_must_be_a_plain_absolute_path() {
+        for good in ["/mnt/usb", "/mnt/usb/zfsctl", "/var/backups/my disk"] {
+            assert!(valid_dest_dir(good), "{good}");
+        }
+        for bad in ["", "/", "mnt/usb", "-x", "/mnt/../etc", "/mnt/..", "/mnt/a;b", "/mnt/a\nb", "/mnt/$x", "/mnt/a\\b"] {
+            assert!(!valid_dest_dir(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn two_enabled_replicate_jobs_with_one_destination_clash_and_other_destinations_do_not() {
+        let a = Job::test_replicate("a", "tank/one", "hourly", "fbsd16", "backup/data");
+        let b = Job::test_replicate("b", "tank/two", "hourly", "fbsd16", "backup/data");
+        let other_dataset = Job::test_replicate("c", "tank/two", "hourly", "fbsd16", "backup/other");
+        let other_host = Job::test_replicate("d", "tank/two", "hourly", "local", "backup/data");
+        let reasons = duplicate_prefix_reasons(&[a.clone(), b.clone(), other_dataset.clone(), other_host.clone()]);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons["b"].contains("same destination") && reasons["b"].contains("'a'"), "{reasons:?}");
+        assert_eq!(clashing_job(std::slice::from_ref(&a), &b).map(|j| j.id.as_str()), Some("a"));
+        assert!(clashing_job(std::slice::from_ref(&a), &other_dataset).is_none());
+        assert!(clash_reason(&a, &b).unwrap().contains("same destination"));
+        let snap = Job::test_snapshot("s", "tank/one", "hourly", 3);
+        assert!(clash_reason(&a, &snap).is_none(), "different kinds never clash");
     }
 }
