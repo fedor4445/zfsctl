@@ -65,7 +65,11 @@ pub fn fill_account_picker(picker: &mut PickerState, accounts: &HostAccounts, cu
     let Some((_, field)) = picker.account else { return };
     picker.values = build_values(field, accounts);
     picker.selected = picker.values.iter().position(|v| v == current_value.trim()).unwrap_or(0);
-    picker.note = accounts.group_error.as_ref().map(|e| format!("groups unavailable: {e}"));
+    let mut notes: Vec<String> = accounts.group_error.iter().map(|e| format!("groups unavailable: {e}")).collect();
+    if picker.values.is_empty() {
+        notes.push("no selectable accounts".to_string());
+    }
+    picker.note = if notes.is_empty() { None } else { Some(notes.join("; ")) };
     picker.load = PickerLoad::Ready;
 }
 
@@ -366,5 +370,19 @@ mod tests {
         assert_eq!(p.values, vec!["carol", "root"]);
         assert_eq!(p.selected, 1, "current text matches 'root'");
         assert_eq!(p.note.as_deref(), Some("groups unavailable: boom"));
+    }
+
+    #[test]
+    fn fill_account_picker_notes_when_nothing_is_selectable() {
+        let mut p = build_picker_state(&FormKind::ShareNfs { host: 0, dataset: "d".into() }, 3, "").unwrap();
+        let mut accounts = sample();
+        accounts.users.clear();
+        fill_account_picker(&mut p, &accounts, "");
+        assert!(p.values.is_empty());
+        assert_eq!(p.note.as_deref(), Some("no selectable accounts"));
+
+        accounts.group_error = Some("boom".to_string());
+        fill_account_picker(&mut p, &accounts, "");
+        assert_eq!(p.note.as_deref(), Some("groups unavailable: boom; no selectable accounts"));
     }
 }

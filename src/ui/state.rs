@@ -1244,6 +1244,13 @@ impl App {
         });
     }
 
+    /// Reports a failed account lookup without running one (e.g. the host
+    /// index no longer resolves), through the same channel a worker uses so
+    /// the picker shows Failed and the in-flight marker clears.
+    pub fn fail_account_fetch(&self, host: usize, err: crate::error::AppError) {
+        let _ = self.tx.send(WorkerMsg::Accounts(host, Err(err)));
+    }
+
     fn focused_form_value(&self) -> String {
         match &self.modal {
             Some(Modal::Form { fields, focused, .. }) => fields.get(*focused).map(|f| f.value.clone()).unwrap_or_default(),
