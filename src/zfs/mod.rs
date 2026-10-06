@@ -9,6 +9,7 @@ pub mod property;
 pub mod share;
 pub mod smb;
 pub mod snapshot;
+pub mod snapshot_detail;
 
 use crate::error::{AppError, Result};
 use crate::exec::{CommandOutput, CommandRunner};

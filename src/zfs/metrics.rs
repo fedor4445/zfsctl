@@ -209,6 +209,8 @@ pub enum MetricsTarget {
     Dataset(String),
     /// The selected host as a whole (Hosts section).
     Host,
+    /// A full `dataset@snapshot` name.
+    Snapshot(String),
 }
 
 impl MetricsTarget {
@@ -218,7 +220,7 @@ impl MetricsTarget {
         match self {
             MetricsTarget::Pool(p) => Some(p),
             MetricsTarget::Dataset(d) => Some(d.split('/').next().unwrap_or(d)),
-            MetricsTarget::Host => None,
+            MetricsTarget::Host | MetricsTarget::Snapshot(_) => None,
         }
     }
 }
@@ -230,20 +232,29 @@ pub struct TargetSample {
     pub space: Option<DatasetSpace>,
     /// Present only for a host target; `pool.io` is then the all-pools total.
     pub host: Option<super::host::HostSummary>,
+    /// Present only for a snapshot target; `pool` is then an unused default.
+    pub snapshot: Option<super::snapshot_detail::SnapshotDetail>,
 }
 
 /// One full panel refresh. Blocks for about a second; run it off the UI thread.
 pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Result<TargetSample> {
     let Some(pool_name) = target.pool() else {
-        let (host, io) = super::host::sample_host(runner)?;
-        return Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: Some(host) });
+        let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None };
+        if let MetricsTarget::Snapshot(name) = target {
+            sample.snapshot = Some(super::snapshot_detail::sample_snapshot(runner, name)?);
+        } else {
+            let (host, io) = super::host::sample_host(runner)?;
+            sample.pool.io = io;
+            sample.host = Some(host);
+        }
+        return Ok(sample);
     };
     let pool = sample_pool(runner, pool_name)?;
     let space = match target {
         MetricsTarget::Dataset(d) => Some(fetch_dataset_space(runner, d)?),
         _ => None,
     };
-    Ok(TargetSample { pool, space, host: None })
+    Ok(TargetSample { pool, space, host: None, snapshot: None })
 }
 
 #[cfg(test)]

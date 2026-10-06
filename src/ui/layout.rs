@@ -36,9 +36,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
         .areas(body_area);
-    // Hosts, Pools, Datasets and a drilled pool give the bottom half of the center
+    // Hosts, Pools, Datasets, Snapshots and a drilled pool give the bottom half of the center
     // column to a metrics panel; the sidebar keeps its full height.
-    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets);
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots);
     let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
@@ -1023,7 +1023,7 @@ mod tests {
         let io = PoolIo { read_bps: 88_080_384, read_ops: 840, ..PoolIo::default() };
         app.metrics.apply(
             &MetricsTarget::Pool("tank".to_string()),
-            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None }),
+            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None }),
             std::time::Instant::now(),
         );
         let rows = render(&mut app, 100, 30);
@@ -1055,7 +1055,7 @@ mod tests {
         };
         app.metrics.apply(
             &MetricsTarget::Host,
-            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host) }),
+            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host), snapshot: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1066,10 +1066,43 @@ mod tests {
     }
 
     #[test]
+    fn the_snapshots_section_shows_what_destroying_the_selection_would_free() {
+        use crate::zfs::metrics::{MetricsTarget, PoolSample, TargetSample};
+        use crate::zfs::snapshot_detail::{SnapshotDetail, SnapshotEntry};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096 }];
+        app.snapshots_table.select(Some(0));
+        let target = MetricsTarget::Snapshot("tank/data@b".to_string());
+        assert_eq!(app.metrics_target(), Some(target.clone()));
+        app.metrics.retarget(Some(target.clone()));
+        let entry = |n: &str, created, used| SnapshotEntry { name: format!("tank/data@{n}"), created, used };
+        let detail = SnapshotDetail {
+            full_name: "tank/data@b".to_string(),
+            used: 4096,
+            holds: 1,
+            reclaim: Some(2048),
+            siblings: vec![entry("a", 1_000_000_000, 100), entry("b", 1_500_000_000, 4096)],
+            dataset_used: 1000,
+            dataset_snapshots_used: 250,
+            ..SnapshotDetail::default()
+        };
+        app.metrics.apply(
+            &target,
+            Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(detail) }),
+            std::time::Instant::now(),
+        );
+        let text = render(&mut app, 120, 30).join("\n");
+        for want in ["Metrics — tank/data@b", "Snapshot  b", "Reclaim   2.0K", "Holds     1", "(blocks destroy)", "2 snaps", "25%"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
     fn sections_without_a_selected_object_or_on_tiny_terminals_have_no_metrics_panel() {
         let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
         assert!(!render(&mut app, 100, 12).join("\n").contains("Metrics"), "too short for a panel");
-        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Disks).unwrap();
         assert!(!render(&mut app, 100, 30).join("\n").contains("Metrics"));
     }
 

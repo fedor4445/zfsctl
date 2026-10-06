@@ -5,12 +5,13 @@ use crate::error::Result;
 use crate::ui::theme::Theme;
 use crate::zfs::disk::human_size;
 use crate::zfs::host::HostSummary;
+use crate::zfs::snapshot_detail::SnapshotDetail;
 use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolFacts, PoolIo, TargetSample};
 use crate::zfs::pool::PoolHealth;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Borders, Paragraph, Sparkline, SparklineBar};
 use ratatui::Frame;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -20,6 +21,8 @@ const HISTORY: usize = 240;
 /// Gap between the end of one sample and the start of the next. A sample
 /// itself takes about a second (the iostat window).
 pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// A snapshot's numbers change slowly and each refresh runs four commands.
+const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(10);
 /// The panel is dropped on terminals whose body is shorter than this, so
 /// the lists above it keep a usable height.
 pub const MIN_BODY_HEIGHT: u16 = 14;
@@ -31,6 +34,7 @@ pub struct MetricsView {
     facts: Option<PoolFacts>,
     space: Option<DatasetSpace>,
     host: Option<HostSummary>,
+    snapshot: Option<SnapshotDetail>,
     error: Option<String>,
     in_flight: bool,
     last_finished: Option<Instant>,
@@ -51,6 +55,7 @@ impl MetricsView {
         }
         self.space = None;
         self.host = None;
+        self.snapshot = None;
         self.error = None;
         self.last_finished = None;
         self.target = wanted;
@@ -62,7 +67,8 @@ impl MetricsView {
 
     /// Whether a new sample should start now.
     pub fn due(&self, now: Instant) -> bool {
-        self.target.is_some() && !self.in_flight && self.last_finished.is_none_or(|t| now.duration_since(t) >= SAMPLE_INTERVAL)
+        let interval = if matches!(self.target, Some(MetricsTarget::Snapshot(_))) { SNAPSHOT_INTERVAL } else { SAMPLE_INTERVAL };
+        self.target.is_some() && !self.in_flight && self.last_finished.is_none_or(|t| now.duration_since(t) >= interval)
     }
 
     pub fn begin(&mut self) {
@@ -72,19 +78,24 @@ impl MetricsView {
     /// Takes a finished sample. One for an object the panel has since moved off is dropped.
     pub fn apply(&mut self, target: &MetricsTarget, result: Result<TargetSample>, now: Instant) {
         self.in_flight = false;
-        self.last_finished = Some(now);
         if self.target.as_ref() != Some(target) {
+            // Leave the timer alone: the object we moved to is due immediately.
             return;
         }
+        self.last_finished = Some(now);
         match result {
             Ok(sample) => {
-                if self.io_history.len() == HISTORY {
-                    self.io_history.pop_front();
+                // A snapshot sample carries no pool data; don't push an all-zero point.
+                if sample.snapshot.is_none() {
+                    if self.io_history.len() == HISTORY {
+                        self.io_history.pop_front();
+                    }
+                    self.io_history.push_back(sample.pool.io);
+                    self.facts = Some(sample.pool.facts);
                 }
-                self.io_history.push_back(sample.pool.io);
-                self.facts = Some(sample.pool.facts);
                 self.space = sample.space;
                 self.host = sample.host;
+                self.snapshot = sample.snapshot;
                 self.error = None;
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -111,6 +122,8 @@ fn latency(ns: Option<u64>) -> String {
 fn percent(part: u64, whole: u64) -> String {
     if whole == 0 {
         "-".to_string()
+    } else if part > 0 && part.saturating_mul(200) < whole {
+        "<1%".to_string()
     } else {
         format!("{:.0}%", part as f64 * 100.0 / whole as f64)
     }
@@ -133,6 +146,59 @@ fn pool_lines(health: Option<&PoolHealth>, facts: &PoolFacts, theme: &Theme) -> 
     let style = if e.total() > 0 { theme.err } else { Style::default() };
     lines.push(Line::from(Span::styled(format!("Errors  R{} W{} C{}", e.read, e.write, e.cksum), style)));
     lines
+}
+
+fn age_text(created: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    format!("{} ago", duration_text(now.saturating_sub(created)))
+}
+
+fn snapshot_lines(s: &SnapshotDetail, theme: &Theme) -> Vec<Line<'static>> {
+    let dash = || "-".to_string();
+    let short = s.full_name.split_once('@').map_or(s.full_name.as_str(), |(_, n)| n);
+    let reclaim = s.reclaim.map_or_else(dash, human_size);
+    let clones = if s.clones.is_empty() { "-".to_string() } else { s.clones.join(",") };
+    let blocked_style = if s.blocked() { theme.warn } else { Style::default() };
+    let count = s.siblings.len();
+    let (oldest, newest) = (s.siblings.first(), s.siblings.last());
+    let age = |e: Option<&crate::zfs::snapshot_detail::SnapshotEntry>| e.map_or_else(dash, |e| age_text(e.created));
+    vec![
+        Line::from(format!("Snapshot  {short}")),
+        Line::from(format!("Created   {}", age_text(s.created))),
+        Line::from(format!("Used      {}   Refer {}   Written {}", human_size(s.used), human_size(s.referenced), human_size(s.written))),
+        Line::from(format!("Reclaim   {reclaim}  (freed if destroyed)")),
+        Line::from(Span::styled(
+            format!("Holds     {}   Clones {clones}{}", s.holds, if s.blocked() { "  (blocks destroy)" } else { "" }),
+            blocked_style,
+        )),
+        Line::from(format!(
+            "Dataset   {count} snaps, {} = {} of used",
+            human_size(s.dataset_snapshots_used),
+            percent(s.dataset_snapshots_used, s.dataset_used)
+        )),
+        Line::from(format!("Oldest    {}", age(oldest))),
+        Line::from(format!("Newest    {}", age(newest))),
+    ]
+}
+
+fn draw_snapshot(f: &mut Frame, s: &SnapshotDetail, theme: &Theme, area: Rect) {
+    let [text, bars] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
+    f.render_widget(Paragraph::new(snapshot_lines(s, theme)), text);
+    let [head, spark] = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(2), Constraint::Min(0)]).areas(bars);
+    f.render_widget(Paragraph::new(vec![Line::from("Snapshot sizes"), Line::from("oldest → newest, this one lit")]).style(theme.dim()), head);
+    // Only the newest snapshots that fit are drawn, but always the highlighted one.
+    let width = usize::from(spark.width);
+    let selected = s.position();
+    let start = selected.map_or(0, |i| (i + 1).saturating_sub(width)).min(s.siblings.len().saturating_sub(width));
+    let data: Vec<SparklineBar> = s
+        .siblings
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(width)
+        .map(|(i, e)| SparklineBar::from(e.used).style(Some(if Some(i) == selected { theme.info } else { theme.dim() })))
+        .collect();
+    f.render_widget(Sparkline::default().data(data), spark);
 }
 
 fn duration_text(secs: u64) -> String {
@@ -199,6 +265,7 @@ pub fn draw(f: &mut Frame, view: &MetricsView, host_name: &str, health: Option<&
     let title = match &view.target {
         Some(MetricsTarget::Pool(p)) => format!("Metrics — {p}"),
         Some(MetricsTarget::Dataset(d)) => format!("Metrics — {d} (I/O of pool {})", view.target.as_ref().and_then(MetricsTarget::pool).unwrap_or("")),
+        Some(MetricsTarget::Snapshot(n)) => format!("Metrics — {n}"),
         Some(MetricsTarget::Host) => format!("Metrics — host {host_name} (all pools)"),
         None => "Metrics".to_string(),
     };
@@ -215,6 +282,10 @@ pub fn draw(f: &mut Frame, view: &MetricsView, host_name: &str, health: Option<&
 }
 
 fn draw_body(f: &mut Frame, view: &MetricsView, health: Option<&PoolHealth>, theme: &Theme, area: Rect) {
+    if let Some(snap) = &view.snapshot {
+        draw_snapshot(f, snap, theme, area);
+        return;
+    }
     if let (Some(host), Some(last)) = (&view.host, view.io_history.back()) {
         draw_graphs_and_text(f, view, last, host_lines(host, theme), theme, area);
         return;
@@ -264,7 +335,7 @@ mod tests {
     #[allow(clippy::unnecessary_wraps)] // handed straight to `apply`, which takes a Result
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
-        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None })
+        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None })
     }
 
     #[test]
@@ -303,6 +374,19 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_sample_adds_no_io_point_and_waits_longer_for_the_next() {
+        let now = Instant::now();
+        let target = MetricsTarget::Snapshot("tank@a".into());
+        let mut v = MetricsView::default();
+        v.retarget(Some(target.clone()));
+        let sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(SnapshotDetail::default()) };
+        v.apply(&target, Ok(sample), now);
+        assert!(v.io_history.is_empty() && v.snapshot.is_some());
+        assert!(!v.due(now + SAMPLE_INTERVAL), "snapshots refresh every 10s, not every second");
+        assert!(v.due(now + SNAPSHOT_INTERVAL));
+    }
+
+    #[test]
     fn a_host_target_never_shares_history_with_a_pool() {
         let now = Instant::now();
         let mut v = MetricsView::default();
@@ -321,6 +405,7 @@ mod tests {
         v.retarget(Some(pool("other")));
         v.apply(&pool("tank"), sample(9), now);
         assert!(v.io_history.is_empty());
+        assert!(v.due(now), "a dropped result must not delay the sample for the new object");
         assert!(!v.in_flight, "the sample slot frees up either way");
     }
 

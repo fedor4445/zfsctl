@@ -428,6 +428,11 @@ impl App {
             Section::Hosts => (!self.hosts.is_empty()).then_some(MetricsTarget::Host),
             Section::Pools => self.selected_pool_name().map(MetricsTarget::Pool),
             Section::Datasets => self.selected_dataset_name().map(MetricsTarget::Dataset),
+            Section::Snapshots => self
+                .snapshots_table
+                .selected()
+                .and_then(|i| self.snapshots.get(i))
+                .map(|s| MetricsTarget::Snapshot(format!("{}@{}", s.dataset, s.name))),
             _ => None,
         }
     }
