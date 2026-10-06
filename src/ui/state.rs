@@ -428,6 +428,13 @@ impl App {
             Section::Hosts => (!self.hosts.is_empty()).then_some(MetricsTarget::Host),
             Section::Pools => self.selected_pool_name().map(MetricsTarget::Pool),
             Section::Datasets => self.selected_dataset_name().map(MetricsTarget::Dataset),
+            Section::Disks => self.disks_table.selected().and_then(|i| self.disks.get(i)).map(|d| MetricsTarget::Disk {
+                name: d.name.clone(),
+                pool: match &d.membership {
+                    crate::zfs::disk::DiskMembership::InPool { pool, .. } => Some(pool.clone()),
+                    crate::zfs::disk::DiskMembership::Available => None,
+                },
+            }),
             Section::Snapshots => self
                 .snapshots_table
                 .selected()

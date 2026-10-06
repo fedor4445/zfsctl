@@ -4,6 +4,8 @@
 use crate::error::Result;
 use crate::ui::theme::Theme;
 use crate::zfs::disk::human_size;
+use crate::zfs::disk::{DiskInfo, DiskMedia, DiskMembership};
+use crate::zfs::disk_detail::DiskLive;
 use crate::zfs::host::HostSummary;
 use crate::zfs::snapshot_detail::SnapshotDetail;
 use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolFacts, PoolIo, TargetSample};
@@ -35,6 +37,7 @@ pub struct MetricsView {
     space: Option<DatasetSpace>,
     host: Option<HostSummary>,
     snapshot: Option<SnapshotDetail>,
+    disk: Option<DiskLive>,
     error: Option<String>,
     in_flight: bool,
     last_finished: Option<Instant>,
@@ -56,6 +59,7 @@ impl MetricsView {
         self.space = None;
         self.host = None;
         self.snapshot = None;
+        self.disk = None;
         self.error = None;
         self.last_finished = None;
         self.target = wanted;
@@ -96,6 +100,7 @@ impl MetricsView {
                 self.space = sample.space;
                 self.host = sample.host;
                 self.snapshot = sample.snapshot;
+                self.disk = sample.disk;
                 self.error = None;
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -146,6 +151,39 @@ fn pool_lines(health: Option<&PoolHealth>, facts: &PoolFacts, theme: &Theme) -> 
     let style = if e.total() > 0 { theme.err } else { Style::default() };
     lines.push(Line::from(Span::styled(format!("Errors  R{} W{} C{}", e.read, e.write, e.cksum), style)));
     lines
+}
+
+fn disk_lines(info: Option<&DiskInfo>, live: &DiskLive, theme: &Theme) -> Vec<Line<'static>> {
+    let dash = || "-".to_string();
+    let Some(info) = info else {
+        return vec![Line::from("Disk     (no longer listed)")];
+    };
+    let media = match info.media {
+        DiskMedia::Ssd => "SSD".to_string(),
+        DiskMedia::Hdd(rpm) => format!("HDD {rpm} rpm"),
+        DiskMedia::Unknown => "type unknown".to_string(),
+    };
+    let membership = match &info.membership {
+        DiskMembership::Available => "available (not in a pool)".to_string(),
+        DiskMembership::InPool { pool, vdev } => format!("{pool} / {vdev}"),
+    };
+    let health = match (&live.state, live.errors) {
+        (Some(state), Some(e)) => {
+            let bad = state != "ONLINE" || e.total() > 0;
+            Line::from(Span::styled(format!("Health   {state}   R{} W{} C{}", e.read, e.write, e.cksum), if bad { theme.err } else { Style::default() }))
+        }
+        _ => Line::from("Health   -"),
+    };
+    let busy = live.busy_percent.map_or_else(dash, |b| format!("{b:.0}%"));
+    let queue = live.queue.map_or_else(dash, |q| q.to_string());
+    vec![
+        Line::from(format!("Disk     {}  {}  {media}", info.name, human_size(info.size))),
+        Line::from(format!("Model    {}", info.model.clone().unwrap_or_else(dash))),
+        Line::from(format!("Serial   {}", info.serial.clone().unwrap_or_else(dash))),
+        Line::from(format!("Pool     {membership}")),
+        health,
+        Line::from(format!("Busy     {busy}   queue {queue}")),
+    ]
 }
 
 fn age_text(created: u64) -> String {
@@ -261,11 +299,12 @@ fn draw_rate(f: &mut Frame, area: Rect, label: &str, history: &[u64], ops: u64, 
     f.render_widget(Sparkline::default().data(tail).style(style), spark);
 }
 
-pub fn draw(f: &mut Frame, view: &MetricsView, host_name: &str, health: Option<&PoolHealth>, theme: &Theme, area: Rect) {
+pub fn draw(f: &mut Frame, view: &MetricsView, host_name: &str, health: Option<&PoolHealth>, disk: Option<&DiskInfo>, theme: &Theme, area: Rect) {
     let title = match &view.target {
         Some(MetricsTarget::Pool(p)) => format!("Metrics — {p}"),
         Some(MetricsTarget::Dataset(d)) => format!("Metrics — {d} (I/O of pool {})", view.target.as_ref().and_then(MetricsTarget::pool).unwrap_or("")),
         Some(MetricsTarget::Snapshot(n)) => format!("Metrics — {n}"),
+        Some(MetricsTarget::Disk { name, .. }) => format!("Metrics — disk {name}"),
         Some(MetricsTarget::Host) => format!("Metrics — host {host_name} (all pools)"),
         None => "Metrics".to_string(),
     };
@@ -275,15 +314,19 @@ pub fn draw(f: &mut Frame, view: &MetricsView, host_name: &str, health: Option<&
     if let Some(err) = &view.error {
         let [msg, rest] = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
         f.render_widget(Paragraph::new(format!("metrics unavailable: {err}")).style(theme.err), msg);
-        draw_body(f, view, health, theme, rest);
+        draw_body(f, view, health, disk, theme, rest);
     } else {
-        draw_body(f, view, health, theme, inner);
+        draw_body(f, view, health, disk, theme, inner);
     }
 }
 
-fn draw_body(f: &mut Frame, view: &MetricsView, health: Option<&PoolHealth>, theme: &Theme, area: Rect) {
+fn draw_body(f: &mut Frame, view: &MetricsView, health: Option<&PoolHealth>, disk: Option<&DiskInfo>, theme: &Theme, area: Rect) {
     if let Some(snap) = &view.snapshot {
         draw_snapshot(f, snap, theme, area);
+        return;
+    }
+    if let (Some(live), Some(last)) = (&view.disk, view.io_history.back()) {
+        draw_graphs_and_text(f, view, last, disk_lines(disk, live, theme), theme, area);
         return;
     }
     if let (Some(host), Some(last)) = (&view.host, view.io_history.back()) {
@@ -335,7 +378,7 @@ mod tests {
     #[allow(clippy::unnecessary_wraps)] // handed straight to `apply`, which takes a Result
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
-        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None })
+        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None, disk: None })
     }
 
     #[test]
@@ -379,7 +422,7 @@ mod tests {
         let target = MetricsTarget::Snapshot("tank@a".into());
         let mut v = MetricsView::default();
         v.retarget(Some(target.clone()));
-        let sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(SnapshotDetail::default()) };
+        let sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(SnapshotDetail::default()), disk: None };
         v.apply(&target, Ok(sample), now);
         assert!(v.io_history.is_empty() && v.snapshot.is_some());
         assert!(!v.due(now + SAMPLE_INTERVAL), "snapshots refresh every 10s, not every second");

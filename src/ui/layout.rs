@@ -1,6 +1,7 @@
 use super::state::{App, DatasetDetailTab, PaneFocus, PermissionRow, Section};
 use crate::ui::modal::{Modal, Tone};
 use crate::zfs::disk::DiskMembership;
+use crate::zfs::metrics::MetricsTarget;
 use crate::zfs::pool::ScanStatus;
 use crate::zfs::property::Property;
 use crate::zfs::share::Share;
@@ -36,9 +37,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
         .areas(body_area);
-    // Hosts, Pools, Datasets, Snapshots and a drilled pool give the bottom half of the center
+    // Hosts, Pools, Datasets, Snapshots, Disks and a drilled pool give the bottom half of the center
     // column to a metrics panel; the sidebar keeps its full height.
-    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots);
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks);
     let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
@@ -53,7 +54,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_main(f, app, main_area);
     if let Some(area) = metrics_area {
         let health = app.metrics.target().and_then(|t| app.pools.iter().find(|p| Some(p.name.as_str()) == t.pool())).map(|p| p.health.clone());
-        crate::ui::metrics::draw(f, &app.metrics, app.active_host_name(), health.as_ref(), &app.theme, area);
+        let disk = match app.metrics.target() {
+            Some(MetricsTarget::Disk { name, .. }) => app.disks.iter().find(|d| &d.name == name),
+            _ => None,
+        };
+        crate::ui::metrics::draw(f, &app.metrics, app.active_host_name(), health.as_ref(), disk, &app.theme, area);
     }
     draw_status_line(f, &status_text, status_style, gauge, &app.theme, status_area);
     let hint_line = crate::ui::hints::hint_line(&crate::ui::hints::hints(app), area.width as usize, &app.theme);
@@ -1023,7 +1028,7 @@ mod tests {
         let io = PoolIo { read_bps: 88_080_384, read_ops: 840, ..PoolIo::default() };
         app.metrics.apply(
             &MetricsTarget::Pool("tank".to_string()),
-            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None }),
+            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None, disk: None }),
             std::time::Instant::now(),
         );
         let rows = render(&mut app, 100, 30);
@@ -1055,7 +1060,7 @@ mod tests {
         };
         app.metrics.apply(
             &MetricsTarget::Host,
-            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host), snapshot: None }),
+            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host), snapshot: None, disk: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1089,7 +1094,7 @@ mod tests {
         };
         app.metrics.apply(
             &target,
-            Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(detail) }),
+            Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(detail), disk: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1099,10 +1104,42 @@ mod tests {
     }
 
     #[test]
+    fn the_disks_section_shows_a_disks_activity_and_pool_health() {
+        use crate::zfs::disk::{DiskInfo, DiskMedia, DiskMembership};
+        use crate::zfs::disk_detail::DiskLive;
+        use crate::zfs::metrics::{ErrorCounts, MetricsTarget, PoolIo, PoolSample, TargetSample};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Disks).unwrap();
+        app.disks = vec![DiskInfo {
+            name: "ada1".to_string(),
+            size: 5 << 30,
+            membership: DiskMembership::InPool { pool: "tpool".to_string(), vdev: "raidz2-0".to_string() },
+            model: Some("QEMU HARDDISK".to_string()),
+            serial: Some("SN123".to_string()),
+            media: DiskMedia::Hdd(7200),
+        }];
+        app.disks_table.select(Some(0));
+        let target = MetricsTarget::Disk { name: "ada1".to_string(), pool: Some("tpool".to_string()) };
+        assert_eq!(app.metrics_target(), Some(target.clone()));
+        app.metrics.retarget(Some(target.clone()));
+        let io = PoolIo { read_bps: 3584, write_ops: 4, write_latency_ns: Some(3_000_000), ..PoolIo::default() };
+        let live = DiskLive { state: Some("DEGRADED".to_string()), errors: Some(ErrorCounts { read: 1, write: 0, cksum: 2 }), busy_percent: Some(12.0), queue: Some(2) };
+        app.metrics.apply(
+            &target,
+            Ok(TargetSample { pool: PoolSample { io, ..PoolSample::default() }, space: None, host: None, snapshot: None, disk: Some(live) }),
+            std::time::Instant::now(),
+        );
+        let text = render(&mut app, 120, 30).join("\n");
+        for want in ["Metrics — disk ada1", "QEMU HARDDISK", "SN123", "HDD 7200 rpm", "tpool / raidz2-0", "DEGRADED   R1 W0 C2", "12%", "queue 2", "lat 3.0ms"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
     fn sections_without_a_selected_object_or_on_tiny_terminals_have_no_metrics_panel() {
         let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
         assert!(!render(&mut app, 100, 12).join("\n").contains("Metrics"), "too short for a panel");
-        app.selected_section = app.sections.iter().position(|s| *s == Section::Disks).unwrap();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
         assert!(!render(&mut app, 100, 30).join("\n").contains("Metrics"));
     }
 

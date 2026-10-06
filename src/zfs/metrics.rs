@@ -211,6 +211,8 @@ pub enum MetricsTarget {
     Host,
     /// A full `dataset@snapshot` name.
     Snapshot(String),
+    /// A disk and, if it belongs to one, its pool (whose status gives its health).
+    Disk { name: String, pool: Option<String> },
 }
 
 impl MetricsTarget {
@@ -220,7 +222,7 @@ impl MetricsTarget {
         match self {
             MetricsTarget::Pool(p) => Some(p),
             MetricsTarget::Dataset(d) => Some(d.split('/').next().unwrap_or(d)),
-            MetricsTarget::Host | MetricsTarget::Snapshot(_) => None,
+            MetricsTarget::Host | MetricsTarget::Snapshot(_) | MetricsTarget::Disk { .. } => None,
         }
     }
 }
@@ -234,14 +236,20 @@ pub struct TargetSample {
     pub host: Option<super::host::HostSummary>,
     /// Present only for a snapshot target; `pool` is then an unused default.
     pub snapshot: Option<super::snapshot_detail::SnapshotDetail>,
+    /// Present only for a disk target; `pool.io` is then that disk's activity.
+    pub disk: Option<super::disk_detail::DiskLive>,
 }
 
 /// One full panel refresh. Blocks for about a second; run it off the UI thread.
 pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Result<TargetSample> {
     let Some(pool_name) = target.pool() else {
-        let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None };
+        let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None, disk: None };
         if let MetricsTarget::Snapshot(name) = target {
             sample.snapshot = Some(super::snapshot_detail::sample_snapshot(runner, name)?);
+        } else if let MetricsTarget::Disk { name, pool } = target {
+            let (io, live) = super::disk_detail::sample_disk(runner, name, pool.as_deref())?;
+            sample.pool.io = io;
+            sample.disk = Some(live);
         } else {
             let (host, io) = super::host::sample_host(runner)?;
             sample.pool.io = io;
@@ -254,7 +262,7 @@ pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Resu
         MetricsTarget::Dataset(d) => Some(fetch_dataset_space(runner, d)?),
         _ => None,
     };
-    Ok(TargetSample { pool, space, host: None, snapshot: None })
+    Ok(TargetSample { pool, space, host: None, snapshot: None, disk: None })
 }
 
 #[cfg(test)]

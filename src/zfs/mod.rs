@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod dataset;
 pub mod disk;
+pub mod disk_detail;
 pub mod host;
 pub mod metrics;
 pub mod permission;
