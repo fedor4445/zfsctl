@@ -131,6 +131,8 @@ pub enum WorkerMsg {
     /// dataset-metadata-scoped). Same stale-identity discard rationale
     /// as `DatasetPermissions`.
     DatasetAcl(usize, String, Result<Vec<crate::acl::AclEntry>>),
+    /// The target is what the sample was taken for; `MetricsView::apply` drops it if the panel has moved on.
+    Metrics(usize, crate::zfs::metrics::MetricsTarget, Result<crate::zfs::metrics::TargetSample>),
     MutationDone(usize, Section, Result<()>),
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
@@ -190,6 +192,7 @@ pub struct App {
     /// resilver/scrub doesn't linger in the status bar forever.
     pool_scan_status_shown_at: Option<Instant>,
     pub drilled_pool: Option<String>,
+    pub metrics: crate::ui::metrics::MetricsView,
     pub pane_focus: PaneFocus,
     pub pool_properties: Vec<Property>,
     pub pool_properties_table: TableState,
@@ -287,6 +290,7 @@ impl App {
             pool_scan_status: None,
             pool_scan_status_shown_at: None,
             drilled_pool: None,
+            metrics: crate::ui::metrics::MetricsView::default(),
             pane_focus: PaneFocus::Middle,
             pool_properties: Vec::new(),
             pool_properties_table: TableState::default(),
@@ -413,6 +417,37 @@ impl App {
         }
     }
 
+    /// The object the bottom metrics panel describes right now: the drilled
+    /// pool, else the highlighted pool or dataset, else nothing.
+    pub fn metrics_target(&self) -> Option<crate::zfs::metrics::MetricsTarget> {
+        use crate::zfs::metrics::MetricsTarget;
+        if let Some(pool) = &self.drilled_pool {
+            return Some(MetricsTarget::Pool(pool.clone()));
+        }
+        match self.current_section() {
+            Section::Pools => self.selected_pool_name().map(MetricsTarget::Pool),
+            Section::Datasets => self.selected_dataset_name().map(MetricsTarget::Dataset),
+            _ => None,
+        }
+    }
+
+    /// Keeps the metrics panel pointed at the selection and starts a sample
+    /// on a worker thread when one is due. Called once per event-loop tick.
+    pub fn poll_metrics(&mut self, runner: Arc<dyn CommandRunner>, now: Instant) {
+        self.metrics.retarget(self.metrics_target());
+        if !self.metrics.due(now) {
+            return;
+        }
+        let Some(target) = self.metrics.target().cloned() else { return };
+        self.metrics.begin();
+        let host = self.selected_host;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::metrics::sample_target(runner.as_ref(), &target);
+            let _ = tx.send(WorkerMsg::Metrics(host, target, result));
+        });
+    }
+
     /// Sets a failure message (rendered with the theme's `err` style).
     pub fn set_error(&mut self, msg: String) {
         self.status_error = Some(msg.clone());
@@ -451,6 +486,7 @@ impl App {
     /// Clears data panes so a stale render from the previously-selected
     /// host is never left on screen looking current after switching hosts.
     fn clear_host_data(&mut self) {
+        self.metrics = crate::ui::metrics::MetricsView::default();
         self.pools.clear();
         self.datasets.clear();
         self.snapshots.clear();
@@ -1810,6 +1846,11 @@ impl App {
                             self.status_message = None;
                         }
                         Err(e) => self.set_error(e.to_string()),
+                    }
+                }
+                WorkerMsg::Metrics(host, target, result) => {
+                    if host == self.selected_host {
+                        self.metrics.apply(&target, result, Instant::now());
                     }
                 }
                 WorkerMsg::PoolProperties(host, pool, result) => {

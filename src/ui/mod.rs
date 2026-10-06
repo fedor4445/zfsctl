@@ -1,5 +1,6 @@
 pub mod hints;
 pub mod layout;
+pub mod metrics;
 pub mod modal;
 pub mod picker;
 pub mod state;
@@ -137,6 +138,9 @@ fn event_loop(
         }
         if let (Some(interval), Some(host)) = (auto_refresh, inventory.hosts.get(app.selected_host)) {
             app.auto_refresh(host.runner.clone(), Instant::now(), interval);
+        }
+        if let Some(host) = inventory.hosts.get(app.selected_host) {
+            app.poll_metrics(host.runner.clone(), Instant::now());
         }
         for section in refreshes {
             if let Some(host) = inventory.hosts.get(app.selected_host) {

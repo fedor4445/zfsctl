@@ -32,13 +32,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(0), Constraint::Length(status_height), Constraint::Length(1)])
         .areas(area);
 
-    let [sidebar_area, main_area] = Layout::default()
+    let [sidebar_area, center_area] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(24), Constraint::Min(0)])
         .areas(body_area);
+    // Pools, Datasets and a drilled pool give the bottom half of the center
+    // column to a metrics panel; the sidebar keeps its full height.
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Pools | Section::Datasets);
+    let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
+        let [top, bottom] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(center_area);
+        (top, Some(bottom))
+    } else {
+        (center_area, None)
+    };
 
     draw_sidebar(f, app, sidebar_area);
     draw_main(f, app, main_area);
+    if let Some(area) = metrics_area {
+        let health = app.metrics.target().and_then(|t| app.pools.iter().find(|p| p.name == t.pool())).map(|p| p.health.clone());
+        crate::ui::metrics::draw(f, &app.metrics, health.as_ref(), &app.theme, area);
+    }
     draw_status_line(f, &status_text, status_style, gauge, &app.theme, status_area);
     let hint_line = crate::ui::hints::hint_line(&crate::ui::hints::hints(app), area.width as usize, &app.theme);
     f.render_widget(Paragraph::new(hint_line), hint_area);
@@ -997,6 +1013,36 @@ mod tests {
         app.pools = pools;
         app.pools_table.select(Some(0));
         app
+    }
+
+    #[test]
+    fn pools_get_a_metrics_panel_across_the_bottom_half() {
+        use crate::zfs::metrics::{MetricsTarget, PoolFacts, PoolIo, PoolSample, TargetSample};
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.metrics.retarget(Some(MetricsTarget::Pool("tank".to_string())));
+        let io = PoolIo { read_bps: 88_080_384, read_ops: 840, ..PoolIo::default() };
+        app.metrics.apply(
+            &MetricsTarget::Pool("tank".to_string()),
+            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None }),
+            std::time::Instant::now(),
+        );
+        let rows = render(&mut app, 100, 30);
+        let panel = rows.iter().position(|r| r.contains("Metrics — tank")).expect("metrics panel title");
+        assert!((13..=16).contains(&panel), "panel starts around the middle of the body, got row {panel}");
+        let text = rows.join("\n");
+        assert!(text.contains("Read  84.0M/s"), "{text}");
+        assert!(text.contains("840 ops"), "{text}");
+        assert!(text.contains("ONLINE"), "{text}");
+        assert!(rows[..panel].iter().any(|r| r.contains("Pools —")), "the lists stay above the panel");
+        assert!(rows[panel].starts_with('│'), "the sidebar keeps its full height beside the panel: {:?}", rows[panel]);
+    }
+
+    #[test]
+    fn sections_without_a_selected_object_or_on_tiny_terminals_have_no_metrics_panel() {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        assert!(!render(&mut app, 100, 12).join("\n").contains("Metrics"), "too short for a panel");
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        assert!(!render(&mut app, 100, 30).join("\n").contains("Metrics"));
     }
 
     #[test]
