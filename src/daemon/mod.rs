@@ -7,6 +7,7 @@ pub mod history;
 pub mod notify;
 pub mod scheduler;
 pub mod scrub;
+pub mod snapshot;
 
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
