@@ -144,6 +144,18 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
             account: Some((host, field)),
         });
     }
+    if let FormKind::Job { hosts, .. } = kind {
+        let (values, selected) = match field_index {
+            0 => (hosts.clone(), hosts.iter().position(|h| h == current_value.trim()).unwrap_or(0)),
+            2 => {
+                let presets = crate::ui::jobs::preset_values();
+                let selected = presets.iter().position(|p| crate::ui::jobs::insert_text(p) == current_value.trim()).unwrap_or(0);
+                (presets, selected)
+            }
+            _ => return None,
+        };
+        return Some(PickerState { values, filter: String::new(), selected, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Ready, note: None, account: None });
+    }
     let (values, multi_select) = vocabulary_for(kind, field_index)?;
     let values: Vec<String> = values.iter().map(std::string::ToString::to_string).collect();
     let mut checked = std::collections::HashSet::new();

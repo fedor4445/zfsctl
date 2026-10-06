@@ -190,6 +190,10 @@ pub struct FormField {
 /// match the order the modal's `fields` were constructed in.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormKind {
+    /// Fields: `[host, pool, schedule, catch_up]`. `hosts` are the configured host names (for the
+    /// host picker and for validation); `existing` is the job being edited, if any; `taken_ids`
+    /// are the job ids already in use, so a new job can be named without a collision.
+    Job { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, taken_ids: Vec<String> },
     /// Fields: `[name, vdev_spec]`.
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.

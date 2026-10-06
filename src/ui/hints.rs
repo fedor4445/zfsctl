@@ -140,6 +140,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("→", "Properties", 2));
             if selected {
                 v.push(h("s", "Scrub", 2));
+                v.push(h("J", "Schedule", 3));
                 v.push(h("R", "Resilver", 3));
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
             }
@@ -250,6 +251,12 @@ fn context_hints(app: &App) -> Vec<Hint> {
         (Section::Jobs, _) => {
             if !app.jobs_view.jobs.is_empty() {
                 v.push(h("↑↓", "Move", 1));
+            }
+            if app.jobs_view.jobs.is_empty() || app.jobs_table.selected().is_none() {
+                v.push(h("n", "New job", 2));
+            } else {
+                v.push(h("Enter", "Edit", 1));
+                v.push(h("n", "New job", 2));
             }
             v.push(h("r", "Refresh", 4));
         }

@@ -668,6 +668,15 @@ fn confirm_block(theme: &Theme, tone: Tone, label: &str, neutral_title: &str, ri
     Block::default().borders(Borders::ALL).border_style(border).title(Span::styled(title, border))
 }
 
+/// Extra lines drawn under a form's fields, computed from what is typed so far: for a job
+/// form, what the schedule means and its next three run times.
+fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField]) -> Vec<String> {
+    match kind {
+        crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        _ => Vec::new(),
+    }
+}
+
 fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
@@ -682,11 +691,14 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
         Modal::ConfirmTyped { prompt, input, .. } => {
             wrapped_line_count(&format!("{prompt}\n\n> {input}"), inner_width)
         }
-        Modal::Form { fields, description, .. } => {
-            let fields_lines: u16 = fields
-                .iter()
-                .map(|field| wrapped_line_count(&format!("  {}: {}", field.label, field.value), inner_width))
-                .sum();
+        Modal::Form { fields, description, kind, .. } => {
+            let preview = form_preview(kind, fields);
+            let preview_lines: u16 = if preview.is_empty() { 0 } else { 1 + preview.iter().map(|l| wrapped_line_count(l, inner_width)).sum::<u16>() };
+            let fields_lines: u16 = preview_lines
+                + fields
+                    .iter()
+                    .map(|field| wrapped_line_count(&format!("  {}: {}", field.label, field.value), inner_width))
+                    .sum::<u16>();
             match description {
                 // +1 blank separator line between the description and the fields.
                 // Word wrapping can need more rows than the byte-based
@@ -737,6 +749,11 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
                 let marker = if i == *focused { ">" } else { " " };
                 let shown = if kind.masks_field(i) { "*".repeat(field.value.chars().count()) } else { field.value.clone() };
                 lines.push(format!("{marker} {}: {shown}", field.label));
+            }
+            let preview = form_preview(kind, fields);
+            if !preview.is_empty() {
+                lines.push(String::new());
+                lines.extend(preview);
             }
             let p = Paragraph::new(lines.join("\n"))
                 .wrap(Wrap { trim: false })
@@ -1292,6 +1309,35 @@ mod tests {
         app.refresh_jobs();
         let text = render(&mut app, 140, 30).join("\n");
         assert!(text.contains("jobs.toml unreadable"), "{text}");
+    }
+
+    fn job_form_app() -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        app.pools = vec![pool("tank", 10, 100, PoolHealth::Online)];
+        app.pools_table.select(Some(0));
+        app.handle_key(crossterm::event::KeyCode::Char('J'));
+        app
+    }
+
+    #[test]
+    fn the_job_form_previews_what_the_schedule_means_and_when_it_next_runs() {
+        let mut app = job_form_app();
+        let text = render(&mut app, 100, 30).join("\n");
+        for want in ["New scrub job", "Host: local", "Pool: tank", "Schedule: 0 3 * * 0", "Weekly, Sunday 03:00", "Next: Sun "] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        assert_eq!(text.matches("03:00").count(), 4, "the label and the three listed run times:\n{text}");
+    }
+
+    #[test]
+    fn the_job_forms_preview_follows_what_is_typed_and_shows_a_parse_error() {
+        let mut app = job_form_app();
+        let Some(crate::ui::modal::Modal::Form { fields, .. }) = &mut app.modal else { panic!() };
+        fields[2].value = "61 * * * *".to_string();
+        let text = render(&mut app, 100, 30).join("\n");
+        assert!(text.contains("Schedule error:") && text.contains("outside 0-59"), "{text}");
+        assert!(!text.contains("Next:"));
     }
 
     #[test]

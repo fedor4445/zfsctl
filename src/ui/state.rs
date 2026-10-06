@@ -1160,6 +1160,20 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Shares => {
                 move_table_selection(&mut self.shares_table, self.shares.len(), false);
             }
+            KeyCode::Char('J') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
+                match self.selected_pool_name() {
+                    Some(pool) => self.modal = Some(self.job_form(None, &pool)),
+                    None => self.status_message = Some("Select a pool first, then press J to schedule a scrub for it".to_string()),
+                }
+            }
+            KeyCode::Char('n') if self.current_section() == Section::Jobs => {
+                self.modal = Some(self.job_form(None, ""));
+            }
+            KeyCode::Enter if self.current_section() == Section::Jobs => {
+                if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).cloned() {
+                    self.modal = Some(self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")));
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Jobs => {
                 move_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len(), true);
             }
@@ -1365,6 +1379,18 @@ impl App {
                             self.begin_add_host(name, target);
                             None
                         }
+                    } else if matches!(kind, FormKind::Job { .. }) {
+                        match build_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
+                            Ok(mut action) => {
+                                action.host = self.selected_host;
+                                Some(action)
+                            }
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
+                        }
                     } else if matches!(kind, FormKind::ShareSmb { .. }) {
                         match build_smb_action(&kind, &fields, &self.shares) {
                             Ok(action) => Some(action),
@@ -1505,7 +1531,7 @@ impl App {
                 } else if let Some(value) = filtered.get(picker.selected).cloned() {
                     if let Some(Modal::Form { fields, focused, .. }) = &mut self.modal {
                         if let Some(field) = fields.get_mut(*focused) {
-                            field.value = value;
+                            field.value = crate::ui::jobs::insert_text(&value).to_string();
                         }
                     }
                 } else {
@@ -2107,6 +2133,64 @@ fn build_vdev_spec_from_selection(redundancy: &str, disks: &[String]) -> Vec<Str
 /// (`self.selected_host` at every call site), threaded through into the
 /// resulting `FormKind` so the eventual mutation runs against the right
 /// host. SMB shares route to `smb_edit_modal` (managed smb4.conf block).
+/// The new/edit scrub-job form. `existing` is the job being edited; for a new job `pool`
+/// is what to pre-fill (a pool picked in the Pools section, or blank).
+impl App {
+    fn job_form(&self, existing: Option<crate::jobs::Job>, pool: &str) -> Modal {
+        let (host, schedule, catch_up, title) = match &existing {
+            Some(job) => (job.host.clone(), job.schedule.clone(), job.catch_up, format!("Edit scrub job '{}'", job.id)),
+            None => (self.active_host_name().to_string(), crate::ui::jobs::DEFAULT_SCHEDULE.to_string(), true, "New scrub job".to_string()),
+        };
+        Modal::Form {
+            title,
+            fields: vec![
+                FormField { label: "Host".to_string(), value: host },
+                FormField { label: "Pool".to_string(), value: pool.to_string() },
+                FormField { label: "Schedule".to_string(), value: schedule },
+                FormField { label: "Catch up (y/n)".to_string(), value: if catch_up { "y" } else { "n" }.to_string() },
+            ],
+            focused: 0,
+            description: None,
+            kind: FormKind::Job { hosts: self.hosts.clone(), existing: existing.map(Box::new), taken_ids: self.jobs_view.jobs.iter().map(|j| j.id.clone()).collect() },
+        }
+    }
+}
+
+/// Turns a submitted job form into a save, or says what is wrong with it. An edit keeps the
+/// job's id, creation time and enabled flag; a new job gets a fresh id and `created_at = now`.
+fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+    let FormKind::Job { hosts, existing, taken_ids } = kind else { return Err("not a job form".to_string()) };
+    let host = field_value(fields, 0).trim();
+    if !hosts.iter().any(|h| h == host) {
+        return Err(format!("Unknown host '{host}'. Configured hosts: {}", hosts.join(", ")));
+    }
+    let pool = field_value(fields, 1).trim();
+    if pool.is_empty() {
+        return Err("Pool name is required".to_string());
+    }
+    let schedule = field_value(fields, 2).trim();
+    crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
+    let catch_up = match field_value(fields, 3).trim().to_lowercase().as_str() {
+        "" | "y" | "yes" => true,
+        "n" | "no" => false,
+        other => return Err(format!("Catch up must be y or n, not '{other}'")),
+    };
+    let job = match existing {
+        Some(old) => crate::jobs::Job { host: host.to_string(), pool: Some(pool.to_string()), schedule: schedule.to_string(), catch_up, ..(**old).clone() },
+        None => crate::jobs::Job {
+            id: crate::ui::jobs::new_job_id(host, pool, taken_ids),
+            host: host.to_string(),
+            kind: crate::jobs::KIND_SCRUB.to_string(),
+            pool: Some(pool.to_string()),
+            schedule: schedule.to_string(),
+            catch_up,
+            enabled: true,
+            created_at: Some(now),
+        },
+    };
+    Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
+}
+
 fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
     match share {
         crate::zfs::share::Share::Nfs { dataset, raw, networks, hosts, read_only, root } => {
@@ -2332,7 +2416,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::AddHost | FormKind::ShareSmb { .. } => None,
+        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::Job { .. } => None,
     }
 }
 
@@ -2622,6 +2706,7 @@ Pools
   Right / Left     focus/unfocus the properties pane
   n / d            create / destroy a pool
   s / R            scrub / resilver (y/n confirm)
+  J                schedule a recurring scrub of the selected pool (opens the job form)
 
 Vdevs (inside a drilled-into pool)
   o / O            offline / online the selected disk
@@ -7251,6 +7336,181 @@ mod tests {
         let (mut app, _dir) = app_with_jobs(&[scrub_job("a")]);
         app.refresh_visible(Arc::new(FakeRunner::new("")));
         assert_eq!(app.jobs_view.jobs.len(), 1);
+    }
+
+    fn pools_app_with_one_pool() -> App {
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+        app.selected_host = 1;
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.pools_table.select(Some(0));
+        app
+    }
+
+    fn form_values(app: &App) -> Vec<String> {
+        match &app.modal {
+            Some(Modal::Form { fields, .. }) => fields.iter().map(|f| f.value.clone()).collect(),
+            other => panic!("expected a form, got {other:?}"),
+        }
+    }
+
+    fn set_form_values(app: &mut App, values: [&str; 4]) {
+        let Some(Modal::Form { fields, .. }) = &mut app.modal else { panic!("no form open") };
+        for (field, value) in fields.iter_mut().zip(values) {
+            field.value = value.to_string();
+        }
+    }
+
+    fn at_utc(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn j_on_a_pool_opens_the_job_form_with_the_host_and_pool_filled_in() {
+        let mut app = pools_app_with_one_pool();
+        app.handle_key(KeyCode::Char('J'));
+        assert_eq!(form_values(&app), vec!["fbsd16", "tank", "0 3 * * 0", "y"]);
+        let Some(Modal::Form { title, kind, .. }) = &app.modal else { panic!() };
+        assert!(title.contains("New scrub job"), "{title}");
+        assert!(matches!(kind, FormKind::Job { existing: None, .. }));
+    }
+
+    #[test]
+    fn j_with_no_pool_selected_opens_nothing_and_says_why() {
+        let mut app = pools_app_with_one_pool();
+        app.pools_table.select(None);
+        app.handle_key(KeyCode::Char('J'));
+        assert!(app.modal.is_none());
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Select a pool")), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn n_in_the_jobs_section_opens_a_blank_pool_form_for_the_selected_host() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(form_values(&app), vec!["local", "", "0 3 * * 0", "y"]);
+    }
+
+    #[test]
+    fn enter_on_a_job_opens_the_form_with_its_values_and_nothing_without_a_selection() {
+        let mut job = scrub_job("scrub-local-tank");
+        job.schedule = "*/10 * * * *".into();
+        job.catch_up = false;
+        let (mut app, _dir) = app_with_jobs(&[job]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Enter);
+        assert!(app.modal.is_none(), "no row is selected yet");
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(form_values(&app), vec!["local", "tank", "*/10 * * * *", "n"]);
+        let Some(Modal::Form { title, kind, .. }) = &app.modal else { panic!() };
+        assert!(title.contains("scrub-local-tank"), "{title}");
+        assert!(matches!(kind, FormKind::Job { existing: Some(_), .. }));
+    }
+
+    fn job_kind(existing: Option<crate::jobs::Job>, taken: &[&str]) -> FormKind {
+        FormKind::Job { hosts: vec!["local".to_string(), "fbsd16".to_string()], existing: existing.map(Box::new), taken_ids: taken.iter().map(|s| (*s).to_string()).collect() }
+    }
+
+    fn fields(values: [&str; 4]) -> Vec<FormField> {
+        ["Host", "Pool", "Schedule", "Catch up (y/n)"].iter().zip(values).map(|(l, v)| FormField { label: (*l).to_string(), value: v.to_string() }).collect()
+    }
+
+    #[test]
+    fn a_new_job_gets_an_id_a_creation_time_and_is_enabled() {
+        let now = at_utc("2026-10-06T12:00:00Z");
+        let action = build_job_action(&job_kind(None, &[]), &fields(["fbsd16", " tank ", " 0 2 * * * ", "y"]), std::path::Path::new("/state"), now).unwrap();
+        assert_eq!(action.section, Section::Jobs);
+        let MutationCall::SaveJob { state_dir, job } = action.call else { panic!("{:?}", action.call) };
+        assert_eq!(state_dir, std::path::PathBuf::from("/state"));
+        assert_eq!((job.id.as_str(), job.host.as_str(), job.pool.as_deref(), job.schedule.as_str()), ("scrub-fbsd16-tank", "fbsd16", Some("tank"), "0 2 * * *"));
+        assert!(job.catch_up && job.enabled && job.kind == crate::jobs::KIND_SCRUB);
+        assert_eq!(job.created_at, Some(now));
+    }
+
+    #[test]
+    fn a_colliding_id_gets_a_numeric_suffix() {
+        let now = at_utc("2026-10-06T12:00:00Z");
+        let action = build_job_action(&job_kind(None, &["scrub-local-tank"]), &fields(["local", "tank", "0 3 * * 0", "y"]), std::path::Path::new("/s"), now).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        assert_eq!(job.id, "scrub-local-tank-2");
+    }
+
+    #[test]
+    fn an_edit_changes_the_fields_but_keeps_id_creation_time_and_enabled() {
+        let mut existing = scrub_job("my-job");
+        existing.enabled = false;
+        existing.created_at = Some(at_utc("2026-09-01T00:00:00Z"));
+        let action = build_job_action(&job_kind(Some(existing), &["my-job"]), &fields(["fbsd16", "other", "0 4 * * *", "n"]), std::path::Path::new("/s"), at_utc("2026-10-06T12:00:00Z")).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        assert_eq!((job.id.as_str(), job.host.as_str(), job.pool.as_deref(), job.schedule.as_str(), job.catch_up), ("my-job", "fbsd16", Some("other"), "0 4 * * *", false));
+        assert!(!job.enabled, "an edit does not re-enable a disabled job");
+        assert_eq!(job.created_at, Some(at_utc("2026-09-01T00:00:00Z")));
+    }
+
+    #[test]
+    fn a_bad_form_is_refused_with_the_reason() {
+        let now = at_utc("2026-10-06T12:00:00Z");
+        let try_it = |values: [&str; 4]| build_job_action(&job_kind(None, &[]), &fields(values), std::path::Path::new("/s"), now).unwrap_err();
+        assert!(try_it(["nowhere", "tank", "0 3 * * 0", "y"]).contains("Unknown host 'nowhere'"));
+        assert!(try_it(["local", "  ", "0 3 * * 0", "y"]).contains("Pool name is required"));
+        assert!(try_it(["local", "tank", "61 * * * *", "y"]).contains("outside 0-59"));
+        assert!(try_it(["local", "tank", "0 3 * * 0", "maybe"]).contains("y or n"));
+    }
+
+    #[test]
+    fn submitting_a_good_form_returns_the_save_action_and_a_bad_one_stays_open_on_the_first_field() {
+        let mut app = pools_app_with_one_pool();
+        app.handle_key(KeyCode::Char('J'));
+        set_form_values(&mut app, ["fbsd16", "tank", "61 * * * *", "y"]);
+        for _ in 0..3 {
+            assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+        }
+        assert!(app.handle_modal_key(KeyCode::Enter).is_none(), "the schedule is bad");
+        assert!(app.modal.is_some(), "the form stays open");
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("outside 0-59")), "{:?}", app.status_message);
+        assert!(app.status_is_error());
+        let Some(Modal::Form { focused, .. }) = &app.modal else { panic!() };
+        assert_eq!(*focused, 0, "focus returns to the first field, as the SMB form does");
+        set_form_values(&mut app, ["fbsd16", "tank", "0 3 * * 0", "y"]);
+        for _ in 0..3 {
+            assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+        }
+        let action = app.handle_modal_key(KeyCode::Enter).expect("the form submits");
+        assert!(matches!(action.call, MutationCall::SaveJob { .. }));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn f2_on_host_lists_the_configured_hosts_and_on_schedule_the_presets_inserting_only_the_cron_part() {
+        let mut app = pools_app_with_one_pool();
+        app.handle_key(KeyCode::Char('J'));
+        app.handle_modal_key(KeyCode::F(2));
+        let picker = app.picker.clone().expect("a host picker");
+        assert_eq!(picker.values, vec!["local", "fbsd16"]);
+        assert!(!picker.multi_select);
+        app.handle_picker_key(KeyCode::Down);
+        app.handle_picker_key(KeyCode::Enter);
+        assert_eq!(form_values(&app)[0], "fbsd16".to_string());
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        let presets = app.picker.clone().expect("a schedule picker");
+        assert_eq!(presets.values, crate::ui::jobs::preset_values());
+        assert_eq!(presets.selected, 2, "the picker opens on the field's current preset");
+        app.handle_picker_key(KeyCode::Up);
+        app.handle_picker_key(KeyCode::Enter);
+        assert_eq!(form_values(&app)[2], "0 2 * * *", "no label text lands in the field");
+    }
+
+    #[test]
+    fn f2_on_pool_and_catch_up_does_nothing() {
+        let mut app = pools_app_with_one_pool();
+        app.handle_key(KeyCode::Char('J'));
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.picker.is_none());
     }
 
     #[test]
