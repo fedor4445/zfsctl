@@ -753,11 +753,11 @@ mod tests {
                 FormField { label: "Scope".to_string(), value: String::new() },
                 FormField { label: "Permissions (F2 to pick)".to_string(), value: String::new() },
             ],
-            focused: 0,
+            focused: 1,
             description: None,
             kind: FormKind::GrantPermission { host: 0, dataset: "tank/a".to_string() },
         });
-        assert!(!hints(&app).iter().any(|h| h.key == "F2"), "field 0 has no vocabulary");
+        assert!(!hints(&app).iter().any(|h| h.key == "F2"), "field 1 (Scope) has no vocabulary");
         if let Some(Modal::Form { focused, .. }) = &mut app.modal {
             *focused = 2;
         }
@@ -774,6 +774,9 @@ mod tests {
             selected: 0,
             checked: Default::default(),
             multi_select: true,
+            load: crate::ui::picker::PickerLoad::Ready,
+            note: None,
+            account: None,
         });
         let ks = keys(&app);
         assert!(ks.contains(&"Space"), "{ks:?}");
