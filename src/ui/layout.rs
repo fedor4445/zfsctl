@@ -834,11 +834,12 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
     const PICKER_WIDTH_PERCENT: u16 = 50;
     if picker.load != crate::ui::picker::PickerLoad::Ready {
         use crate::ui::picker::PickerLoad;
+        let what = if picker.pool_host.is_some() { "pools" } else { "accounts" };
         let body = match &picker.load {
             PickerLoad::Failed(msg) => {
-                format!("Could not load accounts: {}\n\nEsc to close", sanitise_for_display(msg))
+                format!("Could not load {what}: {}\n\nEsc to close", sanitise_for_display(msg))
             }
-            PickerLoad::Loading => "Loading accounts…\n\nEsc to close".to_string(),
+            PickerLoad::Loading => format!("Loading {what}…\n\nEsc to close"),
             PickerLoad::Ready => unreachable!("guarded by the enclosing `!= Ready` check"),
         };
         // Width first (it only depends on the percentage), then a height
@@ -1723,6 +1724,7 @@ mod tests {
             load: crate::ui::picker::PickerLoad::Failed(msg),
             note: None,
             account: None,
+            pool_host: None,
         });
         let rows = render(&mut app, 80, 24).join("\n");
         assert!(rows.contains("Esc to close"), "{rows}");
@@ -1752,6 +1754,7 @@ mod tests {
             load: crate::ui::picker::PickerLoad::Failed(msg.to_string()),
             note: None,
             account: None,
+            pool_host: None,
         });
         let rows = render(&mut app, 80, 24).join("\n");
         assert!(rows.contains("Esc to close"), "{rows}");

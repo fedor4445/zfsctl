@@ -11,6 +11,8 @@ pub struct PickerState {
     pub load: PickerLoad,
     pub note: Option<String>,
     pub account: Option<(usize, AccountField)>,
+    /// Set on the job form's Pool picker: the host whose pool names it lists, fetched live.
+    pub pool_host: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,9 +163,14 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
             load: PickerLoad::Loading,
             note: None,
             account: Some((host, field)),
+            pool_host: None,
         });
     }
     if let FormKind::Job { hosts, .. } = kind {
+        if field_index == 1 {
+            // The host is whatever the form's Host field says at F2 time; `open_pool_picker` fills it in.
+            return Some(PickerState { values: Vec::new(), filter: String::new(), selected: 0, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Loading, note: None, account: None, pool_host: Some(0) });
+        }
         let (values, selected) = match field_index {
             0 => (hosts.clone(), hosts.iter().position(|h| h == current_value.trim()).unwrap_or(0)),
             2 => {
@@ -173,7 +180,7 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
             }
             _ => return None,
         };
-        return Some(PickerState { values, filter: String::new(), selected, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Ready, note: None, account: None });
+        return Some(PickerState { values, filter: String::new(), selected, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Ready, note: None, account: None, pool_host: None });
     }
     let (values, multi_select) = vocabulary_for(kind, field_index)?;
     let values: Vec<String> = values.iter().map(std::string::ToString::to_string).collect();
@@ -188,7 +195,7 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
     } else if let Some(idx) = values.iter().position(|v| v == current_value.trim()) {
         selected = idx;
     }
-    Some(PickerState { values, filter: String::new(), selected, checked, multi_select, load: PickerLoad::Ready, note: None, account: None })
+    Some(PickerState { values, filter: String::new(), selected, checked, multi_select, load: PickerLoad::Ready, note: None, account: None, pool_host: None })
 }
 
 #[cfg(test)]

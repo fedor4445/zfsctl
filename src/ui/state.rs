@@ -140,6 +140,8 @@ pub enum WorkerMsg {
     HostProbe(String, String, Result<()>),
     /// The outcome of a live account fetch for host index `usize`.
     Accounts(usize, Result<crate::zfs::accounts::HostAccounts>),
+    /// The outcome of a live pool-name fetch for the job form's Pool picker.
+    PoolNames(usize, Result<Vec<String>>),
 }
 
 pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
@@ -251,6 +253,7 @@ pub struct App {
     pub account_cache: HashMap<usize, (Instant, crate::zfs::accounts::HostAccounts)>,
     pub account_fetch_in_flight: HashMap<usize, Instant>,
     pub pending_account_fetch: Vec<usize>,
+    pub pending_pool_fetch: Vec<usize>,
     /// Lowercased names currently being probed (submitted, not yet
     /// resolved) -- checked alongside `self.hosts` so a second
     /// submission of the same name while the first is still
@@ -333,6 +336,7 @@ impl App {
             account_cache: HashMap::new(),
             account_fetch_in_flight: HashMap::new(),
             pending_account_fetch: Vec::new(),
+            pending_pool_fetch: Vec::new(),
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
@@ -1447,6 +1451,9 @@ impl App {
                         if let Some((host, _)) = picker.account {
                             self.open_account_picker(&mut picker, host, field_value(&fields, focused), Instant::now());
                         }
+                        if picker.pool_host.is_some() {
+                            self.open_pool_picker(&mut picker, &kind, field_value(&fields, 0));
+                        }
                         self.picker = Some(picker);
                     }
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
@@ -1476,6 +1483,33 @@ impl App {
             self.account_fetch_in_flight.insert(host, now);
             self.pending_account_fetch.push(host);
         }
+    }
+
+    /// Points the job form's Pool picker at the host named in the form's Host field and queues
+    /// one fetch of its pool names; an unknown host name fails the picker right away.
+    fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str) {
+        let FormKind::Job { hosts, .. } = kind else { return };
+        match hosts.iter().position(|h| h == host_name.trim()) {
+            Some(host) => {
+                picker.pool_host = Some(host);
+                self.pending_pool_fetch.push(host);
+            }
+            None => picker.load = crate::ui::picker::PickerLoad::Failed(format!("unknown host '{}'", host_name.trim())),
+        }
+    }
+
+    /// Lists the host's pools on a worker thread and reports them as `WorkerMsg::PoolNames`.
+    pub fn fetch_pool_names(&mut self, runner: Arc<dyn CommandRunner>, host: usize) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::pool::list_pools(runner.as_ref()).map(|pools| pools.into_iter().map(|p| p.name).collect());
+            let _ = tx.send(WorkerMsg::PoolNames(host, result));
+        });
+    }
+
+    /// Reports a failed pool lookup without running one (the host index no longer resolves).
+    pub fn fail_pool_fetch(&self, host: usize, err: crate::error::AppError) {
+        let _ = self.tx.send(WorkerMsg::PoolNames(host, Err(err)));
     }
 
     /// Runs the account lookup on a worker thread and reports it as
@@ -2085,6 +2119,21 @@ impl App {
                             if let Some(p) = self.picker.as_mut().filter(|p| waiting(p)) {
                                 p.load = crate::ui::picker::PickerLoad::Failed(e.to_string());
                             }
+                        }
+                    }
+                }
+                WorkerMsg::PoolNames(host, result) => {
+                    let current = self.focused_form_value();
+                    let waiting = |p: &PickerState| p.load == crate::ui::picker::PickerLoad::Loading && p.pool_host == Some(host);
+                    if let Some(p) = self.picker.as_mut().filter(|p| waiting(p)) {
+                        match result {
+                            Ok(names) => {
+                                p.selected = names.iter().position(|n| *n == current.trim()).unwrap_or(0);
+                                p.note = names.is_empty().then(|| "no pools on this host".to_string());
+                                p.values = names;
+                                p.load = crate::ui::picker::PickerLoad::Ready;
+                            }
+                            Err(e) => p.load = crate::ui::picker::PickerLoad::Failed(e.to_string()),
                         }
                     }
                 }
@@ -2712,7 +2761,7 @@ Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
-  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
+  F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
@@ -7108,6 +7157,7 @@ mod tests {
             load: crate::ui::picker::PickerLoad::Loading,
             note: None,
             account: None,
+            pool_host: None,
         };
         app.open_account_picker(&mut picker, 1, "", now);
         assert_eq!(picker.load, crate::ui::picker::PickerLoad::Loading, "age == TTL is not fresh");
@@ -7534,12 +7584,54 @@ mod tests {
     }
 
     #[test]
-    fn f2_on_pool_and_catch_up_does_nothing() {
+    fn f2_on_catch_up_does_nothing() {
+        let mut app = pools_app_with_one_pool();
+        app.handle_key(KeyCode::Char('J'));
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn f2_on_the_pool_field_lists_the_pool_names_of_the_host_in_the_host_field() {
         let mut app = pools_app_with_one_pool();
         app.handle_key(KeyCode::Char('J'));
         app.handle_modal_key(KeyCode::Tab);
         app.handle_modal_key(KeyCode::F(2));
-        assert!(app.picker.is_none());
+        let picker = app.picker.as_ref().expect("a pool picker");
+        assert_eq!(picker.load, crate::ui::picker::PickerLoad::Loading);
+        assert_eq!(app.pending_pool_fetch, vec![1]);
+        app.tx.send(WorkerMsg::PoolNames(1, Ok(vec!["scratch".to_string(), "zroot".to_string()]))).unwrap();
+        app.drain_worker_messages();
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.load, crate::ui::picker::PickerLoad::Ready);
+        assert_eq!(picker.values, vec!["scratch", "zroot"]);
+        app.handle_picker_key(KeyCode::Down);
+        app.handle_picker_key(KeyCode::Enter);
+        assert_eq!(form_values(&app)[1], "zroot");
+    }
+
+    #[test]
+    fn a_failed_pool_lookup_says_so_and_an_unknown_host_is_refused_without_a_fetch() {
+        let mut app = pools_app_with_one_pool();
+        app.handle_key(KeyCode::Char('J'));
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        app.tx.send(WorkerMsg::PoolNames(1, Err(crate::error::AppError::Parse("ssh down".to_string())))).unwrap();
+        app.drain_worker_messages();
+        assert!(matches!(&app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Failed(m) if m.contains("ssh down")));
+
+        let mut app = pools_app_with_one_pool();
+        app.handle_key(KeyCode::Char('J'));
+        for c in "x".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(matches!(&app.picker.as_ref().unwrap().load, crate::ui::picker::PickerLoad::Failed(m) if m.contains("unknown host")));
+        assert!(app.pending_pool_fetch.is_empty());
     }
 
     fn selected_jobs_app(jobs_list: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
@@ -7863,6 +7955,7 @@ mod tests {
             load: crate::ui::picker::PickerLoad::Ready,
             note: None,
             account: None,
+            pool_host: None,
         });
         assert_eq!(app.auto_refresh_section(), None);
     }

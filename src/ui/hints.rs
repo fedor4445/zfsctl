@@ -671,6 +671,7 @@ mod tests {
             load,
             note: None,
             account: None,
+            pool_host: None,
         }
     }
 
@@ -875,6 +876,7 @@ mod tests {
             load: crate::ui::picker::PickerLoad::Ready,
             note: None,
             account: None,
+            pool_host: None,
         });
         let ks = keys(&app);
         assert!(ks.contains(&"Space"), "{ks:?}");

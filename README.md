@@ -226,7 +226,7 @@ FreeBSD's `sharesmb` ZFS property doesn't work (`zfs set sharesmb=on` prints "No
 The Jobs section lists the scheduled jobs of every host (it is global, not per host). Its title says whether the daemon is running; the status line shows `N jobs failed` from any section while an enabled job's latest run failed.
 
 - `Up` / `Down`: select a job; the bottom panel shows its last 8 runs, its schedule and its next three run times
-- `n`: new scrub job (host, pool, schedule, catch up; `F2` lists the configured hosts and schedule presets, and the form previews the next three run times as you type)
+- `n`: new scrub job (host, pool, schedule, catch up; `F2` lists the configured hosts, the pools of the chosen host (fetched live) and schedule presets, and the form previews the next three run times as you type)
 - `Enter`: edit the selected job (its id, creation time and enabled flag are kept)
 - `Space`: enable or disable the selected job
 - `d`: delete the selected job (y/n; its past runs stay in the history until pruned)

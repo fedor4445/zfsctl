@@ -117,6 +117,17 @@ fn apply_pending_account_fetches(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Same split as `apply_pending_account_fetches`, for the job form's Pool picker.
+fn apply_pending_pool_fetches(app: &mut App, inventory: &HostInventory) {
+    for host in std::mem::take(&mut app.pending_pool_fetch) {
+        if let Some(h) = inventory.hosts.get(host) {
+            app.fetch_pool_names(h.runner.clone(), host);
+        } else {
+            app.fail_pool_fetch(host, AppError::Parse(format!("unknown host index {host}")));
+        }
+    }
+}
+
 /// Leaves the TUI, runs a shell on the host, and puts the TUI back. The
 /// terminal is restored even when the shell could not be started, so a
 /// failure here can never strand the operator in a half-set-up terminal.
@@ -155,6 +166,7 @@ fn event_loop(
         app.refresh_jobs_if_stale(Instant::now());
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
+        apply_pending_pool_fetches(app, inventory);
         app.clear_stale_scan_status();
 
         if last_vdevs_auto_refresh.is_none_or(|t| t.elapsed() >= VDEVS_AUTO_REFRESH_INTERVAL) {
@@ -431,6 +443,7 @@ mod tests {
             load: PickerLoad::Loading,
             note: None,
             account: Some((9, AccountField::User)),
+            pool_host: None,
         });
         app.account_fetch_in_flight.insert(9, Instant::now());
         app.pending_account_fetch = vec![9];
