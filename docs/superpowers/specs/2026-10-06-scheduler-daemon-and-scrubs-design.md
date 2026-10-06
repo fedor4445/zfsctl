@@ -70,10 +70,12 @@ pool = "tank"
 schedule = "0 3 1 * *"
 catch_up = true
 enabled = true
+created_at = "2026-10-06T12:00:00Z"
 ```
 
 - `id` is unique and chosen by the TUI. `host` is a host name from `config.toml` (`local` for the hub). `kind` selects the behavior and which other keys apply (`pool` for scrub).
 - A job whose `kind` the daemon does not know, or whose host is not in the config, is **never run**; the Jobs list shows it as unsupported with the reason. This keeps a newer `jobs.toml` safe under an older daemon.
+- `created_at` is optional. A catch-up never reaches back before it, so a new job does not fire for a slot that passed before it existed. A job with neither `created_at` nor history uses the time the daemon first loaded it as its baseline.
 - `jobs.toml` can name only job kinds the daemon implements; it can never contain a command to execute. The only configured command anywhere is `notify_command`.
 
 ### 3. Schedule parsing
