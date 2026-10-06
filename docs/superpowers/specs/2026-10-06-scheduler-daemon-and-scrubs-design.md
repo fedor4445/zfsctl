@@ -142,7 +142,7 @@ created_at = "2026-10-06T12:00:00Z"
 **Keys.**
 
 - In **Pools** (middle pane): `J` opens the job form for the selected pool, with host and pool filled in, schedule `0 3 * * 0`, catch up `y`.
-- In **Jobs**: `n` new (host defaults to the selected host), `e` or `Enter` edit, `d` delete (confirm), `Space` enable or disable.
+- In **Jobs**: `n` new (host defaults to the selected host), `Enter` edit, `d` delete (confirm), `Space` enable or disable. Edit has one key, not an `e` alias too: the hint-drift guard requires every working key to be advertised, and one advertised key per action.
 - The hint bar and Help text list these, and the existing hint-drift tests guard them.
 
 **Display.**
@@ -150,7 +150,7 @@ created_at = "2026-10-06T12:00:00Z"
 - Columns: job (`id`), host, pool, schedule (the preset's name or the cron text), next run, last result with its age (`ok 2h ago`, `failed 1d ago`, `skipped`, `running`, or `never`).
 - A disabled job is dimmed. A job that cannot run (unknown kind, host not in `config.toml`, bad schedule) is red with the reason in place of the next run.
 - The section title shows the daemon's state from the heartbeat: `daemon running (pid N)`, or, in the error style, `daemon NOT running: jobs will not fire`. Changes are saved either way.
-- The status line shows `N jobs failed` while the most recent run of any enabled job failed, from any section.
+- The status line shows `N jobs failed — see Jobs` (`1 job failed` for one) while the most recent run of any enabled job failed, from any section.
 - The bottom half of the center column holds a Jobs panel, drawn directly from the loaded data (it does not use the metrics panel's sampler): on the left the selected job's last 8 runs (time, result, duration, message); on the right its schedule in words and as cron, its next three run times, and its flags (`enabled`, `catch up`, and any reason it cannot run).
 - Times are the hub's local time. A schedule with no future time (`0 0 31 2 *`) shows `never`.
 

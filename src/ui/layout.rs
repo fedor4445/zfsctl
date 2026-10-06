@@ -39,7 +39,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .areas(body_area);
     // Every list section and a drilled pool give the bottom half of the center
     // column to a metrics panel; the sidebar keeps its full height.
-    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares);
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares | Section::Jobs);
     let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
@@ -52,7 +52,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_sidebar(f, app, sidebar_area);
     draw_main(f, app, main_area);
-    if let Some(area) = metrics_area {
+    if let (Some(area), true) = (metrics_area, app.drilled_pool.is_none() && app.current_section() == Section::Jobs) {
+        draw_jobs_panel(f, app, area);
+    } else if let Some(area) = metrics_area {
         let health = app.metrics.target().and_then(|t| app.pools.iter().find(|p| Some(p.name.as_str()) == t.pool())).map(|p| p.health.clone());
         let disk = match app.metrics.target() {
             Some(MetricsTarget::Disk { name, .. }) => app.disks.iter().find(|d| &d.name == name),
@@ -95,6 +97,13 @@ fn status_bar_content(app: &App) -> (String, Style, Option<(f64, String)>) {
     if let Some(msg) = &app.status_message {
         lines.push(msg.clone());
         if app.status_is_error() {
+            style = app.theme.err;
+        }
+    }
+    let failed = app.jobs_view.failed_count();
+    if failed > 0 {
+        lines.push(format!("{failed} job{} failed — see Jobs", if failed == 1 { "" } else { "s" }));
+        if style == Style::default() {
             style = app.theme.err;
         }
     }
@@ -152,6 +161,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Snapshots => "Snapshots",
                 Section::Disks => "Disks",
                 Section::Shares => "Shares",
+                Section::Jobs => "Jobs",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
@@ -196,6 +206,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Snapshots => draw_snapshots(f, app, area),
         Section::Disks => draw_disks(f, app, area),
         Section::Shares => draw_shares(f, app, area),
+        Section::Jobs => draw_jobs(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl => {
             unreachable!("never in App::sections")
@@ -579,6 +590,87 @@ pub(crate) fn smb_access_label(guest_ok: bool, valid_user: Option<&str>) -> Stri
     }
 }
 
+/// The bottom panel of the Jobs section: the selected job's recent runs on the left, its
+/// schedule, next run times and flags on the right. Drawn straight from the loaded data.
+fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
+    use crate::ui::jobs::{preview_lines, run_summary, schedule_label};
+    let theme = &app.theme;
+    let selected = app.jobs_table.selected().and_then(|i| app.jobs_view.jobs.get(i));
+    let title = selected.map_or_else(|| "Job".to_string(), |j| format!("Job — {}", j.id));
+    let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(false)).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let Some(job) = selected else {
+        f.render_widget(Paragraph::new("nothing selected").style(theme.dim()), inner);
+        return;
+    };
+    let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(55), Constraint::Min(0)]).areas(inner);
+
+    let mut runs = vec![Line::styled("Last runs", theme.dim())];
+    let history = app.jobs_view.runs_of(&job.id, 8);
+    if history.is_empty() {
+        runs.push(Line::from("No runs yet"));
+    }
+    for run in history {
+        let style = if run.result == Some(crate::daemon::history::RunResult::Failed) { theme.err } else { Style::default() };
+        runs.push(Line::styled(run_summary(run, &chrono::Local), style));
+    }
+    f.render_widget(Paragraph::new(runs), left);
+
+    let label = schedule_label(&job.schedule);
+    let cron = job.schedule.trim();
+    let mut info = vec![Line::from(if label == cron { cron.to_string() } else { format!("{label}  ({cron})") })];
+    match app.jobs_view.unsupported.get(&job.id) {
+        Some(reason) => info.push(Line::styled(reason.clone(), theme.err)),
+        None => info.extend(preview_lines(&job.schedule, &chrono::Local::now()).into_iter().skip(1).map(Line::from)),
+    }
+    info.push(Line::from(format!("{}  catch up {}", if job.enabled { "enabled" } else { "disabled" }, if job.catch_up { "yes" } else { "no" })));
+    f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
+}
+
+fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
+    use crate::ui::jobs::{last_result_text, next_run_text, schedule_label, DaemonState};
+    let theme = app.theme.clone();
+    let now = chrono::Utc::now();
+    let local_now = chrono::Local::now();
+    let daemon = match app.jobs_view.daemon(now) {
+        DaemonState::Running { pid } => Span::raw(format!("daemon running (pid {pid})")),
+        DaemonState::NotRunning => Span::styled("daemon NOT running: jobs will not fire".to_string(), theme.err),
+    };
+    let mut title = vec![Span::raw("Jobs — "), daemon];
+    if app.jobs_view.error.is_some() {
+        title.push(Span::styled(" — jobs.toml unreadable: showing the last good list".to_string(), theme.err));
+    }
+    let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(Line::from(title));
+    if app.jobs_view.loaded && app.jobs_view.jobs.is_empty() {
+        let text = "No scheduled jobs. Press 'n' to add one, or 'J' on a pool in the Pools section.";
+        f.render_widget(Paragraph::new(text).style(theme.dim()).wrap(Wrap { trim: false }).block(block), area);
+        return;
+    }
+    let rows: Vec<Row> = app
+        .jobs_view
+        .jobs
+        .iter()
+        .map(|j| {
+            let last = app.jobs_view.last_run(&j.id);
+            let (next, last_text, style) = if let Some(reason) = app.jobs_view.unsupported.get(&j.id) {
+                ("-".to_string(), reason.clone(), theme.err)
+            } else if !j.enabled {
+                ("disabled".to_string(), last_result_text(last, now), theme.dim())
+            } else {
+                (next_run_text(&j.schedule, &local_now), last_result_text(last, now), Style::default())
+            };
+            Row::new(vec![j.id.clone(), j.host.clone(), j.pool.clone().unwrap_or_default(), schedule_label(&j.schedule), next, last_text]).style(style)
+        })
+        .collect();
+    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(10), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
+    let table = Table::new(rows, widths)
+        .header(Row::new(vec!["Job", "Host", "Pool", "Schedule", "Next run", "Last"]))
+        .block(block)
+        .row_highlight_style(theme.selected_row());
+    f.render_stateful_widget(table, area, &mut app.jobs_table);
+}
+
 fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let rows = app.shares.iter().map(|s| match s {
@@ -623,6 +715,15 @@ fn confirm_block(theme: &Theme, tone: Tone, label: &str, neutral_title: &str, ri
     Block::default().borders(Borders::ALL).border_style(border).title(Span::styled(title, border))
 }
 
+/// Extra lines drawn under a form's fields, computed from what is typed so far: for a job
+/// form, what the schedule means and its next three run times.
+fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField]) -> Vec<String> {
+    match kind {
+        crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        _ => Vec::new(),
+    }
+}
+
 fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
@@ -637,11 +738,14 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
         Modal::ConfirmTyped { prompt, input, .. } => {
             wrapped_line_count(&format!("{prompt}\n\n> {input}"), inner_width)
         }
-        Modal::Form { fields, description, .. } => {
-            let fields_lines: u16 = fields
-                .iter()
-                .map(|field| wrapped_line_count(&format!("  {}: {}", field.label, field.value), inner_width))
-                .sum();
+        Modal::Form { fields, description, kind, .. } => {
+            let preview = form_preview(kind, fields);
+            let preview_lines: u16 = if preview.is_empty() { 0 } else { 1 + preview.iter().map(|l| wrapped_line_count(l, inner_width)).sum::<u16>() };
+            let fields_lines: u16 = preview_lines
+                + fields
+                    .iter()
+                    .map(|field| wrapped_line_count(&format!("  {}: {}", field.label, field.value), inner_width))
+                    .sum::<u16>();
             match description {
                 // +1 blank separator line between the description and the fields.
                 // Word wrapping can need more rows than the byte-based
@@ -692,6 +796,11 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
                 let marker = if i == *focused { ">" } else { " " };
                 let shown = if kind.masks_field(i) { "*".repeat(field.value.chars().count()) } else { field.value.clone() };
                 lines.push(format!("{marker} {}: {shown}", field.label));
+            }
+            let preview = form_preview(kind, fields);
+            if !preview.is_empty() {
+                lines.push(String::new());
+                lines.extend(preview);
             }
             let p = Paragraph::new(lines.join("\n"))
                 .wrap(Wrap { trim: false })
@@ -1186,6 +1295,165 @@ mod tests {
         for want in ["SMB share \\\\bee", "user=carol  rw", "unavailable"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    fn jobs_app(jobs_list: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        crate::jobs::save(&dir.path().join("jobs.toml"), jobs_list).unwrap();
+        let mut app = App::new(vec!["local".to_string()]);
+        app.state_dir = dir.path().to_path_buf();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Jobs).unwrap();
+        app.refresh_jobs();
+        (app, dir)
+    }
+
+    fn a_job(id: &str, schedule: &str) -> crate::jobs::Job {
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: None }
+    }
+
+    #[test]
+    fn the_jobs_table_shows_each_job_with_its_schedule_next_run_and_last_result() {
+        let (mut app, dir) = jobs_app(&[a_job("scrub-local-tank", "0 3 * * 0"), a_job("custom", "*/10 * * * *")]);
+        let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
+        let when = chrono::Utc::now() - chrono::Duration::hours(2);
+        h.append(&crate::daemon::history::Event { job_id: "scrub-local-tank".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Finished, at: when, scheduled_for: Some(when), result: Some(crate::daemon::history::RunResult::Ok), message: String::new(), catch_up: false, summary: None }).unwrap();
+        app.refresh_jobs();
+        let text = render(&mut app, 120, 30).join("\n");
+        for want in ["Job", "Host", "Pool", "Schedule", "Next run", "Last", "scrub-local-tank", "Weekly, Sunday 03:00", "*/10 * * * *", "ok 2h ago", "never"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_next_run_column_is_wide_enough_for_the_whole_time() {
+        let (mut app, _dir) = jobs_app(&[a_job("a", "* * * * *")]);
+        let before = crate::ui::jobs::next_run_text("* * * * *", &chrono::Local::now());
+        let text = render(&mut app, 120, 30).join("\n");
+        let after = crate::ui::jobs::next_run_text("* * * * *", &chrono::Local::now());
+        assert!(text.contains(&before) || text.contains(&after), "the next-run time is cut off (wanted {before:?} or {after:?}):\n{text}");
+    }
+
+    #[test]
+    fn a_disabled_job_says_so_and_an_unsupported_one_shows_why() {
+        let mut off = a_job("off", "0 3 * * 0");
+        off.enabled = false;
+        let mut bad = a_job("bad", "0 3 * * 0");
+        bad.host = "gone".into();
+        let (mut app, _dir) = jobs_app(&[off, bad]);
+        let text = render(&mut app, 140, 30).join("\n");
+        assert!(text.contains("disabled"), "{text}");
+        assert!(text.contains("'gone' is not in config.toml"), "{text}");
+    }
+
+    #[test]
+    fn the_jobs_title_says_whether_the_daemon_is_running() {
+        let (mut app, dir) = jobs_app(&[a_job("a", "0 3 * * 0")]);
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("daemon NOT running"), "{text}");
+        crate::daemon::heartbeat::write(&dir.path().join("daemon.json"), &crate::daemon::heartbeat::Heartbeat { pid: 4242, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() }).unwrap();
+        app.refresh_jobs();
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("daemon running (pid 4242)"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_jobs_list_explains_how_to_add_one_and_an_unreadable_file_is_flagged() {
+        let (mut app, dir) = jobs_app(&[]);
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("No scheduled jobs") && text.contains("'n'"), "{text}");
+        std::fs::write(dir.path().join("jobs.toml"), "not [[[ toml").unwrap();
+        app.refresh_jobs();
+        let text = render(&mut app, 140, 30).join("\n");
+        assert!(text.contains("jobs.toml unreadable"), "{text}");
+    }
+
+    fn job_form_app() -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        app.pools = vec![pool("tank", 10, 100, PoolHealth::Online)];
+        app.pools_table.select(Some(0));
+        app.handle_key(crossterm::event::KeyCode::Char('J'));
+        app
+    }
+
+    #[test]
+    fn the_job_form_previews_what_the_schedule_means_and_when_it_next_runs() {
+        let mut app = job_form_app();
+        let text = render(&mut app, 100, 30).join("\n");
+        for want in ["New scrub job", "Host: local", "Pool: tank", "Schedule: 0 3 * * 0", "Weekly, Sunday 03:00", "Next: Sun "] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        assert_eq!(text.matches("03:00").count(), 4, "the label and the three listed run times:\n{text}");
+    }
+
+    #[test]
+    fn the_job_forms_preview_follows_what_is_typed_and_shows_a_parse_error() {
+        let mut app = job_form_app();
+        let Some(crate::ui::modal::Modal::Form { fields, .. }) = &mut app.modal else { panic!() };
+        fields[2].value = "61 * * * *".to_string();
+        let text = render(&mut app, 100, 30).join("\n");
+        assert!(text.contains("Schedule error:") && text.contains("outside 0-59"), "{text}");
+        assert!(!text.contains("Next:"));
+    }
+
+    fn history_event(job_id: &str, run_id: &str, kind: crate::daemon::history::EventKind, ago_mins: i64, result: Option<crate::daemon::history::RunResult>, message: &str) -> crate::daemon::history::Event {
+        let at = chrono::Utc::now() - chrono::Duration::minutes(ago_mins);
+        crate::daemon::history::Event { job_id: job_id.into(), run_id: run_id.into(), event: kind, at, scheduled_for: Some(at), result, message: message.into(), catch_up: false, summary: None }
+    }
+
+    #[test]
+    fn the_jobs_panel_shows_the_selected_jobs_runs_schedule_next_times_and_flags() {
+        use crate::daemon::history::{EventKind, History, RunResult};
+        let (mut app, dir) = jobs_app(&[a_job("scrub-local-tank", "0 3 * * 0")]);
+        let h = History::new(dir.path().join("history.jsonl"));
+        h.append(&history_event("scrub-local-tank", "r1", EventKind::Started, 300, None, "")).unwrap();
+        h.append(&history_event("scrub-local-tank", "r1", EventKind::Finished, 290, Some(RunResult::Failed), "scrub repaired 12K with 3 errors")).unwrap();
+        h.append(&history_event("scrub-local-tank", "r2", EventKind::Skipped, 10, Some(RunResult::Skipped), "skipped: already scanning")).unwrap();
+        app.refresh_jobs();
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 130, 34).join("\n");
+        for want in ["Job — scrub-local-tank", "Last runs", "failed", "10m 00s", "scrub repaired 12K", "skipped", "skipped: already scanning", "Weekly, Sunday 03:00", "0 3 * * 0", "Next:", "enabled", "catch up"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_jobs_panel_says_when_nothing_is_selected_and_shows_an_unsupported_reason_in_full() {
+        let mut bad = a_job("bad", "0 3 * * 0");
+        bad.host = "somewhere-else".into();
+        let (mut app, _dir) = jobs_app(&[bad]);
+        let text = render(&mut app, 120, 34).join("\n");
+        assert!(text.contains("nothing selected"), "{text}");
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 150, 34).join("\n");
+        assert!(text.contains("host 'somewhere-else' is not in config.toml"), "{text}");
+        assert!(text.contains("No runs yet") || text.contains("never"), "{text}");
+    }
+
+    #[test]
+    fn the_jobs_panel_is_dropped_on_a_short_terminal_so_the_table_keeps_its_height() {
+        let (mut app, _dir) = jobs_app(&[a_job("a", "0 3 * * 0")]);
+        let text = render(&mut app, 120, 12).join("\n");
+        assert!(!text.contains("Last runs"), "{text}");
+    }
+
+    #[test]
+    fn failed_jobs_are_flagged_in_the_status_line_from_any_section() {
+        use crate::daemon::history::{EventKind, History, RunResult};
+        let (mut app, dir) = jobs_app(&[a_job("a", "0 3 * * 0"), a_job("b", "0 3 * * 0")]);
+        let h = History::new(dir.path().join("history.jsonl"));
+        h.append(&history_event("a", "r1", EventKind::Finished, 60, Some(RunResult::Failed), "boom")).unwrap();
+        app.refresh_jobs();
+        app.selected_section = 0;
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("1 job failed"), "{text}");
+        h.append(&history_event("b", "r2", EventKind::Finished, 30, Some(RunResult::Failed), "boom")).unwrap();
+        app.refresh_jobs();
+        assert!(render(&mut app, 120, 30).join("\n").contains("2 jobs failed"));
+        h.append(&history_event("a", "r3", EventKind::Finished, 5, Some(RunResult::Ok), "")).unwrap();
+        h.append(&history_event("b", "r4", EventKind::Finished, 5, Some(RunResult::Ok), "")).unwrap();
+        app.refresh_jobs();
+        assert!(!render(&mut app, 120, 30).join("\n").contains("failed —"), "recovered jobs clear the indicator");
     }
 
     #[test]

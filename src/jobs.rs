@@ -94,6 +94,44 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
     Schedule::parse(&job.schedule).map_err(|e| format!("bad schedule: {e}"))
 }
 
+/// Re-reads `jobs.toml`, applies `change`, and saves. Reading first means a hand edit made
+/// since the caller last looked is kept, and a file that cannot be read stops the change
+/// before anything is written, so a half-typed file is never overwritten.
+fn edit(path: &Path, change: impl FnOnce(&mut Vec<Job>) -> Result<()>) -> Result<()> {
+    let mut list = load(path)?;
+    change(&mut list)?;
+    save(path, &list)
+}
+
+fn no_such_job(id: &str) -> AppError {
+    AppError::Config(format!("no job '{id}'"))
+}
+
+/// Adds `job`, or replaces the job with the same id in place.
+pub fn upsert(path: &Path, job: Job) -> Result<()> {
+    edit(path, |list| {
+        match list.iter_mut().find(|j| j.id == job.id) {
+            Some(slot) => *slot = job,
+            None => list.push(job),
+        }
+        Ok(())
+    })
+}
+
+pub fn remove(path: &Path, id: &str) -> Result<()> {
+    edit(path, |list| {
+        let before = list.len();
+        list.retain(|j| j.id != id);
+        if list.len() == before { Err(no_such_job(id)) } else { Ok(()) }
+    })
+}
+
+pub fn set_enabled(path: &Path, id: &str, enabled: bool) -> Result<()> {
+    edit(path, |list| {
+        list.iter_mut().find(|j| j.id == id).map(|j| j.enabled = enabled).ok_or_else(|| no_such_job(id))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +198,67 @@ mod tests {
         std::fs::write(&path, "[[jobs]]\nid = \"x\"\nhost = \"local\"\nkind = \"replicate\"\nschedule = \"0 3 * * *\"\n").unwrap();
         let jobs = load(&path).unwrap();
         assert_eq!(resolve(&jobs[0], &hosts()).unwrap_err(), "unsupported job kind 'replicate'");
+    }
+
+    fn file_with(jobs_list: &[Job]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        save(&path, jobs_list).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn upsert_adds_a_new_job_and_replaces_one_with_the_same_id_in_place() {
+        let (_dir, path) = file_with(&[scrub("a"), scrub("b")]);
+        upsert(&path, scrub("c")).unwrap();
+        let mut edited = scrub("a");
+        edited.schedule = "0 4 * * *".into();
+        upsert(&path, edited.clone()).unwrap();
+        let ids: Vec<String> = load(&path).unwrap().into_iter().map(|j| j.id).collect();
+        assert_eq!(ids, vec!["a", "b", "c"], "an edit keeps the job's place");
+        assert_eq!(load(&path).unwrap()[0], edited);
+    }
+
+    #[test]
+    fn upsert_creates_the_file_when_there_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("jobs.toml");
+        upsert(&path, scrub("a")).unwrap();
+        assert_eq!(load(&path).unwrap(), vec![scrub("a")]);
+    }
+
+    #[test]
+    fn remove_and_set_enabled_touch_only_their_job() {
+        let (_dir, path) = file_with(&[scrub("a"), scrub("b"), scrub("c")]);
+        set_enabled(&path, "b", false).unwrap();
+        let after = load(&path).unwrap();
+        assert_eq!(after.iter().map(|j| j.enabled).collect::<Vec<_>>(), vec![true, false, true]);
+        remove(&path, "a").unwrap();
+        assert_eq!(load(&path).unwrap().iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), vec!["b", "c"]);
+        assert!(remove(&path, "nope").unwrap_err().to_string().contains("no job 'nope'"));
+        assert!(set_enabled(&path, "nope", true).unwrap_err().to_string().contains("no job 'nope'"));
+    }
+
+    #[test]
+    fn a_change_never_clobbers_a_hand_edit_made_since_the_tui_last_looked() {
+        let (_dir, path) = file_with(&[scrub("a")]);
+        let mut by_hand = load(&path).unwrap();
+        by_hand.push(scrub("typed-by-hand"));
+        save(&path, &by_hand).unwrap();
+        set_enabled(&path, "a", false).unwrap();
+        assert_eq!(load(&path).unwrap().len(), 2, "the hand-added job survived: every change re-reads the file first");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_refused_and_left_exactly_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        std::fs::write(&path, "[[jobs]]\nid = \"half-typed\n").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(upsert(&path, scrub("a")).is_err());
+        assert!(remove(&path, "a").is_err());
+        assert!(set_enabled(&path, "a", false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the operator's half-finished edit is not overwritten");
     }
 
     #[test]

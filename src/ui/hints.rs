@@ -140,6 +140,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("→", "Properties", 2));
             if selected {
                 v.push(h("s", "Scrub", 2));
+                v.push(h("J", "Schedule", 3));
                 v.push(h("R", "Resilver", 3));
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
             }
@@ -245,6 +246,18 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("Enter", "Edit", 1));
                 v.push(h("d", "Remove", 2).tone(Tone::Warn));
             }
+            v.push(h("r", "Refresh", 4));
+        }
+        (Section::Jobs, _) => {
+            if !app.jobs_view.jobs.is_empty() {
+                v.push(h("↑↓", "Move", 1));
+            }
+            if let Some(job) = app.jobs_table.selected().and_then(|i| app.jobs_view.jobs.get(i)) {
+                v.push(h("Enter", "Edit", 1));
+                v.push(h("Space", if job.enabled { "Disable" } else { "Enable" }, 2));
+                v.push(h("d", "Delete", 2).tone(Tone::Warn));
+            }
+            v.push(h("n", "New job", 2));
             v.push(h("r", "Refresh", 4));
         }
         // Never in `App::sections`; listed so a future section forces a decision here.
@@ -464,6 +477,30 @@ mod tests {
         a
     }
 
+    fn jobs(with_selection: bool) -> App {
+        let mut a = base();
+        go(&mut a, Section::Jobs);
+        let job = |id: &str, enabled: bool| crate::jobs::Job { id: id.to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled, created_at: None };
+        a.jobs_view.jobs = vec![job("a", true), job("b", false)];
+        a.jobs_table.select(if with_selection { Some(0) } else { None });
+        a
+    }
+
+    #[test]
+    fn the_jobs_section_advertises_edit_enable_or_disable_delete_and_new_for_the_selected_job() {
+        let selected = jobs(true);
+        let labels: Vec<(&str, &str)> = hints(&selected).iter().map(|h| (h.key, h.label)).collect();
+        for want in [("Enter", "Edit"), ("Space", "Disable"), ("d", "Delete"), ("n", "New job")] {
+            assert!(labels.contains(&want), "{labels:?}");
+        }
+        let mut second = jobs(true);
+        second.jobs_table.select(Some(1));
+        assert!(hints(&second).iter().any(|h| (h.key, h.label) == ("Space", "Enable")), "a disabled job offers Enable");
+        let none = jobs(false);
+        let keys: Vec<&str> = hints(&none).iter().map(|h| h.key).collect();
+        assert!(keys.contains(&"n") && !keys.contains(&"Space") && !keys.contains(&"d") && !keys.contains(&"Enter"), "{keys:?}");
+    }
+
     fn hosts() -> App {
         let mut a = base();
         go(&mut a, Section::Hosts);
@@ -490,6 +527,8 @@ mod tests {
             ("disks, none selected", disks(false)),
             ("disks, one selected", disks(true)),
             ("shares", shares()),
+            ("jobs, one selected", jobs(true)),
+            ("jobs, none selected", jobs(false)),
         ]
     }
 
@@ -536,6 +575,7 @@ mod tests {
                 a.snapshots_table.selected(),
                 a.disks_table.selected(),
                 a.shares_table.selected(),
+                a.jobs_table.selected(),
                 a.vdevs_table.selected(),
                 a.pool_properties_table.selected(),
                 a.dataset_properties_table.selected(),
@@ -903,6 +943,7 @@ mod tests {
         a.snapshots.clear();
         a.disks.clear();
         a.shares.clear();
+        a.jobs_view.jobs.clear();
     }
 
     #[test]
@@ -957,6 +998,10 @@ mod tests {
             DiskInfo { name: "da1".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },
         ];
         a.shares = vec![smb("tank/b"), smb("tank/c")];
+        a.jobs_view.jobs = vec![
+            crate::jobs::Job { id: "a".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: true, created_at: None },
+            crate::jobs::Job { id: "b".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: false, created_at: None },
+        ];
         a.vdevs = vec![
             VdevLine { depth: 0, name: "tank".to_string(), health: PoolHealth::Online },
             VdevLine { depth: 1, name: "da0".to_string(), health: PoolHealth::Online },
@@ -978,6 +1023,7 @@ mod tests {
             &mut a.snapshots_table,
             &mut a.disks_table,
             &mut a.shares_table,
+            &mut a.jobs_table,
             &mut a.vdevs_table,
             &mut a.pool_properties_table,
             &mut a.dataset_properties_table,
