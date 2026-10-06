@@ -8,6 +8,7 @@ pub mod notify;
 pub mod scheduler;
 pub mod cancel;
 pub mod progress;
+pub mod replicate;
 pub mod scrub;
 pub mod snapshot;
 pub mod transfer;
