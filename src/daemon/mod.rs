@@ -6,8 +6,11 @@ pub mod heartbeat;
 pub mod history;
 pub mod notify;
 pub mod scheduler;
+pub mod cancel;
+pub mod progress;
 pub mod scrub;
 pub mod snapshot;
+pub mod transfer;
 
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
