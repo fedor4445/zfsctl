@@ -1,4 +1,5 @@
 pub mod hints;
+pub mod jobs;
 pub mod layout;
 pub mod metrics;
 pub mod modal;
