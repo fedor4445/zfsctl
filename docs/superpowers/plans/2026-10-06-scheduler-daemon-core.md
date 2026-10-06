@@ -3021,7 +3021,7 @@ Create `contrib/rc.d/zfsctl` (mode 755):
 # Add to /etc/rc.conf:
 #   zfsctl_enable="YES"
 # Optional:
-#   zfsctl_program="/usr/local/bin/zfsctl"   # where the binary is
+#   zfsctl_binary="/usr/local/bin/zfsctl"   # where the binary is
 #   zfsctl_state_dir="/var/db/zfsctl"         # where jobs, history and heartbeat live
 #   zfsctl_log="/var/log/zfsctl.log"          # the daemon's log
 #
@@ -3036,13 +3036,13 @@ rcvar="zfsctl_enable"
 load_rc_config $name
 
 : ${zfsctl_enable:="NO"}
-: ${zfsctl_program:="/usr/local/bin/zfsctl"}
+: ${zfsctl_binary:="/usr/local/bin/zfsctl"}
 : ${zfsctl_state_dir:="/var/db/zfsctl"}
 : ${zfsctl_log:="/var/log/zfsctl.log"}
 
 pidfile="/var/run/${name}.pid"
 command="/usr/sbin/daemon"
-command_args="-r -R 10 -f -P ${pidfile} -o ${zfsctl_log} ${zfsctl_program} daemon --state-dir ${zfsctl_state_dir}"
+command_args="-r -R 10 -f -P ${pidfile} -o ${zfsctl_log} ${zfsctl_binary} daemon --state-dir ${zfsctl_state_dir}"
 
 run_rc_command "$1"
 ```
@@ -3073,7 +3073,7 @@ sysrc zfsctl_enable=YES
 service zfsctl start
 ```
 
-`daemon(8)` detaches it, writes `/var/run/zfsctl.pid`, sends output to `/var/log/zfsctl.log`, and restarts it ten seconds after a crash. `zfsctl_program`, `zfsctl_state_dir` and `zfsctl_log` in `rc.conf` override the binary path, the state directory and the log.
+`daemon(8)` detaches it, writes `/var/run/zfsctl.pid`, sends output to `/var/log/zfsctl.log`, and restarts it ten seconds after a crash. `zfsctl_binary`, `zfsctl_state_dir` and `zfsctl_log` in `rc.conf` override the binary path, the state directory and the log.
 
 **State** lives in `/var/db/zfsctl/` (root only): `jobs.toml` (the jobs), `history.jsonl` (one JSON line per run event) and `daemon.json` (a heartbeat rewritten every second; older than 10 seconds means the daemon is not running). The daemon notices an edited `jobs.toml` within a second and keeps the previous schedule if the new file does not parse.
 

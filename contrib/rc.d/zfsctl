@@ -7,7 +7,7 @@
 # Add to /etc/rc.conf:
 #   zfsctl_enable="YES"
 # Optional:
-#   zfsctl_program="/usr/local/bin/zfsctl"   # where the binary is
+#   zfsctl_binary="/usr/local/bin/zfsctl"   # where the binary is
 #   zfsctl_state_dir="/var/db/zfsctl"         # where jobs, history and heartbeat live
 #   zfsctl_log="/var/log/zfsctl.log"          # the daemon's log
 #
@@ -22,12 +22,12 @@ rcvar="zfsctl_enable"
 load_rc_config $name
 
 : ${zfsctl_enable:="NO"}
-: ${zfsctl_program:="/usr/local/bin/zfsctl"}
+: ${zfsctl_binary:="/usr/local/bin/zfsctl"}
 : ${zfsctl_state_dir:="/var/db/zfsctl"}
 : ${zfsctl_log:="/var/log/zfsctl.log"}
 
 pidfile="/var/run/${name}.pid"
 command="/usr/sbin/daemon"
-command_args="-r -R 10 -f -P ${pidfile} -o ${zfsctl_log} ${zfsctl_program} daemon --state-dir ${zfsctl_state_dir}"
+command_args="-r -R 10 -f -P ${pidfile} -o ${zfsctl_log} ${zfsctl_binary} daemon --state-dir ${zfsctl_state_dir}"
 
 run_rc_command "$1"
