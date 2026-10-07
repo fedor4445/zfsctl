@@ -28,6 +28,7 @@ pub enum Section {
     Snapshots,
     Disks,
     Shares,
+    BootEnvs,
     Jobs,
     Vdevs,
     PoolProperties,
@@ -114,6 +115,7 @@ pub enum WorkerMsg {
     Snapshots(usize, Result<Vec<Snapshot>>),
     Disks(usize, Result<Vec<DiskInfo>>),
     Shares(usize, Result<SharesSnapshot>),
+    BootEnvs(usize, Result<Vec<crate::zfs::bootenv::BootEnv>>),
     /// The `String` is the name of the pool this vdev refresh was for —
     /// needed so a slow result can be told apart from one for a
     /// different pool the user has since drilled into (see the
@@ -188,6 +190,11 @@ pub struct App {
     /// visiting Shares opens a blank form whose submission silently
     /// widens the share to `"on"` (shared to everyone).
     pub shares_loaded: bool,
+    pub bootenvs: Vec<crate::zfs::bootenv::BootEnv>,
+    pub bootenvs_table: TableState,
+    /// Why the Boot Envs section cannot list on this host (e.g. no `bectl`, not a boot-environment
+    /// layout, an unreachable host), shown in its title. `None` once a list succeeds.
+    pub bootenvs_unavailable: Option<String>,
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
     /// The drilled-into pool's most recent scrub/resilver, refreshed
@@ -282,7 +289,7 @@ impl App {
     pub fn new(hosts: Vec<String>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::Jobs],
+            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs],
             selected_section: 0,
             hosts,
             selected_host: 0,
@@ -304,6 +311,9 @@ impl App {
             nfs_available: None,
             samba_available: None,
             shares_loaded: false,
+            bootenvs: Vec::new(),
+            bootenvs_table: TableState::default(),
+            bootenvs_unavailable: None,
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             pool_scan_status: None,
@@ -411,7 +421,7 @@ impl App {
             return None;
         }
         match self.current_section() {
-            section @ (Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares) => Some(section),
+            section @ (Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares | Section::BootEnvs) => Some(section),
             _ => None,
         }
     }
@@ -432,6 +442,7 @@ impl App {
             Section::Snapshots => self.refresh_snapshots(runner),
             Section::Disks => self.refresh_disks(runner),
             Section::Shares => self.refresh_shares(runner),
+            Section::BootEnvs => self.refresh_bootenvs(runner),
             _ => return,
         }
         if !already_running {
@@ -500,6 +511,7 @@ impl App {
             Section::Snapshots => self.refresh_snapshots(runner),
             Section::Disks => self.refresh_disks(runner),
             Section::Shares => self.refresh_shares(runner),
+            Section::BootEnvs => self.refresh_bootenvs(runner),
             Section::Jobs => self.refresh_jobs(),
             _ => {}
         }
@@ -580,6 +592,9 @@ impl App {
         self.nfs_available = None;
         self.samba_available = None;
         self.shares_loaded = false;
+        self.bootenvs.clear();
+        self.bootenvs_table.select(None);
+        self.bootenvs_unavailable = None;
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
@@ -1167,6 +1182,12 @@ impl App {
             }
             KeyCode::Up if self.current_section() == Section::Shares => {
                 move_table_selection(&mut self.shares_table, self.shares.len(), false);
+            }
+            KeyCode::Down if self.current_section() == Section::BootEnvs => {
+                move_table_selection(&mut self.bootenvs_table, self.bootenvs.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::BootEnvs => {
+                move_table_selection(&mut self.bootenvs_table, self.bootenvs.len(), false);
             }
             KeyCode::Char('J') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 match self.selected_pool_name() {
@@ -1779,6 +1800,25 @@ impl App {
         });
     }
 
+    /// See `refresh_pools` for why this queues rather than drops a request while in flight.
+    pub fn refresh_bootenvs(&mut self, runner: Arc<dyn CommandRunner>) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::BootEnvs, host) {
+            self.pending_refresh.insert((Section::BootEnvs, host));
+            return;
+        }
+        self.begin_refresh(Section::BootEnvs, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::bootenv::list(runner.as_ref());
+            let _ = tx.send(WorkerMsg::BootEnvs(host, result));
+        });
+    }
+
+    pub fn selected_bootenv(&self) -> Option<&crate::zfs::bootenv::BootEnv> {
+        self.bootenvs_table.selected().and_then(|i| self.bootenvs.get(i))
+    }
+
     /// See `refresh_pools` for why this queues rather than drops a
     /// request while already in flight. `pool` is the name of the
     /// currently drilled-into pool.
@@ -2049,6 +2089,32 @@ impl App {
                             }
                         }
                         Err(e) => self.set_error(e.to_string()),
+                    }
+                }
+                WorkerMsg::BootEnvs(host, result) => {
+                    let quiet = self.end_refresh(Section::BootEnvs, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::BootEnvs, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::BootEnvs);
+                    }
+                    match result {
+                        Ok(envs) => {
+                            let previous = self.selected_bootenv().map(|b| b.name.clone());
+                            self.bootenvs = envs;
+                            pin_selection(&mut self.bootenvs_table, previous, &self.bootenvs, |b| b.name.clone());
+                            self.bootenvs_unavailable = None;
+                            self.clear_status_after_refresh(quiet);
+                        }
+                        Err(e) => {
+                            // Not `set_error`: a host without bectl would otherwise raise a fresh
+                            // error every auto-refresh. The title carries the reason instead.
+                            self.bootenvs.clear();
+                            self.bootenvs_table.select(None);
+                            self.bootenvs_unavailable = Some(e.to_string());
+                        }
                     }
                 }
                 WorkerMsg::Vdevs(host, pool, result) => {
@@ -7604,7 +7670,7 @@ mod tests {
     fn jobs_is_the_last_section_and_tab_cycles_into_and_out_of_it() {
         let mut app = App::new(vec!["local".to_string()]);
         assert_eq!(app.sections.last(), Some(&Section::Jobs));
-        app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.current_section(), Section::Jobs);
         app.handle_key(KeyCode::Tab);
@@ -8186,6 +8252,7 @@ mod tests {
             (Section::Snapshots, Some(Section::Snapshots)),
             (Section::Disks, Some(Section::Disks)),
             (Section::Shares, Some(Section::Shares)),
+            (Section::BootEnvs, Some(Section::BootEnvs)),
         ] {
             assert_eq!(in_section(section).auto_refresh_section(), expected, "{section:?}");
         }
@@ -8329,7 +8396,7 @@ mod tests {
 
     #[test]
     fn auto_refresh_starts_the_refresh_that_belongs_to_the_visible_section() {
-        for section in [Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares] {
+        for section in [Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs] {
             let mut app = in_section(section);
             app.auto_refresh(runner(""), Instant::now(), TEN);
             assert!(app.in_flight.contains(&(section, 0)), "{section:?} refresh not started");
@@ -8655,5 +8722,110 @@ mod tests {
         app.handle_key(KeyCode::Char('c'));
         assert_eq!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")), ["r"]);
         assert!(app.status_message.clone().unwrap_or_default().contains("Cancel requested"));
+    }
+
+    fn be(name: &str, now: bool, reboot: bool, temp: bool, mount: Option<&str>) -> crate::zfs::bootenv::BootEnv {
+        crate::zfs::bootenv::BootEnv {
+            name: name.to_string(),
+            flags: crate::zfs::bootenv::ActiveFlags { now, reboot, temp },
+            mountpoint: mount.map(str::to_string),
+            space: "1M".to_string(),
+            created: "2026-10-07 19:26".to_string(),
+        }
+    }
+
+    #[test]
+    fn boot_envs_sits_between_shares_and_jobs() {
+        let app = App::new(vec!["local".to_string()]);
+        let at = |s| app.sections.iter().position(|x| *x == s).unwrap();
+        assert_eq!(at(Section::BootEnvs), at(Section::Shares) + 1);
+        assert_eq!(at(Section::Jobs), at(Section::BootEnvs) + 1);
+        assert_eq!(app.sections.last(), Some(&Section::Jobs));
+    }
+
+    #[test]
+    fn refresh_bootenvs_populates_app_state() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.refresh_bootenvs(runner("default\tNR\t/\t5.18G\t2026-07-24 18:48\nspare\t-\t-\t8K\t2026-10-07 19:26\n"));
+        wait_until(&mut app, |a| !a.bootenvs.is_empty());
+        assert_eq!(app.bootenvs.len(), 2);
+        assert!(app.bootenvs[0].flags.now && app.bootenvs[0].flags.reboot);
+        assert_eq!(app.bootenvs_unavailable, None);
+    }
+
+    #[test]
+    fn a_failing_bectl_marks_the_section_unavailable_and_the_next_good_refresh_recovers() {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = vec![be("stale", false, false, false, None)];
+        app.bootenvs_table.select(Some(0));
+        app.tx.send(WorkerMsg::BootEnvs(0, Err(crate::error::AppError::CommandFailed { cmd: "bectl list".into(), status: 127, stderr: "bectl: not found".into() }))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs.is_empty(), "a stale list must not look current");
+        assert_eq!(app.bootenvs_table.selected(), None);
+        assert!(app.bootenvs_unavailable.as_deref().is_some_and(|m| m.contains("bectl: not found")));
+        // Not gated on the earlier failure: the periodic refresh still runs and recovers.
+        app.auto_refresh(runner("default\tNR\t/\t1G\td\n"), Instant::now(), TEN);
+        wait_until(&mut app, |a| !a.bootenvs.is_empty());
+        assert_eq!(app.bootenvs_unavailable, None);
+        assert_eq!(app.bootenvs.len(), 1);
+    }
+
+    #[test]
+    fn a_host_with_zero_boot_environments_is_empty_not_unavailable() {
+        let mut app = in_section(Section::BootEnvs);
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs.is_empty());
+        assert_eq!(app.bootenvs_unavailable, None);
+    }
+
+    #[test]
+    fn bootenvs_result_for_a_stale_host_is_discarded() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.tx.send(WorkerMsg::BootEnvs(1, Ok(vec![be("x", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs.is_empty());
+    }
+
+    #[test]
+    fn switching_host_clears_boot_environment_state() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.bootenvs = vec![be("x", false, false, false, None)];
+        app.bootenvs_table.select(Some(0));
+        app.bootenvs_unavailable = Some("boom".to_string());
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::BackTab); // -> Hosts
+        app.handle_key(KeyCode::Down); // switch host, triggers clear_host_data
+        assert!(app.bootenvs.is_empty());
+        assert_eq!(app.bootenvs_table.selected(), None);
+        assert_eq!(app.bootenvs_unavailable, None);
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_selection_on_the_same_boot_environment_and_clamps_when_it_vanishes() {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = vec![be("a", false, false, false, None), be("b", false, false, false, None)];
+        app.bootenvs_table.select(Some(1));
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![be("0", false, false, false, None), be("a", false, false, false, None), be("b", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.bootenvs_table.selected(), Some(2), "still on b");
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![be("a", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.bootenvs_table.selected(), Some(0), "b vanished: clamped into range");
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.bootenvs_table.selected(), None);
+    }
+
+    #[test]
+    fn up_and_down_move_the_boot_environment_selection() {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = vec![be("a", false, false, false, None), be("b", false, false, false, None)];
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.bootenvs_table.selected(), Some(0));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("b"));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.bootenvs_table.selected(), Some(0));
     }
 }

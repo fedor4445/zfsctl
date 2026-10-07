@@ -249,6 +249,12 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("r", "Refresh", 4));
         }
+        (Section::BootEnvs, _) => {
+            if !app.bootenvs.is_empty() {
+                v.push(h("↑↓", "Move", 1));
+            }
+            v.push(h("r", "Refresh", 4));
+        }
         (Section::Jobs, _) => {
             if !app.jobs_view.jobs.is_empty() {
                 v.push(h("↑↓", "Move", 1));

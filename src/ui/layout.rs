@@ -161,6 +161,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Snapshots => "Snapshots",
                 Section::Disks => "Disks",
                 Section::Shares => "Shares",
+                Section::BootEnvs => "Boot Envs",
                 Section::Jobs => "Jobs",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
@@ -206,6 +207,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Snapshots => draw_snapshots(f, app, area),
         Section::Disks => draw_disks(f, app, area),
         Section::Shares => draw_shares(f, app, area),
+        Section::BootEnvs => draw_bootenvs(f, app, area),
         Section::Jobs => draw_jobs(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl => {
@@ -710,6 +712,54 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.shares_table);
+}
+
+fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
+    const NAME_W: u16 = 24;
+    const ACTIVE_W: u16 = 12;
+    const SPACE_W: u16 = 8;
+    const MOUNT_W: u16 = 24;
+    const CREATED_W: u16 = 16;
+    let theme = app.theme.clone();
+    // Name, Active and Space always show; Mountpoint then Created only while they fit.
+    let inner = area.width.saturating_sub(2);
+    let mut used = NAME_W + ACTIVE_W + SPACE_W + 2;
+    let show_mount = used + MOUNT_W < inner;
+    if show_mount {
+        used += MOUNT_W + 1;
+    }
+    let show_created = show_mount && used + CREATED_W < inner;
+    let rows = app.bootenvs.iter().map(|b| {
+        let mut cells = vec![sanitise_for_display(&b.name), b.flags.label(), b.space.clone()];
+        if show_mount {
+            cells.push(sanitise_for_display(b.mountpoint.as_deref().unwrap_or("-")));
+        }
+        if show_created {
+            cells.push(sanitise_for_display(&b.created));
+        }
+        Row::new(cells)
+    });
+    let mut widths = vec![Constraint::Length(NAME_W), Constraint::Length(ACTIVE_W), Constraint::Length(SPACE_W)];
+    let mut headers = vec!["Name", "Active", "Space"];
+    if show_mount {
+        widths.push(Constraint::Length(MOUNT_W));
+        headers.push("Mountpoint");
+    }
+    if show_created {
+        widths.push(Constraint::Min(CREATED_W));
+        headers.push("Created");
+    }
+    let suffix = app
+        .bootenvs_unavailable
+        .as_ref()
+        .map(|m| format!(" [unavailable: {}]", sanitise_for_display(m.lines().next().unwrap_or(""))))
+        .unwrap_or_default();
+    let title = format!("Boot Environments — {} ('r' to refresh){suffix}", app.active_host_name());
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers))
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
+        .row_highlight_style(theme.selected_row());
+    f.render_stateful_widget(table, area, &mut app.bootenvs_table);
 }
 
 /// Percentage width the modal popup uses — held constant; only the
@@ -1824,5 +1874,34 @@ mod tests {
         app.handle_key(crossterm::event::KeyCode::Char('R'));
         let text = render(&mut app, 120, 34).join("\n");
         assert!(text.contains("New replication job") && text.contains("Next:"), "{text}");
+    }
+
+    #[test]
+    fn the_boot_envs_table_decodes_activity_and_drops_columns_when_narrow() {
+        use crate::zfs::bootenv::{ActiveFlags, BootEnv};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
+        app.bootenvs = vec![
+            BootEnv { name: "default".into(), flags: ActiveFlags { now: true, reboot: true, temp: false }, mountpoint: Some("/".into()), space: "5.18G".into(), created: "2026-07-24 18:48".into() },
+            BootEnv { name: "spare".into(), flags: ActiveFlags { now: false, reboot: false, temp: true }, mountpoint: None, space: "8K".into(), created: "2026-10-07 19:26".into() },
+        ];
+        let wide = render(&mut app, 120, 24).join("\n");
+        for want in ["Boot Environments", "Name", "Active", "Space", "Mountpoint", "Created", "default", "Now+Reboot", "Temp", "5.18G", "2026-07-24 18:48"] {
+            assert!(wide.contains(want), "missing {want:?} in:\n{wide}");
+        }
+        let narrow = render(&mut app, 80, 24).join("\n");
+        for want in ["Name", "Active", "Space", "default"] {
+            assert!(narrow.contains(want), "missing {want:?} in:\n{narrow}");
+        }
+        assert!(!narrow.contains("Mountpoint") && !narrow.contains("Created"), "optional columns must drop:\n{narrow}");
+    }
+
+    #[test]
+    fn an_unavailable_boot_envs_section_says_why_in_its_title() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
+        app.bootenvs_unavailable = Some("command 'bectl list' failed with status 127: bectl: not found".to_string());
+        let text = render(&mut app, 140, 24).join("\n");
+        assert!(text.contains("[unavailable: command 'bectl list' failed"), "{text}");
     }
 }
