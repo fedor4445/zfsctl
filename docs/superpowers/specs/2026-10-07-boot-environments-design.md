@@ -47,16 +47,16 @@ and a Datasets sub-tab (BEs are a host-level concept).
   Mountpoint, Space, Created. Columns drop on narrow terminals like Disks.
 - Keys: `n` create (name field; F2 picker to optionally clone from an existing
   BE), `a` activate permanently (confirm), `t` activate for next boot only (no
-  confirm), `T` clear temporary flag, `r` rename, `m` mount (path shown in the
-  status bar), `u` unmount, `d` destroy (confirm, with an option to also
-  remove the origin snapshot, `-o`).
+  confirm), `T` clear temporary flag, `R` rename (`r` is the global refresh),
+  `m` mount (the path appears in the Mountpoint column after the re-list), `u`
+  unmount, `d` destroy and `D` destroy + origin snapshot (`-o`), both with a
+  type-the-name confirm.
 - Permanent activate and destroy always confirm. Temporary activation does not
   (it reverts by itself).
 - Destroying a BE that has `N` or `R` set is refused up front in the UI with
   the reason; bectl is the backstop.
-- `t` on a BE already marked `T` is a no-op with a status message.
-- If the BE is mounted, `d` says it will unmount first; if bectl refuses, its
-  message is shown and nothing changes.
+- `t` is not offered (and does nothing) on a BE that is already running or already marked `T`.
+- Destroying a mounted BE is left to bectl; its own error is shown verbatim.
 
 ## Module and data flow
 
