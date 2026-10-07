@@ -209,6 +209,13 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
         };
         return Some(PickerState { values, filter: String::new(), selected, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Ready, note: None, account: None, pool_host: None });
     }
+    if let FormKind::CreateBootEnv { existing, .. } = kind {
+        if field_index != 1 {
+            return None;
+        }
+        let selected = existing.iter().position(|e| e == current_value.trim()).unwrap_or(0);
+        return Some(PickerState { values: existing.clone(), filter: String::new(), selected, checked: std::collections::HashSet::new(), multi_select: false, load: PickerLoad::Ready, note: None, account: None, pool_host: None });
+    }
     let (values, multi_select) = vocabulary_for(kind, field_index)?;
     let values: Vec<String> = values.iter().map(std::string::ToString::to_string).collect();
     let mut checked = std::collections::HashSet::new();
@@ -476,5 +483,17 @@ mod tests {
         accounts.group_error = Some("boom".to_string());
         fill_account_picker(&mut p, &accounts, "");
         assert_eq!(p.note.as_deref(), Some("groups unavailable: boom; no selectable accounts"));
+    }
+
+    #[test]
+    fn the_clone_from_field_offers_the_existing_boot_environments_and_the_name_field_does_not() {
+        let kind = FormKind::CreateBootEnv { host: 0, existing: vec!["default".to_string(), "spare".to_string()] };
+        assert!(build_picker_state(&kind, 0, "").is_none());
+        let picker = build_picker_state(&kind, 1, "spare").unwrap();
+        assert_eq!(picker.values, vec!["default", "spare"]);
+        assert_eq!(picker.selected, 1, "pre-seeded from what is typed");
+        assert!(!picker.multi_select);
+        let rename = FormKind::RenameBootEnv { host: 0, from: "a".to_string(), existing: vec![] };
+        assert!(build_picker_state(&rename, 0, "").is_none());
     }
 }

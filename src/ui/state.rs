@@ -1281,6 +1281,76 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('n') if self.current_section() == Section::BootEnvs && self.bootenvs_unavailable.is_none() => {
+                let existing: Vec<String> = self.bootenvs.iter().map(|b| b.name.clone()).collect();
+                self.modal = Some(Modal::Form {
+                    title: "New boot environment".to_string(),
+                    fields: vec![
+                        FormField { label: "Name (letters, digits, _ - . :)".to_string(), value: String::new() },
+                        FormField { label: "Clone from (F2 to pick; blank = the running boot environment)".to_string(), value: String::new() },
+                    ],
+                    focused: 0,
+                    description: None,
+                    kind: FormKind::CreateBootEnv { host: self.selected_host, existing },
+                });
+            }
+            KeyCode::Char('a') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate()).map(|b| b.name.clone()) else { return };
+                let prompt = format!("Make '{name}' the boot environment for every future boot? (y/n)");
+                let call = MutationCall::ActivateBootEnv { name, temporary: false };
+                self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
+            }
+            KeyCode::Char('t') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Activating '{name}' for the next boot only…"));
+                let call = MutationCall::ActivateBootEnv { name, temporary: true };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char('T') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Clearing the next-boot activation of '{name}'…"));
+                let call = MutationCall::ClearTemporaryBootEnv { name };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char('R') if self.current_section() == Section::BootEnvs => {
+                let Some(from) = self.selected_bootenv().map(|b| b.name.clone()) else { return };
+                let existing: Vec<String> = self.bootenvs.iter().map(|b| b.name.clone()).collect();
+                self.modal = Some(Modal::Form {
+                    title: format!("Rename boot environment '{from}'"),
+                    fields: vec![FormField { label: "New name (letters, digits, _ - . :)".to_string(), value: String::new() }],
+                    focused: 0,
+                    description: None,
+                    kind: FormKind::RenameBootEnv { host: self.selected_host, from, existing },
+                });
+            }
+            KeyCode::Char('m') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_mount()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Mounting '{name}'…"));
+                let call = MutationCall::MountBootEnv { name };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char('u') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_unmount()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Unmounting '{name}'…"));
+                let call = MutationCall::UnmountBootEnv { name };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char(key @ ('d' | 'D')) if self.current_section() == Section::BootEnvs => {
+                let Some(be) = self.selected_bootenv() else { return };
+                let name = be.name.clone();
+                if !be.can_destroy() {
+                    self.status_message = Some(format!("'{name}' cannot be destroyed: it is the running or next-boot boot environment"));
+                    return;
+                }
+                let origin = key == 'D';
+                let also = if origin { " and its origin snapshot" } else { "" };
+                self.modal = Some(Modal::ConfirmTyped {
+                    prompt: format!("Type the boot environment name to destroy '{name}'{also}:"),
+                    expected: name.clone(),
+                    input: String::new(),
+                    action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call: MutationCall::DestroyBootEnv { name, origin } },
+                });
+            }
             KeyCode::Char(' ') if self.current_section() == Section::Disks => {
                 if let Some(i) = self.disks_table.selected() {
                     if let Some(disk) = self.disks.get(i) {
@@ -1486,6 +1556,15 @@ impl App {
                                 action.host = self.selected_host;
                                 Some(action)
                             }
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
+                        }
+                    } else if matches!(kind, FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. }) {
+                        match build_bootenv_action(&kind, &fields) {
+                            Ok(action) => Some(action),
                             Err(msg) => {
                                 self.set_error(msg);
                                 self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
@@ -2803,7 +2882,41 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+    }
+}
+
+fn build_bootenv_action(kind: &FormKind, fields: &[FormField]) -> std::result::Result<PendingAction, String> {
+    use crate::zfs::bootenv::validate_name;
+    match kind {
+        FormKind::CreateBootEnv { host, existing } => {
+            let name = field_value(fields, 0).trim();
+            validate_name(name)?;
+            if existing.iter().any(|e| e == name) {
+                return Err(format!("A boot environment named '{name}' already exists"));
+            }
+            let from = field_value(fields, 1).trim();
+            let from = if from.is_empty() {
+                None
+            } else if existing.iter().any(|e| e == from) {
+                Some(from.to_string())
+            } else {
+                return Err(format!("There is no boot environment named '{from}' to clone"));
+            };
+            Ok(PendingAction { host: *host, section: Section::BootEnvs, call: MutationCall::CreateBootEnv { name: name.to_string(), from } })
+        }
+        FormKind::RenameBootEnv { host, from, existing } => {
+            let to = field_value(fields, 0).trim();
+            validate_name(to)?;
+            if to == from {
+                return Err("That is already its name".to_string());
+            }
+            if existing.iter().any(|e| e == to) {
+                return Err(format!("A boot environment named '{to}' already exists"));
+            }
+            Ok(PendingAction { host: *host, section: Section::BootEnvs, call: MutationCall::RenameBootEnv { from: from.clone(), to: to.to_string() } })
+        }
+        _ => Err("not a boot environment form".to_string()),
     }
 }
 
@@ -3133,6 +3246,14 @@ Disks
 Shares
   Enter            edit the selected share
   d                remove the selected share
+
+Boot Envs
+  n                new boot environment (F2 on the second field picks one to clone)
+  a                make the selected one the boot environment for every future boot (confirms)
+  t / T            use it for the next boot only / clear that
+  R                rename
+  m / u            mount / unmount (the Mountpoint column shows where)
+  d / D            destroy (type its name) / destroy and remove its origin snapshot
 
 Jobs
   Up / Down        select a scheduled job
@@ -8827,5 +8948,197 @@ mod tests {
         assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("b"));
         app.handle_key(KeyCode::Up);
         assert_eq!(app.bootenvs_table.selected(), Some(0));
+    }
+
+    fn bootenv_app(rows: Vec<crate::zfs::bootenv::BootEnv>, select: usize) -> App {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = rows;
+        app.bootenvs_table.select(Some(select));
+        app
+    }
+
+    fn running() -> crate::zfs::bootenv::BootEnv {
+        be("default", true, true, false, Some("/"))
+    }
+
+    fn spare() -> crate::zfs::bootenv::BootEnv {
+        be("spare", false, false, false, None)
+    }
+
+    fn only_pending(app: &App) -> &MutationCall {
+        let [action] = app.pending_mutations.as_slice() else { panic!("{:?}", app.pending_mutations) };
+        assert_eq!(action.section, Section::BootEnvs);
+        &action.call
+    }
+
+    #[test]
+    fn n_opens_the_create_form_listing_existing_names_for_the_picker() {
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(form_values(&app), ["", ""]);
+        let Some(Modal::Form { kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert_eq!(*kind, FormKind::CreateBootEnv { host: 0, existing: vec!["default".to_string(), "spare".to_string()] });
+    }
+
+    #[test]
+    fn n_works_with_zero_boot_environments_but_not_when_unavailable() {
+        let mut app = in_section(Section::BootEnvs);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_some());
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs_unavailable = Some("no bectl".to_string());
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none());
+    }
+
+    /// Opens the create form, types both fields and presses Enter on the last one.
+    fn submit(app: &mut App, name: &str, from: &str) -> Option<PendingAction> {
+        app.handle_key(KeyCode::Char('n'));
+        for c in name.chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in from.chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter)
+    }
+
+    #[test]
+    fn the_create_form_returns_the_create_call_with_or_without_a_clone_source() {
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        let action = submit(&mut app, "pre-upgrade", "spare").expect("submit returns the action");
+        assert_eq!((action.host, action.section), (0, Section::BootEnvs));
+        assert_eq!(action.call, MutationCall::CreateBootEnv { name: "pre-upgrade".to_string(), from: Some("spare".to_string()) });
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        let action = submit(&mut app, "pre-upgrade", "").expect("submit returns the action");
+        assert_eq!(action.call, MutationCall::CreateBootEnv { name: "pre-upgrade".to_string(), from: None });
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn the_create_form_refuses_bad_names_duplicates_and_unknown_sources_with_a_reason() {
+        for (name, from, why) in [
+            ("", "", "cannot be empty"),
+            ("-F", "", "cannot start with '-'"),
+            ("a b", "", "not allowed"),
+            ("default", "", "already exists"),
+            ("ok", "nope", "no boot environment named 'nope'"),
+            ("ok", "-e", "no boot environment named '-e'"),
+        ] {
+            let mut app = bootenv_app(vec![running(), spare()], 0);
+            assert!(submit(&mut app, name, from).is_none(), "{name:?}/{from:?}: nothing is submitted");
+            assert!(app.modal.is_some(), "{name:?}/{from:?}: the form stays open");
+            assert!(app.status_message.as_deref().is_some_and(|m| m.contains(why)), "{name:?}/{from:?}: {:?}", app.status_message);
+        }
+    }
+
+    #[test]
+    fn build_bootenv_action_makes_the_expected_calls() {
+        let create = FormKind::CreateBootEnv { host: 0, existing: vec!["default".to_string()] };
+        let field = |v: &str| FormField { label: "l".to_string(), value: v.to_string() };
+        let a = build_bootenv_action(&create, &[field("new"), field("default")]).unwrap();
+        assert_eq!(a.call, MutationCall::CreateBootEnv { name: "new".to_string(), from: Some("default".to_string()) });
+        assert_eq!(a.section, Section::BootEnvs);
+        let a = build_bootenv_action(&create, &[field("new"), field("")]).unwrap();
+        assert_eq!(a.call, MutationCall::CreateBootEnv { name: "new".to_string(), from: None });
+        let rename = FormKind::RenameBootEnv { host: 2, from: "old".to_string(), existing: vec!["old".to_string(), "taken".to_string()] };
+        let a = build_bootenv_action(&rename, &[field("fresh")]).unwrap();
+        assert_eq!((a.host, a.call), (2, MutationCall::RenameBootEnv { from: "old".to_string(), to: "fresh".to_string() }));
+        assert!(build_bootenv_action(&rename, &[field("taken")]).is_err());
+        assert!(build_bootenv_action(&rename, &[field("old")]).is_err(), "renaming to itself");
+        assert!(build_bootenv_action(&rename, &[field("-x")]).is_err());
+    }
+
+    #[test]
+    fn a_asks_to_confirm_then_activates_permanently_and_only_when_it_would_change_something() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('a'));
+        let Some(Modal::Confirm { prompt, action }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("'spare'"), "{prompt}");
+        assert_eq!(action.call, MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: false });
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        app.handle_key(KeyCode::Char('a'));
+        assert!(app.modal.is_none(), "already the BE used on reboot");
+    }
+
+    #[test]
+    fn t_activates_for_the_next_boot_without_a_confirm_and_big_t_clears_it() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.modal.is_none());
+        assert_eq!(only_pending(&app), &MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: true });
+        assert!(app.status_message.is_some());
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('T'));
+        assert!(app.pending_mutations.is_empty(), "spare has no temporary activation to clear");
+        let mut app = bootenv_app(vec![running(), be("trial", false, false, true, None)], 1);
+        app.handle_key(KeyCode::Char('T'));
+        assert_eq!(only_pending(&app), &MutationCall::ClearTemporaryBootEnv { name: "trial".to_string() });
+        let mut app = bootenv_app(vec![running(), be("trial", false, false, true, None)], 1);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.pending_mutations.is_empty(), "already temporary");
+        let mut app = bootenv_app(vec![running()], 0);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.pending_mutations.is_empty(), "the running BE");
+    }
+
+    #[test]
+    fn m_mounts_an_unmounted_be_and_u_unmounts_a_mounted_one() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(only_pending(&app), &MutationCall::MountBootEnv { name: "spare".to_string() });
+        app.handle_key(KeyCode::Char('u'));
+        assert_eq!(app.pending_mutations.len(), 1, "an unmounted BE cannot be unmounted");
+        let mut app = bootenv_app(vec![running(), be("m", false, false, false, Some("/tmp/be_mount.X"))], 1);
+        app.handle_key(KeyCode::Char('u'));
+        assert_eq!(only_pending(&app), &MutationCall::UnmountBootEnv { name: "m".to_string() });
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1, "already mounted");
+        let mut app = bootenv_app(vec![running()], 0);
+        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(KeyCode::Char('u'));
+        assert!(app.pending_mutations.is_empty(), "the running BE is mounted at / and cannot be remounted or unmounted");
+    }
+
+    #[test]
+    fn big_r_opens_the_rename_form() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('R'));
+        assert_eq!(form_values(&app), [""]);
+        let Some(Modal::Form { kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert_eq!(*kind, FormKind::RenameBootEnv { host: 0, from: "spare".to_string(), existing: vec!["default".to_string(), "spare".to_string()] });
+    }
+
+    #[test]
+    fn d_and_big_d_ask_for_the_name_and_the_running_be_is_refused_with_a_reason() {
+        for (key, origin) in [('d', false), ('D', true)] {
+            let mut app = bootenv_app(vec![running(), spare()], 1);
+            app.handle_key(KeyCode::Char(key));
+            let Some(Modal::ConfirmTyped { expected, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+            assert_eq!(expected, "spare");
+            assert_eq!(action.call, MutationCall::DestroyBootEnv { name: "spare".to_string(), origin });
+        }
+        for blocked in [running(), be("next", false, true, false, None)] {
+            let mut app = bootenv_app(vec![blocked.clone()], 0);
+            app.handle_key(KeyCode::Char('d'));
+            assert!(app.modal.is_none());
+            assert!(app.status_message.as_deref().is_some_and(|m| m.contains(&blocked.name) && m.contains("cannot be destroyed")), "{:?}", app.status_message);
+        }
+    }
+
+    #[test]
+    fn a_successful_boot_environment_mutation_queues_a_re_list() {
+        let mut app = in_section(Section::BootEnvs);
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Ok(()))).unwrap();
+        assert_eq!(app.drain_worker_messages(), vec![Section::BootEnvs]);
+    }
+
+    #[test]
+    fn help_documents_the_boot_environment_keys() {
+        let text = help_text();
+        for want in ["Boot Envs", "next boot only", "rename", "mount", "destroy"] {
+            assert!(text.contains(want), "missing {want:?}");
+        }
     }
 }

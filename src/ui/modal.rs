@@ -284,6 +284,11 @@ pub enum FormKind {
     /// the existing Samba password (only valid when the user is
     /// unchanged, see `existing_user`). The password field is masked.
     ShareSmb { host: usize, dataset: String, path: String, existing_user: Option<String> },
+    /// Fields: `[name, clone_from]` -- a blank `clone_from` clones the running boot environment
+    /// (bectl's default). `existing` is every current name, for the duplicate check and the F2 picker.
+    CreateBootEnv { host: usize, existing: Vec<String> },
+    /// Fields: `[new_name]`; `from` is fixed at modal-open time.
+    RenameBootEnv { host: usize, from: String, existing: Vec<String> },
     /// Fields: `[name, ssh_target]` — both required. Unlike every
     /// other `FormKind`, submitting this one never produces a
     /// `PendingAction`: there's no existing host/runner to dispatch
