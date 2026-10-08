@@ -149,6 +149,7 @@ pub enum WorkerMsg {
 pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
 pub const ACCOUNT_FETCH_STUCK_AFTER: Duration = Duration::from_secs(30);
 
+#[allow(clippy::struct_excessive_bools)] // independent UI state flags, not a state machine
 pub struct App {
     pub sections: Vec<Section>,
     pub selected_section: usize,
@@ -192,6 +193,9 @@ pub struct App {
     pub shares_loaded: bool,
     pub bootenvs: Vec<crate::zfs::bootenv::BootEnv>,
     pub bootenvs_table: TableState,
+    /// `true` once a list has succeeded on this host, so an empty list can say "no boot
+    /// environments" instead of looking like one that has not loaded yet.
+    pub bootenvs_loaded: bool,
     /// Why the Boot Envs section cannot list on this host (e.g. no `bectl`, not a boot-environment
     /// layout, an unreachable host), shown in its title. `None` once a list succeeds.
     pub bootenvs_unavailable: Option<String>,
@@ -313,6 +317,7 @@ impl App {
             shares_loaded: false,
             bootenvs: Vec::new(),
             bootenvs_table: TableState::default(),
+            bootenvs_loaded: false,
             bootenvs_unavailable: None,
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
@@ -595,6 +600,7 @@ impl App {
         self.bootenvs.clear();
         self.bootenvs_table.select(None);
         self.bootenvs_unavailable = None;
+        self.bootenvs_loaded = false;
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
@@ -1339,7 +1345,7 @@ impl App {
                 let Some(be) = self.selected_bootenv() else { return };
                 let name = be.name.clone();
                 if !be.can_destroy() {
-                    self.status_message = Some(format!("'{name}' cannot be destroyed: it is the running or next-boot boot environment"));
+                    self.status_message = Some(format!("'{name}' cannot be destroyed: it is running, set for the next boot, or marked temporary (T clears that)"));
                     return;
                 }
                 let origin = key == 'D';
@@ -2185,6 +2191,7 @@ impl App {
                             self.bootenvs = envs;
                             pin_selection(&mut self.bootenvs_table, previous, &self.bootenvs, |b| b.name.clone());
                             self.bootenvs_unavailable = None;
+                            self.bootenvs_loaded = true;
                             self.clear_status_after_refresh(quiet);
                         }
                         Err(e) => {
@@ -2193,6 +2200,7 @@ impl App {
                             self.bootenvs.clear();
                             self.bootenvs_table.select(None);
                             self.bootenvs_unavailable = Some(e.to_string());
+                            self.bootenvs_loaded = false;
                         }
                     }
                 }
@@ -9119,12 +9127,32 @@ mod tests {
             assert_eq!(expected, "spare");
             assert_eq!(action.call, MutationCall::DestroyBootEnv { name: "spare".to_string(), origin });
         }
-        for blocked in [running(), be("next", false, true, false, None)] {
+        for blocked in [running(), be("next", false, true, false, None), be("trial", false, false, true, None)] {
             let mut app = bootenv_app(vec![blocked.clone()], 0);
             app.handle_key(KeyCode::Char('d'));
             assert!(app.modal.is_none());
             assert!(app.status_message.as_deref().is_some_and(|m| m.contains(&blocked.name) && m.contains("cannot be destroyed")), "{:?}", app.status_message);
         }
+    }
+
+    #[test]
+    fn an_empty_list_is_loaded_but_a_failure_or_a_host_switch_makes_it_unloaded() {
+        let mut app = in_section(Section::BootEnvs);
+        assert!(!app.bootenvs_loaded);
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs_loaded, "zero boot environments is a real answer");
+        app.tx.send(WorkerMsg::BootEnvs(0, Err(crate::error::AppError::Parse("x".into())))).unwrap();
+        app.drain_worker_messages();
+        assert!(!app.bootenvs_loaded);
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        for _ in 0..6 {
+            app.handle_key(KeyCode::BackTab);
+        }
+        assert_eq!(app.current_section(), Section::Hosts);
+        app.handle_key(KeyCode::Down); // switch host
+        assert!(!app.bootenvs_loaded);
     }
 
     #[test]

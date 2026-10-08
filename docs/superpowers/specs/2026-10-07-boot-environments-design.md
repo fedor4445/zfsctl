@@ -85,7 +85,7 @@ New `src/zfs/bootenv.rs`, pure parsing separated from I/O (as in `smb.rs`):
 ## Sudoers, docs, errors
 
 - Add `bectl` to the sudoers allowlist (not argument-pinned, like `zfs` and
-  `zpool`; its scope is bounded to boot environments). Derive the full
+  `zpool`; it is as broad as they are: `bectl jail`/`mount`/`activate` amount to root on the host). Derive the full
   allowlist from the codebase, not memory, then update the README and the
   three managed VMs.
 - README gets a Boot Environments section and the sudoers line.

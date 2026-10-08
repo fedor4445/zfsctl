@@ -723,12 +723,16 @@ fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     // Name, Active and Space always show; Mountpoint then Created only while they fit.
     let inner = area.width.saturating_sub(2);
-    let mut used = NAME_W + ACTIVE_W + SPACE_W + 2;
+    // The name column grows to the longest name (up to 48): `freebsd-update` names are ~33 characters
+    // and differ only at the end.
+    let name_w = u16::try_from(app.bootenvs.iter().map(|b| b.name.chars().count()).max().unwrap_or(0).clamp(usize::from(NAME_W), 48)).unwrap_or(NAME_W);
+    let mut used = name_w + ACTIVE_W + SPACE_W + 2;
     let show_mount = used + MOUNT_W < inner;
     if show_mount {
         used += MOUNT_W + 1;
     }
     let show_created = show_mount && used + CREATED_W < inner;
+    let placeholder = (app.bootenvs_loaded && app.bootenvs.is_empty() && app.bootenvs_unavailable.is_none()).then(|| Row::new(vec!["(no boot environments)".to_string()]).style(theme.dim()));
     let rows = app.bootenvs.iter().map(|b| {
         let mut cells = vec![sanitise_for_display(&b.name), b.flags.label(), b.space.clone()];
         if show_mount {
@@ -739,7 +743,8 @@ fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Row::new(cells)
     });
-    let mut widths = vec![Constraint::Length(NAME_W), Constraint::Length(ACTIVE_W), Constraint::Length(SPACE_W)];
+    let rows: Vec<Row> = rows.chain(placeholder).collect();
+    let mut widths = vec![Constraint::Min(name_w), Constraint::Length(ACTIVE_W), Constraint::Length(SPACE_W)];
     let mut headers = vec!["Name", "Active", "Space"];
     if show_mount {
         widths.push(Constraint::Length(MOUNT_W));
@@ -1903,5 +1908,27 @@ mod tests {
         app.bootenvs_unavailable = Some("command 'bectl list' failed with status 127: bectl: not found".to_string());
         let text = render(&mut app, 140, 24).join("\n");
         assert!(text.contains("[unavailable: command 'bectl list' failed"), "{text}");
+    }
+
+    #[test]
+    fn a_long_boot_environment_name_is_shown_in_full_even_on_a_narrow_terminal() {
+        use crate::zfs::bootenv::{ActiveFlags, BootEnv};
+        let long = "15.1-RELEASE-p3_2026-10-07_184800";
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
+        app.bootenvs = vec![BootEnv { name: long.into(), flags: ActiveFlags::default(), mountpoint: None, space: "8K".into(), created: "2026-10-07 18:48".into() }];
+        for width in [80, 120] {
+            let text = render(&mut app, width, 24).join("\n");
+            assert!(text.contains(long), "{width} cols: name cut off in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_loaded_empty_list_says_there_are_no_boot_environments_but_an_unloaded_one_does_not() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
+        assert!(!render(&mut app, 120, 24).join("\n").contains("no boot environments"));
+        app.bootenvs_loaded = true;
+        assert!(render(&mut app, 120, 24).join("\n").contains("no boot environments"));
     }
 }

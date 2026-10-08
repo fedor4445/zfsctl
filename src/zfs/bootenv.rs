@@ -57,9 +57,10 @@ impl BootEnv {
         self.flags.temp
     }
 
-    /// Neither the running BE nor the one booted next may be destroyed (bectl refuses too).
+    /// Not the running BE, not the one booted next, and not one with a pending next-boot
+    /// activation (destroying that would leave the next-boot pointer dangling; `T` clears it first).
     pub fn can_destroy(&self) -> bool {
-        !self.flags.now && !self.flags.reboot
+        !self.flags.now && !self.flags.reboot && !self.flags.temp
     }
 
     pub fn can_mount(&self) -> bool {
@@ -276,7 +277,8 @@ mod tests {
         assert!(pending.can_activate_temporarily());
 
         let temp = be("T");
-        assert!(temp.can_activate() && temp.can_destroy() && temp.can_clear_temporary());
+        assert!(temp.can_activate() && temp.can_clear_temporary());
+        assert!(!temp.can_destroy(), "its next-boot pointer would dangle: clear it first");
         assert!(!temp.can_activate_temporarily());
 
         let spare = be("-");

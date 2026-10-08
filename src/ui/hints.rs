@@ -1202,7 +1202,7 @@ mod tests {
         let k = |a: &App| context_hints(a).iter().map(|h| h.key).filter(|k| k.chars().count() == 1 && *k != "r").collect::<Vec<_>>();
         assert_eq!(k(&boot_envs(0)), vec!["R", "n"], "running: rename and new only");
         assert_eq!(k(&boot_envs(1)), vec!["a", "t", "R", "m", "d", "D", "n"]);
-        assert_eq!(k(&boot_envs(2)), vec!["a", "T", "R", "m", "d", "D", "n"]);
+        assert_eq!(k(&boot_envs(2)), vec!["a", "T", "R", "m", "n"], "temporary: clear it before destroying");
         assert_eq!(k(&boot_envs(3)), vec!["a", "t", "R", "u", "d", "D", "n"]);
         assert_eq!(k(&boot_envs(4)), vec!["t", "R", "m", "n"]);
         assert_eq!(k(&boot_envs_none()), vec!["n"]);
