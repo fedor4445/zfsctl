@@ -63,6 +63,8 @@ The `!` shell is deliberately the plain unprivileged login: it adds no sudoers r
 
 `zfsctl` shells out to eleven privileged binaries in total (confirmed by grepping every `run`/`run_checked`/`run_with_stdin` call site, not just the obvious `zpool`/`zfs` ones — `getfacl`/`setfacl` back the ACL tab, `geom` backs the Disks section, `bectl` backs the Boot Envs section, `service` backs the Shares section's NFS/SMB availability check and the Samba reload, `smbpasswd` sets a managed SMB share's Samba password, `cat`/`tee` read and write `smb4.conf`, and `smbstatus -S` lists the clients connected to an SMB share for the metrics panel; all eleven need the sudoers entry, or whichever feature uses the missing one fails with "a password is required" the first time you touch it). Replication needs no `sh` entry either: the hub runs the two `zfs` commands itself and pipes them together. On each remote host, as root, find the exact paths (typically `/sbin/zpool`, `/sbin/zfs`, `/bin/getfacl`, `/bin/setfacl`, `/sbin/geom`, `/sbin/bectl`, `/usr/sbin/service`, `/usr/local/bin/smbpasswd`, `/usr/local/bin/smbstatus`, `/bin/cat`, `/usr/bin/tee` on FreeBSD, but confirm on your actual install rather than assume):
 
+A twelfth binary, `/usr/local/bin/restic`, is needed only on a host that runs backup jobs (jobs on the hub itself run as root and need nothing): add it to that host's sudoers entry. It is as broad as `zfs` and `bectl`, since restic as root can read any file and write anywhere.
+
 ```sh
 which zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee
 ```
@@ -240,7 +242,8 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 - `Up` / `Down`: select a job; the bottom panel shows its last 8 runs, its schedule and its next three run times
 - `n`: new scrub job (host, pool, schedule, catch up; `F2` lists the configured hosts, the pools of the chosen host (fetched live) and schedule presets, and the form previews the next three run times as you type)
 - `R`: new replication job (source host and dataset, snapshot prefix, destination host and dataset, force, schedule, catch up; `F2` lists the configured hosts, the datasets of the chosen host (fetched live) and schedule presets)
-- `c`: cancel the selected replication while it is running (it stops within a second or two; the next run resumes it)
+- `B`: new backup job (host, dataset, snapshot prefix, restic repository, password file, keep, schedule, catch up; `F2` lists the configured hosts, the datasets of the chosen host (fetched live) and schedule presets; see "A backup job" below)
+- `c`: cancel the selected replication or backup while it is running (it stops within a second or two; a replication resumes on the next run, a backup starts again)
 - `N`: new snapshot job (host, dataset, recursive, prefix, keep, schedule, catch up; `F2` lists the configured hosts, the datasets of the chosen host (fetched live) and schedule presets)
 - `Enter`: edit the selected job (its id, creation time and enabled flag are kept)
 - `Space`: enable or disable the selected job
@@ -334,6 +337,29 @@ schedule = "30 3 * * *"
 - A file is written as `<name>.partial`, fsynced and renamed when complete, so a file without `.partial` is a complete stream. A failed or cancelled run removes its `.partial` (the daemon also removes leftovers at startup, only `*.zfs.partial` in the jobs' directories). File targets cannot resume: the next run starts again. The directory is created private (mode 0700) and new files are 0600 (modes mean nothing on FAT-style USB disks, which also cap a file at 4 GiB). An existing `dest_dir` is used as it is, but a directory that group or others can write to is refused (the daemon writes as root), `dest_dir` must be in canonical form (no `//`, `.`, `..` or trailing `/`), and the `.partial` file is always created fresh. Nothing is created, destroyed or rolled back on the source, and no remote host needs a new sudoers entry.
 - **Restoring.** The files are plain `zfs send` streams. Receive the full file, then each increment in order, into a dataset that does not exist yet: `zfs receive pool/restored < tank-data@hourly-A.zfs`, then `zfs receive pool/restored < tank-data@hourly-A..hourly-B.zfs`, and so on. There is no UI for restoring, and `zfsctl` never deletes or overwrites a complete stream: if a file with the new name already exists (a snapshot destroyed and recreated under the same name) the earlier one is kept as `<name>.zfs.old-1`, `.old-2`, and so on. Prune old files yourself, keeping every increment back to a full stream you still want to restore from.
 - **Things to know.** The file name has the source dataset (`/` becomes `-`) but not the host, and `tank/a-b` and `tank-a/b` flatten to the same name, so give every file job its own directory (two enabled jobs naming the same directory are refused, but a symlink to it is not detected). Deleting a job does not delete its entry in `<state>/replication.json`; re-adding a job with the same id and directory continues from it, provided the directory still holds the stream the entry names, otherwise it sends a full stream.
+
+**A backup job** runs `restic backup` on a dataset's newest `<prefix>-<timestamp>` snapshot on the job's host (the hub is `local`). It never takes snapshots: pair it with a snapshot job that uses the same prefix.
+
+```toml
+[[jobs]]
+id = "backup-local-tank-data"
+host = "local"
+kind = "backup"
+dataset = "tank/data"
+prefix = "hourly"
+repository = "/mnt/usb/restic-tank"      # restic's -r: a path, sftp:user@host:/path, rclone:remote:path ...
+password_file = "/root/.restic-password"  # absolute path on the host, mode 600
+retention = "7d 4w 12m"                   # optional: daily/weekly/monthly/yearly/last; blank keeps everything
+schedule = "30 3 * * *"
+```
+
+- **One-time setup.** `pkg install restic` on the host; put the repository password in a root-only file (`install -m 600 /dev/null /root/.restic-password`, then write it); create the repository once with `restic init --repo <repository> --password-file <file>`. A backup job never creates a repository (a mistyped path would silently make a new one); an uninitialised repository or wrong password fails the run with restic's own message.
+- **How a run works.** It picks the newest matching snapshot, skips (`up to date`) if the repository already holds a backup tagged `zfsctl-snapshot:<name>` from this job, then clones that snapshot read-only to `/var/run/zfsctl/<job id>`, backs up that path, and destroys the clone, whether the backup succeeded, failed or was cancelled. The path is the same every run on purpose: restic finds its parent backup by path, so unchanged files are skipped instead of read again. While the clone exists its snapshot cannot be destroyed: a snapshot job's prune leaves it for the next slot (`kept 1 in use by a clone`). A clone left by a crash is destroyed by the next run.
+- **Retention.** With `retention` set, a successful backup is followed by `restic forget --prune` limited to this job's own backups from this host (matched by tag and host); without it nothing is ever forgotten. Backups are dated by their snapshot's creation time, so `7d` means seven days of data, not seven runs. `prune` takes the repository lock and can be slow or costly on a big remote repository.
+- **Secrets.** The job holds no password or key, only the path of the password file on the host. The repository string is stored and shown in the Jobs details, so never put credentials in it (`rest:https://user:pass@host/` is the case to avoid; use an rclone remote, whose config holds the keys). Direct S3/Azure/B2 environment variables are not supported, because an environment cannot pass through `sudo -n` without allowing `env`, which would make the sudoers entry root-equivalent.
+- **Cancel and locks.** `c` stops a running backup; restic can leave a stale repository lock, which `restic unlock` removes (zfsctl never removes locks). A cancelled or failed run does not forget. restic exit code 3 (snapshot saved but some files unreadable) is reported as a failure that says so.
+- **Restoring.** Use restic: `restic restore latest --repo <repository> --password-file <file> --tag zfsctl:<job id> --target /restore`. The backed-up path is `/var/run/zfsctl/<job id>`.
+- **Remote hosts.** restic runs on the job's host over SSH + `sudo -n`, so it must be installed there and `/usr/local/bin/restic` added to that host's sudoers entry. That entry is as broad as `zfs` or `bectl`: restic as root reads any file and writes anywhere, so whoever holds the SSH key effectively has root on that host. The hub (`local`) needs no change.
 
 **Notifications.** To be told when a job fails or a scrub finds errors, set a command in `config.toml`:
 
