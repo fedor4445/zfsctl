@@ -127,9 +127,10 @@ pub fn effective_prefix(job: &Job) -> &str {
     job.prefix.as_deref().unwrap_or(DEFAULT_PREFIX)
 }
 
-/// An absolute hub directory with no `..` component and only plain path characters.
+/// An absolute hub directory in canonical form (no empty, `.` or `..` component, no trailing slash, so
+/// two spellings of one directory cannot dodge the shared-destination rule) and only plain path characters.
 pub fn valid_dest_dir(s: &str) -> bool {
-    s.len() > 1 && s.starts_with('/') && s.split('/').all(|c| c != "..") && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ' '))
+    s.len() > 1 && s.starts_with('/') && s.split('/').skip(1).all(|c| !c.is_empty() && c != "." && c != "..") && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ' '))
 }
 
 fn check_replicate_fields(job: &Job) -> std::result::Result<(), String> {
@@ -615,7 +616,7 @@ mod tests {
         for good in ["/mnt/usb", "/mnt/usb/zfsctl", "/var/backups/my disk"] {
             assert!(valid_dest_dir(good), "{good}");
         }
-        for bad in ["", "/", "mnt/usb", "-x", "/mnt/../etc", "/mnt/..", "/mnt/a;b", "/mnt/a\nb", "/mnt/$x", "/mnt/a\\b"] {
+        for bad in ["", "/", "mnt/usb", "-x", "/mnt/../etc", "/mnt/..", "/mnt/a;b", "/mnt/a\nb", "/mnt/$x", "/mnt/a\\b", "//", "/.", "/mnt//usb", "/mnt/./usb", "/mnt/usb/", "/mnt/usb/."] {
             assert!(!valid_dest_dir(bad), "{bad:?}");
         }
     }

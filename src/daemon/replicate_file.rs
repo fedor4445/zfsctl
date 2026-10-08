@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
@@ -58,6 +58,19 @@ pub fn stream_name(dataset: &str, new: &str, base: Option<&str>) -> String {
     }
 }
 
+/// Whether `dir` holds a stream that ends at `snapshot`: the full `<flat>@<snapshot>.zfs` or an increment
+/// `<flat>@<from>..<snapshot>.zfs`. A recorded snapshot without one is as good as not recorded (a swapped or
+/// unmounted disk, a deleted job re-added, an over-pruned directory), and the next stream must then be full.
+fn stream_exists(dir: &str, flat: &str, snapshot: &str) -> bool {
+    let (full, head, tail) = (format!("{flat}@{snapshot}.zfs"), format!("{flat}@"), format!("..{snapshot}.zfs"));
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.filter_map(std::result::Result::ok).any(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name == full || (name.starts_with(&head) && name.ends_with(&tail))
+        })
+    })
+}
+
 pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
     let ctx = env.ctx;
     let dataset = job.dataset.clone().unwrap_or_default();
@@ -77,7 +90,8 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     };
     // The recorded snapshot stands in for "what the other side has": `plan` then gives exactly the
     // rule we want (an increment only from a snapshot that still exists on the source, by guid).
-    let recorded = read_state(env.replication_state).remove(&job.id).filter(|s| s.dir == dir);
+    let flat = dataset.replace('/', "-");
+    let recorded = read_state(env.replication_state).remove(&job.id).filter(|s| s.dir == dir && stream_exists(&dir, &flat, &s.snapshot));
     let known: Vec<SnapInfo> = recorded.iter().map(|s| SnapInfo { name: s.snapshot.clone(), guid: s.guid, createtxg: 0 }).collect();
     let (new, base) = match plan(&source, &known, &prefix) {
         Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
@@ -92,7 +106,17 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     if let Err(e) = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir) {
         return failed(format!("cannot create {dir}: {e}"));
     }
-    let file = match std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&partial) {
+    // Streams hold a whole dataset and the daemon writes as root: never into a directory others can write to.
+    match std::fs::metadata(&dir) {
+        Ok(m) if m.is_dir() && m.permissions().mode() & 0o022 == 0 => {}
+        Ok(m) if m.is_dir() => return failed(format!("{dir} is writable by group or others; refusing to write streams there (chmod go-w it)")),
+        Ok(_) => return failed(format!("{dir} is not a directory")),
+        Err(e) => return failed(format!("cannot read {dir}: {e}")),
+    }
+    // Unlink first (it never follows a symlink) and create exclusively: a file or link somebody put at this
+    // predictable name can neither be truncated through nor have its permissions inherited.
+    let _ = std::fs::remove_file(&partial);
+    let file = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&partial) {
         Ok(f) => f,
         Err(e) => return failed(format!("cannot create {}: {e}", partial.display())),
     };
@@ -136,6 +160,17 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
         let text = message_of(&transfer.send_stderr);
         return discard(if text.is_empty() { "send failed".to_string() } else { format!("send failed: {text}") });
     }
+    // A complete stream is never destroyed: one already under this name (a snapshot recreated under the
+    // same name, or a run that crashed after its rename) is kept as `<name>.old-N`.
+    let mut kept = None;
+    if std::fs::symlink_metadata(&target).is_ok() {
+        let aside = (1_u32..10_000).map(|n| Path::new(&dir).join(format!("{name}.old-{n}"))).find(|p| std::fs::symlink_metadata(p).is_err());
+        let Some(aside) = aside else { return discard(format!("{name} exists and so do 9999 earlier copies of it; remove some of them")) };
+        if let Err(e) = std::fs::rename(&target, &aside) {
+            return discard(format!("cannot keep the earlier {name}: {e}"));
+        }
+        kept = Some(aside);
+    }
     if let Err(e) = std::fs::rename(&partial, &target) {
         return discard(format!("cannot move {} into place: {e}", partial.display()));
     }
@@ -148,7 +183,8 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     if let Err(e) = record(env.replication_state, &job.id, Sent { snapshot: new.clone(), guid: new_guid, dir: dir.clone() }) {
         return failed(format!("wrote {name} but could not record it in replication.json ({e}); the next run sends a full stream"));
     }
-    finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("wrote {name} ({label}), {}", progress::human_bytes(transfer.bytes)), slot)
+    let note = kept.and_then(|p| p.file_name().map(|n| format!("; kept the earlier file as {}", n.to_string_lossy()))).unwrap_or_default();
+    finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("wrote {name} ({label}), {}{note}", progress::human_bytes(transfer.bytes)), slot)
 }
 
 #[cfg(test)]
@@ -434,5 +470,79 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(read_state(&path).len(), 8);
+    }
+
+    #[test]
+    fn a_symlink_planted_where_the_partial_file_goes_is_not_followed() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let rig = Rig::new();
+        std::fs::create_dir_all(rig.dir()).unwrap();
+        std::fs::set_permissions(rig.dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let victim = rig.state.path().join("victim");
+        std::fs::write(&victim, "PRECIOUS").unwrap();
+        symlink(&victim, format!("{}/tank-data@{A}.zfs.partial", rig.dir())).unwrap();
+        let (outcome, _) = rig.run(&Host::new(&listing(&[(A, 1, 10)])), &rig.job(&rig.dir()));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "PRECIOUS", "the file the link pointed at is untouched");
+        let written = format!("{}/tank-data@{A}.zfs", rig.dir());
+        assert!(!std::fs::symlink_metadata(&written).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), "STREAMDATA");
+    }
+
+    #[test]
+    fn a_directory_writable_by_group_or_others_is_refused_before_anything_is_sent() {
+        use std::os::unix::fs::PermissionsExt;
+        for mode in [0o777, 0o770, 0o707, 0o775] {
+            let rig = Rig::new();
+            std::fs::create_dir_all(rig.dir()).unwrap();
+            std::fs::set_permissions(rig.dir(), std::fs::Permissions::from_mode(mode)).unwrap();
+            let src = Host::new(&listing(&[(A, 1, 10)]));
+            let (outcome, _) = rig.run(&src, &rig.job(&rig.dir()));
+            assert_eq!(outcome.result, RunResult::Failed, "{mode:o}");
+            assert!(outcome.message.contains("writable"), "{mode:o}: {}", outcome.message);
+            assert!(src.commands().is_empty() && rig.files().is_empty());
+        }
+    }
+
+    #[test]
+    fn an_increment_is_only_written_when_its_base_stream_is_still_in_the_directory() {
+        let rig = Rig::new();
+        let job = rig.job(&rig.dir());
+        rig.run(&Host::new(&listing(&[(A, 1, 10), (B, 2, 20)])), &job);
+        // The directory lost its files (a swapped or unmounted disk, a pruned backup): "up to date" would be a lie.
+        for f in rig.files() {
+            std::fs::remove_file(format!("{}/{f}", rig.dir())).unwrap();
+        }
+        let src = Host::new(&listing(&[(A, 1, 10), (B, 2, 20)]));
+        let (outcome, _) = rig.run(&src, &job);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("full"), "{}", outcome.message);
+        assert_eq!(rig.files(), vec![format!("tank-data@{B}.zfs")]);
+        // And the newest file can be the increment that ends at the recorded snapshot.
+        rig.run(&Host::new(&listing(&[(A, 1, 10), (B, 2, 20), (C, 3, 30)])), &job);
+        std::fs::remove_file(format!("{}/tank-data@{B}.zfs", rig.dir())).unwrap(); // only the full is gone
+        let src = Host::new(&listing(&[(A, 1, 10), (B, 2, 20), (C, 3, 30), ("hourly-20261008T130000Z", 4, 40)]));
+        let (outcome, _) = rig.run(&src, &job);
+        assert!(outcome.message.contains(&format!("incremental from {C}")), "the record's snapshot still has a file: {}", outcome.message);
+    }
+
+    #[test]
+    fn a_complete_stream_is_never_overwritten_it_is_kept_aside() {
+        let rig = Rig::new();
+        let job = rig.job(&rig.dir());
+        rig.run(&Host::new(&listing(&[(A, 1, 10), (B, 2, 20)])), &job);
+        let mut again = Host::new(&listing(&[(A, 1, 10), (B, 99, 25)])); // B destroyed and recreated
+        again.send_script = "printf 'NEWDATA'".into();
+        let (outcome, _) = rig.run(&again, &job);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        let read = |f: &str| std::fs::read_to_string(format!("{}/{f}", rig.dir())).unwrap();
+        assert_eq!(read(&format!("tank-data@{B}.zfs")), "NEWDATA");
+        assert_eq!(read(&format!("tank-data@{B}.zfs.old-1")), "STREAMDATA", "the earlier full stream survives");
+        assert!(outcome.message.contains(".old-1"), "{}", outcome.message);
+        // A third time takes the next free number.
+        let mut third = Host::new(&listing(&[(A, 1, 10), (B, 100, 26)]));
+        third.send_script = "printf 'THIRD'".into();
+        rig.run(&third, &job);
+        assert_eq!(read(&format!("tank-data@{B}.zfs.old-2")), "NEWDATA");
     }
 }

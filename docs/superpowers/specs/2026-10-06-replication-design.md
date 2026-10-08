@@ -99,10 +99,10 @@ A destination that was written to since its newest snapshot makes the receive fa
 
 ### A file run
 
-Under a lock on `(source host, source dataset)` and one on `dest_dir`:
+Under a lock on `dest_dir` only (the source is not locked, as for host-to-host):
 
 1. Select the newest source snapshot with the prefix.
-2. Read `replication.json` in the state dir (`{job_id: last_sent_snapshot}`). If it names a snapshot that still exists on the source and is older than the new one, send incrementally from it; otherwise a full stream. If the newest is already recorded, `Skipped: up to date`.
+2. Read `replication.json` in the state dir (`{job_id: {snapshot, guid, dir}}`; the record only counts while `dest_dir` still holds the stream that ends at that snapshot). If it names a snapshot that still exists on the source and is older than the new one, send incrementally from it; otherwise a full stream. If the newest is already recorded, `Skipped: up to date`.
 3. The hub spawns `zfs send ...` through the source runner and writes its stdout to `<dir>/<name>@<snap>.zfs.partial` (full) or `<dir>/<name>@<from>..<to>.zfs.partial` (incremental), where `<name>` is the source dataset with `/` replaced by `-`, then fsyncs and renames the file without `.partial`, then updates `replication.json`. A cancelled or failed run removes the `.partial`.
 4. The directory is created (mode 0700) if missing.
 
@@ -211,3 +211,4 @@ On the hub (FreeBSD 15.1), daemon running the plan 2 build, jobs created through
 - **Daemon killed mid-write** (`kill -9` as soon as a `.partial` appeared; the rc supervisor restarted it): after the restart the `.partial` was gone, the unfinished run was closed as lost, and the following run wrote the 150.4 MiB increment.
 - Files were mode 0600, the created directory 0700.
 - Not tested live: a full disk (covered by `pump_to_file`'s write-error test).
+- **Review fixes (2026-10-08):** the `.partial` is created fresh (unlink, then exclusive create) and a group- or world-writable `dest_dir` is refused; `dest_dir` must be canonical; a recorded snapshot whose stream file is gone from the directory counts as unrecorded (full stream); a complete stream with the same name is kept as `<name>.old-N`, never overwritten. Known and documented rather than fixed: the host is not part of the file name, `tank/a-b` and `tank-a/b` flatten alike, symlinked aliases of one directory are not detected, and deleting a job keeps its `replication.json` entry.
