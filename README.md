@@ -314,7 +314,25 @@ schedule = "30 * * * *"
 - **Nothing is destroyed on the source, and the destination is only rolled back with `force`.** A replication never creates, destroys or rolls back a snapshot on the source, and the destination is received unmounted (`zfs receive -s -u`). A destination that was written to since its newest snapshot makes the receive fail with zfs's own message ("destination ... has been modified since most recent snapshot"); `force = true` adds `-F` to an incremental (or resumed) receive, which rolls the destination back to the base: it destroys destination snapshots and changes newer than the base. A full send is never forced, so it can never overwrite an existing dataset. A full send into an existing dataset that shares nothing with the source fails with "destination ... exists / must specify -F".
 - **Resumable.** Because the receive is `-s`, an interrupted transfer (a network drop, a cancel, a daemon restart) leaves a resume token on the destination, and the next run continues with `zfs send -t` instead of starting over (`resumed an interrupted transfer`). If a token can no longer be continued (its source snapshot is gone) the run fails and says so; discard it by hand with `zfs receive -A <dataset>` on the destination host.
 - **Progress and cancel.** The job panel shows `sent 12.3 GiB of 40.0 GiB (30%)  85.0 MiB/s  eta 5m 00s` for a running replication, taken from files the daemon writes once a second in `<state>/progress/`. `c` writes a request file in `<state>/cancel/`; the daemon notices it within a second, stops both processes and records the run as `cancelled`. A cancelled run is not counted as failed and does not notify. A daemon restart during a transfer ends it, closes the run as lost, and the next run resumes.
-- **Rules.** Two jobs may send from the same dataset to different destinations; two enabled jobs cannot write to the same destination (their incrementals would corrupt each other), and a slot that falls due while the job's previous transfer is still running is skipped; the later one is reported as unable to run, and `Space` refuses to enable a job that would clash. Only `/sbin/zfs` is used on the hosts, so no new sudoers entries are needed. `dest_host = "file"` (stream files in a hub directory) is not supported yet.
+- **Rules.** Two jobs may send from the same dataset to different destinations; two enabled jobs cannot write to the same destination (their incrementals would corrupt each other), and a slot that falls due while the job's previous transfer is still running is skipped; the later one is reported as unable to run, and `Space` refuses to enable a job that would clash. Only `/sbin/zfs` is used on the hosts, so no new sudoers entries are needed.
+
+**A file target** writes the stream to files in a directory on the hub instead of receiving it anywhere:
+
+```toml
+[[jobs]]
+id = "repl-tank-data-to-files"
+host = "local"
+kind = "replicate"
+dataset = "tank/data"
+prefix = "hourly"
+dest_host = "file"
+dest_dir = "/mnt/backup/zfs-streams"   # absolute, on the hub
+schedule = "30 3 * * *"
+```
+
+- Each run writes `tank-data@<snap>.zfs` (a full stream) or `tank-data@<from>..<to>.zfs` (an increment), the dataset name with `/` replaced by `-`. The first run, a run after the recorded snapshot was pruned or recreated on the source, one after `dest_dir` was changed, and one after `replication.json` was lost are full streams; otherwise it is an increment from the snapshot the previous run wrote. `<state>/replication.json` records what each job last wrote (snapshot, guid and directory); it changes only after a file is complete.
+- A file is written as `<name>.partial`, fsynced and renamed when complete, so a file without `.partial` is a complete stream. A failed or cancelled run removes its `.partial` (the daemon also removes leftovers at startup, only `*.zfs.partial` in the jobs' directories). File targets cannot resume: the next run starts again. The directory is created private (mode 0700) and so are the files (0600); nothing is created, destroyed or rolled back on the source, and no remote host needs a new sudoers entry.
+- **Restoring.** The files are plain `zfs send` streams. Receive the full file, then each increment in order, into a dataset that does not exist yet: `zfs receive pool/restored < tank-data@hourly-A.zfs`, then `zfs receive pool/restored < tank-data@hourly-A..hourly-B.zfs`, and so on. There is no UI for restoring, and `zfsctl` never deletes old stream files: prune them yourself, keeping every increment back to a full stream you still want to restore from.
 
 **Notifications.** To be told when a job fails or a scrub finds errors, set a command in `config.toml`:
 
