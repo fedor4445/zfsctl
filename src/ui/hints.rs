@@ -74,9 +74,13 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
         Modal::Info { .. } => vec![h("any key", "Close", 0)],
-        Modal::Confirm { action, .. } => {
-            vec![h("y/Enter", "Confirm", 0).tone(action.call.tone()), h("n/Esc", "Cancel", 0)]
-        }
+        // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
+        // it is only advertised once there is a selection for it to apply.
+        Modal::Confirm { action, choice, .. } => match choice {
+            None => vec![h("y", "Yes", 0), h("n/Esc", "No", 0)],
+            Some(true) => vec![h("Enter", "Run", 0).tone(action.call.tone()), h("n/Esc", "No", 1)],
+            Some(false) => vec![h("Enter", "Cancel", 0), h("y", "Yes", 1)],
+        },
         Modal::ConfirmTyped { action, .. } => vec![
             h("type", "name to confirm", 2),
             h("Enter", "Confirm", 0).tone(action.call.tone()),
@@ -858,16 +862,20 @@ mod tests {
     }
 
     #[test]
-    fn plain_confirm_shows_y_and_n() {
-        let mut app = pools_middle();
-        app.modal = Some(Modal::Confirm {
-            prompt: "Scrub pool 'tank'? (y/n)".to_string(),
-            action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::ScrubPool { pool: "tank".to_string() } },
-        });
-        let hs = hints(&app);
-        assert!(hs.iter().any(|h| h.key == "y/Enter"));
-        assert!(hs.iter().any(|h| h.key == "n/Esc"));
-        assert_eq!(hs.iter().find(|h| h.key == "y/Enter").unwrap().tone, Tone::Neutral);
+    fn a_confirm_shows_only_the_keys_that_make_sense_for_its_state() {
+        let confirm = |choice: Option<bool>, call: MutationCall| {
+            let mut app = pools_middle();
+            app.modal = Some(Modal::Confirm { prompt: "Scrub pool 'tank'? (y/n)".to_string(), action: PendingAction { host: 0, section: Section::Pools, call }, choice });
+            hints(&app)
+        };
+        let scrub = || MutationCall::ScrubPool { pool: "tank".to_string() };
+        let keys = |hs: &[Hint]| hs.iter().map(|h| (h.key, h.label)).collect::<Vec<_>>();
+        assert_eq!(keys(&confirm(None, scrub())), vec![("y", "Yes"), ("n/Esc", "No")], "nothing selected: no Enter hint, Enter does nothing");
+        let yes = confirm(Some(true), scrub());
+        assert_eq!(keys(&yes), vec![("Enter", "Run"), ("n/Esc", "No")]);
+        assert_eq!(confirm(Some(false), scrub()).iter().map(|h| (h.key, h.label)).collect::<Vec<_>>(), vec![("Enter", "Cancel"), ("y", "Yes")]);
+        let danger = confirm(Some(true), MutationCall::DestroyPool { pool: "tank".to_string() });
+        assert_eq!(danger.iter().find(|h| h.key == "Enter").unwrap().tone, Tone::Danger, "Run carries the action's tone");
     }
 
     #[test]

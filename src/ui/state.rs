@@ -824,7 +824,7 @@ impl App {
             KeyCode::Char('s') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
-                        self.modal = Some(Modal::Confirm {
+                        self.modal = Some(Modal::Confirm { choice: None,
                             prompt: format!("Scrub pool '{}'? (y/n)", pool.name),
                             action: PendingAction {
                                 host: self.selected_host,
@@ -838,7 +838,7 @@ impl App {
             KeyCode::Char('R') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
-                        self.modal = Some(Modal::Confirm {
+                        self.modal = Some(Modal::Confirm { choice: None,
                             prompt: format!("Resilver pool '{}'? (y/n)", pool.name),
                             action: PendingAction {
                                 host: self.selected_host,
@@ -970,7 +970,7 @@ impl App {
                             PermissionRow::Grant { perms, .. } => Some(perms.clone()),
                             PermissionRow::Set { .. } | PermissionRow::CreateTime { .. } => None,
                         };
-                        self.modal = Some(Modal::Confirm {
+                        self.modal = Some(Modal::Confirm { choice: None,
                             prompt: format!("Revoke all permissions for this target on '{dataset}'? (y/n)"),
                             action: PendingAction {
                                 host: self.selected_host,
@@ -1031,7 +1031,7 @@ impl App {
             {
                 if let (Some(path), Some(i)) = (self.selected_dataset_mountpoint(), self.acl_entries_table.selected()) {
                     if i < self.acl_entries.len() {
-                        self.modal = Some(Modal::Confirm {
+                        self.modal = Some(Modal::Confirm { choice: None,
                             prompt: format!("Remove ACL entry #{i} on '{path}'? (y/n)"),
                             action: PendingAction { host: self.selected_host, section: Section::DatasetAcl, call: MutationCall::RemoveAclEntry { path, position: i } },
                         });
@@ -1258,7 +1258,7 @@ impl App {
                 if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)) {
                     let prompt = format!("Delete job '{}'? It stops running; its past runs stay in the history. (y/n)", job.id);
                     let call = MutationCall::DeleteJob { state_dir: self.state_dir.clone(), id: job.id.clone() };
-                    self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
+                    self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
                 }
             }
             KeyCode::Down if self.current_section() == Section::Jobs => {
@@ -1287,7 +1287,7 @@ impl App {
                                 MutationCall::RemoveSmbShare { dataset: dataset.clone() },
                             ),
                         };
-                        self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::Shares, call } });
+                        self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Shares, call } });
                     }
                 }
             }
@@ -1308,7 +1308,7 @@ impl App {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_activate()).map(|b| b.name.clone()) else { return };
                 let prompt = format!("Make '{name}' the boot environment for every future boot? (y/n)");
                 let call = MutationCall::ActivateBootEnv { name, temporary: false };
-                self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
+                self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
             }
             KeyCode::Char('t') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
@@ -1453,7 +1453,7 @@ impl App {
         } else {
             ("Offline", MutationCall::OfflineDisk { pool: pool.clone(), disk: disk.clone() })
         };
-        self.modal = Some(Modal::Confirm {
+        self.modal = Some(Modal::Confirm { choice: None,
             prompt: format!("{verb} disk '{disk}' in pool '{pool}'? (y/n)"),
             action: PendingAction { host: self.selected_host, section: Section::Vdevs, call },
         });
@@ -1469,11 +1469,21 @@ impl App {
     pub fn handle_modal_key(&mut self, key: KeyCode) -> Option<PendingAction> {
         let modal = self.modal.take()?;
         match modal {
-            Modal::Confirm { prompt, action } => match key {
-                KeyCode::Char('y') | KeyCode::Enter => Some(action),
-                KeyCode::Char('n') | KeyCode::Esc => None,
+            // Two steps for both outcomes: `y` / `n` / Esc only select, Enter applies the selection.
+            // Enter with nothing selected, and every other key, change nothing.
+            Modal::Confirm { prompt, action, choice } => match (key, choice) {
+                (KeyCode::Enter, Some(true)) => Some(action),
+                (KeyCode::Enter, Some(false)) => None,
+                (KeyCode::Char('y'), _) => {
+                    self.modal = Some(Modal::Confirm { prompt, action, choice: Some(true) });
+                    None
+                }
+                (KeyCode::Char('n') | KeyCode::Esc, _) => {
+                    self.modal = Some(Modal::Confirm { prompt, action, choice: Some(false) });
+                    None
+                }
                 _ => {
-                    self.modal = Some(Modal::Confirm { prompt, action });
+                    self.modal = Some(Modal::Confirm { prompt, action, choice });
                     None
                 }
             },
@@ -3310,6 +3320,7 @@ Global
   r                refresh the focused pane
   F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal
+  y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
   A                About
@@ -3688,59 +3699,84 @@ mod tests {
         }
     }
 
-    #[test]
-    fn handle_modal_key_confirm_yes_returns_action_and_clears_modal() {
+    fn confirm_scrub() -> (App, crate::ui::modal::PendingAction) {
         let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action: action.clone() });
-        let result = app.handle_modal_key(KeyCode::Char('y'));
-        assert_eq!(result, Some(action));
+        let action = crate::ui::modal::PendingAction { host: 0, section: Section::Pools, call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() } };
+        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action: action.clone(), choice: None });
+        (app, action)
+    }
+
+    fn choice_of(app: &App) -> Option<Option<bool>> {
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Confirm { choice, .. }) => Some(*choice),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_confirm_needs_y_and_then_enter_to_run() {
+        let (mut app, action) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None, "y alone runs nothing");
+        assert_eq!(choice_of(&app), Some(Some(true)), "y arms yes and keeps the window open");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), Some(action));
         assert!(app.modal.is_none());
     }
 
     #[test]
-    fn handle_modal_key_confirm_enter_also_submits() {
-        let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
-        let result = app.handle_modal_key(KeyCode::Enter);
-        assert!(result.is_some());
+    fn enter_on_its_own_does_nothing_at_all() {
+        let (mut app, _) = confirm_scrub();
+        for _ in 0..5 {
+            assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "mashing Enter must never run or dismiss it");
+        }
+        assert_eq!(choice_of(&app), Some(None));
     }
 
     #[test]
-    fn handle_modal_key_confirm_no_cancels_and_clears_modal() {
-        let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
-        let result = app.handle_modal_key(KeyCode::Char('n'));
-        assert_eq!(result, None);
+    fn n_then_enter_cancels_and_n_alone_does_not_close() {
+        let (mut app, _) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Char('n')), None);
+        assert_eq!(choice_of(&app), Some(Some(false)), "n arms no and keeps the window open");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none(), "Enter after n closes it without running anything");
+    }
+
+    #[test]
+    fn esc_also_arms_no_and_needs_enter_to_close() {
+        let (mut app, _) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Esc), None);
+        assert_eq!(choice_of(&app), Some(Some(false)), "Esc selects no, it does not close");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
         assert!(app.modal.is_none());
     }
 
     #[test]
-    fn handle_modal_key_confirm_unrecognized_key_keeps_modal_open() {
-        let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
-        let result = app.handle_modal_key(KeyCode::Char('x'));
-        assert_eq!(result, None);
-        assert!(app.modal.is_some(), "an unrecognized key must not silently dismiss the confirmation");
+    fn the_last_choice_before_enter_wins() {
+        let (mut app, action) = confirm_scrub();
+        app.handle_modal_key(KeyCode::Char('y'));
+        app.handle_modal_key(KeyCode::Char('n'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "y then n: cancelled");
+        let (mut app, _) = confirm_scrub();
+        app.handle_modal_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Esc);
+        app.handle_modal_key(KeyCode::Char('y'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), Some(action), "n, Esc, y: runs");
+    }
+
+    #[test]
+    fn other_keys_never_change_or_dismiss_a_confirm() {
+        let (mut app, _) = confirm_scrub();
+        app.handle_modal_key(KeyCode::Char('y'));
+        for key in [KeyCode::Char('x'), KeyCode::Char('Y'), KeyCode::Char(' '), KeyCode::Tab, KeyCode::Backspace, KeyCode::Up, KeyCode::Down] {
+            assert_eq!(app.handle_modal_key(key), None);
+        }
+        assert_eq!(choice_of(&app), Some(Some(true)), "stray keys keep the armed choice and the window");
+    }
+
+    #[test]
+    fn every_confirm_opened_from_a_key_starts_with_no_choice() {
+        let (mut app, _dir) = selected_jobs_app(&[scrub_job("a")]);
+        app.handle_key(KeyCode::Char('d'));
+        assert_eq!(choice_of(&app), Some(None), "a freshly opened confirm has nothing selected");
     }
 
     #[test]
@@ -8228,10 +8264,11 @@ mod tests {
     fn d_on_a_job_asks_for_a_warning_confirmation_and_deletes_only_that_job() {
         let (mut app, _dir) = selected_jobs_app(&[scrub_job("a"), scrub_job("b")]);
         app.handle_key(KeyCode::Char('d'));
-        let Some(Modal::Confirm { prompt, action }) = &app.modal else { panic!("{:?}", app.modal) };
+        let Some(Modal::Confirm { prompt, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
         assert!(prompt.contains("Delete job 'a'") && prompt.contains("history"), "{prompt}");
         assert_eq!(action.call.tone(), crate::ui::modal::Tone::Warn);
-        let action = app.handle_modal_key(KeyCode::Char('y')).expect("confirmed");
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("confirmed with y then Enter");
         assert_eq!(action.section, Section::Jobs);
         assert!(matches!(&action.call, MutationCall::DeleteJob { id, .. } if id == "a"), "{:?}", action.call);
     }
@@ -8245,6 +8282,8 @@ mod tests {
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Char('d'));
         assert!(app.handle_modal_key(KeyCode::Char('n')).is_none());
+        assert!(app.modal.is_some(), "n only selects no");
+        assert!(app.handle_modal_key(KeyCode::Enter).is_none());
         assert!(app.modal.is_none());
     }
 
@@ -9175,7 +9214,7 @@ mod tests {
     fn a_asks_to_confirm_then_activates_permanently_and_only_when_it_would_change_something() {
         let mut app = bootenv_app(vec![running(), spare()], 1);
         app.handle_key(KeyCode::Char('a'));
-        let Some(Modal::Confirm { prompt, action }) = &app.modal else { panic!("{:?}", app.modal) };
+        let Some(Modal::Confirm { prompt, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
         assert!(prompt.contains("'spare'"), "{prompt}");
         assert_eq!(action.call, MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: false });
         let mut app = bootenv_app(vec![running(), spare()], 0);
@@ -9389,5 +9428,11 @@ mod tests {
     fn help_documents_the_backup_key() {
         let text = help_text();
         assert!(text.contains("new backup job"), "{text}");
+    }
+
+    #[test]
+    fn help_explains_the_two_step_confirmation() {
+        let text = help_text();
+        assert!(text.contains("takes two keys") && text.contains("Enter alone does nothing"), "{text}");
     }
 }

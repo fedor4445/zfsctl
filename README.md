@@ -90,6 +90,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
+- **Confirmations take two keys.** A y/n window needs `y` (yes) or `n` / `Esc` (no) to *select*, then `Enter` to apply it; `Enter` on its own does nothing, so a stray key or a held-down Enter can never run, or even dismiss, a confirmation. The window shows what is selected and what Enter will do. Typed-name confirmations (destroying a pool, dataset or snapshot) need the exact name and then `Enter`, and `Esc` cancels them at once.
 - `?`: show the Help screen (full keybinding reference)
 - `A`: show the About screen
 - `!`: open a shell on the selected host and return to zfsctl when you exit it. On a remote host this is an interactive `ssh` login as the same unprivileged user zfsctl connects as, never a root shell (run the allowed `sudo zpool ...` yourself from there). Locally it is `$SHELL`. When the shell exits, the list on screen is refreshed.

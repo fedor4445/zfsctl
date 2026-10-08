@@ -311,8 +311,9 @@ impl FormKind {
 /// A modal dialog awaiting user input before a mutation runs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
-    /// Simple y/n confirmation for reversible/lower-risk operations.
-    Confirm { prompt: String, action: PendingAction },
+    /// y/n confirmation. Two steps, both outcomes: `y` or `n`/Esc only *select* (`choice`), and Enter
+    /// applies the selection, so a stray key or a held-down Enter can never run (or dismiss) it.
+    Confirm { prompt: String, action: PendingAction, choice: Option<bool> },
     /// Type-the-exact-name confirmation for irreversible operations.
     ConfirmTyped {
         prompt: String,

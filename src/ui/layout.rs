@@ -803,6 +803,11 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
     }
 }
 
+/// The line under a y/n confirm's prompt. `CONFIRM_YES` is the longest, so it sizes the window.
+const CONFIRM_NONE: &str = "Press y for yes or n for no, then Enter.";
+const CONFIRM_YES: &str = "▶ YES selected: press Enter to run it (n or Esc to change).";
+const CONFIRM_NO: &str = "▶ NO selected: press Enter to cancel (y to change).";
+
 fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
@@ -813,7 +818,8 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     let inner_width = approx_width.saturating_sub(2).max(1);
 
     let content_lines = match modal {
-        Modal::Confirm { prompt, .. } => wrapped_line_count(prompt, inner_width),
+        // The prompt, a blank line and the selection line (sized by the longest of its three texts).
+        Modal::Confirm { prompt, .. } => wrapped_line_count(&format!("{prompt}\n\n{CONFIRM_YES}"), inner_width),
         Modal::ConfirmTyped { prompt, input, .. } => {
             wrapped_line_count(&format!("{prompt}\n\n> {input}"), inner_width)
         }
@@ -846,10 +852,22 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     let popup_area = centered_rect(MODAL_WIDTH_PERCENT, popup_height, area);
     f.render_widget(Clear, popup_area);
     match modal {
-        Modal::Confirm { prompt, action } => {
-            let block = confirm_block(theme, action.call.tone(), action.call.label(), "Confirm (y/n)", "confirm (y/n)");
-            let p = Paragraph::new(prompt.as_str()).wrap(Wrap { trim: false }).block(block);
-            f.render_widget(p, popup_area);
+        Modal::Confirm { prompt, action, choice } => {
+            let tone = action.call.tone();
+            let block = confirm_block(theme, tone, action.call.label(), "Confirm (y/n, then Enter)", "confirm (y/n, then Enter)");
+            let selected = match tone {
+                Tone::Danger => theme.danger,
+                Tone::Warn => theme.warn,
+                Tone::Neutral => Style::default().add_modifier(Modifier::BOLD),
+            };
+            let mut lines: Vec<Line> = prompt.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.push(Line::raw(""));
+            lines.push(match choice {
+                None => Line::styled(CONFIRM_NONE, theme.dim()),
+                Some(true) => Line::styled(CONFIRM_YES, selected),
+                Some(false) => Line::styled(CONFIRM_NO, Style::default().add_modifier(Modifier::BOLD)),
+            });
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), popup_area);
         }
         Modal::ConfirmTyped { prompt, input, action, .. } => {
             let block = confirm_block(
@@ -1732,7 +1750,7 @@ mod tests {
     #[test]
     fn a_warn_confirm_is_titled_with_a_triangle_and_drawn_in_yellow() {
         let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
-        app.modal = Some(Modal::Confirm {
+        app.modal = Some(Modal::Confirm { choice: None,
             prompt: "Offline disk 'da0' in pool 'tank'? (y/n)".to_string(),
             action: PendingAction { host: 0, section: Section::Vdevs, call: MutationCall::OfflineDisk { pool: "tank".to_string(), disk: "da0".to_string() } },
         });
@@ -1745,13 +1763,43 @@ mod tests {
     #[test]
     fn a_routine_confirm_keeps_its_plain_title() {
         let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
-        app.modal = Some(Modal::Confirm {
+        app.modal = Some(Modal::Confirm { choice: None,
             prompt: "Scrub pool 'tank'? (y/n)".to_string(),
             action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::ScrubPool { pool: "tank".to_string() } },
         });
         let rows = render(&mut app, 100, 30).join("\n");
-        assert!(rows.contains("Confirm (y/n)"), "{rows}");
+        assert!(rows.contains("Confirm (y/n, then Enter)"), "{rows}");
         assert!(!rows.contains('✖'));
+    }
+
+    fn confirm_with(choice: Option<bool>, prompt: &str) -> App {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.modal = Some(Modal::Confirm { choice, prompt: prompt.to_string(), action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::ScrubPool { pool: "tank".to_string() } } });
+        app
+    }
+
+    #[test]
+    fn a_confirm_says_what_is_selected_and_what_enter_will_do() {
+        let none = render(&mut confirm_with(None, "Scrub pool 'tank'? (y/n)"), 100, 30).join("\n");
+        assert!(none.contains("Press y for yes or n for no, then Enter"), "{none}");
+        let yes = render(&mut confirm_with(Some(true), "Scrub pool 'tank'? (y/n)"), 100, 30).join("\n");
+        assert!(yes.contains("YES selected") && yes.contains("Enter to run"), "{yes}");
+        let no = render(&mut confirm_with(Some(false), "Scrub pool 'tank'? (y/n)"), 100, 30).join("\n");
+        assert!(no.contains("NO selected") && no.contains("Enter to cancel"), "{no}");
+    }
+
+    #[test]
+    fn the_selection_line_is_not_clipped_under_a_long_prompt_on_a_small_terminal() {
+        let long = "Remove SMB share 'media' for 'tank/media'? Connected clients lose access. They will have to reconnect and any open files may be lost. (y/n)";
+        for choice in [None, Some(true), Some(false)] {
+            let rows = render(&mut confirm_with(choice, long), 64, 20).join("\n");
+            let want = match choice {
+                None => "Press y",
+                Some(true) => "YES selected",
+                Some(false) => "NO selected",
+            };
+            assert!(rows.contains(want), "{choice:?} clipped:\n{rows}");
+        }
     }
 
     #[test]
