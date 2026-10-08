@@ -182,7 +182,8 @@ shown, and that order is also the position number `d`/`n` operate on.
 
 - `Right` / `Left`: move focus to/from the properties pane (same as Pools, above)
 - `n`: create a new dataset (prompts for name)
-- `d`: destroy the selected dataset (type the dataset's name to confirm)
+- `d`: destroy the selected dataset (type the dataset's name to confirm). zfs refuses a dataset that still has snapshots or child datasets; the prompt says so and how many
+- `D`: destroy the selected dataset **and** its child datasets and all their snapshots (`zfs destroy -r`). You type the dataset's name, and the prompt says exactly how many child datasets and snapshots go with it (counted at the last refresh; the snapshot count says "unknown" until the Snapshots section has been opened). Clones are never touched: `-R` is not used, so a dataset with clones is refused with zfs's message
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
 - `J`: schedule recurring snapshots of the selected dataset, keeping the newest N (opens the snapshot-job form with the dataset filled in; see **Scheduled jobs** below)
 - `M`: create/edit a managed SMB share for the selected (mounted) dataset (see Shares → SMB shares). Always shown; if smbd isn't running, the dataset isn't mounted, or shares aren't loaded yet, it says so in the status line instead

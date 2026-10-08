@@ -92,6 +92,13 @@ pub fn destroy_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// `zfs destroy -r`: the dataset, its child datasets and all their snapshots. Never `-R`, which would also
+/// destroy clones elsewhere in the pool: a dataset with clones is refused with zfs's own message.
+pub fn destroy_dataset_recursive(runner: &dyn CommandRunner, name: &str) -> Result<()> {
+    super::run_checked(runner, "zfs", &["destroy", "-r", "--", name], &format!("zfs destroy -r {name}"))?;
+    Ok(())
+}
+
 /// Runs `zfs get all -H -p <dataset>` and parses every property into a
 /// flat list.
 pub fn get_dataset_properties(runner: &dyn CommandRunner, dataset: &str) -> Result<Vec<Property>> {

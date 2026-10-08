@@ -158,6 +158,9 @@ pub struct App {
     pub pools: Vec<Pool>,
     pub datasets: Vec<Dataset>,
     pub snapshots: Vec<Snapshot>,
+    /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
+    /// snapshots can say "unknown" instead of a misleading 0.
+    pub snapshots_loaded: bool,
     pub pools_table: TableState,
     pub datasets_table: TableState,
     pub snapshots_table: TableState,
@@ -300,6 +303,7 @@ impl App {
             pools: Vec::new(),
             datasets: Vec::new(),
             snapshots: Vec::new(),
+            snapshots_loaded: false,
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
             snapshots_table: TableState::default(),
@@ -579,6 +583,33 @@ impl App {
         self.datasets_table.selected().and_then(|i| self.datasets.get(i)).and_then(|d| d.mountpoint.clone())
     }
 
+    /// How many child datasets and snapshots sit under `name` (the dataset's own snapshots included), from
+    /// the lists loaded at the last refresh. Snapshots are `None` until a snapshot list has arrived.
+    fn counts_under(&self, name: &str) -> (usize, Option<usize>) {
+        let prefix = format!("{name}/");
+        let children = self.datasets.iter().filter(|d| d.name.starts_with(&prefix)).count();
+        let snapshots = self.snapshots_loaded.then(|| self.snapshots.iter().filter(|s| s.dataset == name || s.dataset.starts_with(&prefix)).count());
+        (children, snapshots)
+    }
+
+    fn has_anything_under(&self, name: &str) -> bool {
+        let (children, snapshots) = self.counts_under(name);
+        children > 0 || snapshots.is_some_and(|n| n > 0)
+    }
+
+    /// "2 child datasets and 3 snapshots", or "... and snapshots: unknown (...)" before any snapshot list loaded.
+    fn what_is_under(&self, name: &str) -> String {
+        fn plural(n: usize, one: &str, many: &str) -> String {
+            format!("{n} {}", if n == 1 { one } else { many })
+        }
+        let (children, snapshots) = self.counts_under(name);
+        let kids = plural(children, "child dataset", "child datasets");
+        match snapshots {
+            Some(n) => format!("{kids} and {}", plural(n, "snapshot", "snapshots")),
+            None => format!("{kids}; snapshots: unknown (open the Snapshots section to count them)"),
+        }
+    }
+
     /// Clears data panes so a stale render from the previously-selected
     /// host is never left on screen looking current after switching hosts.
     fn clear_host_data(&mut self) {
@@ -586,6 +617,7 @@ impl App {
         self.pools.clear();
         self.datasets.clear();
         self.snapshots.clear();
+        self.snapshots_loaded = false;
         self.pools_table.select(None);
         self.datasets_table.select(None);
         self.snapshots_table.select(None);
@@ -1071,11 +1103,24 @@ impl App {
                     kind: FormKind::CreateDataset { host: self.selected_host },
                 });
             }
+            KeyCode::Char('D') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                if let Some(name) = self.selected_dataset_name() {
+                    let what = self.what_is_under(&name);
+                    self.modal = Some(Modal::ConfirmTyped {
+                        prompt: format!("Type the dataset name to destroy '{name}' AND everything under it: {what}.\n(Counts are as of the last refresh. Clones are never touched: zfs refuses if there are any.)"),
+                        expected: name.clone(),
+                        input: String::new(),
+                        action: PendingAction { host: self.selected_host, section: Section::Datasets, call: MutationCall::DestroyDatasetRecursive { name } },
+                    });
+                }
+            }
             KeyCode::Char('d') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.datasets_table.selected() {
                     if let Some(ds) = self.datasets.get(i) {
+                        let under = self.has_anything_under(&ds.name);
+                        let warning = if under { format!("\nIt has {}, so zfs will refuse; press Esc, then D, to destroy them too.", self.what_is_under(&ds.name)) } else { String::new() };
                         self.modal = Some(Modal::ConfirmTyped {
-                            prompt: format!("Type the dataset name to destroy '{}':", ds.name),
+                            prompt: format!("Type the dataset name to destroy '{}':{warning}", ds.name),
                             expected: ds.name.clone(),
                             input: String::new(),
                             action: PendingAction {
@@ -2144,6 +2189,7 @@ impl App {
                             let previous = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)).map(|s| (s.dataset.clone(), s.name.clone()));
                             self.snapshots = snapshots;
                             pin_selection(&mut self.snapshots_table, previous, &self.snapshots, |s| (s.dataset.clone(), s.name.clone()));
+                            self.snapshots_loaded = true;
                             self.clear_status_after_refresh(quiet);
                         }
                         Err(e) => self.set_error(e.to_string()),
@@ -3349,7 +3395,8 @@ Pool/Dataset properties pane
 
 Datasets
   Right / Left     focus/unfocus the detail pane
-  n / d            create / destroy a dataset
+  n / d            create / destroy a dataset (type its name; zfs refuses if it has snapshots or children)
+  D                destroy a dataset AND its child datasets and snapshots (type its name; says how many; never -R)
   s                snapshot the selected dataset
   N                create/edit an NFS share
   M                create/edit an SMB share
@@ -9434,5 +9481,94 @@ mod tests {
     fn help_explains_the_two_step_confirmation() {
         let text = help_text();
         assert!(text.contains("takes two keys") && text.contains("Enter alone does nothing"), "{text}");
+    }
+
+
+    fn destroy_app() -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        let ds = |name: &str| crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None };
+        app.datasets = vec![ds("tank/data"), ds("tank/data/a"), ds("tank/data/b"), ds("tank/data2"), ds("tank/other")];
+        app.datasets_table.select(Some(0));
+        let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 0 };
+        app.snapshots = vec![snap("tank/data", "s1"), snap("tank/data", "s2"), snap("tank/data/a", "s1"), snap("tank/data2", "x"), snap("tank/other", "x")];
+        app.snapshots_loaded = true;
+        app
+    }
+
+    #[test]
+    fn big_d_on_a_dataset_asks_for_its_name_and_says_what_goes_with_it() {
+        let mut app = destroy_app();
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, expected, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert_eq!(expected, "tank/data");
+        assert_eq!(action.call, MutationCall::DestroyDatasetRecursive { name: "tank/data".to_string() });
+        assert!(prompt.contains("2 child datasets") && prompt.contains("3 snapshots"), "siblings like tank/data2 are not counted: {prompt}");
+        assert!(prompt.contains("last refresh"), "{prompt}");
+        for c in "tank/data".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let run = app.handle_modal_key(KeyCode::Enter).expect("typed the name, then Enter");
+        assert_eq!(run.call, MutationCall::DestroyDatasetRecursive { name: "tank/data".to_string() });
+        assert_eq!(run.section, Section::Datasets);
+    }
+
+    #[test]
+    fn the_prompt_counts_singular_correctly_and_admits_when_snapshots_are_unknown() {
+        let mut app = destroy_app();
+        app.datasets.retain(|d| d.name != "tank/data/b");
+        app.snapshots.retain(|s| s.dataset == "tank/data" && s.name == "s1");
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("1 child dataset ") && prompt.contains("1 snapshot"), "{prompt}");
+        let mut app = destroy_app();
+        app.snapshots_loaded = false;
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("snapshots: unknown") && !prompt.contains("3 snapshots"), "{prompt}");
+    }
+
+    #[test]
+    fn plain_d_warns_that_zfs_will_refuse_and_points_at_big_d_only_when_there_is_something_under_it() {
+        let mut app = destroy_app();
+        app.handle_key(KeyCode::Char('d'));
+        let Some(Modal::ConfirmTyped { prompt, action, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("zfs will refuse") && prompt.contains("D"), "{prompt}");
+        assert_eq!(action.call, MutationCall::DestroyDataset { name: "tank/data".to_string() }, "d stays non-recursive");
+        let mut app = destroy_app();
+        app.datasets_table.select(Some(4)); // tank/other: one snapshot, no children
+        app.snapshots.retain(|s| s.dataset != "tank/other");
+        app.handle_key(KeyCode::Char('d'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(!prompt.contains("zfs will refuse"), "nothing under it: {prompt}");
+    }
+
+    #[test]
+    fn big_d_is_inert_without_a_selection_or_with_the_right_pane_focused() {
+        let mut app = destroy_app();
+        app.datasets_table.select(None);
+        app.handle_key(KeyCode::Char('D'));
+        assert!(app.modal.is_none());
+        let mut app = destroy_app();
+        app.pane_focus = PaneFocus::Right;
+        app.handle_key(KeyCode::Char('D'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn snapshots_count_as_loaded_after_a_refresh_and_not_after_a_host_switch() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        assert!(!app.snapshots_loaded);
+        app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.snapshots_loaded, "an empty list is still a loaded list");
+        app.handle_key(KeyCode::Down); // switch host (Hosts section)
+        assert!(!app.snapshots_loaded);
+    }
+
+    #[test]
+    fn help_documents_recursive_destroy() {
+        assert!(help_text().contains("D                destroy a dataset AND its child datasets and snapshots"), "{}", help_text());
     }
 }

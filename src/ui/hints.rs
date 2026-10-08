@@ -170,6 +170,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("n", "New", 2));
             if selected {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
+                v.push(h("D", "Destroy recursively", 3).tone(Tone::Danger));
                 v.push(h("s", "Snapshot", 2));
                 // Always advertised: when a share can't be created the key
                 // explains why (status message) instead of silently vanishing.
@@ -1224,5 +1225,16 @@ mod tests {
         let labels: Vec<(&str, &str)> = hints(&a).iter().map(|h| (h.key, h.label)).collect();
         assert!(labels.contains(&("B", "New backup job")), "{labels:?}");
         assert!(!labels.iter().any(|(k, _)| *k == "c"), "nothing is running");
+    }
+
+
+    #[test]
+    fn datasets_advertise_recursive_destroy_only_with_a_dataset_selected() {
+        let with = keys(&datasets_middle(false));
+        assert!(with.contains(&"D"), "{with:?}");
+        let h = hints(&datasets_middle(false));
+        let d = h.iter().find(|x| x.key == "D").unwrap();
+        assert_eq!((d.label, d.tone), ("Destroy recursively", Tone::Danger));
+        assert!(!keys(&datasets_none_selected()).contains(&"D"));
     }
 }
