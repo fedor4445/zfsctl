@@ -115,3 +115,7 @@ After `/sbin/bectl` was added to each VM's sudoers (`/usr/local/etc/sudoers.d/zf
 - **Permanent activation** (never tested before): the confirm prompt appeared; after `y`, `default` read `N`, the new BE `R`, and `bootfs` pointed at it; activating `default` again restored `NR` and the original `bootfs`. No reboot was performed, so booting into an activated BE is still untested.
 - 15.1 and 16.0-CURRENT behaved identically. One empty listing seen right after an activation on 16.0-CURRENT came from the test script's own SSH hop: a direct `bectl list -H` immediately and 5 seconds after activating listed both BEs.
 - Both VMs were left with only `default` (`NR`) and the original `bootfs`.
+
+### Reboot into an activated BE (2026-10-08)
+
+On `fbsd16t2` (15.1) the user created a BE named `new` in the TUI, activated it (permanent `a`), and rebooted. The VM came up in it: the TUI showed `new` as `Now+Reboot` with `default` inactive (space 808K, no mountpoint), and on the VM `kenv` reported `currdev`, `vfs.root.mountfrom` and `zfs_be_active` all `zfs:zroot/ROOT/new`, `/` mounted from `zroot/ROOT/new` and `zpool get bootfs zroot` was `zroot/ROOT/new`. A temporary (`t`) activation followed by a reboot is still untested.
