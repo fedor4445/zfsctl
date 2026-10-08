@@ -146,7 +146,12 @@ pub fn error_text(stdout: &str, stderr: &str) -> String {
         Line::Error(m) => Some(m),
         _ => None,
     });
-    let text = one_line(&fatal.unwrap_or_else(|| stderr.to_string()));
+    failure_text(fatal.as_deref(), stderr)
+}
+
+/// `fatal` (restic's own `exit_error` message) if there is one, else `stderr`, on one line.
+pub fn failure_text(fatal: Option<&str>, stderr: &str) -> String {
+    let text = one_line(fatal.unwrap_or(stderr));
     if text.is_empty() {
         "restic failed".to_string()
     } else {
