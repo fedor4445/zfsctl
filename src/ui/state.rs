@@ -8756,7 +8756,9 @@ mod tests {
         let mut to_file = GOOD;
         to_file[3] = "file";
         to_file[4] = "/mnt/usb";
-        assert!(repl_err(to_file, vec![]).contains("not supported"), "this build has no file destinations yet");
+        assert!(build_replicate_job_action(&repl_kind(None, vec![]), &repl_fields(to_file), std::path::Path::new("/x"), chrono::Utc::now()).is_ok(), "a file destination with an absolute directory is accepted");
+        to_file[4] = "relative/dir";
+        assert!(repl_err(to_file, vec![]).contains("dest_dir"));
     }
 
     #[test]

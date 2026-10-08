@@ -195,8 +195,7 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
     }
     if job.kind == KIND_REPLICATE {
         match job.dest_host.as_deref() {
-            // Plan 2 (file targets) removes this refusal.
-            Some(DEST_FILE) => return Err("file destinations are not supported by this build".to_string()),
+            Some(DEST_FILE) => {}
             Some(dest) if !known_hosts.iter().any(|h| h == dest) => return Err(format!("destination host '{dest}' is not in config.toml")),
             _ => {}
         }
@@ -600,12 +599,15 @@ mod tests {
     }
 
     #[test]
-    fn a_file_destination_is_rejected_by_this_build_with_a_clear_reason() {
+    fn a_file_destination_is_accepted_and_still_needs_a_plain_absolute_directory() {
         let mut j = Job::test_replicate("r", "tank/data", "hourly", "file", "x");
         j.dest_dataset = None;
         j.dest_dir = Some("/mnt/usb/zfsctl".into());
-        let reason = resolve(&j, &["local".to_string()]).unwrap_err();
-        assert!(reason.contains("not supported"), "{reason}");
+        assert!(resolve(&j, &["local".to_string()]).is_ok());
+        j.dest_dir = Some("relative/dir".into());
+        assert!(resolve(&j, &["local".to_string()]).unwrap_err().contains("dest_dir"));
+        j.dest_dir = Some("/a/../etc".into());
+        assert!(resolve(&j, &["local".to_string()]).is_err());
     }
 
     #[test]
