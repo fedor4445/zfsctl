@@ -50,7 +50,7 @@ The run never creates, destroys or modifies a snapshot of the source.
 
 ### Progress and cancel
 
-The existing machinery: restic is spawned through `runner.command("restic", …)`, its stdout is read line by line on the hub, and a progress file is written once a second. `c` kills the restic process (over SSH, the `ssh` client; the remote restic ends when its output pipe closes). A cancelled run records `Cancelled`, destroys the clone, and the next run starts again (restic itself reuses what was already uploaded). A killed restic can leave a stale repository lock; zfsctl does not remove locks (`restic unlock` is documented).
+The existing machinery: restic is spawned through `runner.command("restic", …)`, its stdout is read line by line on the hub, and a progress file is written once a second. `c` kills the restic process (over SSH, the `ssh` client; the remote restic ends when its output pipe closes). A cancelled run records `Cancelled`, destroys the clone, and the next run starts again (restic itself reuses what was already uploaded). A killed restic leaves a stale repository lock (seen live): a backup tolerates it but `forget --prune` fails with `repository is already locked`. When forget fails with that message the run runs `restic unlock` (stale locks only, never `--remove-all`) once and retries the forget once; any other forget failure is not retried.
 
 ### Snapshot jobs and the clone
 
@@ -100,3 +100,17 @@ One implementation plan (the pieces share one job kind and are small): the job m
 ## Files touched (indicative)
 
 `src/jobs.rs`, `src/daemon/backup.rs` (new), `src/daemon/mod.rs`, `src/daemon/snapshot.rs`, `src/zfs/snapshot.rs`, `src/ui/jobs.rs`, `src/ui/state.rs`, `src/ui/modal.rs`, `src/ui/picker.rs`, `src/ui/layout.rs`, `src/ui/hints.rs`, `README.md`.
+
+## Live results (2026-10-08)
+
+On the hub (FreeBSD 15.1, restic 0.19.1 from `pkg`, the same version as on the workstation), jobs created through the TUI's `B` form, repository and data on the `scratch` pool and `/var/tmp`:
+
+- **Real formats:** `zfs get -H -p -o value creation <snap>` gives an epoch, `date -r <epoch> "+%Y-%m-%d %H:%M:%S"` the host's local time; `restic snapshots --json` prints `[]` for no match. The restic snapshot carried both tags, the stable path `/var/run/zfsctl/<job id>` and the snapshot's *creation* time (05:58:50), not the run time.
+- **The stable-path claim, on real ZFS:** a clone and its snapshot directory report the same inode and ctime (`ino=2`, equal `ctime`). A first backup said `6 new, 0 changed, 0 unmodified, 2.9 MiB added`; after adding one file and a second snapshot, `1 new, 0 changed, 6 unmodified, 504 KiB added`. Unchanged files were skipped.
+- **Skip, restore, retention:** the next slot with nothing new was `skipped: up to date`; `restic restore latest` matched the source checksums (7 files); `retention = "1l"` left exactly one backup.
+- **Snapshot job vs a pinned snapshot:** with a hand-made clone of the old snapshot, the snapshot job's run was `Ok: … pruned 0; kept 1 in use by a clone`; after the clone was destroyed the next run `pruned 2`.
+- **Errors** (each `Failed`, no clone or mount left behind): wrong password, a repository that was never initialised, a dataset that does not exist. These showed raw JSON at first (restic prints `exit_error` on stderr); fixed.
+- **Cancel** (700 MiB, `c` pressed while the progress line read `sent 8.2 MiB of 700.0 MiB (1%)`): `Cancelled: cancelled after 138.3 MiB`, clone and mount gone, no half-written snapshot.
+- **`kill -9` of the daemon mid-backup:** the clone and the orphaned restic child survived; the supervisor restarted the daemon after about 10 s, the unfinished run was closed as lost, and the next run destroyed the leftover clone itself and backed up (700.0 MiB).
+- **Defects found live and fixed:** (1) the daemon, started by rc with a minimal `PATH`, could not find `restic` in `/usr/local/bin`: `LocalRunner` now appends `/usr/local/sbin:/usr/local/bin` to the `PATH` of every child; (2) restic's JSON errors on stderr were shown raw; (3) a cancelled or killed run left a stale lock that made every later `forget --prune` fail (see "Progress and cancel"). After the fix: 2 stale locks, a run with retention was `Ok` and left 0 locks.
+- Not tested live: a remote host (needs restic and a sudoers entry on a VM, which needs root there), rclone and sftp repositories.
