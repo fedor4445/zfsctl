@@ -172,7 +172,14 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
             }
             let policy = job.retention.as_deref().and_then(|t| restic::parse_retention(t).ok()).filter(|r| !r.is_empty());
             if let Some(policy) = policy {
-                if let Err(e) = restic_query(runner, &restic::forget_args(&repo, &password_file, &job.host, &job.id, &policy)) {
+                let forget_args = restic::forget_args(&repo, &password_file, &job.host, &job.id, &policy);
+                let mut forgot = restic_query(runner, &forget_args);
+                // A cancelled or killed run leaves a stale repository lock that blocks `forget --prune`.
+                // `restic unlock` removes only stale locks, so clear them once and retry once.
+                if forgot.as_ref().is_err_and(|e| e.contains("already locked")) && restic_query(runner, &restic::unlock_args(&repo, &password_file)).is_ok() {
+                    forgot = restic_query(runner, &forget_args);
+                }
+                if let Err(e) = forgot {
                     return failed(format!("backed up {snapshot} but forget failed: {e}"));
                 }
             }
@@ -215,6 +222,9 @@ mod tests {
         clone_fails: bool,
         destroy_fails: bool,
         forget_fails: bool,
+        /// While true `restic forget` fails like a repository with a stale lock; `restic unlock` clears it.
+        forget_locked: Mutex<bool>,
+        unlock_fails: bool,
         clone_exists: Mutex<bool>,
         calls: Mutex<Vec<String>>,
         backup_args: Mutex<Vec<Vec<String>>>,
@@ -230,6 +240,8 @@ mod tests {
                 clone_fails: false,
                 destroy_fails: false,
                 forget_fails: false,
+                forget_locked: Mutex::new(false),
+                unlock_fails: false,
                 clone_exists: Mutex::new(false),
                 calls: Mutex::new(vec![]),
                 backup_args: Mutex::new(vec![]),
@@ -276,7 +288,17 @@ mod tests {
                     Err(e) => Ok(CommandOutput { stdout: String::new(), stderr: e.clone(), status: 12 }),
                 },
                 ("restic", Some("forget")) => {
-                    if self.forget_fails { fail("Fatal: unable to lock repository") } else { ok("") }
+                    if *self.forget_locked.lock().unwrap() {
+                        return fail("unable to create lock in backend: repository is already locked by PID 14568 on fb by root");
+                    }
+                    if self.forget_fails { fail("Fatal: unable to save snapshot") } else { ok("") }
+                }
+                ("restic", Some("unlock")) => {
+                    if self.unlock_fails {
+                        return fail("Fatal: unlock broke");
+                    }
+                    *self.forget_locked.lock().unwrap() = false;
+                    ok("")
                 }
                 other => panic!("unexpected call {other:?}"),
             }
@@ -563,5 +585,47 @@ mod tests {
         let host = Host::new();
         let (outcome, _) = rig.run(&host, &other);
         assert_ne!(outcome.result, RunResult::Skipped, "the other job's lock does not block this one: {}", outcome.message);
+    }
+
+    #[test]
+    fn a_stale_lock_left_by_an_earlier_cancelled_run_is_cleared_once_and_forget_is_retried() {
+        let rig = Rig::new();
+        let host = Host::new();
+        *host.forget_locked.lock().unwrap() = true;
+        let mut with_policy = job();
+        with_policy.retention = Some("1l".to_string());
+        let (outcome, _) = rig.run(&host, &with_policy);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        let calls = host.calls();
+        let forgets: Vec<usize> = calls.iter().enumerate().filter(|(_, c)| c.starts_with("restic forget")).map(|(i, _)| i).collect();
+        let unlock = calls.iter().position(|c| c.starts_with("restic unlock")).expect("unlock ran");
+        assert_eq!(forgets.len(), 2, "{calls:?}");
+        assert!(forgets[0] < unlock && unlock < forgets[1], "{calls:?}");
+        assert_eq!(calls[unlock], "restic unlock --repo=/mnt/usb/restic --password-file=/root/pw", "only stale locks: no --remove-all");
+    }
+
+    #[test]
+    fn a_forget_that_fails_for_another_reason_does_not_unlock_anything() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.forget_fails = true;
+        let mut with_policy = job();
+        with_policy.retention = Some("1l".to_string());
+        let (outcome, _) = rig.run(&host, &with_policy);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(!host.called("restic unlock"));
+    }
+
+    #[test]
+    fn a_failing_unlock_is_reported_with_the_original_lock_error() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        *host.forget_locked.lock().unwrap() = true;
+        host.unlock_fails = true;
+        let mut with_policy = job();
+        with_policy.retention = Some("1l".to_string());
+        let (outcome, _) = rig.run(&host, &with_policy);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("already locked") && outcome.message.contains("forget failed"), "{}", outcome.message);
     }
 }

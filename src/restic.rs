@@ -101,6 +101,13 @@ pub fn forget_args(repo: &str, password_file: &str, host: &str, job_id: &str, re
     args
 }
 
+/// `restic unlock`: removes only stale locks (restic's own test: a dead process on the same host, or
+/// a lock nobody has refreshed for 30 minutes). Never `--remove-all`, which would remove a live one.
+pub fn unlock_args(repo: &str, password_file: &str) -> Vec<String> {
+    let [r, p] = repo_flags(repo, password_file);
+    vec!["unlock".to_string(), r, p]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Summary {
     pub new: u64,
@@ -269,5 +276,12 @@ mod tests {
         assert_eq!(failure_text(None, err), "Fatal: wrong password or no key found");
         assert_eq!(failure_text(None, "plain text\n"), "plain text");
         assert_eq!(failure_text(Some("from stdout"), err), "from stdout", "an explicit fatal message wins");
+    }
+
+    #[test]
+    fn unlock_args_remove_only_stale_locks() {
+        let a = unlock_args("/repo", "/pw");
+        assert_eq!(a, vec!["unlock", "--repo=/repo", "--password-file=/pw"]);
+        assert!(!a.iter().any(|x| x.contains("remove-all")), "never --remove-all: that would remove a live lock");
     }
 }
