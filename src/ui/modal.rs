@@ -30,6 +30,13 @@ pub enum MutationCall {
     RemoveAclEntry { path: String, position: usize },
     SetSmbShare { share: crate::zfs::smb::SmbShare, password: Option<Secret> },
     RemoveSmbShare { dataset: String },
+    CreateBootEnv { name: String, from: Option<String> },
+    ActivateBootEnv { name: String, temporary: bool },
+    ClearTemporaryBootEnv { name: String },
+    RenameBootEnv { from: String, to: String },
+    MountBootEnv { name: String },
+    UnmountBootEnv { name: String },
+    DestroyBootEnv { name: String, origin: bool },
     /// Creates or replaces a scheduled job in `<state_dir>/jobs.toml`. Local file edits: the runner is not used.
     SaveJob { state_dir: std::path::PathBuf, job: Box<crate::jobs::Job> },
     DeleteJob { state_dir: std::path::PathBuf, id: String },
@@ -64,12 +71,14 @@ impl MutationCall {
             MutationCall::DestroyPool { .. }
             | MutationCall::DestroyDataset { .. }
             | MutationCall::DestroySnapshot { .. }
-            | MutationCall::RollbackSnapshot { .. } => Tone::Danger,
+            | MutationCall::RollbackSnapshot { .. }
+            | MutationCall::DestroyBootEnv { .. } => Tone::Danger,
             MutationCall::OfflineDisk { .. }
             | MutationCall::ReplaceDisk { .. }
             | MutationCall::UnallowPermission { .. }
             | MutationCall::RemoveAclEntry { .. }
             | MutationCall::RemoveSmbShare { .. }
+            | MutationCall::ActivateBootEnv { temporary: false, .. }
             | MutationCall::DeleteJob { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
             | MutationCall::ResilverPool { .. }
@@ -84,6 +93,12 @@ impl MutationCall {
             | MutationCall::SaveJob { .. }
             | MutationCall::SetJobEnabled { .. }
             | MutationCall::SetSmbShare { .. }
+            | MutationCall::ActivateBootEnv { temporary: true, .. }
+            | MutationCall::CreateBootEnv { .. }
+            | MutationCall::ClearTemporaryBootEnv { .. }
+            | MutationCall::RenameBootEnv { .. }
+            | MutationCall::MountBootEnv { .. }
+            | MutationCall::UnmountBootEnv { .. }
             | MutationCall::SetDatasetProperty { .. } => Tone::Neutral,
         }
     }
@@ -112,6 +127,13 @@ impl MutationCall {
             MutationCall::RemoveAclEntry { .. } => "REMOVE ACL ENTRY",
             MutationCall::SetSmbShare { .. } => "SET SMB SHARE",
             MutationCall::RemoveSmbShare { .. } => "REMOVE SMB SHARE",
+            MutationCall::CreateBootEnv { .. } => "CREATE BOOT ENV",
+            MutationCall::ActivateBootEnv { .. } => "ACTIVATE BOOT ENV",
+            MutationCall::ClearTemporaryBootEnv { .. } => "CLEAR TEMPORARY BOOT ENV",
+            MutationCall::RenameBootEnv { .. } => "RENAME BOOT ENV",
+            MutationCall::MountBootEnv { .. } => "MOUNT BOOT ENV",
+            MutationCall::UnmountBootEnv { .. } => "UNMOUNT BOOT ENV",
+            MutationCall::DestroyBootEnv { .. } => "DESTROY BOOT ENV",
             MutationCall::SaveJob { .. } => "SAVE JOB",
             MutationCall::DeleteJob { .. } => "DELETE JOB",
             MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
@@ -159,6 +181,13 @@ impl MutationCall {
                 crate::zfs::smb::set_share(runner, share, password.as_ref().map(|p| p.0.as_str()))
             }
             MutationCall::RemoveSmbShare { dataset } => crate::zfs::smb::remove_share(runner, dataset),
+            MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref()),
+            MutationCall::ActivateBootEnv { name, temporary } => crate::zfs::bootenv::activate(runner, name, *temporary),
+            MutationCall::ClearTemporaryBootEnv { name } => crate::zfs::bootenv::clear_temporary(runner, name),
+            MutationCall::RenameBootEnv { from, to } => crate::zfs::bootenv::rename(runner, from, to),
+            MutationCall::MountBootEnv { name } => crate::zfs::bootenv::mount(runner, name),
+            MutationCall::UnmountBootEnv { name } => crate::zfs::bootenv::unmount(runner, name),
+            MutationCall::DestroyBootEnv { name, origin } => crate::zfs::bootenv::destroy(runner, name, *origin),
             MutationCall::SaveJob { state_dir, job } => crate::jobs::upsert(&state_dir.join("jobs.toml"), job.as_ref().clone()),
             MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
@@ -255,6 +284,11 @@ pub enum FormKind {
     /// the existing Samba password (only valid when the user is
     /// unchanged, see `existing_user`). The password field is masked.
     ShareSmb { host: usize, dataset: String, path: String, existing_user: Option<String> },
+    /// Fields: `[name, clone_from]` -- a blank `clone_from` clones the running boot environment
+    /// (bectl's default). `existing` is every current name, for the duplicate check and the F2 picker.
+    CreateBootEnv { host: usize, existing: Vec<String> },
+    /// Fields: `[new_name]`; `from` is fixed at modal-open time.
+    RenameBootEnv { host: usize, from: String, existing: Vec<String> },
     /// Fields: `[name, ssh_target]` — both required. Unlike every
     /// other `FormKind`, submitting this one never produces a
     /// `PendingAction`: there's no existing host/runner to dispatch
@@ -532,6 +566,7 @@ mod tests {
 #[cfg(test)]
 mod tone_tests {
     use super::*;
+    use crate::exec::test_support::FakeRunner;
 
     #[test]
     fn irreversible_actions_are_danger() {
@@ -572,5 +607,52 @@ mod tone_tests {
         assert_eq!(MutationCall::DestroyPool { pool: "t".into() }.label(), "DESTROY POOL");
         assert_eq!(MutationCall::RollbackSnapshot { dataset: "t".into(), name: "s".into() }.label(), "ROLLBACK SNAPSHOT");
         assert_eq!(MutationCall::OfflineDisk { pool: "t".into(), disk: "d".into() }.label(), "OFFLINE DISK");
+    }
+
+    #[test]
+    fn boot_environment_calls_run_bectl_with_the_right_argv() {
+        let cases: Vec<(MutationCall, Vec<&str>)> = vec![
+            (MutationCall::CreateBootEnv { name: "n".into(), from: None }, vec!["create", "n"]),
+            (MutationCall::CreateBootEnv { name: "n".into(), from: Some("o".into()) }, vec!["create", "-e", "o", "n"]),
+            (MutationCall::ActivateBootEnv { name: "n".into(), temporary: false }, vec!["activate", "n"]),
+            (MutationCall::ActivateBootEnv { name: "n".into(), temporary: true }, vec!["activate", "-t", "n"]),
+            (MutationCall::ClearTemporaryBootEnv { name: "n".into() }, vec!["activate", "-T", "n"]),
+            (MutationCall::RenameBootEnv { from: "a".into(), to: "b".into() }, vec!["rename", "a", "b"]),
+            (MutationCall::MountBootEnv { name: "n".into() }, vec!["mount", "n"]),
+            (MutationCall::UnmountBootEnv { name: "n".into() }, vec!["umount", "n"]),
+            (MutationCall::DestroyBootEnv { name: "n".into(), origin: false }, vec!["destroy", "n"]),
+            (MutationCall::DestroyBootEnv { name: "n".into(), origin: true }, vec!["destroy", "-o", "n"]),
+        ];
+        for (call, want) in cases {
+            let runner = FakeRunner::new("");
+            call.run(&runner).unwrap();
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls[0].0, "bectl", "{call:?}");
+            assert_eq!(calls[0].1, want, "{call:?}");
+        }
+    }
+
+    #[test]
+    fn boot_environment_tones_match_how_hard_each_is_to_undo() {
+        let tone = |c: MutationCall| c.tone();
+        assert_eq!(tone(MutationCall::DestroyBootEnv { name: "n".into(), origin: false }), Tone::Danger);
+        assert_eq!(tone(MutationCall::ActivateBootEnv { name: "n".into(), temporary: false }), Tone::Warn);
+        assert_eq!(tone(MutationCall::ActivateBootEnv { name: "n".into(), temporary: true }), Tone::Neutral);
+        for call in [
+            MutationCall::CreateBootEnv { name: "n".into(), from: None },
+            MutationCall::ClearTemporaryBootEnv { name: "n".into() },
+            MutationCall::RenameBootEnv { from: "a".into(), to: "b".into() },
+            MutationCall::MountBootEnv { name: "n".into() },
+            MutationCall::UnmountBootEnv { name: "n".into() },
+        ] {
+            assert_eq!(call.tone(), Tone::Neutral, "{call:?}");
+        }
+    }
+
+    #[test]
+    fn a_failing_bectl_surfaces_through_the_mutation() {
+        let runner = FakeRunner::failing("cannot destroy active boot environment", 5);
+        let err = MutationCall::DestroyBootEnv { name: "default".into(), origin: false }.run(&runner).unwrap_err().to_string();
+        assert!(err.contains("cannot destroy active boot environment"), "{err}");
     }
 }

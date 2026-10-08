@@ -28,6 +28,7 @@ pub enum Section {
     Snapshots,
     Disks,
     Shares,
+    BootEnvs,
     Jobs,
     Vdevs,
     PoolProperties,
@@ -114,6 +115,7 @@ pub enum WorkerMsg {
     Snapshots(usize, Result<Vec<Snapshot>>),
     Disks(usize, Result<Vec<DiskInfo>>),
     Shares(usize, Result<SharesSnapshot>),
+    BootEnvs(usize, Result<Vec<crate::zfs::bootenv::BootEnv>>),
     /// The `String` is the name of the pool this vdev refresh was for —
     /// needed so a slow result can be told apart from one for a
     /// different pool the user has since drilled into (see the
@@ -147,6 +149,7 @@ pub enum WorkerMsg {
 pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
 pub const ACCOUNT_FETCH_STUCK_AFTER: Duration = Duration::from_secs(30);
 
+#[allow(clippy::struct_excessive_bools)] // independent UI state flags, not a state machine
 pub struct App {
     pub sections: Vec<Section>,
     pub selected_section: usize,
@@ -188,6 +191,14 @@ pub struct App {
     /// visiting Shares opens a blank form whose submission silently
     /// widens the share to `"on"` (shared to everyone).
     pub shares_loaded: bool,
+    pub bootenvs: Vec<crate::zfs::bootenv::BootEnv>,
+    pub bootenvs_table: TableState,
+    /// `true` once a list has succeeded on this host, so an empty list can say "no boot
+    /// environments" instead of looking like one that has not loaded yet.
+    pub bootenvs_loaded: bool,
+    /// Why the Boot Envs section cannot list on this host (e.g. no `bectl`, not a boot-environment
+    /// layout, an unreachable host), shown in its title. `None` once a list succeeds.
+    pub bootenvs_unavailable: Option<String>,
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
     /// The drilled-into pool's most recent scrub/resilver, refreshed
@@ -282,7 +293,7 @@ impl App {
     pub fn new(hosts: Vec<String>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::Jobs],
+            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs],
             selected_section: 0,
             hosts,
             selected_host: 0,
@@ -304,6 +315,10 @@ impl App {
             nfs_available: None,
             samba_available: None,
             shares_loaded: false,
+            bootenvs: Vec::new(),
+            bootenvs_table: TableState::default(),
+            bootenvs_loaded: false,
+            bootenvs_unavailable: None,
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             pool_scan_status: None,
@@ -411,7 +426,7 @@ impl App {
             return None;
         }
         match self.current_section() {
-            section @ (Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares) => Some(section),
+            section @ (Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares | Section::BootEnvs) => Some(section),
             _ => None,
         }
     }
@@ -432,6 +447,7 @@ impl App {
             Section::Snapshots => self.refresh_snapshots(runner),
             Section::Disks => self.refresh_disks(runner),
             Section::Shares => self.refresh_shares(runner),
+            Section::BootEnvs => self.refresh_bootenvs(runner),
             _ => return,
         }
         if !already_running {
@@ -500,6 +516,7 @@ impl App {
             Section::Snapshots => self.refresh_snapshots(runner),
             Section::Disks => self.refresh_disks(runner),
             Section::Shares => self.refresh_shares(runner),
+            Section::BootEnvs => self.refresh_bootenvs(runner),
             Section::Jobs => self.refresh_jobs(),
             _ => {}
         }
@@ -580,6 +597,10 @@ impl App {
         self.nfs_available = None;
         self.samba_available = None;
         self.shares_loaded = false;
+        self.bootenvs.clear();
+        self.bootenvs_table.select(None);
+        self.bootenvs_unavailable = None;
+        self.bootenvs_loaded = false;
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
@@ -1168,6 +1189,12 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Shares => {
                 move_table_selection(&mut self.shares_table, self.shares.len(), false);
             }
+            KeyCode::Down if self.current_section() == Section::BootEnvs => {
+                move_table_selection(&mut self.bootenvs_table, self.bootenvs.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::BootEnvs => {
+                move_table_selection(&mut self.bootenvs_table, self.bootenvs.len(), false);
+            }
             KeyCode::Char('J') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 match self.selected_pool_name() {
                     Some(pool) => self.modal = Some(self.job_form(None, &pool)),
@@ -1259,6 +1286,76 @@ impl App {
                         self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::Shares, call } });
                     }
                 }
+            }
+            KeyCode::Char('n') if self.current_section() == Section::BootEnvs && self.bootenvs_unavailable.is_none() => {
+                let existing: Vec<String> = self.bootenvs.iter().map(|b| b.name.clone()).collect();
+                self.modal = Some(Modal::Form {
+                    title: "New boot environment".to_string(),
+                    fields: vec![
+                        FormField { label: "Name (letters, digits, _ - . :)".to_string(), value: String::new() },
+                        FormField { label: "Clone from (F2 to pick; blank = the running boot environment)".to_string(), value: String::new() },
+                    ],
+                    focused: 0,
+                    description: None,
+                    kind: FormKind::CreateBootEnv { host: self.selected_host, existing },
+                });
+            }
+            KeyCode::Char('a') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate()).map(|b| b.name.clone()) else { return };
+                let prompt = format!("Make '{name}' the boot environment for every future boot? (y/n)");
+                let call = MutationCall::ActivateBootEnv { name, temporary: false };
+                self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
+            }
+            KeyCode::Char('t') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Activating '{name}' for the next boot only…"));
+                let call = MutationCall::ActivateBootEnv { name, temporary: true };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char('T') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Clearing the next-boot activation of '{name}'…"));
+                let call = MutationCall::ClearTemporaryBootEnv { name };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char('R') if self.current_section() == Section::BootEnvs => {
+                let Some(from) = self.selected_bootenv().map(|b| b.name.clone()) else { return };
+                let existing: Vec<String> = self.bootenvs.iter().map(|b| b.name.clone()).collect();
+                self.modal = Some(Modal::Form {
+                    title: format!("Rename boot environment '{from}'"),
+                    fields: vec![FormField { label: "New name (letters, digits, _ - . :)".to_string(), value: String::new() }],
+                    focused: 0,
+                    description: None,
+                    kind: FormKind::RenameBootEnv { host: self.selected_host, from, existing },
+                });
+            }
+            KeyCode::Char('m') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_mount()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Mounting '{name}'…"));
+                let call = MutationCall::MountBootEnv { name };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char('u') if self.current_section() == Section::BootEnvs => {
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_unmount()).map(|b| b.name.clone()) else { return };
+                self.status_message = Some(format!("Unmounting '{name}'…"));
+                let call = MutationCall::UnmountBootEnv { name };
+                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+            }
+            KeyCode::Char(key @ ('d' | 'D')) if self.current_section() == Section::BootEnvs => {
+                let Some(be) = self.selected_bootenv() else { return };
+                let name = be.name.clone();
+                if !be.can_destroy() {
+                    self.status_message = Some(format!("'{name}' cannot be destroyed: it is running, set for the next boot, or marked temporary (T clears that)"));
+                    return;
+                }
+                let origin = key == 'D';
+                let also = if origin { " and its origin snapshot" } else { "" };
+                self.modal = Some(Modal::ConfirmTyped {
+                    prompt: format!("Type the boot environment name to destroy '{name}'{also}:"),
+                    expected: name.clone(),
+                    input: String::new(),
+                    action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call: MutationCall::DestroyBootEnv { name, origin } },
+                });
             }
             KeyCode::Char(' ') if self.current_section() == Section::Disks => {
                 if let Some(i) = self.disks_table.selected() {
@@ -1465,6 +1562,15 @@ impl App {
                                 action.host = self.selected_host;
                                 Some(action)
                             }
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
+                        }
+                    } else if matches!(kind, FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. }) {
+                        match build_bootenv_action(&kind, &fields) {
+                            Ok(action) => Some(action),
                             Err(msg) => {
                                 self.set_error(msg);
                                 self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
@@ -1779,6 +1885,25 @@ impl App {
         });
     }
 
+    /// See `refresh_pools` for why this queues rather than drops a request while in flight.
+    pub fn refresh_bootenvs(&mut self, runner: Arc<dyn CommandRunner>) {
+        let host = self.selected_host;
+        if self.is_refreshing(Section::BootEnvs, host) {
+            self.pending_refresh.insert((Section::BootEnvs, host));
+            return;
+        }
+        self.begin_refresh(Section::BootEnvs, host);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::bootenv::list(runner.as_ref());
+            let _ = tx.send(WorkerMsg::BootEnvs(host, result));
+        });
+    }
+
+    pub fn selected_bootenv(&self) -> Option<&crate::zfs::bootenv::BootEnv> {
+        self.bootenvs_table.selected().and_then(|i| self.bootenvs.get(i))
+    }
+
     /// See `refresh_pools` for why this queues rather than drops a
     /// request while already in flight. `pool` is the name of the
     /// currently drilled-into pool.
@@ -2049,6 +2174,34 @@ impl App {
                             }
                         }
                         Err(e) => self.set_error(e.to_string()),
+                    }
+                }
+                WorkerMsg::BootEnvs(host, result) => {
+                    let quiet = self.end_refresh(Section::BootEnvs, host);
+                    let had_pending = self.pending_refresh.remove(&(Section::BootEnvs, host));
+                    if host != self.selected_host {
+                        continue;
+                    }
+                    if had_pending {
+                        refreshes_needed.push(Section::BootEnvs);
+                    }
+                    match result {
+                        Ok(envs) => {
+                            let previous = self.selected_bootenv().map(|b| b.name.clone());
+                            self.bootenvs = envs;
+                            pin_selection(&mut self.bootenvs_table, previous, &self.bootenvs, |b| b.name.clone());
+                            self.bootenvs_unavailable = None;
+                            self.bootenvs_loaded = true;
+                            self.clear_status_after_refresh(quiet);
+                        }
+                        Err(e) => {
+                            // Not `set_error`: a host without bectl would otherwise raise a fresh
+                            // error every auto-refresh. The title carries the reason instead.
+                            self.bootenvs.clear();
+                            self.bootenvs_table.select(None);
+                            self.bootenvs_unavailable = Some(e.to_string());
+                            self.bootenvs_loaded = false;
+                        }
                     }
                 }
                 WorkerMsg::Vdevs(host, pool, result) => {
@@ -2737,7 +2890,41 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+    }
+}
+
+fn build_bootenv_action(kind: &FormKind, fields: &[FormField]) -> std::result::Result<PendingAction, String> {
+    use crate::zfs::bootenv::validate_name;
+    match kind {
+        FormKind::CreateBootEnv { host, existing } => {
+            let name = field_value(fields, 0).trim();
+            validate_name(name)?;
+            if existing.iter().any(|e| e == name) {
+                return Err(format!("A boot environment named '{name}' already exists"));
+            }
+            let from = field_value(fields, 1).trim();
+            let from = if from.is_empty() {
+                None
+            } else if existing.iter().any(|e| e == from) {
+                Some(from.to_string())
+            } else {
+                return Err(format!("There is no boot environment named '{from}' to clone"));
+            };
+            Ok(PendingAction { host: *host, section: Section::BootEnvs, call: MutationCall::CreateBootEnv { name: name.to_string(), from } })
+        }
+        FormKind::RenameBootEnv { host, from, existing } => {
+            let to = field_value(fields, 0).trim();
+            validate_name(to)?;
+            if to == from {
+                return Err("That is already its name".to_string());
+            }
+            if existing.iter().any(|e| e == to) {
+                return Err(format!("A boot environment named '{to}' already exists"));
+            }
+            Ok(PendingAction { host: *host, section: Section::BootEnvs, call: MutationCall::RenameBootEnv { from: from.clone(), to: to.to_string() } })
+        }
+        _ => Err("not a boot environment form".to_string()),
     }
 }
 
@@ -3067,6 +3254,14 @@ Disks
 Shares
   Enter            edit the selected share
   d                remove the selected share
+
+Boot Envs
+  n                new boot environment (F2 on the second field picks one to clone)
+  a                make the selected one the boot environment for every future boot (confirms)
+  t / T            use it for the next boot only / clear that
+  R                rename
+  m / u            mount / unmount (the Mountpoint column shows where)
+  d / D            destroy (type its name) / destroy and remove its origin snapshot
 
 Jobs
   Up / Down        select a scheduled job
@@ -7604,7 +7799,7 @@ mod tests {
     fn jobs_is_the_last_section_and_tab_cycles_into_and_out_of_it() {
         let mut app = App::new(vec!["local".to_string()]);
         assert_eq!(app.sections.last(), Some(&Section::Jobs));
-        app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.current_section(), Section::Jobs);
         app.handle_key(KeyCode::Tab);
@@ -8186,6 +8381,7 @@ mod tests {
             (Section::Snapshots, Some(Section::Snapshots)),
             (Section::Disks, Some(Section::Disks)),
             (Section::Shares, Some(Section::Shares)),
+            (Section::BootEnvs, Some(Section::BootEnvs)),
         ] {
             assert_eq!(in_section(section).auto_refresh_section(), expected, "{section:?}");
         }
@@ -8329,7 +8525,7 @@ mod tests {
 
     #[test]
     fn auto_refresh_starts_the_refresh_that_belongs_to_the_visible_section() {
-        for section in [Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares] {
+        for section in [Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs] {
             let mut app = in_section(section);
             app.auto_refresh(runner(""), Instant::now(), TEN);
             assert!(app.in_flight.contains(&(section, 0)), "{section:?} refresh not started");
@@ -8655,5 +8851,322 @@ mod tests {
         app.handle_key(KeyCode::Char('c'));
         assert_eq!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")), ["r"]);
         assert!(app.status_message.clone().unwrap_or_default().contains("Cancel requested"));
+    }
+
+    fn be(name: &str, now: bool, reboot: bool, temp: bool, mount: Option<&str>) -> crate::zfs::bootenv::BootEnv {
+        crate::zfs::bootenv::BootEnv {
+            name: name.to_string(),
+            flags: crate::zfs::bootenv::ActiveFlags { now, reboot, temp },
+            mountpoint: mount.map(str::to_string),
+            space: "1M".to_string(),
+            created: "2026-10-07 19:26".to_string(),
+        }
+    }
+
+    #[test]
+    fn boot_envs_sits_between_shares_and_jobs() {
+        let app = App::new(vec!["local".to_string()]);
+        let at = |s| app.sections.iter().position(|x| *x == s).unwrap();
+        assert_eq!(at(Section::BootEnvs), at(Section::Shares) + 1);
+        assert_eq!(at(Section::Jobs), at(Section::BootEnvs) + 1);
+        assert_eq!(app.sections.last(), Some(&Section::Jobs));
+    }
+
+    #[test]
+    fn refresh_bootenvs_populates_app_state() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.refresh_bootenvs(runner("default\tNR\t/\t5.18G\t2026-07-24 18:48\nspare\t-\t-\t8K\t2026-10-07 19:26\n"));
+        wait_until(&mut app, |a| !a.bootenvs.is_empty());
+        assert_eq!(app.bootenvs.len(), 2);
+        assert!(app.bootenvs[0].flags.now && app.bootenvs[0].flags.reboot);
+        assert_eq!(app.bootenvs_unavailable, None);
+    }
+
+    #[test]
+    fn a_failing_bectl_marks_the_section_unavailable_and_the_next_good_refresh_recovers() {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = vec![be("stale", false, false, false, None)];
+        app.bootenvs_table.select(Some(0));
+        app.tx.send(WorkerMsg::BootEnvs(0, Err(crate::error::AppError::CommandFailed { cmd: "bectl list".into(), status: 127, stderr: "bectl: not found".into() }))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs.is_empty(), "a stale list must not look current");
+        assert_eq!(app.bootenvs_table.selected(), None);
+        assert!(app.bootenvs_unavailable.as_deref().is_some_and(|m| m.contains("bectl: not found")));
+        // Not gated on the earlier failure: the periodic refresh still runs and recovers.
+        app.auto_refresh(runner("default\tNR\t/\t1G\td\n"), Instant::now(), TEN);
+        wait_until(&mut app, |a| !a.bootenvs.is_empty());
+        assert_eq!(app.bootenvs_unavailable, None);
+        assert_eq!(app.bootenvs.len(), 1);
+    }
+
+    #[test]
+    fn a_host_with_zero_boot_environments_is_empty_not_unavailable() {
+        let mut app = in_section(Section::BootEnvs);
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs.is_empty());
+        assert_eq!(app.bootenvs_unavailable, None);
+    }
+
+    #[test]
+    fn bootenvs_result_for_a_stale_host_is_discarded() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.tx.send(WorkerMsg::BootEnvs(1, Ok(vec![be("x", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs.is_empty());
+    }
+
+    #[test]
+    fn switching_host_clears_boot_environment_state() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.bootenvs = vec![be("x", false, false, false, None)];
+        app.bootenvs_table.select(Some(0));
+        app.bootenvs_unavailable = Some("boom".to_string());
+        app.handle_key(KeyCode::Tab); // -> Pools
+        app.handle_key(KeyCode::BackTab); // -> Hosts
+        app.handle_key(KeyCode::Down); // switch host, triggers clear_host_data
+        assert!(app.bootenvs.is_empty());
+        assert_eq!(app.bootenvs_table.selected(), None);
+        assert_eq!(app.bootenvs_unavailable, None);
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_selection_on_the_same_boot_environment_and_clamps_when_it_vanishes() {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = vec![be("a", false, false, false, None), be("b", false, false, false, None)];
+        app.bootenvs_table.select(Some(1));
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![be("0", false, false, false, None), be("a", false, false, false, None), be("b", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.bootenvs_table.selected(), Some(2), "still on b");
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![be("a", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.bootenvs_table.selected(), Some(0), "b vanished: clamped into range");
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.bootenvs_table.selected(), None);
+    }
+
+    #[test]
+    fn up_and_down_move_the_boot_environment_selection() {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = vec![be("a", false, false, false, None), be("b", false, false, false, None)];
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.bootenvs_table.selected(), Some(0));
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("b"));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.bootenvs_table.selected(), Some(0));
+    }
+
+    fn bootenv_app(rows: Vec<crate::zfs::bootenv::BootEnv>, select: usize) -> App {
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs = rows;
+        app.bootenvs_table.select(Some(select));
+        app
+    }
+
+    fn running() -> crate::zfs::bootenv::BootEnv {
+        be("default", true, true, false, Some("/"))
+    }
+
+    fn spare() -> crate::zfs::bootenv::BootEnv {
+        be("spare", false, false, false, None)
+    }
+
+    fn only_pending(app: &App) -> &MutationCall {
+        let [action] = app.pending_mutations.as_slice() else { panic!("{:?}", app.pending_mutations) };
+        assert_eq!(action.section, Section::BootEnvs);
+        &action.call
+    }
+
+    #[test]
+    fn n_opens_the_create_form_listing_existing_names_for_the_picker() {
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(form_values(&app), ["", ""]);
+        let Some(Modal::Form { kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert_eq!(*kind, FormKind::CreateBootEnv { host: 0, existing: vec!["default".to_string(), "spare".to_string()] });
+    }
+
+    #[test]
+    fn n_works_with_zero_boot_environments_but_not_when_unavailable() {
+        let mut app = in_section(Section::BootEnvs);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_some());
+        let mut app = in_section(Section::BootEnvs);
+        app.bootenvs_unavailable = Some("no bectl".to_string());
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none());
+    }
+
+    /// Opens the create form, types both fields and presses Enter on the last one.
+    fn submit(app: &mut App, name: &str, from: &str) -> Option<PendingAction> {
+        app.handle_key(KeyCode::Char('n'));
+        for c in name.chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Tab);
+        for c in from.chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter)
+    }
+
+    #[test]
+    fn the_create_form_returns_the_create_call_with_or_without_a_clone_source() {
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        let action = submit(&mut app, "pre-upgrade", "spare").expect("submit returns the action");
+        assert_eq!((action.host, action.section), (0, Section::BootEnvs));
+        assert_eq!(action.call, MutationCall::CreateBootEnv { name: "pre-upgrade".to_string(), from: Some("spare".to_string()) });
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        let action = submit(&mut app, "pre-upgrade", "").expect("submit returns the action");
+        assert_eq!(action.call, MutationCall::CreateBootEnv { name: "pre-upgrade".to_string(), from: None });
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn the_create_form_refuses_bad_names_duplicates_and_unknown_sources_with_a_reason() {
+        for (name, from, why) in [
+            ("", "", "cannot be empty"),
+            ("-F", "", "cannot start with '-'"),
+            ("a b", "", "not allowed"),
+            ("default", "", "already exists"),
+            ("ok", "nope", "no boot environment named 'nope'"),
+            ("ok", "-e", "no boot environment named '-e'"),
+        ] {
+            let mut app = bootenv_app(vec![running(), spare()], 0);
+            assert!(submit(&mut app, name, from).is_none(), "{name:?}/{from:?}: nothing is submitted");
+            assert!(app.modal.is_some(), "{name:?}/{from:?}: the form stays open");
+            assert!(app.status_message.as_deref().is_some_and(|m| m.contains(why)), "{name:?}/{from:?}: {:?}", app.status_message);
+        }
+    }
+
+    #[test]
+    fn build_bootenv_action_makes_the_expected_calls() {
+        let create = FormKind::CreateBootEnv { host: 0, existing: vec!["default".to_string()] };
+        let field = |v: &str| FormField { label: "l".to_string(), value: v.to_string() };
+        let a = build_bootenv_action(&create, &[field("new"), field("default")]).unwrap();
+        assert_eq!(a.call, MutationCall::CreateBootEnv { name: "new".to_string(), from: Some("default".to_string()) });
+        assert_eq!(a.section, Section::BootEnvs);
+        let a = build_bootenv_action(&create, &[field("new"), field("")]).unwrap();
+        assert_eq!(a.call, MutationCall::CreateBootEnv { name: "new".to_string(), from: None });
+        let rename = FormKind::RenameBootEnv { host: 2, from: "old".to_string(), existing: vec!["old".to_string(), "taken".to_string()] };
+        let a = build_bootenv_action(&rename, &[field("fresh")]).unwrap();
+        assert_eq!((a.host, a.call), (2, MutationCall::RenameBootEnv { from: "old".to_string(), to: "fresh".to_string() }));
+        assert!(build_bootenv_action(&rename, &[field("taken")]).is_err());
+        assert!(build_bootenv_action(&rename, &[field("old")]).is_err(), "renaming to itself");
+        assert!(build_bootenv_action(&rename, &[field("-x")]).is_err());
+    }
+
+    #[test]
+    fn a_asks_to_confirm_then_activates_permanently_and_only_when_it_would_change_something() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('a'));
+        let Some(Modal::Confirm { prompt, action }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("'spare'"), "{prompt}");
+        assert_eq!(action.call, MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: false });
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        app.handle_key(KeyCode::Char('a'));
+        assert!(app.modal.is_none(), "already the BE used on reboot");
+    }
+
+    #[test]
+    fn t_activates_for_the_next_boot_without_a_confirm_and_big_t_clears_it() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.modal.is_none());
+        assert_eq!(only_pending(&app), &MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: true });
+        assert!(app.status_message.is_some());
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('T'));
+        assert!(app.pending_mutations.is_empty(), "spare has no temporary activation to clear");
+        let mut app = bootenv_app(vec![running(), be("trial", false, false, true, None)], 1);
+        app.handle_key(KeyCode::Char('T'));
+        assert_eq!(only_pending(&app), &MutationCall::ClearTemporaryBootEnv { name: "trial".to_string() });
+        let mut app = bootenv_app(vec![running(), be("trial", false, false, true, None)], 1);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.pending_mutations.is_empty(), "already temporary");
+        let mut app = bootenv_app(vec![running()], 0);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.pending_mutations.is_empty(), "the running BE");
+    }
+
+    #[test]
+    fn m_mounts_an_unmounted_be_and_u_unmounts_a_mounted_one() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(only_pending(&app), &MutationCall::MountBootEnv { name: "spare".to_string() });
+        app.handle_key(KeyCode::Char('u'));
+        assert_eq!(app.pending_mutations.len(), 1, "an unmounted BE cannot be unmounted");
+        let mut app = bootenv_app(vec![running(), be("m", false, false, false, Some("/tmp/be_mount.X"))], 1);
+        app.handle_key(KeyCode::Char('u'));
+        assert_eq!(only_pending(&app), &MutationCall::UnmountBootEnv { name: "m".to_string() });
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1, "already mounted");
+        let mut app = bootenv_app(vec![running()], 0);
+        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(KeyCode::Char('u'));
+        assert!(app.pending_mutations.is_empty(), "the running BE is mounted at / and cannot be remounted or unmounted");
+    }
+
+    #[test]
+    fn big_r_opens_the_rename_form() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('R'));
+        assert_eq!(form_values(&app), [""]);
+        let Some(Modal::Form { kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert_eq!(*kind, FormKind::RenameBootEnv { host: 0, from: "spare".to_string(), existing: vec!["default".to_string(), "spare".to_string()] });
+    }
+
+    #[test]
+    fn d_and_big_d_ask_for_the_name_and_the_running_be_is_refused_with_a_reason() {
+        for (key, origin) in [('d', false), ('D', true)] {
+            let mut app = bootenv_app(vec![running(), spare()], 1);
+            app.handle_key(KeyCode::Char(key));
+            let Some(Modal::ConfirmTyped { expected, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+            assert_eq!(expected, "spare");
+            assert_eq!(action.call, MutationCall::DestroyBootEnv { name: "spare".to_string(), origin });
+        }
+        for blocked in [running(), be("next", false, true, false, None), be("trial", false, false, true, None)] {
+            let mut app = bootenv_app(vec![blocked.clone()], 0);
+            app.handle_key(KeyCode::Char('d'));
+            assert!(app.modal.is_none());
+            assert!(app.status_message.as_deref().is_some_and(|m| m.contains(&blocked.name) && m.contains("cannot be destroyed")), "{:?}", app.status_message);
+        }
+    }
+
+    #[test]
+    fn an_empty_list_is_loaded_but_a_failure_or_a_host_switch_makes_it_unloaded() {
+        let mut app = in_section(Section::BootEnvs);
+        assert!(!app.bootenvs_loaded);
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.bootenvs_loaded, "zero boot environments is a real answer");
+        app.tx.send(WorkerMsg::BootEnvs(0, Err(crate::error::AppError::Parse("x".into())))).unwrap();
+        app.drain_worker_messages();
+        assert!(!app.bootenvs_loaded);
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        for _ in 0..6 {
+            app.handle_key(KeyCode::BackTab);
+        }
+        assert_eq!(app.current_section(), Section::Hosts);
+        app.handle_key(KeyCode::Down); // switch host
+        assert!(!app.bootenvs_loaded);
+    }
+
+    #[test]
+    fn a_successful_boot_environment_mutation_queues_a_re_list() {
+        let mut app = in_section(Section::BootEnvs);
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Ok(()))).unwrap();
+        assert_eq!(app.drain_worker_messages(), vec![Section::BootEnvs]);
+    }
+
+    #[test]
+    fn help_documents_the_boot_environment_keys() {
+        let text = help_text();
+        for want in ["Boot Envs", "next boot only", "rename", "mount", "destroy"] {
+            assert!(text.contains(want), "missing {want:?}");
+        }
     }
 }

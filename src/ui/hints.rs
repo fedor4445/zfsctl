@@ -249,6 +249,37 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("r", "Refresh", 4));
         }
+        (Section::BootEnvs, _) => {
+            if !app.bootenvs.is_empty() {
+                v.push(h("↑↓", "Move", 1));
+            }
+            if let Some(be) = app.selected_bootenv() {
+                if be.can_activate() {
+                    v.push(h("a", "Activate", 2).tone(Tone::Warn));
+                }
+                if be.can_activate_temporarily() {
+                    v.push(h("t", "Next boot only", 2));
+                }
+                if be.can_clear_temporary() {
+                    v.push(h("T", "Clear next-boot", 2));
+                }
+                v.push(h("R", "Rename", 3));
+                if be.can_mount() {
+                    v.push(h("m", "Mount", 3));
+                }
+                if be.can_unmount() {
+                    v.push(h("u", "Unmount", 3));
+                }
+                if be.can_destroy() {
+                    v.push(h("d", "Destroy", 2).tone(Tone::Danger));
+                    v.push(h("D", "Destroy + origin", 3).tone(Tone::Danger));
+                }
+            }
+            if app.bootenvs_unavailable.is_none() {
+                v.push(h("n", "New", 2));
+            }
+            v.push(h("r", "Refresh", 4));
+        }
         (Section::Jobs, _) => {
             if !app.jobs_view.jobs.is_empty() {
                 v.push(h("↑↓", "Move", 1));
@@ -535,6 +566,13 @@ mod tests {
             ("disks, none selected", disks(false)),
             ("disks, one selected", disks(true)),
             ("shares", shares()),
+            ("boot envs, running selected", boot_envs(0)),
+            ("boot envs, spare selected", boot_envs(1)),
+            ("boot envs, temporary selected", boot_envs(2)),
+            ("boot envs, mounted selected", boot_envs(3)),
+            ("boot envs, next-boot selected", boot_envs(4)),
+            ("boot envs, none selected", boot_envs_none()),
+            ("boot envs, unavailable", boot_envs_unavailable()),
             ("jobs, one selected", jobs(true)),
             ("jobs, none selected", jobs(false)),
         ]
@@ -583,6 +621,7 @@ mod tests {
                 a.snapshots_table.selected(),
                 a.disks_table.selected(),
                 a.shares_table.selected(),
+                a.bootenvs_table.selected(),
                 a.jobs_table.selected(),
                 a.vdevs_table.selected(),
                 a.pool_properties_table.selected(),
@@ -640,7 +679,7 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_advertised_are_no_ops() {
-        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']'];
+        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D'];
         for (name, app) in scenarios() {
             let advertised: Vec<KeyCode> = hints(&app).iter().filter_map(|h| key_code(h.key)).collect();
             for ch in probes {
@@ -953,6 +992,7 @@ mod tests {
         a.snapshots.clear();
         a.disks.clear();
         a.shares.clear();
+        a.bootenvs.clear();
         a.jobs_view.jobs.clear();
     }
 
@@ -960,7 +1000,7 @@ mod tests {
     fn the_move_hint_is_shown_only_while_the_list_has_rows() {
         for (name, mut app) in scenarios() {
             let before = keys(&app).contains(&"↑↓");
-            if name != "pools middle, empty" {
+            if name != "pools middle, empty" && name != "boot envs, unavailable" {
                 assert!(before, "{name} should advertise ↑↓ with rows present");
             }
             empty_every_list(&mut app);
@@ -1119,5 +1159,53 @@ mod tests {
         assert!(keys(&a).contains(&"c"));
         a.jobs_view.jobs = vec![crate::jobs::Job::test_snapshot("r", "tank/data", "hourly", 3)];
         assert!(!keys(&a).contains(&"c"), "only replications can be cancelled");
+    }
+
+    fn boot_envs(selected: usize) -> App {
+        use crate::zfs::bootenv::{ActiveFlags, BootEnv};
+        let row = |name: &str, now, reboot, temp, mount: Option<&str>| BootEnv {
+            name: name.to_string(),
+            flags: ActiveFlags { now, reboot, temp },
+            mountpoint: mount.map(str::to_string),
+            space: "1M".to_string(),
+            created: "2026-10-07 19:26".to_string(),
+        };
+        let mut a = base();
+        go(&mut a, Section::BootEnvs);
+        a.bootenvs = vec![
+            row("default", true, true, false, Some("/")),
+            row("spare", false, false, false, None),
+            row("trial", false, false, true, None),
+            row("mounted", false, false, false, Some("/tmp/be_mount.X")),
+            row("next", false, true, false, None),
+        ];
+        a.bootenvs_table.select(Some(selected));
+        a
+    }
+
+    fn boot_envs_none() -> App {
+        let mut a = boot_envs(0);
+        a.bootenvs_table.select(None);
+        a
+    }
+
+    fn boot_envs_unavailable() -> App {
+        let mut a = base();
+        go(&mut a, Section::BootEnvs);
+        a.bootenvs_unavailable = Some("bectl: not found".to_string());
+        a
+    }
+
+    #[test]
+    fn boot_envs_advertise_exactly_what_the_selected_row_allows() {
+        // `context_hints` is the section's own hints, without the always-present `! A ? q`.
+        let k = |a: &App| context_hints(a).iter().map(|h| h.key).filter(|k| k.chars().count() == 1 && *k != "r").collect::<Vec<_>>();
+        assert_eq!(k(&boot_envs(0)), vec!["R", "n"], "running: rename and new only");
+        assert_eq!(k(&boot_envs(1)), vec!["a", "t", "R", "m", "d", "D", "n"]);
+        assert_eq!(k(&boot_envs(2)), vec!["a", "T", "R", "m", "n"], "temporary: clear it before destroying");
+        assert_eq!(k(&boot_envs(3)), vec!["a", "t", "R", "u", "d", "D", "n"]);
+        assert_eq!(k(&boot_envs(4)), vec!["t", "R", "m", "n"]);
+        assert_eq!(k(&boot_envs_none()), vec!["n"]);
+        assert!(k(&boot_envs_unavailable()).is_empty(), "nothing can be done to a section that cannot list");
     }
 }

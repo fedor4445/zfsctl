@@ -189,6 +189,7 @@ fn event_loop(
                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
                     Section::Disks => app.refresh_disks(host.runner.clone()),
                     Section::Shares => app.refresh_shares(host.runner.clone()),
+                    Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
                     Section::Jobs => app.refresh_jobs(),
                     Section::Vdevs => {
                         if let Some(pool) = app.drilled_pool.clone() {
@@ -277,6 +278,7 @@ fn event_loop(
                                     Section::Snapshots => app.refresh_snapshots(host.runner.clone()),
                                     Section::Disks => app.refresh_disks(host.runner.clone()),
                                     Section::Shares => app.refresh_shares(host.runner.clone()),
+                                    Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
                                     Section::Jobs => app.refresh_jobs(),
                                     Section::Hosts
                                     | Section::Vdevs

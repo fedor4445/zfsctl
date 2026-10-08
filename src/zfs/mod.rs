@@ -1,3 +1,4 @@
+pub mod bootenv;
 pub mod accounts;
 pub mod dataset;
 pub mod disk;

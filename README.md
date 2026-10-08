@@ -61,10 +61,10 @@ auto_refresh_secs = 10   # seconds between refreshes; 0 turns it off
 `ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (the exceptions are read-only lookups that need no privilege and run over SSH without sudo: `getent passwd` / `getent group` for the F2 picker, and `uname`, `date`, `sysctl`, `iostat` and `showmount` for the metrics panel; if the SSH key is locked to a forced command, that command must allow them too) (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the commands `zfsctl` ever runs, not full root.
 The `!` shell is deliberately the plain unprivileged login: it adds no sudoers requirement and no path to root.
 
-`zfsctl` shells out to ten privileged binaries in total (confirmed by grepping every `run`/`run_checked`/`run_with_stdin` call site, not just the obvious `zpool`/`zfs` ones — `getfacl`/`setfacl` back the ACL tab, `geom` backs the Disks section, `service` backs the Shares section's NFS/SMB availability check and the Samba reload, `smbpasswd` sets a managed SMB share's Samba password, `cat`/`tee` read and write `smb4.conf`, and `smbstatus -S` lists the clients connected to an SMB share for the metrics panel; all ten need the sudoers entry, or whichever feature uses the missing one fails with "a password is required" the first time you touch it). Replication needs no `sh` entry either: the hub runs the two `zfs` commands itself and pipes them together. On each remote host, as root, find the exact paths (typically `/sbin/zpool`, `/sbin/zfs`, `/bin/getfacl`, `/bin/setfacl`, `/sbin/geom`, `/usr/sbin/service`, `/usr/local/bin/smbpasswd`, `/usr/local/bin/smbstatus`, `/bin/cat`, `/usr/bin/tee` on FreeBSD, but confirm on your actual install rather than assume):
+`zfsctl` shells out to eleven privileged binaries in total (confirmed by grepping every `run`/`run_checked`/`run_with_stdin` call site, not just the obvious `zpool`/`zfs` ones — `getfacl`/`setfacl` back the ACL tab, `geom` backs the Disks section, `bectl` backs the Boot Envs section, `service` backs the Shares section's NFS/SMB availability check and the Samba reload, `smbpasswd` sets a managed SMB share's Samba password, `cat`/`tee` read and write `smb4.conf`, and `smbstatus -S` lists the clients connected to an SMB share for the metrics panel; all eleven need the sudoers entry, or whichever feature uses the missing one fails with "a password is required" the first time you touch it). Replication needs no `sh` entry either: the hub runs the two `zfs` commands itself and pipes them together. On each remote host, as root, find the exact paths (typically `/sbin/zpool`, `/sbin/zfs`, `/bin/getfacl`, `/bin/setfacl`, `/sbin/geom`, `/sbin/bectl`, `/usr/sbin/service`, `/usr/local/bin/smbpasswd`, `/usr/local/bin/smbstatus`, `/bin/cat`, `/usr/bin/tee` on FreeBSD, but confirm on your actual install rather than assume):
 
 ```sh
-which zpool zfs getfacl setfacl geom service smbpasswd smbstatus cat tee
+which zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee
 ```
 
 Then add a `NOPASSWD` entry scoped to exactly those paths for the connecting user (replace `fbsd` and the paths with what you found):
@@ -72,18 +72,18 @@ Then add a `NOPASSWD` entry scoped to exactly those paths for the connecting use
 ```sh
 visudo
 # add a line like:
-fbsd ALL=(root) NOPASSWD: /sbin/zpool, /sbin/zfs, /bin/getfacl, /bin/setfacl, /sbin/geom, /usr/sbin/service, /usr/local/bin/smbpasswd, /usr/local/bin/smbstatus -S, /bin/cat /usr/local/etc/smb4.conf, /usr/bin/tee /usr/local/etc/smb4.conf
+fbsd ALL=(root) NOPASSWD: /sbin/zpool, /sbin/zfs, /bin/getfacl, /bin/setfacl, /sbin/geom, /sbin/bectl, /usr/sbin/service, /usr/local/bin/smbpasswd, /usr/local/bin/smbstatus -S, /bin/cat /usr/local/etc/smb4.conf, /usr/bin/tee /usr/local/etc/smb4.conf
 ```
 
 Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `secure_path` (FreeBSD's default) already protects the *command being resolved*, but the sudoers entry itself should still pin the exact binaries it authorizes, as a second, independent layer — this is the actual place the hardening belongs, not the client code, which only ever sends `sudo -n zpool ...` (bare names; the unprivileged `getent` lookups are the only commands sent without `sudo -n`) and relies on `secure_path` for safe resolution.
 
 `smbstatus` is pinned to `-S` (the share-connection listing); it only works as root, and the broader `-b`/`-p` forms are not needed. Without this one entry everything else keeps working: the Shares metrics panel just shows the SMB client line as `unavailable` instead of a client list.
 
-`cat` and `tee` are additionally pinned to the `smb4.conf` argument. A bare `sudo cat` would let the connecting user read any file as root (e.g. `/etc/master.passwd`), and a bare `sudo tee` would let them overwrite any file, so pinning prevents arbitrary-file read/overwrite through those two commands. It does not make the entry as a whole root-equivalent-proof: `smbpasswd`, `zfs` and `setfacl` are already broad (for example `zfs` can mount over or change permissions on arbitrary paths, and `setfacl` can alter ACLs anywhere). A `sudo sh` entry would be unrestricted root outright, which is why `zfsctl` uses `cat`/`tee` with a fixed path rather than `sh -c`. If your Samba config lives somewhere other than `/usr/local/etc/smb4.conf`, `zfsctl` does not currently support it.
+`cat` and `tee` are additionally pinned to the `smb4.conf` argument. A bare `sudo cat` would let the connecting user read any file as root (e.g. `/etc/master.passwd`), and a bare `sudo tee` would let them overwrite any file, so pinning prevents arbitrary-file read/overwrite through those two commands. It does not make the entry as a whole root-equivalent-proof: `smbpasswd`, `zfs`, `setfacl` and `bectl` are already broad (for example `zfs` can mount over or change permissions on arbitrary paths, `setfacl` can alter ACLs anywhere, and `bectl` can open a shell in a boot environment, mount one anywhere, or activate one for the next boot, which amounts to root on the host). A `sudo sh` entry would be unrestricted root outright, which is why `zfsctl` uses `cat`/`tee` with a fixed path rather than `sh -c`. If your Samba config lives somewhere other than `/usr/local/etc/smb4.conf`, `zfsctl` does not currently support it.
 
 ## Keys
 
-- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `'['` / `']'` (Datasets right pane only, once focused with `Right`): cycle between the Properties, Permissions, and ACL sub-tabs.
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
@@ -221,6 +221,17 @@ FreeBSD's `sharesmb` ZFS property doesn't work (`zfs set sharesmb=on` prints "No
 - **The Valid user must already be a Unix account.** `zfsctl` gives it a Samba password with `smbpasswd -a -s`. A password is required on create; on edit, a blank password keeps the existing one (only if the user is unchanged). Setting a password **replaces that user's Samba password for every share they use**; there is no way to avoid this when creating a share, so enter the user's current Samba password if you want to keep it.
 - **Removing a share** (`d` in Shares) deletes its stanza but leaves the user's Samba password in place, since the same user may also back a hand-written share.
 - SMB shares are only listed while `smbd` is running; a config or parse error shows in the Shares status line while NFS rows still render.
+
+### Boot Envs
+
+Lists the host's boot environments (`bectl list`): Name, Active (`Now`, `Reboot`, `Now+Reboot`, `Temp`), Space, Mountpoint and Created; Mountpoint then Created drop on a narrow terminal. If the host has no `bectl` (or is not laid out for boot environments) the section title says `[unavailable: ...]` with the reason, and recovers on its own once it works. Keys act only on what is possible for the selected row, and the hint bar shows exactly those:
+
+- `n`: new boot environment (name; `F2` on the second field picks one to clone, blank clones the running one).
+- `a`: make it the boot environment for every future boot (asks first). `t`: use it for the next boot only; `T`: clear that. Neither the running nor the next-boot one is destroyable.
+- `R`: rename. `m` / `u`: mount / unmount; the Mountpoint column shows the `/tmp/be_mount.XXXX` path.
+- `d`: destroy (type its name). `D`: destroy and remove its origin snapshot (`bectl destroy -o`).
+
+`zfsctl` never reboots the host. bectl's own error text is shown verbatim when it refuses something; for example, destroying a mounted boot environment fails with `cannot destroy mounted boot env unless forced`, so unmount it (`u`) first.
 
 ### Jobs
 
