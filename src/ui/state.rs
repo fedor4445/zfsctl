@@ -452,6 +452,7 @@ impl App {
         }
         self.last_auto_refresh.insert(key, now);
         let already_running = self.is_refreshing(section, key.1);
+        let for_snapshots = runner.clone();
         match section {
             Section::Pools => self.refresh_pools(runner),
             Section::Datasets => self.refresh_datasets(runner),
@@ -463,6 +464,12 @@ impl App {
         }
         if !already_running {
             self.quiet_refresh.insert(key);
+        }
+        // The destroy prompts count a dataset's snapshots, so the Datasets view loads the snapshot list once
+        // (quietly) instead of leaving the count "unknown" until the Snapshots section has been opened.
+        if section == Section::Datasets && !self.snapshots_loaded && !self.is_refreshing(Section::Snapshots, key.1) {
+            self.refresh_snapshots(for_snapshots);
+            self.quiet_refresh.insert((Section::Snapshots, key.1));
         }
     }
 
@@ -8846,7 +8853,9 @@ mod tests {
             let mut app = in_section(section);
             app.auto_refresh(runner(""), Instant::now(), TEN);
             assert!(app.in_flight.contains(&(section, 0)), "{section:?} refresh not started");
-            assert_eq!(app.in_flight.len(), 1, "only the visible section is refreshed ({section:?})");
+            // Datasets also loads the snapshot list the first time (the destroy prompts count them).
+            let expected = if section == Section::Datasets { 2 } else { 1 };
+            assert_eq!(app.in_flight.len(), expected, "only the visible section is refreshed ({section:?})");
             assert!(app.quiet_refresh.contains(&(section, 0)), "{section:?} should be quiet");
         }
     }
@@ -9892,5 +9901,22 @@ mod tests {
         let mut app = acl_app_with_acltype(Some("posix"));
         app.dataset_properties_for = Some("tank/other".to_string());
         assert_eq!(app.acl_unsupported(), None, "stale properties of a different dataset say nothing about this one");
+    }
+
+
+    #[test]
+    fn the_datasets_view_loads_the_snapshot_list_once_quietly_so_destroy_prompts_can_count_them() {
+        let mut app = in_section(Section::Datasets);
+        app.status_message = Some("scrub started".to_string());
+        app.auto_refresh(runner(""), Instant::now(), TEN);
+        assert!(app.in_flight.contains(&(Section::Datasets, 0)) && app.in_flight.contains(&(Section::Snapshots, 0)));
+        assert!(app.quiet_refresh.contains(&(Section::Snapshots, 0)), "quiet: its arrival must not wipe an informational status");
+        wait_until(&mut app, |a| a.snapshots_loaded);
+        assert!(app.snapshots_loaded);
+        assert_eq!(app.status_message.as_deref(), Some("scrub started"));
+        app.in_flight.clear();
+        app.last_auto_refresh.clear();
+        app.auto_refresh(runner(""), Instant::now(), TEN);
+        assert!(!app.in_flight.contains(&(Section::Snapshots, 0)), "only the first time: the Snapshots section keeps them fresh after that");
     }
 }
