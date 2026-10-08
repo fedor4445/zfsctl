@@ -126,7 +126,12 @@ pub fn save(path: &Path, jobs: &[Job]) -> Result<()> {
 /// `-` or `/`, no trailing `/`. Checked here so a hand-edited `jobs.toml` can never put an
 /// option or a shell-looking string on a `zfs` command line.
 pub fn valid_dataset(s: &str) -> bool {
-    !s.is_empty() && !s.starts_with(['-', '/']) && !s.ends_with('/') && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.' | '/'))
+    !s.is_empty()
+        && !s.starts_with(['-', '/'])
+        && !s.ends_with('/')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.' | '/'))
+        // No empty, `.` or `..` component: `tank//x`, `tank/./x` and `../x` are not dataset names.
+        && s.split('/').all(|c| !c.is_empty() && c != "." && c != "..")
 }
 
 pub fn valid_prefix(s: &str) -> bool {
@@ -732,5 +737,16 @@ mod tests {
         let a = Job::test_backup("a", "tank/data", "hourly", "/mnt/one", "/pw");
         let b = Job::test_backup("b", "tank/data", "hourly", "/mnt/two", "/pw");
         assert!(clashing_job(&[a], &b).is_none());
+    }
+
+
+    #[test]
+    fn dataset_names_with_empty_dot_or_dotdot_components_are_refused() {
+        for good in ["tank", "tank/data", "tank/data-1/sub.dir", "zroot/ROOT/default", "a:b/c_d"] {
+            assert!(valid_dataset(good), "{good}");
+        }
+        for bad in ["", "-x", "/tank", "tank/", "../x", "tank//x", "tank/./x", "tank/../x", "tank/data/..", ".", "..", "tank/a b", "tank/a@b"] {
+            assert!(!valid_dataset(bad), "{bad:?}");
+        }
     }
 }

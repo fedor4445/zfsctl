@@ -652,7 +652,7 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
-    use crate::ui::jobs::{last_result_text, next_run_text, schedule_label, DaemonState};
+    use crate::ui::jobs::{job_target, last_result_text, next_run_text, schedule_label, DaemonState};
     let theme = app.theme.clone();
     let now = chrono::Utc::now();
     let local_now = chrono::Local::now();
@@ -683,10 +683,16 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 (next_run_text(&j.schedule, &local_now), last_result_text(last, now), Style::default())
             };
-            Row::new(vec![j.id.clone(), j.host.clone(), j.pool.clone().or_else(|| j.dataset.clone()).unwrap_or_default(), schedule_label(&j.schedule), next, last_text]).style(style)
+            Row::new(vec![j.id.clone(), j.host.clone(), job_target(j), schedule_label(&j.schedule), next, last_text]).style(style)
         })
         .collect();
-    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(14), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
+    // The Target column is as wide as its longest entry (a destination or a repository path can be long), but
+    // never so wide that Schedule, Next run and the start of Last are pushed off a narrow terminal.
+    let others: u16 = 22 + 8 + 20 + 15 + 5 + 10; // the other columns, their gaps and Last's minimum
+    let room = area.width.saturating_sub(2).saturating_sub(others).max(14);
+    let longest = app.jobs_view.jobs.iter().map(|j| job_target(j).chars().count()).max().unwrap_or(0);
+    let target_w = u16::try_from(longest).unwrap_or(u16::MAX).clamp(14, room);
+    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(target_w), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Job", "Host", "Target", "Schedule", "Next run", "Last"]))
         .block(block)
@@ -2024,5 +2030,20 @@ mod tests {
         assert!(!render(&mut app, 80, 24).join("\n").contains("mounted at"));
         app.bootenvs[0].mountpoint = Some("/".into());
         assert!(!render(&mut app, 80, 24).join("\n").contains("mounted at"), "the running BE at / is not news");
+    }
+
+
+    #[test]
+    fn the_jobs_table_shows_where_each_job_sends_its_data_and_clamps_on_a_narrow_terminal() {
+        let repl = crate::jobs::Job::test_replicate("repl", "tank/data", "hourly", "local", "backup/data");
+        let backup = crate::jobs::Job::test_backup("bak", "tank/media", "hourly", "/mnt/usb/restic", "/root/pw");
+        let (mut app, _dir) = jobs_app(&[repl, backup]);
+        app.refresh_jobs();
+        let wide = render(&mut app, 170, 30).join("\n");
+        for want in ["tank/data → local:backup/data", "tank/media → /mnt/usb/restic"] {
+            assert!(wide.contains(want), "missing {want:?} in\n{wide}");
+        }
+        let narrow = render(&mut app, 100, 30).join("\n");
+        assert!(narrow.contains("tank/data") && narrow.contains("Schedule") && narrow.contains("Last"), "other columns survive:\n{narrow}");
     }
 }
