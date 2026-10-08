@@ -208,7 +208,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     if !app.acl_entries.is_empty() {
                         v.push(h("↑↓", "Move", 1));
                     }
-                    if app.selected_dataset_mountpoint().is_some() {
+                    if app.selected_dataset_mountpoint().is_some() && app.acl_unsupported().is_none() {
                         v.push(h("n", "Add entry", 2));
                         if app.acl_entries_table.selected().is_some_and(|i| i < app.acl_entries.len()) {
                             v.push(h("d", "Remove", 2).tone(Tone::Warn));
@@ -1236,5 +1236,16 @@ mod tests {
         let d = h.iter().find(|x| x.key == "D").unwrap();
         assert_eq!((d.label, d.tone), ("Destroy recursively", Tone::Danger));
         assert!(!keys(&datasets_none_selected()).contains(&"D"));
+    }
+
+
+    #[test]
+    fn the_acl_tab_hides_add_and_remove_on_a_posix_acltype_dataset() {
+        let mut a = datasets_right(DatasetDetailTab::Acl);
+        assert!(keys(&a).contains(&"n") && keys(&a).contains(&"d"));
+        a.dataset_properties_for = Some("tank/a".to_string());
+        a.dataset_properties = vec![Property { name: "acltype".to_string(), value: "posix".to_string(), source: PropertySource::Local }];
+        let k = keys(&a);
+        assert!(!k.contains(&"n") && !k.contains(&"d"), "{k:?}");
     }
 }

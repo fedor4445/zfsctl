@@ -104,7 +104,7 @@ On the four account fields (SMB valid user, NFS "Root user mapping" (users only)
 
 - `Tab` / `Down`: move to the next field (wraps from the last field back to the first)
 - `Shift+Tab` / `Up`: move to the previous field (wraps from the first field back to the last)
-- `Enter` on the last field: submit. An invalid value anywhere in the form is rejected with a status message explaining that submission failed — the form stays open, focus resets to the first field so you can `Tab`/`Down` through to find and fix the problem without needing to `Esc` and start over
+- `Enter` on the last field: submit. An invalid value anywhere in the form is rejected with a status message that names the field and what is wrong with it (for the permission and ACL forms: a permission that starts with `-`, a set name typed with its leading `@`, an unknown recipient or type) — the form stays open with everything you typed, focus resets to the first field so you can `Tab`/`Down` through to find and fix the problem without needing to `Esc` and start over
 - `Esc`: cancel, discarding whatever was typed
 
 ### Hosts
@@ -157,7 +157,7 @@ separate calls merges into one combined grant, it never overwrites.
 
 FreeBSD native NFSv4 access control lists (`getfacl`/`setfacl`) on the
 selected dataset's mountpoint — not available for a zvol or an
-unmounted filesystem (no mountpoint to point `getfacl` at).
+unmounted filesystem (no mountpoint to point `getfacl` at). On a dataset whose `acltype` property is `posix` the tab says so in its title, hides `n` and `d`, and explains in the status line if you press them: it edits NFSv4 ACLs only. In the Recipient fields (here and in the Permissions sub-tab) `user:` and `group:` may be written in any case with spaces around the colon (`User: carol`); the name keeps its case. `d` asks for confirmation naming the entry (`allow owner@: read_data/write_data`), not just its number.
 
 - `n`: add a new ACL entry, always appended at the end (prompts for
   Recipient — `owner` / `group` / `everyone` / `user:<name>` /

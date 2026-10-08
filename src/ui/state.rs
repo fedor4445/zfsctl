@@ -590,6 +590,17 @@ impl App {
         self.datasets_table.selected().and_then(|i| self.datasets.get(i)).and_then(|d| d.mountpoint.clone())
     }
 
+    /// Why the ACL tab cannot edit the selected dataset, from its `acltype` property (only trusted when the
+    /// loaded properties belong to this very dataset).
+    pub fn acl_unsupported(&self) -> Option<&'static str> {
+        let name = self.selected_dataset_name()?;
+        if self.dataset_properties_for.as_deref() != Some(name.as_str()) {
+            return None;
+        }
+        let acltype = self.dataset_properties.iter().find(|p| p.name == "acltype")?;
+        (acltype.value == "posix").then_some("this dataset has acltype=posix: the ACL tab edits NFSv4 ACLs only")
+    }
+
     /// How many child datasets and snapshots sit under `name` (the dataset's own snapshots included), from
     /// the lists loaded at the last refresh. Snapshots are `None` until a snapshot list has arrived.
     fn counts_under(&self, name: &str) -> (usize, Option<usize>) {
@@ -1040,6 +1051,15 @@ impl App {
                     }
                 }
             }
+            // acltype=posix: this tab edits NFSv4 ACLs only. Say so instead of offering keys that cannot work.
+            KeyCode::Char('n' | 'd')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Acl
+                    && self.acl_unsupported().is_some() =>
+            {
+                self.status_message = self.acl_unsupported().map(str::to_string);
+            }
             KeyCode::Char('n')
                 if self.current_section() == Section::Datasets
                     && self.pane_focus == PaneFocus::Right
@@ -1071,9 +1091,9 @@ impl App {
                     && self.dataset_detail_tab == DatasetDetailTab::Acl =>
             {
                 if let (Some(path), Some(i)) = (self.selected_dataset_mountpoint(), self.acl_entries_table.selected()) {
-                    if i < self.acl_entries.len() {
+                    if let Some(entry) = self.acl_entries.get(i) {
                         self.modal = Some(Modal::Confirm { choice: None,
-                            prompt: format!("Remove ACL entry #{i} on '{path}'? (y/n)"),
+                            prompt: format!("Remove ACL entry #{i} ({}) on '{path}'? (y/n)", entry.describe()),
                             action: PendingAction { host: self.selected_host, section: Section::DatasetAcl, call: MutationCall::RemoveAclEntry { path, position: i } },
                         });
                     }
@@ -1677,7 +1697,7 @@ impl App {
                             }
                         }
                     } else if let Some(action) = build_pending_action(&kind, &fields) { Some(action) } else {
-                        self.set_error("Could not submit -- check the field values against the hints in their labels".to_string());
+                        self.set_error(form_problem(&kind, &fields));
                         self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
                         None
                     }
@@ -3048,7 +3068,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         }
         FormKind::GrantPermissionSet { host, dataset } => {
             let name = field_value(fields, 0).trim();
-            if name.is_empty() {
+            if name.is_empty() || name.contains('@') {
                 return None;
             }
             let perms = parse_required_perms_field(field_value(fields, 1))?;
@@ -3229,24 +3249,24 @@ fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs:
 /// Parses the `Recipient` field's mini-language: `everyone`,
 /// `user:<name>`, or `group:<name>` — no bare-name fallback, since this
 /// app always passes explicit `-u`/`-g` to `zfs allow` (see the spec).
+/// Splits `user:carol`, ` User : carol `, `GROUP:wheel` into a lower-case keyword and a trimmed name (the
+/// name keeps its case). `None` when there is no colon or the name is blank.
+fn split_recipient(s: &str) -> Option<(String, &str)> {
+    let (keyword, name) = s.split_once(':')?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| (keyword.trim().to_ascii_lowercase(), name))
+}
+
 fn parse_recipient_field(s: &str) -> Option<crate::zfs::permission::Recipient> {
     let s = s.trim();
     if s.eq_ignore_ascii_case("everyone") {
         return Some(crate::zfs::permission::Recipient::Everyone);
     }
-    if let Some(name) = s.strip_prefix("user:") {
-        if !name.is_empty() {
-            return Some(crate::zfs::permission::Recipient::User(name.to_string()));
-        }
-        return None;
+    match split_recipient(s)? {
+        (keyword, name) if keyword == "user" => Some(crate::zfs::permission::Recipient::User(name.to_string())),
+        (keyword, name) if keyword == "group" => Some(crate::zfs::permission::Recipient::Group(name.to_string())),
+        _ => None,
     }
-    if let Some(name) = s.strip_prefix("group:") {
-        if !name.is_empty() {
-            return Some(crate::zfs::permission::Recipient::Group(name.to_string()));
-        }
-        return None;
-    }
-    None
 }
 
 /// Parses the `Scope` field — blank defaults to `Both`, anything else
@@ -3278,10 +3298,57 @@ fn parse_scope_field(s: &str) -> Option<crate::zfs::permission::Scope> {
 /// default for a permission list (unlike Shares' optional fields).
 fn parse_required_perms_field(s: &str) -> Option<Vec<String>> {
     let perms: Vec<String> = s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
-    if perms.is_empty() {
+    // A token starting with `-` would be read as an option by zfs/setfacl: refuse it here, with the form open.
+    if perms.is_empty() || perms.iter().any(|p| p.starts_with('-')) {
         None
     } else {
         Some(perms)
+    }
+}
+
+/// What is wrong with a required permissions field, in the words the form shows.
+fn perms_problem(s: &str) -> String {
+    match s.split(',').map(str::trim).find(|p| p.starts_with('-')) {
+        Some(token) => format!("Permissions: '{token}' is not a permission (it starts with '-')"),
+        None => "Permissions: choose at least one (F2 lists them)".to_string(),
+    }
+}
+
+/// The reason `build_pending_action` returned `None` for this form, naming the field, so the form can stay
+/// open with the typing intact and say what to fix.
+fn form_problem(kind: &FormKind, fields: &[FormField]) -> String {
+    let value = |i: usize| field_value(fields, i);
+    match kind {
+        FormKind::GrantPermission { .. } => {
+            if parse_recipient_field(value(0)).is_none() {
+                "Recipient: use everyone, user:<name> or group:<name>".to_string()
+            } else if parse_scope_field(value(1)).is_none() {
+                "Scope: local, descendent or both (blank means both)".to_string()
+            } else {
+                perms_problem(value(2))
+            }
+        }
+        FormKind::GrantPermissionSet { .. } => {
+            let name = value(0).trim();
+            if name.is_empty() {
+                "Set name: required".to_string()
+            } else if name.contains('@') {
+                "Set name: type it without the leading '@'".to_string()
+            } else {
+                perms_problem(value(1))
+            }
+        }
+        FormKind::GrantCreateTimePermission { .. } | FormKind::RevokePermissions { .. } => perms_problem(value(0)),
+        FormKind::AddAclEntry { .. } => {
+            if parse_acl_recipient_field(value(0)).is_none() {
+                "Recipient: use owner, group, everyone, user:<name> or group:<name>".to_string()
+            } else if parse_required_perms_field(value(1)).is_none() {
+                perms_problem(value(1))
+            } else {
+                "Type: allow or deny (blank means allow)".to_string()
+            }
+        }
+        _ => "Could not submit -- check the field values against the hints in their labels".to_string(),
     }
 }
 
@@ -3300,19 +3367,11 @@ fn parse_acl_recipient_field(s: &str) -> Option<crate::acl::AclTag> {
     if s.eq_ignore_ascii_case("everyone") {
         return Some(crate::acl::AclTag::Everyone);
     }
-    if let Some(name) = s.strip_prefix("user:") {
-        if !name.is_empty() {
-            return Some(crate::acl::AclTag::User(name.to_string()));
-        }
-        return None;
+    match split_recipient(s)? {
+        (keyword, name) if keyword == "user" => Some(crate::acl::AclTag::User(name.to_string())),
+        (keyword, name) if keyword == "group" => Some(crate::acl::AclTag::NamedGroup(name.to_string())),
+        _ => None,
     }
-    if let Some(name) = s.strip_prefix("group:") {
-        if !name.is_empty() {
-            return Some(crate::acl::AclTag::NamedGroup(name.to_string()));
-        }
-        return None;
-    }
-    None
 }
 
 /// Parses the ACL `Type` field — blank defaults to `Allow` (the more
@@ -9730,5 +9789,108 @@ mod tests {
         app.handle_key(KeyCode::BackTab);
         app.handle_key(KeyCode::Down);
         assert!(app.bootenv_busy.is_none() && app.bootenv_pin.is_none());
+    }
+
+
+    #[test]
+    fn recipient_keywords_are_case_insensitive_and_whitespace_tolerant_but_names_keep_their_case() {
+        use crate::zfs::permission::Recipient;
+        assert_eq!(parse_recipient_field("User:Carol"), Some(Recipient::User("Carol".into())));
+        assert_eq!(parse_recipient_field("  GROUP : wheel  "), Some(Recipient::Group("wheel".into())));
+        assert_eq!(parse_recipient_field(" user:  bob "), Some(Recipient::User("bob".into())));
+        assert_eq!(parse_recipient_field("EVERYONE"), Some(Recipient::Everyone));
+        for bad in ["user:", "user:   ", "group", "users:bob", "", "bob"] {
+            assert_eq!(parse_recipient_field(bad), None, "{bad:?}");
+        }
+        use crate::acl::AclTag;
+        assert_eq!(parse_acl_recipient_field(" Owner "), Some(AclTag::Owner));
+        assert_eq!(parse_acl_recipient_field("GROUP"), Some(AclTag::OwningGroup));
+        assert_eq!(parse_acl_recipient_field("Group: Wheel"), Some(AclTag::NamedGroup("Wheel".into())));
+        assert_eq!(parse_acl_recipient_field("USER :carol"), Some(AclTag::User("carol".into())));
+        assert_eq!(parse_acl_recipient_field("user:  "), None);
+    }
+
+    fn open_form(app: &mut App, kind: FormKind, values: &[&str]) {
+        let fields = values.iter().map(|v| FormField { label: "f".to_string(), value: (*v).to_string() }).collect::<Vec<_>>();
+        app.modal = Some(Modal::Form { title: "t".to_string(), focused: fields.len() - 1, fields, description: None, kind });
+    }
+
+    fn submit_problem(kind: FormKind, values: &[&str]) -> String {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_form(&mut app, kind, values);
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "an invalid form submits nothing");
+        assert!(matches!(app.modal, Some(Modal::Form { .. })), "and stays open so the typing is not lost");
+        app.status_message.unwrap_or_default()
+    }
+
+    #[test]
+    fn a_dash_prefixed_permission_keeps_the_form_open_and_names_the_token() {
+        let grant = || FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        let msg = submit_problem(grant(), &["user:carol", "both", "snapshot, -x"]);
+        assert!(msg.contains("Permissions") && msg.contains("-x") && msg.contains("'-'"), "{msg}");
+        let revoke = FormKind::RevokePermissions { host: 0, dataset: "tank/data".to_string(), target: crate::zfs::permission::PermissionTarget::CreateTime };
+        assert!(submit_problem(revoke, &["--help"]).contains("--help"));
+        let acl = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
+        assert!(submit_problem(acl, &["owner", "read_data,-r", "", "allow"]).contains("-r"));
+    }
+
+    #[test]
+    fn each_form_problem_says_which_field_is_wrong() {
+        let grant = || FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        assert!(submit_problem(grant(), &["bob", "both", "snapshot"]).contains("Recipient"));
+        assert!(submit_problem(grant(), &["user:carol", "sideways", "snapshot"]).contains("Scope"));
+        assert!(submit_problem(grant(), &["user:carol", "both", " , "]).contains("Permissions"));
+        let set = || FormKind::GrantPermissionSet { host: 0, dataset: "tank/data".to_string() };
+        assert!(submit_problem(set(), &["@ro", "snapshot"]).contains("without the leading '@'"));
+        assert!(submit_problem(set(), &["", "snapshot"]).contains("Set name"));
+        let acl = || FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
+        assert!(submit_problem(acl(), &["nobody", "read_data", "", "allow"]).contains("Recipient"));
+        assert!(submit_problem(acl(), &["owner", "read_data", "", "maybe"]).contains("Type"));
+        // A form with no specific rule still says something useful.
+        assert!(submit_problem(FormKind::CreatePool { host: 0 }, &["", ""]).contains("Could not submit"));
+    }
+
+    fn acl_app_with_acltype(value: Option<&str>) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.acl_entries = vec![crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow }];
+        app.acl_entries_table.select(Some(0));
+        app.acl_entries_for = Some("/tank/data".to_string());
+        if let Some(v) = value {
+            app.dataset_properties_for = Some("tank/data".to_string());
+            app.dataset_properties = vec![Property { name: "acltype".to_string(), value: v.to_string(), source: PropertySource::Local }];
+        }
+        app
+    }
+
+    #[test]
+    fn the_acl_remove_confirm_shows_the_entry_it_would_remove() {
+        let mut app = acl_app_with_acltype(Some("nfsv4"));
+        app.handle_key(KeyCode::Char('d'));
+        let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("#0") && prompt.contains("allow owner@: read_data") && prompt.contains("/tank/data"), "{prompt}");
+    }
+
+    #[test]
+    fn a_posix_acltype_dataset_explains_itself_and_the_acl_keys_stay_inert() {
+        let mut app = acl_app_with_acltype(Some("posix"));
+        assert!(app.acl_unsupported().is_some_and(|r| r.contains("posix") && r.contains("NFSv4")));
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none() && app.status_message.as_deref().is_some_and(|m| m.contains("posix")), "{:?}", app.status_message);
+        app.status_message = None;
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none() && app.status_message.as_deref().is_some_and(|m| m.contains("posix")));
+        for other in [Some("nfsv4"), Some("off"), None] {
+            assert_eq!(acl_app_with_acltype(other).acl_unsupported(), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_acltype_of_another_dataset_is_never_applied() {
+        let mut app = acl_app_with_acltype(Some("posix"));
+        app.dataset_properties_for = Some("tank/other".to_string());
+        assert_eq!(app.acl_unsupported(), None, "stale properties of a different dataset say nothing about this one");
     }
 }

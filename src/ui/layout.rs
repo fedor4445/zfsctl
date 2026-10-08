@@ -464,13 +464,7 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let rows = app.acl_entries.iter().enumerate().map(|(i, entry)| {
-        let target = match &entry.tag {
-            crate::acl::AclTag::Owner => "owner@".to_string(),
-            crate::acl::AclTag::OwningGroup => "group@".to_string(),
-            crate::acl::AclTag::Everyone => "everyone@".to_string(),
-            crate::acl::AclTag::User(name) => format!("user {name}"),
-            crate::acl::AclTag::NamedGroup(name) => format!("group {name}"),
-        };
+        let target = entry.tag.label();
         let flags = if entry.flags.is_empty() { "—".to_string() } else { entry.flags.join("/") };
         let entry_type = match entry.entry_type {
             crate::acl::AclEntryType::Allow => "Allow",
@@ -479,7 +473,11 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
         Row::new(vec![i.to_string(), target, entry.permissions.join("/"), flags, entry_type.to_string()])
     });
     let widths = [Constraint::Length(3), Constraint::Length(14), Constraint::Min(20), Constraint::Length(16), Constraint::Length(6)];
-    let title = format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)");
+    let title = match app.acl_unsupported() {
+        // Short on purpose: the right pane is narrow. The full reason is in the status line when n or d is pressed.
+        Some(_) => format!("ACL — {dataset} (acltype=posix: NFSv4 ACLs only)"),
+        None => format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)"),
+    };
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["#", "Target", "Permissions", "Flags", "Type"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
@@ -2045,5 +2043,20 @@ mod tests {
         }
         let narrow = render(&mut app, 100, 30).join("\n");
         assert!(narrow.contains("tank/data") && narrow.contains("Schedule") && narrow.contains("Last"), "other columns survive:\n{narrow}");
+    }
+
+
+    #[test]
+    fn the_acl_pane_title_says_when_the_dataset_is_posix() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Datasets).unwrap();
+        app.datasets = vec![crate::zfs::dataset::Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.pane_focus = crate::ui::state::PaneFocus::Right;
+        app.dataset_detail_tab = crate::ui::state::DatasetDetailTab::Acl;
+        app.dataset_properties_for = Some("tank/data".to_string());
+        app.dataset_properties = vec![crate::zfs::property::Property { name: "acltype".to_string(), value: "posix".to_string(), source: crate::zfs::property::PropertySource::Local }];
+        let text = render(&mut app, 160, 30).join("\n");
+        assert!(text.contains("acltype=posix") && text.contains("NFSv4"), "{text}");
     }
 }

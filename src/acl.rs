@@ -10,6 +10,19 @@ pub enum AclTag {
     NamedGroup(String),
 }
 
+impl AclTag {
+    /// How the ACL tab and confirmations name the entry's subject: `owner@`, `group@`, `everyone@`, `user carol`.
+    pub fn label(&self) -> String {
+        match self {
+            AclTag::Owner => "owner@".to_string(),
+            AclTag::OwningGroup => "group@".to_string(),
+            AclTag::Everyone => "everyone@".to_string(),
+            AclTag::User(name) => format!("user {name}"),
+            AclTag::NamedGroup(name) => format!("group {name}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AclEntryType {
     Allow,
@@ -22,6 +35,19 @@ pub struct AclEntry {
     pub permissions: Vec<String>,
     pub flags: Vec<String>,
     pub entry_type: AclEntryType,
+}
+
+impl AclEntry {
+    /// One line for a confirmation prompt: `allow owner@: read_data/write_data` or
+    /// `deny user carol: read_data (file_inherit/dir_inherit)`.
+    pub fn describe(&self) -> String {
+        let kind = match self.entry_type {
+            AclEntryType::Allow => "allow",
+            AclEntryType::Deny => "deny",
+        };
+        let flags = if self.flags.is_empty() { String::new() } else { format!(" ({})", self.flags.join("/")) };
+        format!("{kind} {}: {}{flags}", self.tag.label(), self.permissions.join("/"))
+    }
 }
 
 fn split_slash_list(s: &str) -> Vec<String> {
@@ -264,5 +290,18 @@ mod tests {
         assert_eq!(parse_acl_tag("group", Some("")), None);
         assert_eq!(parse_acl_tag("user", Some("bob")), Some(AclTag::User("bob".to_string())));
         assert_eq!(parse_acl_tag("group", Some("wheel")), Some(AclTag::NamedGroup("wheel".to_string())));
+    }
+
+
+    #[test]
+    fn an_entry_describes_itself_for_a_confirmation_prompt() {
+        let owner = AclEntry { tag: AclTag::Owner, permissions: vec!["read_data".into(), "write_data".into()], flags: vec![], entry_type: AclEntryType::Allow };
+        assert_eq!(owner.describe(), "allow owner@: read_data/write_data");
+        let named = AclEntry { tag: AclTag::User("carol".into()), permissions: vec!["read_data".into()], flags: vec!["file_inherit".into(), "dir_inherit".into()], entry_type: AclEntryType::Deny };
+        assert_eq!(named.describe(), "deny user carol: read_data (file_inherit/dir_inherit)");
+        let group = AclEntry { tag: AclTag::NamedGroup("wheel".into()), permissions: vec!["modify_set".into()], flags: vec![], entry_type: AclEntryType::Allow };
+        assert_eq!(group.describe(), "allow group wheel: modify_set");
+        assert!(AclEntry { tag: AclTag::OwningGroup, permissions: vec![], flags: vec![], entry_type: AclEntryType::Allow }.describe().starts_with("allow group@"));
+        assert!(AclEntry { tag: AclTag::Everyone, permissions: vec![], flags: vec![], entry_type: AclEntryType::Allow }.describe().starts_with("allow everyone@"));
     }
 }
