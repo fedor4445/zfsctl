@@ -56,6 +56,8 @@ impl Paths {
 
 /// One piece of work for the runtime to start on its own thread.
 #[derive(Debug, Clone, PartialEq)]
+// A `Work` is created, sent to a worker thread and consumed within one tick: boxing the job inside would only add noise.
+#[allow(clippy::large_enum_variant)]
 pub enum Work {
     /// A scheduled (or catch-up) run.
     Run(Due),
@@ -196,7 +198,7 @@ mod tests {
     }
 
     fn job(id: &str, schedule: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: Some(at("2026-09-01T00:00:00Z")), dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: Some(at("2026-09-01T00:00:00Z")), dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
     }
 
     fn engine(dir: &tempfile::TempDir, now: &str) -> Engine<Utc> {

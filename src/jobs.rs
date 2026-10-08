@@ -15,6 +15,7 @@ use std::path::Path;
 pub const KIND_SCRUB: &str = "scrub";
 pub const KIND_SNAPSHOT: &str = "snapshot";
 pub const KIND_REPLICATE: &str = "replicate";
+pub const KIND_BACKUP: &str = "backup";
 /// `dest_host` value meaning "write stream files to `dest_dir` on the hub".
 pub const DEST_FILE: &str = "file";
 /// The snapshot name prefix a job without one uses.
@@ -59,6 +60,15 @@ pub struct Job {
     /// Receive with `-F`, rolling the destination back to the incremental base.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
+    /// A backup job's restic repository (`restic -r`). It must not contain credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// A backup job's restic password file: an absolute path on the job's host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_file: Option<String>,
+    /// A backup job's retention such as `7d 4w 12m 3y`; absent or blank keeps every backup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<String>,
     /// A five-field cron expression, in the hub's local time zone.
     pub schedule: String,
     #[serde(default = "yes")]
@@ -166,6 +176,34 @@ fn check_replicate_fields(job: &Job) -> std::result::Result<(), String> {
     }
 }
 
+fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
+    if !job.dataset.as_deref().is_some_and(valid_dataset) {
+        return Err("a backup job needs a dataset like tank/data".to_string());
+    }
+    if !valid_prefix(effective_prefix(job)) {
+        return Err("the snapshot prefix may only use letters, digits, _ - and .".to_string());
+    }
+    // The id becomes a dataset name, a mountpoint and restic tags.
+    if !valid_prefix(&job.id) {
+        return Err("a backup job's id may only use letters, digits, _ - and .".to_string());
+    }
+    if !job.repository.as_deref().is_some_and(crate::restic::valid_repository) {
+        return Err("a backup job needs a repository (restic -r) that does not start with '-'".to_string());
+    }
+    if !job.password_file.as_deref().is_some_and(crate::restic::valid_password_file) {
+        return Err("a backup job needs password_file: an absolute path on the host".to_string());
+    }
+    if let Some(text) = job.retention.as_deref() {
+        crate::restic::parse_retention(text).map_err(|e| format!("retention: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Whether a running run of `job` can be cancelled from the TUI (it has a long-lived child process).
+pub fn is_cancellable(job: &Job) -> bool {
+    job.kind == KIND_REPLICATE || job.kind == KIND_BACKUP
+}
+
 fn check_snapshot_fields(job: &Job) -> std::result::Result<(), String> {
     if !job.dataset.as_deref().is_some_and(valid_dataset) {
         return Err("a snapshot job needs a dataset like tank/data".to_string());
@@ -189,6 +227,7 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
         }
         KIND_SNAPSHOT => check_snapshot_fields(job)?,
         KIND_REPLICATE => check_replicate_fields(job)?,
+        KIND_BACKUP => check_backup_fields(job)?,
         other => return Err(format!("unsupported job kind '{other}'")),
     }
     if !known_hosts.iter().any(|h| h == &job.host) {
@@ -270,11 +309,15 @@ pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<Strin
 #[cfg(test)]
 impl Job {
     pub fn test_snapshot(id: &str, dataset: &str, prefix: &str, keep: u32) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, force: false, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+    }
+
+    pub fn test_backup(id: &str, dataset: &str, prefix: &str, repository: &str, password_file: &str) -> Job {
+        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_replicate(id: &str, dataset: &str, prefix: &str, dest_host: &str, dest_dataset: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, force: false, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, force: false, repository: None, password_file: None, retention: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 }
 
@@ -337,7 +380,7 @@ mod tests {
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false,
+            force: false, repository: None, password_file: None, retention: None,
         }
     }
 
@@ -635,5 +678,59 @@ mod tests {
         assert!(clash_reason(&a, &b).unwrap().contains("same destination"));
         let snap = Job::test_snapshot("s", "tank/one", "hourly", 3);
         assert!(clash_reason(&a, &snap).is_none(), "different kinds never clash");
+    }
+
+    #[test]
+    fn a_backup_job_round_trips_and_other_kinds_serialize_without_its_fields() {
+        let mut job = Job::test_backup("b", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        job.retention = Some("7d 4w".into());
+        let text = toml::to_string_pretty(&JobFile { jobs: vec![job.clone()] }).unwrap();
+        let back: JobFile = toml::from_str(&text).unwrap();
+        assert_eq!(back.jobs, vec![job]);
+        let scrub = toml::to_string_pretty(&JobFile { jobs: vec![Job::test_snapshot("s", "tank/a", "auto", 3)] }).unwrap();
+        for absent in ["repository", "password_file", "retention"] {
+            assert!(!scrub.contains(absent), "{absent} leaked into a snapshot job:\n{scrub}");
+        }
+    }
+
+    #[test]
+    fn resolve_accepts_a_good_backup_job_and_rejects_each_bad_field() {
+        let hosts = vec!["local".to_string()];
+        let good = Job::test_backup("backup-local-tank-data", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        assert!(resolve(&good, &hosts).is_ok());
+        let bad = |change: &dyn Fn(&mut Job)| {
+            let mut j = good.clone();
+            change(&mut j);
+            resolve(&j, &hosts).unwrap_err()
+        };
+        assert!(bad(&|j| j.dataset = Some("-rf".into())).contains("dataset"));
+        assert!(bad(&|j| j.dataset = None).contains("dataset"));
+        assert!(bad(&|j| j.prefix = Some("a b".into())).contains("prefix"));
+        assert!(bad(&|j| j.id = "a b".into()).contains("id"));
+        assert!(bad(&|j| j.id = "../x".into()).contains("id"));
+        assert!(bad(&|j| j.repository = None).contains("repository"));
+        assert!(bad(&|j| j.repository = Some("-r".into())).contains("repository"));
+        assert!(bad(&|j| j.password_file = None).contains("password_file"));
+        assert!(bad(&|j| j.password_file = Some("relative".into())).contains("password_file"));
+        assert!(bad(&|j| j.retention = Some("7x".into())).contains("retention"));
+        assert!(bad(&|j| j.host = "nope".into()).contains("host"));
+        assert!(bad(&|j| j.schedule = "x".into()).contains("schedule"));
+        let mut blank = good.clone();
+        blank.retention = Some("  ".into());
+        assert!(resolve(&blank, &hosts).is_ok(), "blank retention keeps everything");
+    }
+
+    #[test]
+    fn only_replication_and_backup_runs_can_be_cancelled() {
+        assert!(is_cancellable(&Job::test_backup("b", "tank/a", "auto", "/r", "/pw")));
+        assert!(is_cancellable(&Job::test_replicate("r", "tank/a", "auto", "fbsd16", "backup/a")));
+        assert!(!is_cancellable(&Job::test_snapshot("s", "tank/a", "auto", 3)));
+    }
+
+    #[test]
+    fn two_backup_jobs_for_one_dataset_do_not_clash() {
+        let a = Job::test_backup("a", "tank/data", "hourly", "/mnt/one", "/pw");
+        let b = Job::test_backup("b", "tank/data", "hourly", "/mnt/two", "/pw");
+        assert!(clashing_job(&[a], &b).is_none());
     }
 }

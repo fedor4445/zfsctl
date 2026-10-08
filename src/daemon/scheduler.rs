@@ -152,7 +152,7 @@ mod tests {
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false,
+            force: false, repository: None, password_file: None, retention: None,
         }
     }
 

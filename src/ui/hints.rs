@@ -519,7 +519,7 @@ mod tests {
     fn jobs(with_selection: bool) -> App {
         let mut a = base();
         go(&mut a, Section::Jobs);
-        let job = |id: &str, enabled: bool| crate::jobs::Job { id: id.to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false };
+        let job = |id: &str, enabled: bool| crate::jobs::Job { id: id.to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None };
         a.jobs_view.jobs = vec![job("a", true), job("b", false)];
         a.jobs_table.select(if with_selection { Some(0) } else { None });
         a
@@ -1049,8 +1049,8 @@ mod tests {
         ];
         a.shares = vec![smb("tank/b"), smb("tank/c")];
         a.jobs_view.jobs = vec![
-            crate::jobs::Job { id: "a".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false },
-            crate::jobs::Job { id: "b".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: false, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false },
+            crate::jobs::Job { id: "a".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None },
+            crate::jobs::Job { id: "b".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: false, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None },
         ];
         a.vdevs = vec![
             VdevLine { depth: 0, name: "tank".to_string(), health: PoolHealth::Online },

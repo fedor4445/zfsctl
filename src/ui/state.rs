@@ -2548,6 +2548,9 @@ fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], state_dir: 
         dest_dataset: (!to_file).then(|| dest.to_string()),
         dest_dir: to_file.then(|| dest.to_string()),
         force,
+        repository: None,
+        password_file: None,
+        retention: None,
         schedule: schedule.to_string(),
         catch_up,
         enabled: true,
@@ -2609,7 +2612,7 @@ fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false,
+            force: false, repository: None, password_file: None, retention: None,
             schedule: schedule.to_string(),
             catch_up,
             enabled: true,
@@ -2659,7 +2662,7 @@ fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false,
+            force: false, repository: None, password_file: None, retention: None,
         },
     };
     Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
@@ -7792,7 +7795,7 @@ mod tests {
     }
 
     fn scrub_job(id: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod restic;
 mod acl;
 mod config;
 mod daemon;
