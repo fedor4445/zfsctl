@@ -235,6 +235,8 @@ Lists the host's boot environments (`bectl list`): Name, Active (`Now`, `Reboot`
 - `R`: rename. `m` / `u`: mount / unmount; the Mountpoint column shows the `/tmp/be_mount.XXXX` path.
 - `d`: destroy (type its name). `D`: destroy and remove its origin snapshot (`bectl destroy -o`).
 
+While a change to a boot environment is running (usually a second or two) the keys that change things wait and the status line says `Still working on '<name>'`, so a second `m` or `t` cannot queue a duplicate. After a rename the selection stays on the renamed boot environment. When the selected one is mounted, its mount path leads the pane title, so it is visible even when the Mountpoint column has dropped off a narrow terminal.
+
 `zfsctl` never reboots the host. bectl's own error text is shown verbatim when it refuses something; for example, destroying a mounted boot environment fails with `cannot destroy mounted boot env unless forced`, so unmount it (`u`) first.
 
 ### Jobs

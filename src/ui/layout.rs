@@ -766,7 +766,13 @@ fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
         .as_ref()
         .map(|m| format!(" [unavailable: {}]", sanitise_for_display(m.lines().next().unwrap_or(""))))
         .unwrap_or_default();
-    let title = format!("Boot Environments — {} ('r' to refresh){suffix}", app.active_host_name());
+    // The Mountpoint column is the first to go on a narrow terminal, so when the selected boot environment is
+    // mounted (where `bectl mount` put it) that path leads the title, ahead of the clippable rest.
+    let host = app.active_host_name();
+    let title = match app.selected_bootenv().filter(|b| b.can_unmount()).and_then(|b| b.mountpoint.as_deref().map(|m| (b.name.as_str(), m))) {
+        Some((name, path)) => format!("'{}' mounted at {} — {host}{suffix}", sanitise_for_display(name), sanitise_for_display(path)),
+        None => format!("Boot Environments — {host} ('r' to refresh){suffix}"),
+    };
     let table = Table::new(rows, widths)
         .header(Row::new(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
@@ -2001,5 +2007,22 @@ mod tests {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
         assert!(!text.contains("password"), "the password file path is not shown");
+    }
+
+
+    #[test]
+    fn a_mounted_boot_environments_path_is_in_the_title_even_when_the_column_is_hidden() {
+        use crate::zfs::bootenv::{ActiveFlags, BootEnv};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
+        app.bootenvs = vec![BootEnv { name: "zit-a".into(), flags: ActiveFlags::default(), mountpoint: Some("/tmp/be_mount.Xy12".into()), space: "8K".into(), created: "2026-10-08 18:48".into() }];
+        app.bootenvs_table.select(Some(0));
+        let narrow = render(&mut app, 80, 24).join("\n");
+        assert!(!narrow.contains("Mountpoint"), "the column is hidden at this width:\n{narrow}");
+        assert!(narrow.contains("'zit-a' mounted at /tmp/be_mount.Xy12"), "{narrow}");
+        app.bootenvs[0].mountpoint = None;
+        assert!(!render(&mut app, 80, 24).join("\n").contains("mounted at"));
+        app.bootenvs[0].mountpoint = Some("/".into());
+        assert!(!render(&mut app, 80, 24).join("\n").contains("mounted at"), "the running BE at / is not news");
     }
 }

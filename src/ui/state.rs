@@ -202,6 +202,11 @@ pub struct App {
     /// Why the Boot Envs section cannot list on this host (e.g. no `bectl`, not a boot-environment
     /// layout, an unreachable host), shown in its title. `None` once a list succeeds.
     pub bootenvs_unavailable: Option<String>,
+    /// The boot environment a change is being made to, and since when: while it is set (and under two minutes
+    /// old, so a lost result can never lock the section for good) the keys that change things wait.
+    pub bootenv_busy: Option<(String, Instant)>,
+    /// After a rename, the new name the selection should land on once the list shows it.
+    pub bootenv_pin: Option<String>,
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
     /// The drilled-into pool's most recent scrub/resilver, refreshed
@@ -323,6 +328,8 @@ impl App {
             bootenvs_table: TableState::default(),
             bootenvs_loaded: false,
             bootenvs_unavailable: None,
+            bootenv_busy: None,
+            bootenv_pin: None,
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             pool_scan_status: None,
@@ -633,6 +640,8 @@ impl App {
         self.bootenvs_table.select(None);
         self.bootenvs_unavailable = None;
         self.bootenvs_loaded = false;
+        self.bootenv_busy = None;
+        self.bootenv_pin = None;
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
@@ -1336,6 +1345,11 @@ impl App {
                     }
                 }
             }
+            // A change to a boot environment is still running: do nothing else to the section until it has finished.
+            KeyCode::Char('n' | 'a' | 't' | 'T' | 'R' | 'm' | 'u' | 'd' | 'D') if self.current_section() == Section::BootEnvs && self.bootenv_busy_name().is_some() => {
+                let name = self.bootenv_busy_name().unwrap_or_default().to_string();
+                self.status_message = Some(format!("Still working on '{name}'… wait for it to finish"));
+            }
             KeyCode::Char('n') if self.current_section() == Section::BootEnvs && self.bootenvs_unavailable.is_none() => {
                 let existing: Vec<String> = self.bootenvs.iter().map(|b| b.name.clone()).collect();
                 self.modal = Some(Modal::Form {
@@ -1359,13 +1373,13 @@ impl App {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Activating '{name}' for the next boot only…"));
                 let call = MutationCall::ActivateBootEnv { name, temporary: true };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char('T') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Clearing the next-boot activation of '{name}'…"));
                 let call = MutationCall::ClearTemporaryBootEnv { name };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char('R') if self.current_section() == Section::BootEnvs => {
                 let Some(from) = self.selected_bootenv().map(|b| b.name.clone()) else { return };
@@ -1382,13 +1396,13 @@ impl App {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_mount()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Mounting '{name}'…"));
                 let call = MutationCall::MountBootEnv { name };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char('u') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_unmount()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Unmounting '{name}'…"));
                 let call = MutationCall::UnmountBootEnv { name };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char(key @ ('d' | 'D')) if self.current_section() == Section::BootEnvs => {
                 let Some(be) = self.selected_bootenv() else { return };
@@ -1641,7 +1655,12 @@ impl App {
                         }
                     } else if matches!(kind, FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. }) {
                         match build_bootenv_action(&kind, &fields) {
-                            Ok(action) => Some(action),
+                            Ok(action) => {
+                                if let MutationCall::RenameBootEnv { to, .. } = &action.call {
+                                    self.bootenv_pin = Some(to.clone());
+                                }
+                                Some(action)
+                            }
                             Err(msg) => {
                                 self.set_error(msg);
                                 self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
@@ -1860,6 +1879,9 @@ impl App {
     /// clears it on submit) — this only executes the mutation itself.
     pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
         let PendingAction { host, section, call } = action;
+        if section == Section::BootEnvs {
+            self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
+        }
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = call.run(runner.as_ref());
@@ -1969,6 +1991,19 @@ impl App {
             let result = crate::zfs::bootenv::list(runner.as_ref());
             let _ = tx.send(WorkerMsg::BootEnvs(host, result));
         });
+    }
+
+    /// The boot environment a change is in flight for, unless that marker is stale.
+    fn bootenv_busy_name(&self) -> Option<&str> {
+        const STALE: Duration = Duration::from_mins(2);
+        self.bootenv_busy.as_ref().filter(|(_, since)| since.elapsed() < STALE).map(|(name, _)| name.as_str())
+    }
+
+    /// Queues a change to run on the next loop tick and marks the section busy right away, so a second key
+    /// pressed before it is dispatched cannot queue a duplicate.
+    fn queue_bootenv_change(&mut self, call: MutationCall) {
+        self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
+        self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
     }
 
     pub fn selected_bootenv(&self) -> Option<&crate::zfs::bootenv::BootEnv> {
@@ -2259,7 +2294,13 @@ impl App {
                     }
                     match result {
                         Ok(envs) => {
-                            let previous = self.selected_bootenv().map(|b| b.name.clone());
+                            // A just-renamed boot environment keeps the selection under its new name, once the
+                            // list shows it (an earlier refresh that still has the old name must not use up the pin).
+                            let wanted = self.bootenv_pin.clone().filter(|n| envs.iter().any(|b| &b.name == n));
+                            let previous = wanted.clone().or_else(|| self.selected_bootenv().map(|b| b.name.clone()));
+                            if wanted.is_some() {
+                                self.bootenv_pin = None;
+                            }
                             self.bootenvs = envs;
                             pin_selection(&mut self.bootenvs_table, previous, &self.bootenvs, |b| b.name.clone());
                             self.bootenvs_unavailable = None;
@@ -2444,6 +2485,12 @@ impl App {
                 WorkerMsg::MutationDone(host, section, result) => {
                     if host != self.selected_host {
                         continue;
+                    }
+                    if section == Section::BootEnvs {
+                        self.bootenv_busy = None;
+                        if result.is_err() {
+                            self.bootenv_pin = None;
+                        }
                     }
                     match result {
                         Ok(()) => {
@@ -3057,6 +3104,20 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
         FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+    }
+}
+
+/// The boot environment a boot-environment call is about (the old name for a rename).
+fn bootenv_call_name(call: &MutationCall) -> &str {
+    match call {
+        MutationCall::CreateBootEnv { name, .. }
+        | MutationCall::ActivateBootEnv { name, .. }
+        | MutationCall::ClearTemporaryBootEnv { name }
+        | MutationCall::MountBootEnv { name }
+        | MutationCall::UnmountBootEnv { name }
+        | MutationCall::DestroyBootEnv { name, .. } => name,
+        MutationCall::RenameBootEnv { from, .. } => from,
+        _ => "",
     }
 }
 
@@ -9570,5 +9631,104 @@ mod tests {
     #[test]
     fn help_documents_recursive_destroy() {
         assert!(help_text().contains("D                destroy a dataset AND its child datasets and snapshots"), "{}", help_text());
+    }
+
+
+    fn rename_to(app: &mut App, new_name: &str) -> PendingAction {
+        app.handle_key(KeyCode::Char('R'));
+        for c in new_name.chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter).expect("the rename form submits")
+    }
+
+    fn names(app: &App) -> Vec<&str> {
+        app.bootenvs.iter().map(|b| b.name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_selection_follows_a_renamed_boot_environment_instead_of_sliding_to_its_neighbour() {
+        let rows = vec![running(), spare(), be("zeta", false, false, false, None)];
+        let mut app = bootenv_app(rows, 1); // spare
+        rename_to(&mut app, "zz");
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Ok(()))).unwrap();
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), be("zeta", false, false, false, None), be("zz", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(names(&app), ["default", "zeta", "zz"]);
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("zz"), "index 1 is now zeta: the key must not act on it");
+    }
+
+    #[test]
+    fn a_refresh_that_lands_before_the_rename_does_not_use_up_the_pin() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        rename_to(&mut app, "zz");
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), spare()]))).unwrap(); // an auto-refresh from before the rename
+        app.drain_worker_messages();
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("spare"));
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), be("zz", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("zz"), "the later list still honours the pin");
+    }
+
+    #[test]
+    fn a_failed_rename_drops_the_pin() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        rename_to(&mut app, "zz");
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Err(crate::error::AppError::Parse("no".into())))).unwrap();
+        app.drain_worker_messages();
+        // A later, unrelated list with a boot environment of that name must not steal the selection.
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), spare(), be("zz", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("spare"));
+    }
+
+    #[test]
+    fn no_confirm_keys_cannot_fire_twice_before_the_first_change_has_finished() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1);
+        for key in ['m', 'u', 't', 'T', 'a', 'd', 'D', 'R', 'n'] {
+            app.handle_key(KeyCode::Char(key));
+        }
+        assert_eq!(app.pending_mutations.len(), 1, "nothing else was queued");
+        assert!(app.modal.is_none(), "no window opened for a change while one is running");
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Still working on 'spare'")), "{:?}", app.status_message);
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Ok(()))).unwrap();
+        app.drain_worker_messages();
+        app.pending_mutations.clear();
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1, "free again once the change finished");
+    }
+
+    #[test]
+    fn a_change_started_from_a_confirmation_marks_the_section_busy_until_it_finishes() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('a'));
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("confirmed");
+        app.dispatch_mutation(action, std::sync::Arc::new(FakeRunner::new("")));
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.pending_mutations.is_empty() && app.status_message.as_deref().is_some_and(|m| m.contains("Still working")), "{:?}", app.status_message);
+        wait_until(&mut app, |a| a.bootenv_busy.is_none());
+        assert!(app.bootenv_busy.is_none());
+    }
+
+    #[test]
+    fn a_stuck_busy_marker_expires_so_the_section_can_never_be_locked_for_good() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.bootenv_busy = Some(("spare".to_string(), Instant::now().checked_sub(Duration::from_secs(300)).unwrap()));
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1);
+    }
+
+    #[test]
+    fn switching_host_clears_the_busy_marker_and_the_pin() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.bootenv_busy = Some(("x".to_string(), Instant::now()));
+        app.bootenv_pin = Some("y".to_string());
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::BackTab);
+        app.handle_key(KeyCode::Down);
+        assert!(app.bootenv_busy.is_none() && app.bootenv_pin.is_none());
     }
 }
