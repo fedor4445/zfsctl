@@ -118,4 +118,13 @@ After `/sbin/bectl` was added to each VM's sudoers (`/usr/local/etc/sudoers.d/zf
 
 ### Reboot into an activated BE (2026-10-08)
 
-On `fbsd16t2` (15.1) the user created a BE named `new` in the TUI, activated it (permanent `a`), and rebooted. The VM came up in it: the TUI showed `new` as `Now+Reboot` with `default` inactive (space 808K, no mountpoint), and on the VM `kenv` reported `currdev`, `vfs.root.mountfrom` and `zfs_be_active` all `zfs:zroot/ROOT/new`, `/` mounted from `zroot/ROOT/new` and `zpool get bootfs zroot` was `zroot/ROOT/new`. A temporary (`t`) activation followed by a reboot is still untested.
+On `fbsd16t2` (15.1) the user created a BE named `new` in the TUI, activated it (permanent `a`), and rebooted. The VM came up in it: the TUI showed `new` as `Now+Reboot` with `default` inactive (space 808K, no mountpoint), and on the VM `kenv` reported `currdev`, `vfs.root.mountfrom` and `zfs_be_active` all `zfs:zroot/ROOT/new`, `/` mounted from `zroot/ROOT/new` and `zpool get bootfs zroot` was `zroot/ROOT/new`.
+
+### Temporary activation across reboots (2026-10-08)
+
+On `fbsd16t2` with `new` permanent (`bootfs = zroot/ROOT/new`), the user pressed `t` on `default` (flag `T`, `bootfs` untouched) and rebooted twice:
+
+1. First reboot: the VM came up in `default` through boot-once (`kenv zfs-bootonce = zfs:zroot/ROOT/default:`, `/` mounted from `zroot/ROOT/default`). The TUI showed `default` as `Now` and `new` still as `Reboot`; `bootfs` was still `zroot/ROOT/new` and the `T` flag was gone.
+2. Second reboot: the VM returned to `new` by itself (`Now+Reboot`, `zfs-bootonce` empty, `/` from `zroot/ROOT/new`).
+
+So `t` is one-shot, as designed: it does not promote the BE (the VM's `zfs_bootonce_activate` is the default `NO`). Together with the permanent activation above, every activation path of this section has now been verified by actually booting. `fbsd16t2` was left running `new`; `default` is inactive there.
