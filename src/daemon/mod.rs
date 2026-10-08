@@ -84,6 +84,18 @@ fn clear_runtime_files(paths: &Paths) {
     cancel::clear_all(&paths.cancel_dir());
 }
 
+/// A `.partial` stream file can only belong to a write of a previous daemon. The daemon knows the
+/// directories from `jobs.toml`; nothing but `*.zfs.partial` is touched.
+fn clear_partial_files(jobs: &[crate::jobs::Job]) {
+    for job in jobs.iter().filter(|j| j.kind == crate::jobs::KIND_REPLICATE && j.dest_host.as_deref() == Some(crate::jobs::DEST_FILE)) {
+        let Some(dir) = job.dest_dir.as_deref() else { continue };
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for e in entries.filter_map(std::result::Result::ok).filter(|e| e.file_name().to_string_lossy().ends_with(".zfs.partial")) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -119,9 +131,13 @@ impl Shared {
     fn replicate(&self, ctx: &Context, due: &scheduler::Due, run_id: &str) -> Outcome {
         let job = &due.job;
         let dest_host = job.dest_host.clone().unwrap_or_default();
-        let (Some(src), Some(dst)) = (self.runner(&job.host), self.runner(&dest_host)) else {
+        let to_file = dest_host == crate::jobs::DEST_FILE;
+        let src = self.runner(&job.host);
+        let dst = if to_file { None } else { self.runner(&dest_host) };
+        let Some(src) = src.filter(|_| to_file || dst.is_some()) else {
             let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
-            return scrub::finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("host '{}' or '{dest_host}' is not configured", job.host), slot);
+            let which = if to_file { format!("host '{}' is", job.host) } else { format!("host '{}' or '{dest_host}' is", job.host) };
+            return scrub::finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("{which} not configured"), slot);
         };
         let flag = Arc::new(AtomicBool::new(false));
         let key = cancel::file_name(&job.id);
@@ -136,7 +152,10 @@ impl Shared {
             running.insert(key.clone(), Arc::clone(&flag));
         }
         let env = replicate::Env { ctx, progress_dir: &self.progress_dir, cancel: &flag, replication_state: &self.replication_state };
-        let outcome = replicate::run_replicate(&env, src.as_ref(), dst.as_ref(), job, due.scheduled_for, due.catch_up, run_id);
+        let outcome = match &dst {
+            Some(dst) => replicate::run_replicate(&env, src.as_ref(), dst.as_ref(), job, due.scheduled_for, due.catch_up, run_id),
+            None => replicate_file::run_replicate_file(&env, src.as_ref(), job, due.scheduled_for, due.catch_up, run_id),
+        };
         self.cancels.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
         outcome
     }
@@ -224,6 +243,9 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         return Err(AppError::Config(format!("another zfsctl daemon is already running (pid {pid})")));
     }
     clear_runtime_files(&paths);
+    if let Ok(jobs) = crate::jobs::load(&paths.jobs()) {
+        clear_partial_files(&jobs);
+    }
     let loaded = load_hosts(config_path)?;
     let names: Vec<String> = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
     let shared = Arc::new(Shared {
@@ -552,5 +574,54 @@ mod tests {
         assert!(runs[0].message.contains("already running"), "{}", runs[0].message);
         let map = shared.cancels.lock().unwrap();
         assert!(map.get(&cancel::file_name("repl")).is_some_and(|f| Arc::ptr_eq(f, &running)), "the running transfer stays cancellable");
+    }
+
+    fn file_job(id: &str, dir: &Path) -> Job {
+        let mut j = Job::test_replicate(id, "tank/data", "hourly", "file", "x");
+        j.dest_dataset = None;
+        j.dest_dir = Some(dir.display().to_string());
+        j
+    }
+
+    #[test]
+    fn a_due_file_replication_needs_no_destination_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let due = Due { job: file_job("repl-file", &dir.path().join("out")), scheduled_for: shared.clock.now(), catch_up: false };
+        shared.execute(Work::Run(due));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Skipped)), "{:?}", runs[0].message);
+        assert!(runs[0].message.contains("no snapshots"), "it reached the file run: {}", runs[0].message);
+    }
+
+    #[test]
+    fn a_due_file_replication_from_an_unconfigured_source_host_is_recorded_as_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let mut job = file_job("repl-file", &dir.path().join("out"));
+        job.host = "gone".into();
+        shared.execute(Work::Run(Due { job, scheduled_for: shared.clock.now(), catch_up: false }));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Failed)));
+        assert!(runs[0].message.contains("gone"), "{}", runs[0].message);
+    }
+
+    #[test]
+    fn startup_removes_partial_stream_files_of_file_jobs_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("tank-data@s2.zfs.partial"), "half").unwrap();
+        std::fs::write(out.join("tank-data@s1.zfs"), "complete").unwrap();
+        std::fs::write(out.join("notes.partial"), "not ours").unwrap();
+        let host_to_host = Job::test_replicate("h", "tank/data", "hourly", "fbsd16", "backup/data");
+        clear_partial_files(&[file_job("f", &out), host_to_host]);
+        assert!(!out.join("tank-data@s2.zfs.partial").exists());
+        assert!(out.join("tank-data@s1.zfs").exists() && out.join("notes.partial").exists());
+    }
+
+    #[test]
+    fn a_missing_file_directory_is_not_an_error_at_startup() {
+        clear_partial_files(&[file_job("f", Path::new("/nonexistent/zfsctl-test-dir"))]);
     }
 }
