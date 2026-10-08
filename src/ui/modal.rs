@@ -289,6 +289,9 @@ pub enum FormKind {
     CreateBootEnv { host: usize, existing: Vec<String> },
     /// Fields: `[new_name]`; `from` is fixed at modal-open time.
     RenameBootEnv { host: usize, from: String, existing: Vec<String> },
+    /// Fields: `[host, dataset, prefix, repository, password file, keep, schedule, catch_up (y/n)]`.
+    /// `keep` is blank (keep everything) or text like `7d 4w 12m 3y`. `jobs` is every current job.
+    BackupJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
     /// Fields: `[name, ssh_target]` — both required. Unlike every
     /// other `FormKind`, submitting this one never produces a
     /// `PendingAction`: there's no existing host/runner to dispatch

@@ -641,6 +641,13 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
             info.push(Line::from(crate::daemon::progress::progress_line(p)));
         }
     }
+    if job.kind == crate::jobs::KIND_BACKUP {
+        let keep = job.retention.as_deref().map(str::trim).filter(|k| !k.is_empty()).map_or_else(|| "keep everything".to_string(), |k| format!("keep {k}"));
+        info.push(Line::from(format!("to {}  {keep}  prefix {}", job.repository.as_deref().unwrap_or(""), crate::jobs::effective_prefix(job))));
+        if let Some(p) = app.jobs_view.progress_of(&job.id) {
+            info.push(Line::from(crate::daemon::progress::progress_line(p)));
+        }
+    }
     f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
 }
 
@@ -659,7 +666,7 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(Line::from(title));
     if app.jobs_view.loaded && app.jobs_view.jobs.is_empty() {
-        let text = "No scheduled jobs. Press 'n' for a scrub job, 'N' for a snapshot job or 'R' for a replication job, or 'J' on a pool (Pools) or a dataset (Datasets).";
+        let text = "No scheduled jobs. Press 'n' for a scrub job, 'N' for a snapshot job or 'R' for a replication job, 'B' for a backup job, or 'J' on a pool (Pools) or a dataset (Datasets).";
         f.render_widget(Paragraph::new(text).style(theme.dim()).wrap(Wrap { trim: false }).block(block), area);
         return;
     }
@@ -790,6 +797,7 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
     match kind {
         crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::SnapshotJob { .. } => crate::ui::jobs::preview_lines(fields.get(5).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        crate::ui::modal::FormKind::BackupJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::ReplicateJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         _ => Vec::new(),
     }
@@ -1930,5 +1938,20 @@ mod tests {
         assert!(!render(&mut app, 120, 24).join("\n").contains("no boot environments"));
         app.bootenvs_loaded = true;
         assert!(render(&mut app, 120, 24).join("\n").contains("no boot environments"));
+    }
+
+    #[test]
+    fn a_backup_job_shows_its_repository_retention_and_progress_in_the_details() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Jobs).unwrap();
+        let mut job = crate::jobs::Job::test_backup("backup-x", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        job.retention = Some("7d 4w".to_string());
+        app.jobs_view.jobs = vec![job];
+        app.jobs_table.select(Some(0));
+        let text = render(&mut app, 140, 30).join("\n");
+        for want in ["tank/data", "to /mnt/usb/restic", "keep 7d 4w", "prefix hourly"] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(!text.contains("password"), "the password file path is not shown");
     }
 }

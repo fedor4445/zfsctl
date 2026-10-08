@@ -292,8 +292,9 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("n", "New scrub job", 2));
             v.push(h("N", "New snapshot job", 3));
             v.push(h("R", "New replication job", 3));
+            v.push(h("B", "New backup job", 3));
             if let Some(job) = app.jobs_table.selected().and_then(|i| app.jobs_view.jobs.get(i)) {
-                if job.kind == crate::jobs::KIND_REPLICATE && app.jobs_view.is_running(&job.id) {
+                if crate::jobs::is_cancellable(job) && app.jobs_view.is_running(&job.id) {
                     v.push(h("c", "Cancel transfer", 1).tone(Tone::Warn));
                 }
             }
@@ -679,7 +680,7 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_advertised_are_no_ops() {
-        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D'];
+        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D', 'B'];
         for (name, app) in scenarios() {
             let advertised: Vec<KeyCode> = hints(&app).iter().filter_map(|h| key_code(h.key)).collect();
             for ch in probes {
@@ -1207,5 +1208,13 @@ mod tests {
         assert_eq!(k(&boot_envs(4)), vec!["t", "R", "m", "n"]);
         assert_eq!(k(&boot_envs_none()), vec!["n"]);
         assert!(k(&boot_envs_unavailable()).is_empty(), "nothing can be done to a section that cannot list");
+    }
+
+    #[test]
+    fn the_jobs_section_advertises_b_for_a_backup_job_and_c_only_for_a_running_cancellable_one() {
+        let a = jobs(true);
+        let labels: Vec<(&str, &str)> = hints(&a).iter().map(|h| (h.key, h.label)).collect();
+        assert!(labels.contains(&("B", "New backup job")), "{labels:?}");
+        assert!(!labels.iter().any(|(k, _)| *k == "c"), "nothing is running");
     }
 }
