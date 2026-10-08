@@ -29,9 +29,9 @@ Non-goals (YAGNI): restoring from the UI, browsing a repository, `restic init`, 
 |---|---|
 | `repository` | restic's `-r` value. Required. No credentials inside it. |
 | `password_file` | absolute path on the job's host. Required. |
-| `keep` | optional retention text: tokens `<n>l` (last), `<n>d`, `<n>w`, `<n>m`, `<n>y`, e.g. `7d 4w 12m 3y`. Blank = nothing is ever forgotten. |
+| `retention` | optional retention text (the TOML name: the snapshot job's numeric `keep` already uses that word; the form label stays "Keep"): tokens `<n>l` (last), `<n>d`, `<n>w`, `<n>m`, `<n>y`, e.g. `7d 4w 12m 3y`. Blank = nothing is ever forgotten. |
 
-`resolve` rules for a backup job: `dataset` valid, `prefix` valid, `host` known, `repository` non-empty with no NUL/newline and not starting with `-`, `password_file` an absolute path with no `..`/NUL/newline, `keep` parses (each count 1..=9999, no duplicate unit), schedule valid. Two enabled backup jobs may not share a clone name (same host and job id cannot happen; same job id is unique by construction), but several jobs may back up the same dataset to different repositories.
+`resolve` rules for a backup job: `dataset` valid, `prefix` valid, `host` known, `repository` non-empty with no NUL/newline and not starting with `-`, `password_file` an absolute path with no `..`/NUL/newline, `retention` parses (each count 1..=9999, no duplicate unit), schedule valid. Two enabled backup jobs may not share a clone name (same host and job id cannot happen; same job id is unique by construction), but several jobs may back up the same dataset to different repositories.
 
 ## A run
 
@@ -43,7 +43,7 @@ Under a lock on `(host, "#bak@<job id>")`:
 4. **Clone.** `zfs clone -o mountpoint=/var/run/zfsctl/<job id> -o readonly=on -o canmount=on <dataset>@<snap> <pool>/zit-restic-<job id>`. Failure (for example a locked encrypted dataset) is a failed run with zfs's message.
 5. **Backup.** `restic backup -r <repo> --password-file <pf> --host <job host> --tag zfsctl:<job id> --tag zfsctl-snapshot:<name> --time "<snapshot creation, local time of the host>" --json /var/run/zfsctl/<job id>`. The run reads restic's JSON lines: `status` messages feed the progress file (`bytes_done`, `total_bytes`), the final `summary` message gives the counts. `--time` makes restic's history, and so daily/weekly retention, follow the age of the data, not when the run happened.
 6. **Always clean up.** `zfs destroy` the clone whether the backup succeeded, failed or was cancelled. A failed destroy is reported in the run message (the next run retries it).
-7. **Forget.** Only after a successful backup and only if `keep` is set: `restic forget -r <repo> --password-file <pf> --prune --tag zfsctl:<job id> --host <job host> --keep-last/--keep-daily/--keep-weekly/--keep-monthly/--keep-yearly …`. A forget failure makes the run `Failed: backed up <snap> but forget failed: <message>` (the backup exists).
+7. **Forget.** (Every restic option is passed as `--flag=value`, so a value can never be read as an option, and the keep flags are `--keep-last=N` and so on.) Only after a successful backup and only if `retention` is set: `restic forget -r <repo> --password-file <pf> --prune --tag zfsctl:<job id> --host <job host> --keep-last/--keep-daily/--keep-weekly/--keep-monthly/--keep-yearly …`. A forget failure makes the run `Failed: backed up <snap> but forget failed: <message>` (the backup exists).
 8. **Result.** `Ok: backed up <snap> (<new> new, <changed> changed, <unmodified> unmodified), <bytes> added`; the repository is never part of a message.
 
 The run never creates, destroys or modifies a snapshot of the source.
@@ -82,11 +82,11 @@ An unfinished backup run is closed as lost (as for the other kinds); the leftove
 - **Time zones:** `--time` is passed in the host's local time; the host is where restic parses it.
 - **Dataset renamed or destroyed between runs:** the job fails at selection; restic's history is untouched.
 - **Large first backup:** it simply takes long; the progress file shows it; cancel and resume work because restic reuses uploaded data.
-- **`keep` with a very short policy on a repository shared with other tools:** only snapshots with this job's tag and host are forgotten.
+- **`retention` with a very short policy on a repository shared with other tools:** only snapshots with this job's tag and host are forgotten.
 
 ## Testing
 
-- `jobs`: round trip, `resolve` for each bad field, `keep` parser (valid, duplicate units, zero, junk), other kinds unchanged.
+- `jobs`: round trip, `resolve` for each bad field, `retention` parser (valid, duplicate units, zero, junk), other kinds unchanged.
 - The run with scripted `zfs` and `restic` doubles: exact argument lists for each step in order; skip when no snapshot / already backed up; failure at each step; clone destroyed after success, failure, cancel; leftover clone destroyed first; forget only after success and only with a policy; no repository in any message; the JSON status/summary parsing.
 - Progress file written and removed; cancel kills restic and records `Cancelled`.
 - Snapshot-job prune leaves a snapshot with a dependent clone and succeeds.
@@ -95,7 +95,7 @@ An unfinished backup run is closed as lost (as for the other kinds); the leftove
 
 ## Delivery
 
-One implementation plan (the pieces share one job kind and are small): the job model and `keep` parser, the run (with a restic double), snapshot-prune handling of a dependent clone, daemon wiring, the form, docs and the live checks.
+One implementation plan (the pieces share one job kind and are small): the job model and `retention` parser, the run (with a restic double), snapshot-prune handling of a dependent clone, daemon wiring, the form, docs and the live checks.
 
 ## Files touched (indicative)
 
