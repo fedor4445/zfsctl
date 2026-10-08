@@ -174,6 +174,52 @@ pub fn pump_to_file(mut send: Command, mut file: std::fs::File, cancel: &AtomicB
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lines {
+    pub cancelled: bool,
+    /// The exit code; `None` when the child was killed by a signal.
+    pub code: Option<i32>,
+    pub stderr: String,
+}
+
+/// Runs `cmd` and hands each line of its stdout to `on_line` as it arrives. Setting `cancel` kills the
+/// child; the call still returns once its output ends.
+pub fn run_lines(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> std::io::Result<Lines> {
+    use std::io::BufRead;
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other("could not open the pipe"));
+    };
+    let log = drain_stderr(&mut child);
+    let (tx, rx) = channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut cancelled = false;
+    loop {
+        match rx.recv_timeout(TICK) {
+            Ok(line) => on_line(&line),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if !cancelled && cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            let _ = child.kill();
+        }
+    }
+    let _ = reader.join();
+    let status = child.wait()?;
+    Ok(Lines { cancelled, code: status.code(), stderr: log.join().unwrap_or_default() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +329,29 @@ mod tests {
         assert!(t.write_error.is_some(), "{t:?}");
         assert!(!t.send_ok, "the send is killed once the write fails");
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn run_lines_hands_over_each_stdout_line_and_the_exit_code() {
+        let mut seen = Vec::new();
+        let r = run_lines(sh("echo one; echo two; echo oops >&2; exit 2"), &AtomicBool::new(false), |l| seen.push(l.to_string())).unwrap();
+        assert_eq!(seen, vec!["one", "two"]);
+        assert_eq!((r.cancelled, r.code), (false, Some(2)));
+        assert!(r.stderr.contains("oops"), "{}", r.stderr);
+    }
+
+    #[test]
+    fn run_lines_kills_the_child_when_cancelled_and_still_returns() {
+        let started = Instant::now();
+        let r = run_lines(sh("echo started; sleep 60"), &AtomicBool::new(true), |_| {}).unwrap();
+        assert!(r.cancelled);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_ne!(r.code, Some(0));
+    }
+
+    #[test]
+    fn run_lines_reports_a_command_that_cannot_start() {
+        let missing = Command::new("/nonexistent/zfsctl-test-binary");
+        assert!(run_lines(missing, &AtomicBool::new(false), |_| {}).is_err());
     }
 }

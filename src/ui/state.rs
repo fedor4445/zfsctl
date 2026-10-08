@@ -1207,12 +1207,15 @@ impl App {
             KeyCode::Char('N') if self.current_section() == Section::Jobs => {
                 self.modal = Some(self.snapshot_job_form(None, ""));
             }
+            KeyCode::Char('B') if self.current_section() == Section::Jobs => {
+                self.modal = Some(self.backup_job_form(None));
+            }
             KeyCode::Char('R') if self.current_section() == Section::Jobs => {
                 self.modal = Some(self.replicate_job_form(None));
             }
             KeyCode::Char('c') if self.current_section() == Section::Jobs => {
                 if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)) {
-                    if job.kind == crate::jobs::KIND_REPLICATE && self.jobs_view.is_running(&job.id) {
+                    if crate::jobs::is_cancellable(job) && self.jobs_view.is_running(&job.id) {
                         match crate::daemon::cancel::request(&self.state_dir.join("cancel"), &job.id) {
                             Ok(()) => self.status_message = Some(format!("Cancel requested for '{}'; it stops within a second or two", job.id)),
                             Err(e) => self.set_error(format!("Could not request the cancel: {e}")),
@@ -1229,6 +1232,7 @@ impl App {
                     self.modal = Some(match job.kind.as_str() {
                         crate::jobs::KIND_SNAPSHOT => self.snapshot_job_form(Some(job), ""),
                         crate::jobs::KIND_REPLICATE => self.replicate_job_form(Some(job)),
+                        crate::jobs::KIND_BACKUP => self.backup_job_form(Some(job)),
                         _ => self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")),
                     });
                 }
@@ -1556,6 +1560,18 @@ impl App {
                                 None
                             }
                         }
+                    } else if matches!(kind, FormKind::BackupJob { .. }) {
+                        match build_backup_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
+                            Ok(mut action) => {
+                                action.host = self.selected_host;
+                                Some(action)
+                            }
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
+                        }
                     } else if matches!(kind, FormKind::ReplicateJob { .. }) {
                         match build_replicate_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
@@ -1652,7 +1668,7 @@ impl App {
     fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str) {
         let (hosts, what) = match kind {
             FormKind::Job { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Pools),
-            FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
+            FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } | FormKind::BackupJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
             _ => return,
         };
         if host_name.trim() == crate::jobs::DEST_FILE {
@@ -2508,6 +2524,97 @@ impl App {
     }
 }
 
+impl App {
+    fn backup_job_form(&self, existing: Option<crate::jobs::Job>) -> Modal {
+        let yn = |b: bool| if b { "y" } else { "n" }.to_string();
+        let (title, host, dataset, prefix, repository, password_file, keep, schedule, catch_up) = match &existing {
+            Some(j) => (
+                format!("Edit backup job '{}'", j.id),
+                j.host.clone(),
+                j.dataset.clone().unwrap_or_default(),
+                crate::jobs::effective_prefix(j).to_string(),
+                j.repository.clone().unwrap_or_default(),
+                j.password_file.clone().unwrap_or_default(),
+                j.retention.clone().unwrap_or_default(),
+                j.schedule.clone(),
+                j.catch_up,
+            ),
+            None => ("New backup job".to_string(), self.active_host_name().to_string(), String::new(), crate::jobs::DEFAULT_PREFIX.to_string(), String::new(), String::new(), String::new(), "30 3 * * *".to_string(), true),
+        };
+        Modal::Form {
+            title,
+            fields: vec![
+                FormField { label: "Host (where restic runs)".to_string(), value: host },
+                FormField { label: "Dataset".to_string(), value: dataset },
+                FormField { label: "Prefix (snapshots to back up)".to_string(), value: prefix },
+                FormField { label: "Repository (restic -r; no credentials in it)".to_string(), value: repository },
+                FormField { label: "Password file (absolute path on the host)".to_string(), value: password_file },
+                FormField { label: "Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything)".to_string(), value: keep },
+                FormField { label: "Schedule".to_string(), value: schedule },
+                FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
+            ],
+            focused: 0,
+            description: Some("Backs up the newest <prefix>-<timestamp> snapshot (it never takes snapshots) through a temporary read-only clone. The repository must already exist (restic init).".to_string()),
+            kind: FormKind::BackupJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+        }
+    }
+}
+
+/// Turns a submitted backup form into a save, or says what is wrong. It refuses exactly what the
+/// daemon would refuse (`jobs::resolve`).
+fn build_backup_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+    let FormKind::BackupJob { hosts, existing, jobs } = kind else { return Err("not a backup job form".to_string()) };
+    let yes_no = |label: &str, raw: &str, blank: bool| match raw.trim().to_lowercase().as_str() {
+        "" => Ok(blank),
+        "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        other => Err(format!("{label} must be y or n, not '{other}'")),
+    };
+    let host = field_value(fields, 0).trim();
+    if !hosts.iter().any(|h| h == host) {
+        return Err(format!("Unknown host '{host}'. Configured hosts: {}", hosts.join(", ")));
+    }
+    let dataset = field_value(fields, 1).trim();
+    let prefix = match field_value(fields, 2).trim() {
+        "" => crate::jobs::DEFAULT_PREFIX,
+        p => p,
+    };
+    let repository = field_value(fields, 3).trim();
+    let password_file = field_value(fields, 4).trim();
+    let keep = field_value(fields, 5).trim();
+    let schedule = field_value(fields, 6).trim();
+    crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
+    let catch_up = yes_no("Catch up", field_value(fields, 7), true)?;
+    let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+    let base = crate::jobs::Job {
+        id: String::new(),
+        host: host.to_string(),
+        kind: crate::jobs::KIND_BACKUP.to_string(),
+        pool: None,
+        dataset: Some(dataset.to_string()),
+        recursive: false,
+        prefix: Some(prefix.to_string()),
+        keep: None,
+        dest_host: None,
+        dest_dataset: None,
+        dest_dir: None,
+        force: false,
+        repository: Some(repository.to_string()),
+        password_file: Some(password_file.to_string()),
+        retention: (!keep.is_empty()).then(|| keep.to_string()),
+        schedule: schedule.to_string(),
+        catch_up,
+        enabled: true,
+        created_at: Some(now),
+    };
+    let job = match existing {
+        Some(old) => crate::jobs::Job { id: old.id.clone(), enabled: old.enabled, created_at: old.created_at, ..base },
+        None => crate::jobs::Job { id: crate::ui::jobs::new_backup_job_id(host, dataset, &taken), ..base },
+    };
+    crate::jobs::resolve(&job, hosts)?;
+    Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
+}
+
 /// Turns a submitted replication form into a save, or says what is wrong. The job is validated
 /// by `jobs::resolve`, exactly as the daemon will validate it, plus the shared-destination rule.
 fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
@@ -2548,6 +2655,9 @@ fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], state_dir: 
         dest_dataset: (!to_file).then(|| dest.to_string()),
         dest_dir: to_file.then(|| dest.to_string()),
         force,
+        repository: None,
+        password_file: None,
+        retention: None,
         schedule: schedule.to_string(),
         catch_up,
         enabled: true,
@@ -2609,7 +2719,7 @@ fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false,
+            force: false, repository: None, password_file: None, retention: None,
             schedule: schedule.to_string(),
             catch_up,
             enabled: true,
@@ -2659,7 +2769,7 @@ fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false,
+            force: false, repository: None, password_file: None, retention: None,
         },
     };
     Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
@@ -2890,7 +3000,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
     }
 }
 
@@ -3269,7 +3379,8 @@ Jobs
   n                new scrub job (or press J on a pool in Pools)
   N                new snapshot job (or press J on a dataset in Datasets)
   R                new replication job
-  c                cancel the selected replication while it is running
+  B                new backup job (restic: back up a snapshot through a temporary clone)
+  c                cancel the selected replication or backup while it is running
   Space            enable / disable the job
   d                delete the job (y/n; its past runs stay in the history)
 
@@ -7792,7 +7903,7 @@ mod tests {
     }
 
     fn scrub_job(id: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
     }
 
     #[test]
@@ -9170,5 +9281,113 @@ mod tests {
         for want in ["Boot Envs", "next boot only", "rename", "mount", "destroy"] {
             assert!(text.contains(want), "missing {want:?}");
         }
+    }
+
+    const BACKUP_GOOD: [&str; 8] = ["local", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw", "7d 4w", "30 3 * * *", "y"];
+
+    fn backup_kind(existing: Option<crate::jobs::Job>, jobs: Vec<crate::jobs::Job>) -> FormKind {
+        FormKind::BackupJob { hosts: vec!["local".to_string(), "fbsd16".to_string()], existing: existing.map(Box::new), jobs }
+    }
+
+    fn backup_fields(values: [&str; 8]) -> Vec<FormField> {
+        values.iter().map(|v| FormField { label: "x".to_string(), value: (*v).to_string() }).collect()
+    }
+
+    fn backup_err(values: [&str; 8]) -> String {
+        build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err()
+    }
+
+    #[test]
+    fn big_b_in_jobs_opens_the_backup_form_with_sensible_defaults() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.handle_key(KeyCode::Char('B'));
+        assert_eq!(form_values(&app), ["local", "", "auto", "", "", "", "30 3 * * *", "y"]);
+        assert!(matches!(&app.modal, Some(Modal::Form { kind: FormKind::BackupJob { .. }, .. })));
+    }
+
+    #[test]
+    fn big_b_outside_jobs_does_nothing() {
+        let mut app = in_section(Section::Pools);
+        app.handle_key(KeyCode::Char('B'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn a_good_backup_form_saves_a_backup_job_with_a_generated_id() {
+        let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(BACKUP_GOOD), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!("{:?}", action.call) };
+        assert_eq!((job.id.as_str(), job.kind.as_str(), job.host.as_str(), job.dataset.as_deref(), job.prefix.as_deref()), ("backup-local-tank-data", "backup", "local", Some("tank/data"), Some("hourly")));
+        assert_eq!((job.repository.as_deref(), job.password_file.as_deref(), job.retention.as_deref()), (Some("/mnt/usb/restic"), Some("/root/pw"), Some("7d 4w")));
+        assert_eq!((job.schedule.as_str(), job.catch_up, job.enabled), ("30 3 * * *", true, true));
+        assert_eq!(action.section, Section::Jobs);
+    }
+
+    #[test]
+    fn a_blank_keep_field_saves_no_retention_and_a_blank_prefix_means_the_default() {
+        let mut values = BACKUP_GOOD;
+        values[5] = "  ";
+        values[2] = "";
+        let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        assert_eq!((job.retention, job.prefix.as_deref()), (None, Some(crate::jobs::DEFAULT_PREFIX)));
+    }
+
+    #[test]
+    fn the_backup_form_refuses_what_the_daemon_would_refuse() {
+        let with = |i: usize, v: &'static str| {
+            let mut vals = BACKUP_GOOD;
+            vals[i] = v;
+            vals
+        };
+        assert!(backup_err(with(0, "nope")).contains("host"));
+        assert!(backup_err(with(1, "-rf")).contains("dataset"));
+        assert!(backup_err(with(2, "a b")).contains("prefix"));
+        assert!(backup_err(with(3, "")).contains("repository"));
+        assert!(backup_err(with(3, "-r")).contains("repository"));
+        assert!(backup_err(with(4, "relative")).contains("password_file"));
+        assert!(backup_err(with(5, "7x")).contains("retention"));
+        assert!(backup_err(with(6, "bogus")).contains("Schedule"));
+        assert!(backup_err(with(7, "q")).contains("Catch up"));
+    }
+
+    #[test]
+    fn enter_on_a_backup_job_edits_it_in_the_backup_form_and_keeps_its_id_and_state() {
+        let mut job = crate::jobs::Job::test_backup("backup-x", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        job.retention = Some("7d".to_string());
+        job.enabled = false;
+        let (mut app, _dir) = app_with_jobs(&[job.clone()]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw", "7d", "0 3 * * *", "y"]);
+        let kind = backup_kind(Some(job.clone()), vec![job]);
+        let mut values = BACKUP_GOOD;
+        values[3] = "/mnt/other";
+        let action = build_backup_job_action(&kind, &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        assert_eq!((job.id.as_str(), job.enabled, job.repository.as_deref()), ("backup-x", false, Some("/mnt/other")));
+    }
+
+    #[test]
+    fn c_cancels_a_running_backup_and_is_inert_otherwise() {
+        let job = crate::jobs::Job::test_backup("backup-x", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        let (mut app, dir) = app_with_jobs(&[job]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('c'));
+        assert!(app.status_message.is_none(), "not running: nothing happens");
+        assert!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")).is_empty());
+        let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
+        h.append(&crate::daemon::history::Event { job_id: "backup-x".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Started, at: chrono::Utc::now(), scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }).unwrap();
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Char('c'));
+        assert_eq!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")), ["backup-x"]);
+        assert!(app.status_message.clone().unwrap_or_default().contains("Cancel requested"));
+    }
+
+    #[test]
+    fn help_documents_the_backup_key() {
+        let text = help_text();
+        assert!(text.contains("new backup job"), "{text}");
     }
 }

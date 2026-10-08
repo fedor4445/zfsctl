@@ -102,6 +102,10 @@ pub struct ProgressWriter {
 }
 
 impl ProgressWriter {
+    /// The total can become known after the start (restic reports it in its first status lines).
+    pub fn set_total(&mut self, total: u64) {
+        self.total = Some(total);
+    }
     pub fn new(dir: PathBuf, run_id: String, job_id: String, total: Option<u64>, started_at: DateTime<Utc>) -> Self {
         ProgressWriter { dir, run_id, job_id, total, started_at, last: None }
     }
@@ -176,5 +180,18 @@ mod tests {
         w.update(1100, at("2026-10-06T10:00:02Z"));
         let p = &read_all(dir.path())[0];
         assert_eq!((p.bytes, p.rate), (1100, Some(500)), "1000 bytes over 2 s");
+    }
+
+    #[test]
+    fn a_total_learned_after_the_start_shows_up_in_later_progress_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let t0 = at("2026-10-08T10:00:00Z");
+        let mut w = ProgressWriter::new(dir.path().to_path_buf(), "run".into(), "job".into(), None, t0);
+        w.update(10, t0);
+        assert_eq!(read_all(dir.path())[0].total, None);
+        w.set_total(1000);
+        w.update(500, at("2026-10-08T10:00:02Z"));
+        let p = &read_all(dir.path())[0];
+        assert_eq!((p.bytes, p.total), (500, Some(1000)));
     }
 }

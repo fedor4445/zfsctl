@@ -132,6 +132,11 @@ pub fn new_replicate_job_id(host: &str, dataset: &str, dest_host: &str, dest: &s
     unique(&format!("repl-{}-{}-to-{}-{}", safe_key(host), safe_key(dataset), safe_key(dest_host), safe_key(dest)), existing)
 }
 
+/// `backup-<host>-<dataset>`, made safe the same way.
+pub fn new_backup_job_id(host: &str, dataset: &str, existing: &[String]) -> String {
+    unique(&format!("backup-{}-{}", safe_key(host), safe_key(dataset)), existing)
+}
+
 /// `snap-<host>-<dataset>-<prefix>`, made safe the same way.
 pub fn new_snapshot_job_id(host: &str, dataset: &str, prefix: &str, existing: &[String]) -> String {
     unique(&format!("snap-{}-{}-{}", safe_key(host), safe_key(dataset), safe_key(prefix)), existing)
@@ -254,7 +259,7 @@ mod tests {
     }
 
     fn job(id: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
     }
 
     fn event(job_id: &str, run_id: &str, kind: EventKind, when: &str, result: Option<RunResult>) -> Event {
@@ -501,5 +506,12 @@ mod tests {
         assert!(view.is_running("r"), "the 09:00 transfer is still going");
         h.append(&event("r", "r1", EventKind::Finished, "2026-10-06T11:00:00Z", Some(RunResult::Ok))).unwrap();
         assert!(!load(dir.path(), &["local".to_string(), "fbsd16".to_string()], None).is_running("r"));
+    }
+
+    #[test]
+    fn backup_job_ids_are_safe_and_unique() {
+        assert_eq!(new_backup_job_id("local", "tank/data", &[]), "backup-local-tank-data");
+        assert_eq!(new_backup_job_id("local", "tank/data", &["backup-local-tank-data".to_string()]), "backup-local-tank-data-2");
+        assert!(new_backup_job_id("my host", "tank/we ird", &[]).chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')));
     }
 }

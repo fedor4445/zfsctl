@@ -10,6 +10,7 @@ pub mod cancel;
 pub mod progress;
 pub mod replicate;
 pub mod replicate_file;
+pub mod backup;
 pub mod scrub;
 pub mod snapshot;
 pub mod transfer;
@@ -126,8 +127,28 @@ impl Shared {
         }
     }
 
-    /// Runs a replication with its own cancel flag registered under the job's cancel-file name, so a
-    /// request file can reach it. A host that is no longer configured is a recorded failure.
+    /// Runs `run` with a cancel flag registered under the job's cancel-file name, so a request file
+    /// can reach it. A slot that falls due while this job's previous run is still going must not
+    /// replace (and later remove) that run's flag: it is skipped instead.
+    fn run_cancellable(&self, ctx: &Context, due: &scheduler::Due, run_id: &str, run: impl FnOnce(&replicate::Env) -> Outcome) -> Outcome {
+        let job = &due.job;
+        let flag = Arc::new(AtomicBool::new(false));
+        let key = cancel::file_name(&job.id);
+        {
+            let mut running = self.cancels.lock().unwrap_or_else(PoisonError::into_inner);
+            if running.contains_key(&key) {
+                let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
+                return scrub::finish(ctx, job, run_id, EventKind::Skipped, RunResult::Skipped, "skipped: already running".to_string(), slot);
+            }
+            running.insert(key.clone(), Arc::clone(&flag));
+        }
+        let env = replicate::Env { ctx, progress_dir: &self.progress_dir, cancel: &flag, replication_state: &self.replication_state };
+        let outcome = run(&env);
+        self.cancels.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+        outcome
+    }
+
+    /// A host that is no longer configured is a recorded failure.
     fn replicate(&self, ctx: &Context, due: &scheduler::Due, run_id: &str) -> Outcome {
         let job = &due.job;
         let dest_host = job.dest_host.clone().unwrap_or_default();
@@ -139,25 +160,19 @@ impl Shared {
             let which = if to_file { format!("host '{}' is", job.host) } else { format!("host '{}' or '{dest_host}' is", job.host) };
             return scrub::finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("{which} not configured"), slot);
         };
-        let flag = Arc::new(AtomicBool::new(false));
-        let key = cancel::file_name(&job.id);
-        {
-            // A slot that falls due while this job's previous transfer is still running must not
-            // replace (and later remove) that transfer's cancel flag.
-            let mut running = self.cancels.lock().unwrap_or_else(PoisonError::into_inner);
-            if running.contains_key(&key) {
-                let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
-                return scrub::finish(ctx, job, run_id, EventKind::Skipped, RunResult::Skipped, "skipped: already running".to_string(), slot);
-            }
-            running.insert(key.clone(), Arc::clone(&flag));
-        }
-        let env = replicate::Env { ctx, progress_dir: &self.progress_dir, cancel: &flag, replication_state: &self.replication_state };
-        let outcome = match &dst {
-            Some(dst) => replicate::run_replicate(&env, src.as_ref(), dst.as_ref(), job, due.scheduled_for, due.catch_up, run_id),
-            None => replicate_file::run_replicate_file(&env, src.as_ref(), job, due.scheduled_for, due.catch_up, run_id),
+        self.run_cancellable(ctx, due, run_id, |env| match &dst {
+            Some(dst) => replicate::run_replicate(env, src.as_ref(), dst.as_ref(), job, due.scheduled_for, due.catch_up, run_id),
+            None => replicate_file::run_replicate_file(env, src.as_ref(), job, due.scheduled_for, due.catch_up, run_id),
+        })
+    }
+
+    fn backup(&self, ctx: &Context, due: &scheduler::Due, run_id: &str) -> Outcome {
+        let job = &due.job;
+        let Some(runner) = self.runner(&job.host) else {
+            let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
+            return scrub::finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("host '{}' is not configured", job.host), slot);
         };
-        self.cancels.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
-        outcome
+        self.run_cancellable(ctx, due, run_id, |env| backup::run_backup(env, runner.as_ref(), job, due.scheduled_for, due.catch_up, run_id))
     }
 
     /// Hands each pending cancel request to the run it names; a request for a job that is not
@@ -181,6 +196,7 @@ impl Shared {
                 log(&format!("running {} (slot {}{})", due.job.id, due.scheduled_for.to_rfc3339(), if due.catch_up { ", catch-up" } else { "" }));
                 let outcome = match due.job.kind.as_str() {
                     crate::jobs::KIND_REPLICATE => Some(self.replicate(&ctx, &due, &run_id)),
+                    crate::jobs::KIND_BACKUP => Some(self.backup(&ctx, &due, &run_id)),
                     kind => {
                         let Some(runner) = self.runner(&due.job.host) else { return };
                         if kind == crate::jobs::KIND_SNAPSHOT {
@@ -335,7 +351,7 @@ mod tests {
     }
 
     fn job() -> Job {
-        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false }
+        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
     }
 
     fn shared(dir: &tempfile::TempDir, runner: FakeRunner, notify: Option<String>) -> Shared {
@@ -623,5 +639,54 @@ mod tests {
     #[test]
     fn a_missing_file_directory_is_not_an_error_at_startup() {
         clear_partial_files(&[file_job("f", Path::new("/nonexistent/zfsctl-test-dir"))]);
+    }
+
+    #[test]
+    fn a_due_backup_job_is_run_by_the_backup_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let job = Job::test_backup("backup-local-tank-data", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        shared.execute(Work::Run(Due { job, scheduled_for: shared.clock.now(), catch_up: false }));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Skipped)), "{:?}", runs[0].message);
+        assert!(runs[0].message.contains("no snapshots"), "it reached the backup run: {}", runs[0].message);
+    }
+
+    #[test]
+    fn a_due_backup_job_on_an_unconfigured_host_is_recorded_as_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let mut job = Job::test_backup("b", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        job.host = "gone".into();
+        shared.execute(Work::Run(Due { job, scheduled_for: shared.clock.now(), catch_up: false }));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Failed)));
+        assert!(runs[0].message.contains("gone"), "{}", runs[0].message);
+    }
+
+    #[test]
+    fn a_second_slot_of_a_running_backup_is_skipped_and_leaves_the_running_ones_cancel_flag_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let job = Job::test_backup("b", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        let running = Arc::new(AtomicBool::new(false));
+        shared.cancels.lock().unwrap().insert(cancel::file_name("b"), Arc::clone(&running));
+        shared.execute(Work::Run(Due { job, scheduled_for: shared.clock.now(), catch_up: false }));
+        let runs = history::runs(&shared.history.read());
+        assert_eq!((runs.len(), runs[0].result), (1, Some(RunResult::Skipped)));
+        assert!(runs[0].message.contains("already running"), "{}", runs[0].message);
+        assert!(shared.cancels.lock().unwrap().get(&cancel::file_name("b")).is_some_and(|f| Arc::ptr_eq(f, &running)));
+    }
+
+    #[test]
+    fn a_cancel_request_reaches_a_running_backup_through_the_shared_flag_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let running = Arc::new(AtomicBool::new(false));
+        shared.cancels.lock().unwrap().insert(cancel::file_name("b"), Arc::clone(&running));
+        let cancel_dir = dir.path().join("cancel");
+        cancel::request(&cancel_dir, "b").unwrap();
+        shared.apply_cancel_requests(&cancel_dir);
+        assert!(running.load(Ordering::SeqCst));
     }
 }

@@ -64,18 +64,21 @@ pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, schedu
     let mut own: Vec<String> = listed.into_iter().filter(|s| s.dataset == dataset && s.name != name && is_own(&prefix, &s.name)).map(|s| s.name).collect();
     own.sort_unstable_by(|a, b| b.cmp(a));
     own.dedup();
-    let (mut pruned, mut failures) = (0_usize, Vec::new());
+    let (mut pruned, mut failures, mut in_use) = (0_usize, Vec::new(), 0_usize);
     // Oldest first, so a failure part-way leaves the newest of the excess in place.
     for old in own.iter().skip(keep.saturating_sub(1)).rev() {
         match destroy_snapshot_with(runner, &dataset, old, job.recursive) {
             Ok(()) => pruned += 1,
+            // A backup run's clone pins its snapshot for the length of the run: leave it for the next slot.
+            Err(AppError::CommandFailed { stderr, .. }) if stderr.contains("dependent clones") => in_use += 1,
             Err(e) => failures.push(format!("{old}: {e}")),
         }
     }
+    let kept = if in_use == 0 { String::new() } else { format!("; kept {in_use} in use by a clone") };
     if failures.is_empty() {
-        finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("created {name}; pruned {pruned}"), slot)
+        finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("created {name}; pruned {pruned}{kept}"), slot)
     } else {
-        finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("created {name}; pruned {pruned}; could not destroy {}", failures.join("; ")), slot)
+        finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("created {name}; pruned {pruned}{kept}; could not destroy {}", failures.join("; ")), slot)
     }
 }
 
@@ -104,13 +107,14 @@ mod tests {
         listing: String,
         snapshot_error: Option<String>,
         destroy_fails: Vec<String>,
+        destroy_error: String,
         calls: Mutex<Vec<Vec<String>>>,
     }
 
     impl Zfs {
         fn new(existing: &[&str]) -> Self {
             let listing = existing.iter().map(|n| format!("{n}\t1\n")).collect::<Vec<_>>().concat();
-            Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), calls: Mutex::new(Vec::new()) }
+            Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), destroy_error: "snapshot has holds".to_string(), calls: Mutex::new(Vec::new()) }
         }
         fn calls(&self) -> Vec<Vec<String>> {
             self.calls.lock().unwrap().clone()
@@ -131,7 +135,7 @@ mod tests {
                 "list" => ok(self.listing.clone()),
                 "destroy" => {
                     let target = args.last().unwrap();
-                    if self.destroy_fails.iter().any(|t| t == target) { fail("snapshot has holds") } else { ok(String::new()) }
+                    if self.destroy_fails.iter().any(|t| t == target) { fail(&self.destroy_error) } else { ok(String::new()) }
                 }
                 other => panic!("unexpected zfs {other}"),
             }
@@ -324,5 +328,26 @@ mod tests {
         let (outcome, _) = run(&zfs, &job);
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
         assert_eq!(zfs.destroyed(), vec!["tank@hourly-20261006T100000Z"], "child-only names are neither counted nor destroyed");
+    }
+
+    #[test]
+    fn a_snapshot_pinned_by_a_clone_is_left_alone_and_does_not_fail_the_run() {
+        let mut zfs = Zfs::new(&["tank/data@hourly-20261006T040000Z", "tank/data@hourly-20261006T050000Z", "tank/data@hourly-20261006T060000Z"]);
+        zfs.destroy_fails = vec!["tank/data@hourly-20261006T040000Z".to_string()];
+        zfs.destroy_error = "cannot destroy 'tank/data@hourly-20261006T040000Z': snapshot has dependent clones\nuse '-R' to destroy the following datasets:\ntank/zit-restic-job".to_string();
+        let (outcome, history) = run(&zfs, &Job::test_snapshot("s", "tank/data", "hourly", 2));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("kept 1 in use by a clone"), "{}", outcome.message);
+        assert!(outcome.message.contains("pruned 1"), "the other excess snapshot is still pruned: {}", outcome.message);
+        assert_eq!(history.last().and_then(|r| r.result), Some(RunResult::Ok));
+    }
+
+    #[test]
+    fn any_other_destroy_failure_still_fails_the_run() {
+        let mut zfs = Zfs::new(&["tank/data@hourly-20261006T040000Z", "tank/data@hourly-20261006T050000Z", "tank/data@hourly-20261006T060000Z"]);
+        zfs.destroy_fails = vec!["tank/data@hourly-20261006T040000Z".to_string()];
+        let (outcome, _) = run(&zfs, &Job::test_snapshot("s", "tank/data", "hourly", 2));
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("snapshot has holds"), "{}", outcome.message);
     }
 }

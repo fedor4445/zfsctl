@@ -186,6 +186,7 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
         FormKind::Job { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 2 }),
         FormKind::SnapshotJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 5 }),
         FormKind::ReplicateJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0, 3], live_fields: &[1, 4], schedule_field: 6 }),
+        FormKind::BackupJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 6 }),
         _ => None,
     };
     if let Some(spec) = job_form {
@@ -495,5 +496,16 @@ mod tests {
         assert!(!picker.multi_select);
         let rename = FormKind::RenameBootEnv { host: 0, from: "a".to_string(), existing: vec![] };
         assert!(build_picker_state(&rename, 0, "").is_none());
+    }
+
+    #[test]
+    fn the_backup_form_offers_hosts_live_datasets_and_schedule_presets() {
+        let kind = FormKind::BackupJob { hosts: vec!["local".to_string(), "fbsd16".to_string()], existing: None, jobs: vec![] };
+        assert_eq!(build_picker_state(&kind, 0, "fbsd16").unwrap().values, vec!["local", "fbsd16"]);
+        assert!(build_picker_state(&kind, 1, "").unwrap().pool_host.is_some(), "the dataset field fetches live names");
+        assert!(!build_picker_state(&kind, 6, "").unwrap().values.is_empty(), "schedule presets");
+        for text_field in [2, 3, 4, 5, 7] {
+            assert!(build_picker_state(&kind, text_field, "").is_none(), "field {text_field} has no vocabulary");
+        }
     }
 }
