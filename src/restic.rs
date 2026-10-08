@@ -139,19 +139,25 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A failed restic command's message: the `exit_error` of `--json` output if there is one, else
-/// stderr, on one line.
+/// A failed restic command's message: an `exit_error` of `--json` output if there is one (stdout or
+/// stderr), else stderr, on one line.
 pub fn error_text(stdout: &str, stderr: &str) -> String {
-    let fatal = stdout.lines().find_map(|l| match parse_line(l) {
-        Line::Error(m) => Some(m),
-        _ => None,
-    });
-    failure_text(fatal.as_deref(), stderr)
+    failure_text(exit_error_in(stdout).as_deref(), stderr)
 }
 
-/// `fatal` (restic's own `exit_error` message) if there is one, else `stderr`, on one line.
+/// The message of the first `exit_error` line in `text`, if any.
+fn exit_error_in(text: &str) -> Option<String> {
+    text.lines().find_map(|l| match parse_line(l) {
+        Line::Error(m) => Some(m),
+        _ => None,
+    })
+}
+
+/// `fatal` (restic's own `exit_error` message) if there is one, else the `exit_error` in `stderr`
+/// (restic prints its JSON errors there), else `stderr` itself, on one line.
 pub fn failure_text(fatal: Option<&str>, stderr: &str) -> String {
-    let text = one_line(fatal.unwrap_or(stderr));
+    let from_stderr = exit_error_in(stderr);
+    let text = one_line(fatal.or(from_stderr.as_deref()).unwrap_or(stderr));
     if text.is_empty() {
         "restic failed".to_string()
     } else {
@@ -254,5 +260,14 @@ mod tests {
         assert_eq!(error_text("", ""), "restic failed");
         let multi = "{\"message_type\":\"exit_error\",\"message\":\"Fatal: repository does not exist\\nIs there a repository?\"}";
         assert_eq!(error_text(multi, ""), "Fatal: repository does not exist Is there a repository?");
+    }
+
+    #[test]
+    fn a_json_exit_error_on_stderr_is_unwrapped_too() {
+        let err = "{\"message_type\":\"exit_error\",\"code\":12,\"message\":\"Fatal: wrong password or no key found\"}\n";
+        assert_eq!(error_text("", err), "Fatal: wrong password or no key found");
+        assert_eq!(failure_text(None, err), "Fatal: wrong password or no key found");
+        assert_eq!(failure_text(None, "plain text\n"), "plain text");
+        assert_eq!(failure_text(Some("from stdout"), err), "from stdout", "an explicit fatal message wins");
     }
 }
