@@ -106,3 +106,12 @@ New `src/zfs/bootenv.rs`, pure parsing separated from I/O (as in `smb.rs`):
 - Not verifiable by us: an actual reboot into a permanent or temporary
   activation. Only the `bootfs`/flags are checked; a real reboot test is left
   to the user, ideally on a VM.
+
+## Live results on the VMs (2026-10-08)
+
+After `/sbin/bectl` was added to each VM's sudoers (`/usr/local/etc/sudoers.d/zfsctl-bectl`, installed by the user as root), the hub's TUI drove `fbsd16t1` (FreeBSD 15.1) and `fbsd16` (16.0-CURRENT) over SSH + `sudo -n`, checking every step against `bectl list -H` and `zpool get bootfs zroot` on the VM:
+
+- create, clone from another BE with F2 (origin snapshot confirmed with `zfs get origin`), rename, `t` (flag `T`) and `T`, mount (`/tmp/be_mount.*` shown) and unmount, destroy with `D` (no snapshots left under `zroot/ROOT`).
+- **Permanent activation** (never tested before): the confirm prompt appeared; after `y`, `default` read `N`, the new BE `R`, and `bootfs` pointed at it; activating `default` again restored `NR` and the original `bootfs`. No reboot was performed, so booting into an activated BE is still untested.
+- 15.1 and 16.0-CURRENT behaved identically. One empty listing seen right after an activation on 16.0-CURRENT came from the test script's own SSH hop: a direct `bectl list -H` immediately and 5 seconds after activating listed both BEs.
+- Both VMs were left with only `default` (`NR`) and the original `bootfs`.
