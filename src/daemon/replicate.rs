@@ -17,6 +17,8 @@ pub struct Env<'a> {
     pub ctx: &'a Context<'a>,
     pub progress_dir: &'a Path,
     pub cancel: &'a AtomicBool,
+    /// `replication.json`: what each file-target job last wrote.
+    pub replication_state: &'a Path,
 }
 
 /// What a run decided to send.
@@ -31,7 +33,7 @@ struct Chosen {
 
 /// A command's stderr as one line: its lines joined, without the sender's `warning:` noise (the
 /// send reports "signal received" whenever the receive stops first).
-fn message_of(stderr: &str) -> String {
+pub(super) fn message_of(stderr: &str) -> String {
     stderr.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("warning:")).collect::<Vec<_>>().join(" ")
 }
 
@@ -219,7 +221,8 @@ mod tests {
             let (clock, stop) = (FixedClock(now()), AtomicBool::new(false));
             let ctx = Context { history: &history, clock: &clock, locks: &self.locks, poll: Duration::from_secs(1), stop: &stop };
             let progress = self.dir.path().join("progress");
-            let env = Env { ctx: &ctx, progress_dir: &progress, cancel: &self.cancel };
+            let state = self.dir.path().join("replication.json");
+            let env = Env { ctx: &ctx, progress_dir: &progress, cancel: &self.cancel, replication_state: &state };
             let outcome = run_replicate(&env, src, dst, job, now(), false, "run-1");
             (outcome, runs(&history.read()))
         }

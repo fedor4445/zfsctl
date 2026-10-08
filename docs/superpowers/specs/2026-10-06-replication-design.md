@@ -99,12 +99,14 @@ A destination that was written to since its newest snapshot makes the receive fa
 
 ### A file run
 
-Under a lock on `(source host, source dataset)` and one on `dest_dir`:
+Under a lock on `dest_dir` only (the source is not locked, as for host-to-host):
 
 1. Select the newest source snapshot with the prefix.
-2. Read `replication.json` in the state dir (`{job_id: last_sent_snapshot}`). If it names a snapshot that still exists on the source and is older than the new one, send incrementally from it; otherwise a full stream. If the newest is already recorded, `Skipped: up to date`.
+2. Read `replication.json` in the state dir (`{job_id: {snapshot, guid, dir}}`; the record only counts while `dest_dir` still holds the stream that ends at that snapshot). If it names a snapshot that still exists on the source and is older than the new one, send incrementally from it; otherwise a full stream. If the newest is already recorded, `Skipped: up to date`.
 3. The hub spawns `zfs send ...` through the source runner and writes its stdout to `<dir>/<name>@<snap>.zfs.partial` (full) or `<dir>/<name>@<from>..<to>.zfs.partial` (incremental), where `<name>` is the source dataset with `/` replaced by `-`, then fsyncs and renames the file without `.partial`, then updates `replication.json`. A cancelled or failed run removes the `.partial`.
 4. The directory is created (mode 0700) if missing.
+
+`replication.json` stores `{snapshot, guid, dir}` per job, not just a snapshot name (planning ruling for plan 2): a name alone cannot tell a snapshot destroyed and recreated under the same name from the one that was written, and `dir` makes an edited `dest_dir` start with a full stream. An unreadable file counts as nothing recorded.
 
 ### Progress
 
@@ -197,3 +199,16 @@ Two implementation plans, one spec:
 ## Files touched (indicative)
 
 `src/exec/mod.rs`, `src/exec/local.rs`, `src/exec/ssh.rs`, `src/jobs.rs`, `src/daemon/replicate.rs` (new), `src/daemon/mod.rs`, `src/daemon/engine.rs`, `src/daemon/history.rs`, `src/zfs/snapshot.rs`, `src/ui/jobs.rs`, `src/ui/state.rs`, `src/ui/modal.rs`, `src/ui/picker.rs`, `src/ui/layout.rs`, `src/ui/hints.rs`, `README.md`.
+
+### File targets (live, 2026-10-08)
+
+On the hub (FreeBSD 15.1), daemon running the plan 2 build, jobs created through the TUI form (`R`, destination host `file`):
+
+- **Full, increment, up to date:** a 3 MiB scratch dataset wrote `scratch-fsrc@hourly-…A.zfs` (3,201,416 bytes; `zfs send -nvP` estimated 3,198,384, the difference is the stream header) with no `.partial`, then `scratch-fsrc@hourly-…A..hourly-…B.zfs` (1 MiB) when a second snapshot appeared, then `skipped: up to date`.
+- **Restore:** `zfs receive scratch/frestore < full`, then `< increment`: both snapshots appeared and `sha256` of both data files matched the source.
+- **Snapshot destroyed and recreated under the same name** (new guid): the next run wrote a *full* stream (5.3 MB), recorded the new guid, then `up to date`. An increment from the old base would have been corrupt.
+- **Cancel mid-transfer over the real SSH runner** (`fbsd16t1`, 400 MiB, `c` pressed while the progress line showed `sent … of 400.8 MiB`): `Cancelled: cancelled after 74.9 MiB; the next run starts again`, the directory (created by the daemon, mode `drwx------`) had no `.partial`, `replication.json` unchanged; the next run wrote the full 401.0 MiB stream (420,497,736 bytes vs an estimate of 420,219,176).
+- **Daemon killed mid-write** (`kill -9` as soon as a `.partial` appeared; the rc supervisor restarted it): after the restart the `.partial` was gone, the unfinished run was closed as lost, and the following run wrote the 150.4 MiB increment.
+- Files were mode 0600, the created directory 0700.
+- Not tested live: a full disk (covered by `pump_to_file`'s write-error test).
+- **Review fixes (2026-10-08):** the `.partial` is created fresh (unlink, then exclusive create) and a group- or world-writable `dest_dir` is refused; `dest_dir` must be canonical; a recorded snapshot whose stream file is gone from the directory counts as unrecorded (full stream); a complete stream with the same name is kept as `<name>.old-N`, never overwritten. Known and documented rather than fixed: the host is not part of the file name, `tank/a-b` and `tank-a/b` flatten alike, symlinked aliases of one directory are not detected, and deleting a job keeps its `replication.json` entry.

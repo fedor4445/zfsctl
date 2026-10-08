@@ -127,9 +127,10 @@ pub fn effective_prefix(job: &Job) -> &str {
     job.prefix.as_deref().unwrap_or(DEFAULT_PREFIX)
 }
 
-/// An absolute hub directory with no `..` component and only plain path characters.
+/// An absolute hub directory in canonical form (no empty, `.` or `..` component, no trailing slash, so
+/// two spellings of one directory cannot dodge the shared-destination rule) and only plain path characters.
 pub fn valid_dest_dir(s: &str) -> bool {
-    s.len() > 1 && s.starts_with('/') && s.split('/').all(|c| c != "..") && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ' '))
+    s.len() > 1 && s.starts_with('/') && s.split('/').skip(1).all(|c| !c.is_empty() && c != "." && c != "..") && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ' '))
 }
 
 fn check_replicate_fields(job: &Job) -> std::result::Result<(), String> {
@@ -195,8 +196,7 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
     }
     if job.kind == KIND_REPLICATE {
         match job.dest_host.as_deref() {
-            // Plan 2 (file targets) removes this refusal.
-            Some(DEST_FILE) => return Err("file destinations are not supported by this build".to_string()),
+            Some(DEST_FILE) => {}
             Some(dest) if !known_hosts.iter().any(|h| h == dest) => return Err(format!("destination host '{dest}' is not in config.toml")),
             _ => {}
         }
@@ -600,12 +600,15 @@ mod tests {
     }
 
     #[test]
-    fn a_file_destination_is_rejected_by_this_build_with_a_clear_reason() {
+    fn a_file_destination_is_accepted_and_still_needs_a_plain_absolute_directory() {
         let mut j = Job::test_replicate("r", "tank/data", "hourly", "file", "x");
         j.dest_dataset = None;
         j.dest_dir = Some("/mnt/usb/zfsctl".into());
-        let reason = resolve(&j, &["local".to_string()]).unwrap_err();
-        assert!(reason.contains("not supported"), "{reason}");
+        assert!(resolve(&j, &["local".to_string()]).is_ok());
+        j.dest_dir = Some("relative/dir".into());
+        assert!(resolve(&j, &["local".to_string()]).unwrap_err().contains("dest_dir"));
+        j.dest_dir = Some("/a/../etc".into());
+        assert!(resolve(&j, &["local".to_string()]).is_err());
     }
 
     #[test]
@@ -613,7 +616,7 @@ mod tests {
         for good in ["/mnt/usb", "/mnt/usb/zfsctl", "/var/backups/my disk"] {
             assert!(valid_dest_dir(good), "{good}");
         }
-        for bad in ["", "/", "mnt/usb", "-x", "/mnt/../etc", "/mnt/..", "/mnt/a;b", "/mnt/a\nb", "/mnt/$x", "/mnt/a\\b"] {
+        for bad in ["", "/", "mnt/usb", "-x", "/mnt/../etc", "/mnt/..", "/mnt/a;b", "/mnt/a\nb", "/mnt/$x", "/mnt/a\\b", "//", "/.", "/mnt//usb", "/mnt/./usb", "/mnt/usb/", "/mnt/usb/."] {
             assert!(!valid_dest_dir(bad), "{bad:?}");
         }
     }

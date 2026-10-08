@@ -37,6 +37,10 @@ impl Paths {
     pub fn progress_dir(&self) -> PathBuf {
         self.dir.join("progress")
     }
+    /// What each file-target replication last wrote.
+    pub fn replication_state(&self) -> PathBuf {
+        self.dir.join("replication.json")
+    }
     /// Cancel requests dropped by the TUI, one file per job.
     pub fn cancel_dir(&self) -> PathBuf {
         self.dir.join("cancel")

@@ -105,6 +105,75 @@ pub fn pump(mut send: Command, mut recv: Command, cancel: &AtomicBool, mut on_pr
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileTransfer {
+    pub bytes: u64,
+    pub cancelled: bool,
+    pub send_ok: bool,
+    pub send_stderr: String,
+    /// A write or fsync error on the destination file (disk full, ...), if there was one.
+    pub write_error: Option<String>,
+}
+
+/// Runs `send` and writes its stdout to `file` (fsynced at the end), counting the bytes: the hub-side
+/// half of a replication to a stream file. `on_progress` is called about every 200 ms. Setting
+/// `cancel` kills the child; a failed write stops the copy and kills it too.
+pub fn pump_to_file(mut send: Command, mut file: std::fs::File, cancel: &AtomicBool, mut on_progress: impl FnMut(u64)) -> std::io::Result<FileTransfer> {
+    send.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut sender = send.spawn()?;
+    let Some(mut from) = sender.stdout.take() else {
+        let _ = sender.kill();
+        let _ = sender.wait();
+        return Err(std::io::Error::other("could not open the pipe"));
+    };
+    let send_log = drain_stderr(&mut sender);
+
+    let total_bytes = Arc::new(AtomicU64::new(0));
+    let counter = Arc::clone(&total_bytes);
+    let copier = std::thread::spawn(move || -> Option<String> {
+        let mut buf = vec![0_u8; BUFFER];
+        loop {
+            match from.read(&mut buf) {
+                Ok(0) => break,
+                Err(e) => return Some(format!("reading the stream failed: {e}")),
+                Ok(n) => {
+                    let Some(chunk) = buf.get(..n) else { break };
+                    if let Err(e) = file.write_all(chunk) {
+                        return Some(e.to_string());
+                    }
+                    counter.fetch_add(u64::try_from(n).unwrap_or(u64::MAX), Ordering::Relaxed);
+                }
+            }
+        }
+        file.sync_all().err().map(|e| format!("syncing failed: {e}"))
+    });
+
+    let mut cancelled = false;
+    while !copier.is_finished() {
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            let _ = sender.kill();
+            break;
+        }
+        on_progress(total_bytes.load(Ordering::Relaxed));
+        std::thread::sleep(TICK);
+    }
+    let write_error = copier.join().unwrap_or_else(|_| Some("the writer thread panicked".to_string()));
+    on_progress(total_bytes.load(Ordering::Relaxed));
+    if write_error.is_some() {
+        // Nothing can be stored any more: whatever the send is still doing is pointless.
+        let _ = sender.kill();
+    }
+    let send_status = sender.wait()?;
+    Ok(FileTransfer {
+        bytes: total_bytes.load(Ordering::Relaxed),
+        cancelled,
+        send_ok: send_status.success(),
+        send_stderr: send_log.join().unwrap_or_default(),
+        write_error,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +239,49 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let missing = Command::new("/nonexistent/zfsctl-test-binary");
         assert!(pump(sh("sleep 60"), missing, &cancel, |_| {}).is_err());
+    }
+
+    #[test]
+    fn pump_to_file_writes_the_stream_counts_the_bytes_and_reports_a_clean_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out");
+        let file = std::fs::File::create(&path).unwrap();
+        let t = pump_to_file(sh("printf 'STREAMDATA'"), file, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!((t.bytes, t.cancelled, t.send_ok, t.write_error), (10, false, true, None));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "STREAMDATA");
+    }
+
+    #[test]
+    fn pump_to_file_reports_a_failing_send_with_its_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("out")).unwrap();
+        let t = pump_to_file(sh("echo oops >&2; printf abc; exit 3"), file, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(!t.send_ok && !t.cancelled && t.write_error.is_none());
+        assert_eq!(t.bytes, 3);
+        assert!(t.send_stderr.contains("oops"), "{}", t.send_stderr);
+    }
+
+    #[test]
+    fn pump_to_file_kills_the_send_when_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("out")).unwrap();
+        let cancel = AtomicBool::new(true);
+        let started = Instant::now();
+        let t = pump_to_file(sh("sleep 60"), file, &cancel, |_| {}).unwrap();
+        assert!(t.cancelled && !t.send_ok);
+        assert!(started.elapsed() < Duration::from_secs(10), "the sleep was killed, not waited for");
+    }
+
+    #[test]
+    fn pump_to_file_stops_and_reports_a_write_error_such_as_a_full_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out");
+        std::fs::write(&path, "").unwrap();
+        let read_only = std::fs::File::open(&path).unwrap(); // every write to it fails, like ENOSPC
+        let started = Instant::now();
+        let t = pump_to_file(sh("head -c 1000000 /dev/zero; sleep 30"), read_only, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(t.write_error.is_some(), "{t:?}");
+        assert!(!t.send_ok, "the send is killed once the write fails");
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }
