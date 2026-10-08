@@ -76,16 +76,19 @@ fn repo_flags(repo: &str, password_file: &str) -> [String; 2] {
     [format!("--repo={repo}"), format!("--password-file={password_file}")]
 }
 
-/// `restic snapshots` of the backups made from `snapshot` by this job (both tags must match).
-pub fn snapshots_args(repo: &str, password_file: &str, job_id: &str, snapshot: &str) -> Vec<String> {
+/// Jobs that share a repository take turns: wait for another run's lock instead of failing at once.
+const RETRY_LOCK: &str = "--retry-lock=10m";
+
+/// `restic snapshots` of the backups made from `snapshot` by this job on this machine (both tags must match).
+pub fn snapshots_args(repo: &str, password_file: &str, host: &str, job_id: &str, snapshot: &str) -> Vec<String> {
     let [r, p] = repo_flags(repo, password_file);
-    vec!["snapshots".to_string(), r, p, "--json".to_string(), format!("--tag=zfsctl:{job_id},zfsctl-snapshot:{snapshot}")]
+    vec!["snapshots".to_string(), r, p, RETRY_LOCK.to_string(), format!("--host={host}"), "--json".to_string(), format!("--tag=zfsctl:{job_id},zfsctl-snapshot:{snapshot}")]
 }
 
 /// `restic backup` of `path`, tagged with the job and the ZFS snapshot it was made from.
 pub fn backup_args(repo: &str, password_file: &str, host: &str, job_id: &str, snapshot: &str, time: Option<&str>, path: &str) -> Vec<String> {
     let [r, p] = repo_flags(repo, password_file);
-    let mut args = vec!["backup".to_string(), r, p, format!("--host={host}"), format!("--tag=zfsctl:{job_id}"), format!("--tag=zfsctl-snapshot:{snapshot}")];
+    let mut args = vec!["backup".to_string(), r, p, RETRY_LOCK.to_string(), format!("--host={host}"), format!("--tag=zfsctl:{job_id}"), format!("--tag=zfsctl-snapshot:{snapshot}")];
     if let Some(time) = time {
         args.push(format!("--time={time}"));
     }
@@ -96,7 +99,7 @@ pub fn backup_args(repo: &str, password_file: &str, host: &str, job_id: &str, sn
 /// `restic forget --prune` limited to this job's backups from this host.
 pub fn forget_args(repo: &str, password_file: &str, host: &str, job_id: &str, retention: &Retention) -> Vec<String> {
     let [r, p] = repo_flags(repo, password_file);
-    let mut args = vec!["forget".to_string(), r, p, "--prune".to_string(), format!("--tag=zfsctl:{job_id}"), format!("--host={host}")];
+    let mut args = vec!["forget".to_string(), r, p, RETRY_LOCK.to_string(), "--prune".to_string(), format!("--tag=zfsctl:{job_id}"), format!("--host={host}")];
     args.extend(retention.args());
     args
 }
@@ -160,15 +163,43 @@ fn exit_error_in(text: &str) -> Option<String> {
     })
 }
 
+/// "N files could not be read, first: ..." from restic's per-file `error` lines, if there are any.
+fn file_errors_summary(text: &str) -> Option<String> {
+    let messages: Vec<String> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("message_type").and_then(Value::as_str) == Some("error"))
+        .map(|v| {
+            let error = v.get("error");
+            error.and_then(|e| e.get("message").and_then(Value::as_str).or_else(|| e.as_str())).unwrap_or("unreadable").to_string()
+        })
+        .collect();
+    let first = messages.first()?;
+    Some(format!("{} file{} could not be read, first: {first}", messages.len(), if messages.len() == 1 { "" } else { "s" }))
+}
+
+/// A message is one line of at most this many characters (it goes into history and the notify hook).
+const MAX_TEXT: usize = 400;
+
+fn capped(text: String) -> String {
+    if text.chars().count() <= MAX_TEXT {
+        return text;
+    }
+    let mut short: String = text.chars().take(MAX_TEXT - 1).collect();
+    short.push('…');
+    short
+}
+
 /// `fatal` (restic's own `exit_error` message) if there is one, else the `exit_error` in `stderr`
-/// (restic prints its JSON errors there), else `stderr` itself, on one line.
+/// (restic prints its JSON errors there), else a summary of its per-file errors, else `stderr` itself:
+/// on one line, at most 400 characters.
 pub fn failure_text(fatal: Option<&str>, stderr: &str) -> String {
-    let from_stderr = exit_error_in(stderr);
-    let text = one_line(fatal.or(from_stderr.as_deref()).unwrap_or(stderr));
+    let chosen = fatal.map(str::to_string).or_else(|| exit_error_in(stderr)).or_else(|| file_errors_summary(stderr));
+    let text = one_line(chosen.as_deref().unwrap_or(stderr));
     if text.is_empty() {
         "restic failed".to_string()
     } else {
-        text
+        capped(text)
     }
 }
 
@@ -219,14 +250,14 @@ mod tests {
 
     #[test]
     fn snapshots_args_match_both_tags_with_one_comma_separated_flag() {
-        let a = snapshots_args("/repo", "/pw", "backup-local-tank-data", "hourly-20261008T100000Z");
-        assert_eq!(a, vec!["snapshots", "--repo=/repo", "--password-file=/pw", "--json", "--tag=zfsctl:backup-local-tank-data,zfsctl-snapshot:hourly-20261008T100000Z"]);
+        let a = snapshots_args("/repo", "/pw", "fb", "backup-local-tank-data", "hourly-20261008T100000Z");
+        assert_eq!(a, vec!["snapshots", "--repo=/repo", "--password-file=/pw", "--retry-lock=10m", "--host=fb", "--json", "--tag=zfsctl:backup-local-tank-data,zfsctl-snapshot:hourly-20261008T100000Z"]);
     }
 
     #[test]
     fn backup_args_tag_the_job_and_snapshot_and_put_the_path_after_a_double_dash() {
         let a = backup_args("/repo", "/pw", "local", "job1", "snapA", Some("2026-10-08 20:00:00"), "/var/run/zfsctl/job1");
-        assert_eq!(a, vec!["backup", "--repo=/repo", "--password-file=/pw", "--host=local", "--tag=zfsctl:job1", "--tag=zfsctl-snapshot:snapA", "--time=2026-10-08 20:00:00", "--json", "--", "/var/run/zfsctl/job1"]);
+        assert_eq!(a, vec!["backup", "--repo=/repo", "--password-file=/pw", "--retry-lock=10m", "--host=local", "--tag=zfsctl:job1", "--tag=zfsctl-snapshot:snapA", "--time=2026-10-08 20:00:00", "--json", "--", "/var/run/zfsctl/job1"]);
         let no_time = backup_args("-weird", "/pw", "local", "job1", "snapA", None, "/m");
         assert!(!no_time.iter().any(|x| x.starts_with("--time")));
         assert_eq!(no_time.get(1).map(String::as_str), Some("--repo=-weird"), "a leading dash stays inside the flag value");
@@ -236,7 +267,7 @@ mod tests {
     fn forget_args_are_limited_to_this_jobs_tag_and_host() {
         let r = parse_retention("7d 4w").unwrap();
         let a = forget_args("/repo", "/pw", "local", "job1", &r);
-        assert_eq!(a, vec!["forget", "--repo=/repo", "--password-file=/pw", "--prune", "--tag=zfsctl:job1", "--host=local", "--keep-daily=7", "--keep-weekly=4"]);
+        assert_eq!(a, vec!["forget", "--repo=/repo", "--password-file=/pw", "--retry-lock=10m", "--prune", "--tag=zfsctl:job1", "--host=local", "--keep-daily=7", "--keep-weekly=4"]);
     }
 
     #[test]
@@ -283,5 +314,25 @@ mod tests {
         let a = unlock_args("/repo", "/pw");
         assert_eq!(a, vec!["unlock", "--repo=/repo", "--password-file=/pw"]);
         assert!(!a.iter().any(|x| x.contains("remove-all")), "never --remove-all: that would remove a live lock");
+    }
+
+    #[test]
+    fn many_per_file_errors_are_summarised_not_dumped() {
+        let mut err = String::new();
+        for i in 0..50 {
+            err.push_str(&format!("{{\"message_type\":\"error\",\"error\":{{\"message\":\"open /x/f{i}: permission denied\"}},\"during\":\"archival\",\"item\":\"/x/f{i}\"}}\n"));
+        }
+        let text = failure_text(None, &err);
+        assert!(text.starts_with("50 files could not be read"), "{text}");
+        assert!(text.contains("permission denied"), "{text}");
+        assert!(text.len() < 300, "{} bytes", text.len());
+    }
+
+    #[test]
+    fn any_failure_text_is_capped() {
+        let long = "x ".repeat(2000);
+        let text = failure_text(None, &long);
+        assert!(text.chars().count() <= 400 && text.ends_with('…'), "{}", text.chars().count());
+        assert_eq!(failure_text(None, "short"), "short");
     }
 }

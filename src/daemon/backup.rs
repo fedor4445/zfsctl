@@ -36,13 +36,53 @@ fn zfs(runner: &dyn CommandRunner, args: &[&str]) -> std::result::Result<String,
     }
 }
 
-fn restic_query(runner: &dyn CommandRunner, args: &[String]) -> std::result::Result<String, String> {
+/// restic quotes the repository in many of its error messages; a run message never carries it.
+fn redact(text: &str, repo: &str) -> String {
+    if repo.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(repo, "<repository>")
+    }
+}
+
+fn restic_query(runner: &dyn CommandRunner, repo: &str, args: &[String]) -> std::result::Result<String, String> {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match runner.run("restic", &refs) {
         Ok(out) if out.success() => Ok(out.stdout),
-        Ok(out) => Err(restic::error_text(&out.stdout, &out.stderr)),
-        Err(e) => Err(e.to_string()),
+        Ok(out) => Err(redact(&restic::error_text(&out.stdout, &out.stderr), repo)),
+        Err(e) => Err(redact(&e.to_string(), repo)),
     }
+}
+
+/// restic's `--host` is the machine's real name, not zfsctl's label for it (usually `local`): two hubs
+/// that share a repository must not mistake each other's backups for their own. The label is the
+/// fallback when the host cannot say.
+fn machine_name(runner: &dyn CommandRunner, label: &str) -> String {
+    runner
+        .run_unprivileged("hostname", &[])
+        .ok()
+        .filter(crate::exec::CommandOutput::success)
+        .map(|o| o.stdout.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| label.to_string())
+}
+
+/// `zfs destroy -r` (a pool-wide recursive snapshot may have given the clone snapshots of its own; the
+/// name is zfsctl's), retried a few times: after a cancel over SSH the remote restic can take a moment to
+/// let go of the files. A clone that is already gone is fine.
+fn destroy_clone(runner: &dyn CommandRunner, clock: &dyn super::scrub::Clock, clone: &str) -> std::result::Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..5 {
+        match zfs(runner, &["destroy", "-r", "--", clone]) {
+            Ok(_) => return Ok(()),
+            Err(e) if e.contains("does not exist") => return Ok(()),
+            Err(e) => last = e,
+        }
+        if attempt < 4 {
+            clock.sleep(std::time::Duration::from_secs(2));
+        }
+    }
+    Err(last)
 }
 
 /// The snapshot's creation time as restic's `--time` wants it: in the host's own local time zone.
@@ -65,8 +105,8 @@ enum End {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn backup(env: &Env, runner: &dyn CommandRunner, job: &Job, repo: &str, password_file: &str, snapshot: &str, time: Option<&str>, mount: &str, run_id: &str) -> End {
-    let args = restic::backup_args(repo, password_file, &job.host, &job.id, snapshot, time, mount);
+fn backup(env: &Env, runner: &dyn CommandRunner, job: &Job, machine: &str, repo: &str, password_file: &str, snapshot: &str, time: Option<&str>, mount: &str, run_id: &str) -> End {
+    let args = restic::backup_args(repo, password_file, machine, &job.id, snapshot, time, mount);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let cmd = match runner.command("restic", &refs) {
         Ok(c) => c,
@@ -100,7 +140,7 @@ fn backup(env: &Env, runner: &dyn CommandRunner, job: &Job, repo: &str, password
         code => {
             let text = restic::failure_text(fatal.as_deref(), &lines.stderr);
             let what = if code == Some(3) { "restic saved the backup but could not read some files (exit 3)".to_string() } else { format!("restic failed (exit {})", code.map_or_else(|| "signal".to_string(), |c| c.to_string())) };
-            End::Failed(format!("{what}: {text}"))
+            End::Failed(redact(&format!("{what}: {text}"), repo))
         }
     }
 }
@@ -122,7 +162,7 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
 
     // A clone left by a crashed run would pin its snapshot and block the new clone.
     if zfs(runner, &["list", "-H", "-o", "name", "--", &clone]).is_ok() {
-        if let Err(e) = zfs(runner, &["destroy", "--", &clone]) {
+        if let Err(e) = destroy_clone(runner, ctx.clock, &clone) {
             return failed(format!("cannot remove the clone {clone} left by an earlier run: {e}"));
         }
     }
@@ -136,7 +176,8 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     };
     let snapshot = newest.name.clone();
 
-    match restic_query(runner, &restic::snapshots_args(&repo, &password_file, &job.id, &snapshot)).and_then(|json| restic::snapshot_count(&json)) {
+    let machine = machine_name(runner, &job.host);
+    match restic_query(runner, &repo, &restic::snapshots_args(&repo, &password_file, &machine, &job.id, &snapshot)).and_then(|json| restic::snapshot_count(&json)) {
         Ok(0) => {}
         Ok(_) => return skipped(format!("skipped: up to date ({snapshot})")),
         Err(e) => return failed(e),
@@ -144,7 +185,7 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
 
     let time = snapshot_time(runner, &dataset, &snapshot);
     let origin = format!("{dataset}@{snapshot}");
-    if let Err(e) = zfs(runner, &["clone", "-o", &format!("mountpoint={mount}"), "-o", "readonly=on", "--", &origin, &clone]) {
+    if let Err(e) = zfs(runner, &["clone", "-o", &format!("mountpoint={mount}"), "-o", "readonly=on", "-o", "com.sun:auto-snapshot=false", "--", &origin, &clone]) {
         return failed(format!("cannot clone {origin}: {e}"));
     }
 
@@ -153,10 +194,10 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     started.catch_up = catch_up;
     let _ = ctx.history.append(&started);
 
-    let end = backup(env, runner, job, &repo, &password_file, &snapshot, time.as_deref(), &mount, run_id);
+    let end = backup(env, runner, job, &machine, &repo, &password_file, &snapshot, time.as_deref(), &mount, run_id);
     // Always, whatever happened: the clone pins the snapshot and holds a mountpoint.
-    let leftover = match zfs(runner, &["destroy", "--", &clone]) {
-        Ok(_) => String::new(),
+    let leftover = match destroy_clone(runner, ctx.clock, &clone) {
+        Ok(()) => String::new(),
         Err(e) => format!("; could not remove the clone {clone} ({e}), the next run retries"),
     };
     match end {
@@ -172,12 +213,12 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
             }
             let policy = job.retention.as_deref().and_then(|t| restic::parse_retention(t).ok()).filter(|r| !r.is_empty());
             if let Some(policy) = policy {
-                let forget_args = restic::forget_args(&repo, &password_file, &job.host, &job.id, &policy);
-                let mut forgot = restic_query(runner, &forget_args);
+                let forget_args = restic::forget_args(&repo, &password_file, &machine, &job.id, &policy);
+                let mut forgot = restic_query(runner, &repo, &forget_args);
                 // A cancelled or killed run leaves a stale repository lock that blocks `forget --prune`.
                 // `restic unlock` removes only stale locks, so clear them once and retry once.
-                if forgot.as_ref().is_err_and(|e| e.contains("already locked")) && restic_query(runner, &restic::unlock_args(&repo, &password_file)).is_ok() {
-                    forgot = restic_query(runner, &forget_args);
+                if forgot.as_ref().is_err_and(|e| e.contains("already locked")) && restic_query(runner, &repo, &restic::unlock_args(&repo, &password_file)).is_ok() {
+                    forgot = restic_query(runner, &repo, &forget_args);
                 }
                 if let Err(e) = forgot {
                     return failed(format!("backed up {snapshot} but forget failed: {e}"));
@@ -225,6 +266,10 @@ mod tests {
         /// While true `restic forget` fails like a repository with a stale lock; `restic unlock` clears it.
         forget_locked: Mutex<bool>,
         unlock_fails: bool,
+        /// `hostname` answers this (None: it fails).
+        hostname: Option<&'static str>,
+        /// The next N `zfs destroy` calls fail, then they succeed.
+        destroy_flaky: Mutex<u32>,
         clone_exists: Mutex<bool>,
         calls: Mutex<Vec<String>>,
         backup_args: Mutex<Vec<Vec<String>>>,
@@ -242,6 +287,8 @@ mod tests {
                 forget_fails: false,
                 forget_locked: Mutex::new(false),
                 unlock_fails: false,
+                hostname: Some("fb"),
+                destroy_flaky: Mutex::new(0),
                 clone_exists: Mutex::new(false),
                 calls: Mutex::new(vec![]),
                 backup_args: Mutex::new(vec![]),
@@ -280,6 +327,12 @@ mod tests {
                     if self.destroy_fails {
                         return fail("dataset is busy");
                     }
+                    let mut flaky = self.destroy_flaky.lock().unwrap();
+                    if *flaky > 0 {
+                        *flaky -= 1;
+                        return fail("dataset is busy");
+                    }
+                    drop(flaky);
                     *self.clone_exists.lock().unwrap() = false;
                     ok("")
                 }
@@ -308,6 +361,12 @@ mod tests {
         }
         fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
             self.calls.lock().unwrap().push(format!("{cmd} {}", args.join(" ")));
+            if cmd == "hostname" {
+                return Ok(match self.hostname {
+                    Some(name) => CommandOutput { stdout: format!("{name}\n"), stderr: String::new(), status: 0 },
+                    None => CommandOutput { stdout: String::new(), stderr: "no hostname".to_string(), status: 1 },
+                });
+            }
             assert_eq!(cmd, "date");
             let status = i32::from(!self.date_works);
             Ok(CommandOutput { stdout: if self.date_works { "2026-10-08 19:33:20\n".to_string() } else { String::new() }, stderr: String::new(), status })
@@ -369,8 +428,8 @@ mod tests {
         let calls = host.calls();
         let at = |prefix: &str| calls.iter().position(|c| c.starts_with(prefix)).unwrap_or_else(|| panic!("no call starting {prefix:?} in {calls:?}"));
         assert!(at("restic snapshots") < at("zfs clone") && at("zfs clone") < at("restic backup") && at("restic backup") < at("zfs destroy"));
-        assert!(calls.contains(&format!("zfs clone -o mountpoint=/var/run/zfsctl/job -o readonly=on -- tank/data@{B} tank/zit-restic-job")), "{calls:?}");
-        assert!(calls.contains(&"zfs destroy -- tank/zit-restic-job".to_string()));
+        assert!(calls.contains(&format!("zfs clone -o mountpoint=/var/run/zfsctl/job -o readonly=on -o com.sun:auto-snapshot=false -- tank/data@{B} tank/zit-restic-job")), "{calls:?}");
+        assert!(calls.contains(&"zfs destroy -r -- tank/zit-restic-job".to_string()), "recursive: a pool-wide recursive snapshot may have given the clone snapshots of its own");
         let backup = host.backup_args.lock().unwrap()[0].clone();
         assert!(backup.contains(&format!("--tag=zfsctl-snapshot:{B}")) && backup.contains(&"--tag=zfsctl:job".to_string()));
         assert!(backup.contains(&"--time=2026-10-08 19:33:20".to_string()), "{backup:?}");
@@ -513,7 +572,7 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
         let calls = host.calls();
         let forget = calls.iter().find(|c| c.starts_with("restic forget")).expect("forget ran");
-        assert_eq!(forget, "restic forget --repo=/mnt/usb/restic --password-file=/root/pw --prune --tag=zfsctl:job --host=local --keep-daily=7 --keep-weekly=4");
+        assert_eq!(forget, "restic forget --repo=/mnt/usb/restic --password-file=/root/pw --retry-lock=10m --prune --tag=zfsctl:job --host=fb --keep-daily=7 --keep-weekly=4");
         assert!(calls.iter().position(|c| c.starts_with("zfs destroy")) < calls.iter().position(|c| c.starts_with("restic forget")), "the clone is gone before the slow prune");
     }
 
@@ -627,5 +686,69 @@ mod tests {
         let (outcome, _) = rig.run(&host, &with_policy);
         assert_eq!(outcome.result, RunResult::Failed);
         assert!(outcome.message.contains("already locked") && outcome.message.contains("forget failed"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn the_backup_is_labelled_with_the_machines_real_name_and_the_already_done_query_is_limited_to_it() {
+        let rig = Rig::new();
+        let host = Host::new();
+        rig.run(&host, &job());
+        let calls = host.calls();
+        assert!(calls.iter().any(|c| c.starts_with("restic snapshots") && c.contains("--host=fb")), "{calls:?}");
+        assert!(host.backup_args.lock().unwrap()[0].contains(&"--host=fb".to_string()));
+    }
+
+    #[test]
+    fn without_a_hostname_the_job_hosts_label_is_used() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.hostname = None;
+        let (outcome, _) = rig.run(&host, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(host.backup_args.lock().unwrap()[0].contains(&"--host=local".to_string()));
+    }
+
+    #[test]
+    fn the_clone_opts_out_of_auto_snapshot_tools() {
+        let rig = Rig::new();
+        let host = Host::new();
+        rig.run(&host, &job());
+        assert!(host.calls().iter().any(|c| c.starts_with("zfs clone") && c.contains("-o com.sun:auto-snapshot=false")));
+    }
+
+    #[test]
+    fn a_destroy_that_fails_briefly_is_retried_so_a_slow_to_die_remote_restic_does_not_strand_the_clone() {
+        let rig = Rig::new();
+        let host = Host::new();
+        *host.destroy_flaky.lock().unwrap() = 2;
+        let (outcome, _) = rig.run(&host, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(host.calls().iter().filter(|c| c.starts_with("zfs destroy")).count(), 3);
+        assert!(!host.clone_exists());
+    }
+
+    #[test]
+    fn a_destroy_that_keeps_failing_is_given_up_on_after_a_few_tries() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.destroy_fails = true;
+        rig.run(&host, &job());
+        let tries = host.calls().iter().filter(|c| c.starts_with("zfs destroy")).count();
+        assert!((2..=6).contains(&tries), "{tries}");
+    }
+
+    #[test]
+    fn the_repository_is_removed_from_restics_own_error_text() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.restic_snapshots = Err("Fatal: repository does not exist: unable to open config file\nIs there a repository at the following location?\n/mnt/usb/restic".to_string());
+        let (outcome, history) = rig.run(&host, &job());
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(!outcome.message.contains("/mnt/usb/restic") && outcome.message.contains("<repository>"), "{}", outcome.message);
+        assert!(!format!("{history:?}").contains("/mnt/usb/restic"));
+        let mut failing = Host::new();
+        failing.backup_script = "echo 'Fatal: cannot write to /mnt/usb/restic/data' >&2; exit 1".to_string();
+        let (outcome, _) = rig.run(&failing, &job());
+        assert!(!outcome.message.contains("/mnt/usb/restic"), "{}", outcome.message);
     }
 }
