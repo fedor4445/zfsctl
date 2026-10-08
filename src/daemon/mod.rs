@@ -9,6 +9,7 @@ pub mod scheduler;
 pub mod cancel;
 pub mod progress;
 pub mod replicate;
+pub mod replicate_file;
 pub mod scrub;
 pub mod snapshot;
 pub mod transfer;
@@ -57,6 +58,8 @@ struct Shared {
     stop: Arc<AtomicBool>,
     /// Where running transfers write their progress files.
     progress_dir: PathBuf,
+    /// What each file-target replication last wrote.
+    replication_state: PathBuf,
     /// The cancel flag of each running replication, by its cancel-file name.
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
@@ -132,7 +135,7 @@ impl Shared {
             }
             running.insert(key.clone(), Arc::clone(&flag));
         }
-        let env = replicate::Env { ctx, progress_dir: &self.progress_dir, cancel: &flag };
+        let env = replicate::Env { ctx, progress_dir: &self.progress_dir, cancel: &flag, replication_state: &self.replication_state };
         let outcome = replicate::run_replicate(&env, src.as_ref(), dst.as_ref(), job, due.scheduled_for, due.catch_up, run_id);
         self.cancels.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
         outcome
@@ -232,6 +235,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         notify_command: RwLock::new(loaded.notify_command),
         stop: Arc::clone(stop),
         progress_dir: paths.progress_dir(),
+        replication_state: paths.replication_state(),
         cancels: Mutex::default(),
     });
     let cancel_dir = paths.cancel_dir();
@@ -323,6 +327,7 @@ mod tests {
             notify_command: RwLock::new(notify),
             stop: Arc::new(AtomicBool::new(false)),
             progress_dir: dir.path().join("progress"),
+            replication_state: dir.path().join("replication.json"),
             cancels: Mutex::default(),
         }
     }
