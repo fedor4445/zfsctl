@@ -862,7 +862,11 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
 
     let content_lines = match modal {
         // The prompt, a blank line and the selection line (sized by the longest of its three texts).
-        Modal::Confirm { prompt, .. } => wrapped_line_count(&format!("{prompt}\n\n{CONFIRM_YES}"), inner_width),
+        // Word wrapping can need more rows than the byte-based estimate, so it gets the same ~25% + 1 margin as the forms.
+        Modal::Confirm { prompt, .. } => {
+            let n = wrapped_line_count(&format!("{prompt}\n\n{CONFIRM_YES}"), inner_width);
+            n + n / 4 + 1
+        }
         Modal::ConfirmTyped { prompt, input, .. } => {
             wrapped_line_count(&format!("{prompt}\n\n> {input}"), inner_width)
         }

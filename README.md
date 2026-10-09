@@ -90,7 +90,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
-- **Confirmations take two keys.** A y/n window needs `y` (yes) or `n` / `Esc` (no) to *select*, then `Enter` to apply it; `Enter` on its own does nothing, so a stray key or a held-down Enter can never run, or even dismiss, a confirmation. The window shows what is selected and what Enter will do. Typed-name confirmations (destroying a pool, dataset or snapshot) need the exact name and then `Enter`, and `Esc` cancels them at once.
+- **Confirmations take two keys.** A y/n window needs `y` (yes) or `n` / `Esc` (no) to *select*, then `Enter` to apply it; `Enter` on its own does nothing, so a stray key or a held-down Enter can never run, or even dismiss, a confirmation. The window shows what is selected and what Enter will do. Forms that cannot be taken back (creating a pool, adding a vdev, replacing a disk, revoking permissions) end in the same confirmation, which shows the exact command first; Enter on the last field never runs them by itself; shrinking a volume (`volsize`) and setting a pool `feature@…` property get the same confirmation. An Enter that follows another within a quarter of a second is ignored, which swallows most of a held key's repeats; what really protects you from a held key is that an unanswered confirmation ignores Enter. Typed-name confirmations (destroying a pool, dataset or snapshot) need the exact name and then `Enter`, and `Esc` cancels them at once.
 - `?`: show the Help screen (full keybinding reference)
 - `A`: show the About screen
 - `!`: open a shell on the selected host and return to zfsctl when you exit it. On a remote host this is an interactive `ssh` login as the same unprivileged user zfsctl connects as, never a root shell (run the allowed `sudo zpool ...` yourself from there). Locally it is `$SHELL`. When the shell exits, the list on screen is refreshed.
@@ -238,7 +238,7 @@ FreeBSD's `sharesmb` ZFS property doesn't work (`zfs set sharesmb=on` prints "No
 Lists the host's boot environments (`bectl list`): Name, Active (`Now`, `Reboot`, `Now+Reboot`, `Temp`), Space, Mountpoint and Created; Mountpoint then Created drop on a narrow terminal. If the host has no `bectl` (or is not laid out for boot environments) the section title says `[unavailable: ...]` with the reason, and recovers on its own once it works. Keys act only on what is possible for the selected row, and the hint bar shows exactly those:
 
 - `n`: new boot environment (name; `F2` on the second field picks one to clone, blank clones the running one).
-- `a`: make it the boot environment for every future boot (asks first). `t`: use it for the next boot only; `T`: clear that. Neither the running nor the next-boot one is destroyable.
+- `a`: make it the boot environment for every future boot (asks first). `t`: use it for the next boot only (asks first); `T`: clear that. Neither the running nor the next-boot one is destroyable.
 - `R`: rename. `m` / `u`: mount / unmount; the Mountpoint column shows the `/tmp/be_mount.XXXX` path.
 - `d`: destroy (type its name). `D`: destroy and remove its origin snapshot (`bectl destroy -o`).
 

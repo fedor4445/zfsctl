@@ -1514,9 +1514,9 @@ impl App {
             }
             KeyCode::Char('t') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
-                self.status_message = Some(format!("Activating '{name}' for the next boot only…"));
+                let prompt = format!("Boot '{name}' on the NEXT boot only? Later boots go back to the usual boot environment. (y/n)");
                 let call = MutationCall::ActivateBootEnv { name, temporary: true };
-                self.queue_bootenv_change(call);
+                self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
             }
             KeyCode::Char('T') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return };
@@ -1819,7 +1819,15 @@ impl App {
                                 None
                             }
                         }
-                    } else if let Some(action) = build_pending_action(&kind, &fields) { Some(action) } else {
+                    } else if let Some(action) = build_pending_action(&kind, &fields) {
+                        // What cannot be taken back is shown as the exact command and needs y then Enter.
+                        if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
+                            self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+                            None
+                        } else {
+                            Some(action)
+                        }
+                    } else {
                         self.set_error(form_problem(&kind, &fields));
                         self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
                         None
@@ -3067,6 +3075,50 @@ fn field_value(fields: &[FormField], index: usize) -> &str {
     fields.get(index).map_or("", |f| f.value.as_str())
 }
 
+/// The confirmation text for a form whose result cannot be undone: the host, the exact command on a line of
+/// its own, then what makes it irreversible.
+fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> Option<String> {
+    let host = hosts.get(action.host).map_or("?", String::as_str);
+    let ask = |command: String, why: &str| Some(format!("On {host}:\n  {command}\n\n{why} (y/n)"));
+    match &action.call {
+        MutationCall::CreatePool { name, vdev_spec } => ask(
+            format!("zpool create {name} {}", vdev_spec.join(" ")),
+            "This overwrites whatever is on those disks. Create the pool?",
+        ),
+        MutationCall::AddVdev { pool, vdev_spec } => ask(
+            format!("zpool add {pool} {}", vdev_spec.join(" ")),
+            "A vdev added to a pool usually cannot be removed again. Add it?",
+        ),
+        MutationCall::ReplaceDisk { pool, old_disk, new_disk } => ask(
+            format!("zpool replace {pool} {old_disk} {new_disk}"),
+            "The new disk is overwritten. Replace it?",
+        ),
+        MutationCall::UnallowPermission { dataset, target, perms } => {
+            use crate::zfs::permission::{PermissionTarget, Recipient};
+            let whose = match target {
+                PermissionTarget::CreateTime => "create-time permissions".to_string(),
+                PermissionTarget::Set(name) => format!("permission set @{name}"),
+                PermissionTarget::Grant { recipient: Recipient::User(u), .. } => format!("user {u}"),
+                PermissionTarget::Grant { recipient: Recipient::Group(g), .. } => format!("group {g}"),
+                PermissionTarget::Grant { recipient: Recipient::Everyone, .. } => "everyone".to_string(),
+            };
+            Some(format!(
+                "On {host}:\n  Revoke {} from {whose} on {dataset}\n\nThe delegation is removed. Revoke it? (y/n)",
+                perms.as_ref().map_or_else(|| "all delegated permissions".to_string(), |p| p.join(","))
+            ))
+        }
+        MutationCall::SetDatasetProperty { dataset, key, value } if key == "volsize" => ask(
+            format!("zfs set volsize={value} {dataset}"),
+            "Shrinking a volume destroys the data past the new size. Set it?",
+        ),
+        MutationCall::SetPoolProperty { pool, key, value } if key.starts_with("feature@") => ask(
+            format!("zpool set {key}={value} {pool}"),
+            "Enabling a pool feature cannot be undone and can make the pool unreadable by older systems. Set it?",
+        ),
+        _ => None,
+    }
+}
+
 fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<PendingAction> {
     match kind {
         FormKind::CreatePool { host } => {
@@ -3622,7 +3674,7 @@ Global
   r                refresh the focused pane
   F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal (in a y/n confirmation Esc selects No, then Enter)
-  y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing
+  y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing. Forms that cannot be undone (create pool, add vdev, replace disk, revoke, shrinking a volume, pool features) end in one, showing the exact command
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
   A                About
@@ -3682,7 +3734,7 @@ Shares
 Boot Envs
   n                new boot environment (F2 on the second field picks one to clone)
   a                make the selected one the boot environment for every future boot (confirms)
-  t / T            use it for the next boot only / clear that
+  t / T            use it for the next boot only (confirms) / clear that
   R                rename
   m / u            mount / unmount (the Mountpoint column shows where)
   d / D            destroy (type its name) / destroy and remove its origin snapshot
@@ -5193,7 +5245,7 @@ mod tests {
         for c in "mirror da0 da1".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert_eq!(
             result,
             Some(crate::ui::modal::PendingAction {
@@ -5337,7 +5389,7 @@ mod tests {
         for c in "mirror da2 da3".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert_eq!(
             result,
             Some(crate::ui::modal::PendingAction {
@@ -5378,7 +5430,7 @@ mod tests {
         for c in "da2".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert_eq!(
             result,
             Some(crate::ui::modal::PendingAction {
@@ -6279,7 +6331,7 @@ mod tests {
             app.handle_modal_key(KeyCode::Char(c));
         }
         app.handle_modal_key(KeyCode::Tab); // move to the Redundancy field
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert!(result.is_some(), "the form still submits and returns a PendingAction");
         assert!(
             app.selected_disks.contains("da0"),
@@ -9530,12 +9582,7 @@ mod tests {
     }
 
     #[test]
-    fn t_activates_for_the_next_boot_without_a_confirm_and_big_t_clears_it() {
-        let mut app = bootenv_app(vec![running(), spare()], 1);
-        app.handle_key(KeyCode::Char('t'));
-        assert!(app.modal.is_none());
-        assert_eq!(only_pending(&app), &MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: true });
-        assert!(app.status_message.is_some());
+    fn big_t_clears_a_temporary_activation_without_a_confirm() {
         let mut app = bootenv_app(vec![running(), spare()], 1);
         app.handle_key(KeyCode::Char('T'));
         assert!(app.pending_mutations.is_empty(), "spare has no temporary activation to clear");
@@ -10232,5 +10279,188 @@ mod tests {
         assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
         app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()) });
         assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
+    }
+
+    /// Enter on a finished irreversible form, then the confirmation's `y` and Enter.
+    fn submit_and_confirm(app: &mut App) -> Option<PendingAction> {
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        app.handle_modal_key(KeyCode::Char('y'));
+        app.handle_modal_key(KeyCode::Enter)
+    }
+
+    /// Presses Enter on a finished irreversible form and returns the prompt of the confirmation it opens,
+    /// asserting nothing ran yet.
+    fn submit_to_confirm(app: &mut App) -> String {
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "an irreversible form must not run on Enter");
+        match &app.modal {
+            Some(Modal::Confirm { prompt, choice: None, .. }) => prompt.clone(),
+            other => panic!("expected an unanswered confirmation, got {other:?}"),
+        }
+    }
+
+    fn pool_for_forms(app: &mut App) {
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+    }
+
+    #[test]
+    fn add_vdev_shows_the_exact_command_and_runs_only_after_y_then_enter() {
+        let mut app = App::new(vec!["local".to_string()]);
+        pool_for_forms(&mut app);
+        app.vdevs = vec![VdevLine { depth: 1, name: "mirror-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('a'));
+        for c in "mirror da2 da3".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool add tank mirror da2 da3"), "{prompt}");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter with nothing selected does nothing");
+        assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
+        let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter runs it");
+        assert_eq!(action.call, MutationCall::AddVdev { pool: "tank".to_string(), vdev_spec: vec!["mirror".into(), "da2".into(), "da3".into()] });
+    }
+
+    #[test]
+    fn declining_an_irreversible_form_takes_two_steps_and_runs_nothing() {
+        let mut app = App::new(vec!["local".to_string()]);
+        pool_for_forms(&mut app);
+        app.vdevs = vec![VdevLine { depth: 1, name: "da1".to_string(), health: crate::zfs::pool::PoolHealth::Faulted }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('x'));
+        for c in "da2".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool replace tank da1 da2"), "{prompt}");
+        assert_eq!(app.handle_modal_key(KeyCode::Char('n')), None);
+        assert!(app.modal.is_some(), "n only selects");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn create_pool_forms_confirm_with_the_command_and_the_warning_about_the_disks() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "newpool".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        for c in "mirror da0 da1".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool create newpool mirror da0 da1") && prompt.contains("overwrit"), "{prompt}");
+    }
+
+    #[test]
+    fn the_from_disks_forms_confirm_too() {
+        for kind in [FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }, FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }] {
+            let mut app = App::new(vec!["local".to_string()]);
+            let (a, b) = if matches!(kind, FormKind::CreatePoolFromDisks { .. }) { ("newpool", "mirror") } else { ("tank", "mirror") };
+            app.modal = Some(Modal::Form {
+                title: "t".to_string(),
+                fields: vec![FormField { label: "a".into(), value: a.into() }, FormField { label: "b".into(), value: b.into() }],
+                focused: 1,
+                description: None,
+                kind,
+            });
+            let prompt = submit_to_confirm(&mut app);
+            assert!(prompt.contains("da0 da1"), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn revoking_permissions_confirms_and_names_the_permissions() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "perms".into(), value: "snapshot,mount".into() }],
+            focused: 0,
+            description: None,
+            kind: FormKind::RevokePermissions { host: 0, dataset: "tank/data".into(), target: crate::zfs::permission::PermissionTarget::CreateTime },
+        });
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("snapshot,mount") && prompt.contains("tank/data"), "{prompt}");
+    }
+
+    #[test]
+    fn routine_forms_still_submit_on_enter() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "name".into(), value: "tank/new".into() }],
+            focused: 0,
+            description: None,
+            kind: FormKind::CreateDataset { host: 0 },
+        });
+        assert!(app.handle_modal_key(KeyCode::Enter).is_some());
+    }
+
+    #[test]
+    fn boot_once_asks_first_and_only_y_then_enter_queues_it() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('t'));
+        match &app.modal {
+            Some(Modal::Confirm { prompt, choice: None, .. }) => assert!(prompt.contains("'spare'") && prompt.contains("NEXT boot"), "{prompt}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(app.pending_mutations.is_empty(), "nothing is queued before the answer");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("runs after y then Enter");
+        assert_eq!(action.call, MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: true });
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.modal.is_none(), "the running boot environment has nothing to boot once");
+    }
+
+    fn property_form(kind: FormKind, value: &str) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form { title: "t".to_string(), fields: vec![FormField { label: "value".into(), value: value.into() }], focused: 0, description: None, kind });
+        app
+    }
+
+    #[test]
+    fn shrinking_a_volume_and_enabling_a_pool_feature_confirm_but_ordinary_properties_do_not() {
+        let mut app = property_form(FormKind::EditDatasetProperty { host: 0, dataset: "tank/vol".into(), key: "volsize".into() }, "1G");
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zfs set volsize=1G tank/vol") && prompt.contains("data past the new size"), "{prompt}");
+        let mut app = property_form(FormKind::EditPoolProperty { host: 0, pool: "tank".into(), key: "feature@async_destroy".into() }, "enabled");
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool set feature@async_destroy=enabled tank") && prompt.contains("cannot be undone"), "{prompt}");
+        let mut app = property_form(FormKind::EditDatasetProperty { host: 0, dataset: "tank/data".into(), key: "compression".into() }, "lz4");
+        assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "an ordinary property still applies on Enter");
+    }
+
+    #[test]
+    fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_whose_permissions() {
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+        app.selected_host = 1;
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "pool".into(), value: "tank".into() }, FormField { label: "b".into(), value: "mirror".into() }],
+            focused: 1,
+            description: None,
+            kind: FormKind::AddVdevFromDisks { host: 1, disks: vec!["da0".into(), "da1".into()] },
+        });
+        let prompt = submit_to_confirm(&mut app);
+        let lines: Vec<&str> = prompt.lines().collect();
+        assert!(lines[0].contains("fbsd16"), "{prompt}");
+        assert!(lines.iter().any(|l| l.trim_start().starts_with("zpool add tank")), "the command is a line of its own: {prompt}");
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "perms".into(), value: "mount".into() }],
+            focused: 0,
+            description: None,
+            kind: FormKind::RevokePermissions { host: 0, dataset: "tank/data".into(), target: crate::zfs::permission::PermissionTarget::Grant { recipient: crate::zfs::permission::Recipient::User("alice".into()), scope: crate::zfs::permission::Scope::Both } },
+        });
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("alice"), "{prompt}");
     }
 }
