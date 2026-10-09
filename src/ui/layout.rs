@@ -464,13 +464,7 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let rows = app.acl_entries.iter().enumerate().map(|(i, entry)| {
-        let target = match &entry.tag {
-            crate::acl::AclTag::Owner => "owner@".to_string(),
-            crate::acl::AclTag::OwningGroup => "group@".to_string(),
-            crate::acl::AclTag::Everyone => "everyone@".to_string(),
-            crate::acl::AclTag::User(name) => format!("user {name}"),
-            crate::acl::AclTag::NamedGroup(name) => format!("group {name}"),
-        };
+        let target = entry.tag.label();
         let flags = if entry.flags.is_empty() { "—".to_string() } else { entry.flags.join("/") };
         let entry_type = match entry.entry_type {
             crate::acl::AclEntryType::Allow => "Allow",
@@ -479,7 +473,11 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
         Row::new(vec![i.to_string(), target, entry.permissions.join("/"), flags, entry_type.to_string()])
     });
     let widths = [Constraint::Length(3), Constraint::Length(14), Constraint::Min(20), Constraint::Length(16), Constraint::Length(6)];
-    let title = format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)");
+    let title = match app.acl_unsupported() {
+        // Short on purpose: the right pane is narrow. The full reason is in the status line when n or d is pressed.
+        Some(_) => format!("ACL — {dataset} (acltype=posix: NFSv4 ACLs only)"),
+        None => format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)"),
+    };
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["#", "Target", "Permissions", "Flags", "Type"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
@@ -652,7 +650,7 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
-    use crate::ui::jobs::{last_result_text, next_run_text, schedule_label, DaemonState};
+    use crate::ui::jobs::{job_target, last_result_text, next_run_text, schedule_label, DaemonState};
     let theme = app.theme.clone();
     let now = chrono::Utc::now();
     let local_now = chrono::Local::now();
@@ -683,10 +681,16 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 (next_run_text(&j.schedule, &local_now), last_result_text(last, now), Style::default())
             };
-            Row::new(vec![j.id.clone(), j.host.clone(), j.pool.clone().or_else(|| j.dataset.clone()).unwrap_or_default(), schedule_label(&j.schedule), next, last_text]).style(style)
+            Row::new(vec![j.id.clone(), j.host.clone(), job_target(j), schedule_label(&j.schedule), next, last_text]).style(style)
         })
         .collect();
-    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(14), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
+    // The Target column is as wide as its longest entry (a destination or a repository path can be long), but
+    // never so wide that Schedule, Next run and the start of Last are pushed off a narrow terminal.
+    let others: u16 = 22 + 8 + 20 + 15 + 5 + 10; // the other columns, their gaps and Last's minimum
+    let room = area.width.saturating_sub(2).saturating_sub(others).max(14);
+    let longest = app.jobs_view.jobs.iter().map(|j| job_target(j).chars().count()).max().unwrap_or(0);
+    let target_w = u16::try_from(longest).unwrap_or(u16::MAX).clamp(14, room);
+    let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(target_w), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Job", "Host", "Target", "Schedule", "Next run", "Last"]))
         .block(block)
@@ -766,7 +770,13 @@ fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
         .as_ref()
         .map(|m| format!(" [unavailable: {}]", sanitise_for_display(m.lines().next().unwrap_or(""))))
         .unwrap_or_default();
-    let title = format!("Boot Environments — {} ('r' to refresh){suffix}", app.active_host_name());
+    // The Mountpoint column is the first to go on a narrow terminal, so when the selected boot environment is
+    // mounted (where `bectl mount` put it) that path leads the title, ahead of the clippable rest.
+    let host = app.active_host_name();
+    let title = match app.selected_bootenv().filter(|b| b.can_unmount()).and_then(|b| b.mountpoint.as_deref().map(|m| (b.name.as_str(), m))) {
+        Some((name, path)) => format!("'{}' mounted at {} — {host}{suffix}", sanitise_for_display(name), sanitise_for_display(path)),
+        None => format!("Boot Environments — {host} ('r' to refresh){suffix}"),
+    };
     let table = Table::new(rows, widths)
         .header(Row::new(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
@@ -803,6 +813,11 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
     }
 }
 
+/// The line under a y/n confirm's prompt. `CONFIRM_YES` is the longest, so it sizes the window.
+const CONFIRM_NONE: &str = "Press y for yes or n for no, then Enter.";
+const CONFIRM_YES: &str = "▶ YES selected: press Enter to run it (n or Esc to change).";
+const CONFIRM_NO: &str = "▶ NO selected: press Enter to cancel (y to change).";
+
 fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
@@ -813,7 +828,8 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     let inner_width = approx_width.saturating_sub(2).max(1);
 
     let content_lines = match modal {
-        Modal::Confirm { prompt, .. } => wrapped_line_count(prompt, inner_width),
+        // The prompt, a blank line and the selection line (sized by the longest of its three texts).
+        Modal::Confirm { prompt, .. } => wrapped_line_count(&format!("{prompt}\n\n{CONFIRM_YES}"), inner_width),
         Modal::ConfirmTyped { prompt, input, .. } => {
             wrapped_line_count(&format!("{prompt}\n\n> {input}"), inner_width)
         }
@@ -846,10 +862,22 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
     let popup_area = centered_rect(MODAL_WIDTH_PERCENT, popup_height, area);
     f.render_widget(Clear, popup_area);
     match modal {
-        Modal::Confirm { prompt, action } => {
-            let block = confirm_block(theme, action.call.tone(), action.call.label(), "Confirm (y/n)", "confirm (y/n)");
-            let p = Paragraph::new(prompt.as_str()).wrap(Wrap { trim: false }).block(block);
-            f.render_widget(p, popup_area);
+        Modal::Confirm { prompt, action, choice } => {
+            let tone = action.call.tone();
+            let block = confirm_block(theme, tone, action.call.label(), "Confirm (y/n, then Enter)", "confirm (y/n, then Enter)");
+            let selected = match tone {
+                Tone::Danger => theme.danger,
+                Tone::Warn => theme.warn,
+                Tone::Neutral => Style::default().add_modifier(Modifier::BOLD),
+            };
+            let mut lines: Vec<Line> = prompt.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.push(Line::raw(""));
+            lines.push(match choice {
+                None => Line::styled(CONFIRM_NONE, theme.dim()),
+                Some(true) => Line::styled(CONFIRM_YES, selected),
+                Some(false) => Line::styled(CONFIRM_NO, Style::default().add_modifier(Modifier::BOLD)),
+            });
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), popup_area);
         }
         Modal::ConfirmTyped { prompt, input, action, .. } => {
             let block = confirm_block(
@@ -1732,7 +1760,7 @@ mod tests {
     #[test]
     fn a_warn_confirm_is_titled_with_a_triangle_and_drawn_in_yellow() {
         let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
-        app.modal = Some(Modal::Confirm {
+        app.modal = Some(Modal::Confirm { choice: None,
             prompt: "Offline disk 'da0' in pool 'tank'? (y/n)".to_string(),
             action: PendingAction { host: 0, section: Section::Vdevs, call: MutationCall::OfflineDisk { pool: "tank".to_string(), disk: "da0".to_string() } },
         });
@@ -1745,13 +1773,43 @@ mod tests {
     #[test]
     fn a_routine_confirm_keeps_its_plain_title() {
         let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
-        app.modal = Some(Modal::Confirm {
+        app.modal = Some(Modal::Confirm { choice: None,
             prompt: "Scrub pool 'tank'? (y/n)".to_string(),
             action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::ScrubPool { pool: "tank".to_string() } },
         });
         let rows = render(&mut app, 100, 30).join("\n");
-        assert!(rows.contains("Confirm (y/n)"), "{rows}");
+        assert!(rows.contains("Confirm (y/n, then Enter)"), "{rows}");
         assert!(!rows.contains('✖'));
+    }
+
+    fn confirm_with(choice: Option<bool>, prompt: &str) -> App {
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        app.modal = Some(Modal::Confirm { choice, prompt: prompt.to_string(), action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::ScrubPool { pool: "tank".to_string() } } });
+        app
+    }
+
+    #[test]
+    fn a_confirm_says_what_is_selected_and_what_enter_will_do() {
+        let none = render(&mut confirm_with(None, "Scrub pool 'tank'? (y/n)"), 100, 30).join("\n");
+        assert!(none.contains("Press y for yes or n for no, then Enter"), "{none}");
+        let yes = render(&mut confirm_with(Some(true), "Scrub pool 'tank'? (y/n)"), 100, 30).join("\n");
+        assert!(yes.contains("YES selected") && yes.contains("Enter to run"), "{yes}");
+        let no = render(&mut confirm_with(Some(false), "Scrub pool 'tank'? (y/n)"), 100, 30).join("\n");
+        assert!(no.contains("NO selected") && no.contains("Enter to cancel"), "{no}");
+    }
+
+    #[test]
+    fn the_selection_line_is_not_clipped_under_a_long_prompt_on_a_small_terminal() {
+        let long = "Remove SMB share 'media' for 'tank/media'? Connected clients lose access. They will have to reconnect and any open files may be lost. (y/n)";
+        for choice in [None, Some(true), Some(false)] {
+            let rows = render(&mut confirm_with(choice, long), 64, 20).join("\n");
+            let want = match choice {
+                None => "Press y",
+                Some(true) => "YES selected",
+                Some(false) => "NO selected",
+            };
+            assert!(rows.contains(want), "{choice:?} clipped:\n{rows}");
+        }
     }
 
     #[test]
@@ -1953,5 +2011,52 @@ mod tests {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
         assert!(!text.contains("password"), "the password file path is not shown");
+    }
+
+
+    #[test]
+    fn a_mounted_boot_environments_path_is_in_the_title_even_when_the_column_is_hidden() {
+        use crate::zfs::bootenv::{ActiveFlags, BootEnv};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
+        app.bootenvs = vec![BootEnv { name: "zit-a".into(), flags: ActiveFlags::default(), mountpoint: Some("/tmp/be_mount.Xy12".into()), space: "8K".into(), created: "2026-10-08 18:48".into() }];
+        app.bootenvs_table.select(Some(0));
+        let narrow = render(&mut app, 80, 24).join("\n");
+        assert!(!narrow.contains("Mountpoint"), "the column is hidden at this width:\n{narrow}");
+        assert!(narrow.contains("'zit-a' mounted at /tmp/be_mount.Xy12"), "{narrow}");
+        app.bootenvs[0].mountpoint = None;
+        assert!(!render(&mut app, 80, 24).join("\n").contains("mounted at"));
+        app.bootenvs[0].mountpoint = Some("/".into());
+        assert!(!render(&mut app, 80, 24).join("\n").contains("mounted at"), "the running BE at / is not news");
+    }
+
+
+    #[test]
+    fn the_jobs_table_shows_where_each_job_sends_its_data_and_clamps_on_a_narrow_terminal() {
+        let repl = crate::jobs::Job::test_replicate("repl", "tank/data", "hourly", "local", "backup/data");
+        let backup = crate::jobs::Job::test_backup("bak", "tank/media", "hourly", "/mnt/usb/restic", "/root/pw");
+        let (mut app, _dir) = jobs_app(&[repl, backup]);
+        app.refresh_jobs();
+        let wide = render(&mut app, 170, 30).join("\n");
+        for want in ["tank/data → local:backup/data", "tank/media → /mnt/usb/restic"] {
+            assert!(wide.contains(want), "missing {want:?} in\n{wide}");
+        }
+        let narrow = render(&mut app, 100, 30).join("\n");
+        assert!(narrow.contains("tank/data") && narrow.contains("Schedule") && narrow.contains("Last"), "other columns survive:\n{narrow}");
+    }
+
+
+    #[test]
+    fn the_acl_pane_title_says_when_the_dataset_is_posix() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Datasets).unwrap();
+        app.datasets = vec![crate::zfs::dataset::Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        app.pane_focus = crate::ui::state::PaneFocus::Right;
+        app.dataset_detail_tab = crate::ui::state::DatasetDetailTab::Acl;
+        app.dataset_properties_for = Some("tank/data".to_string());
+        app.dataset_properties = vec![crate::zfs::property::Property { name: "acltype".to_string(), value: "posix".to_string(), source: crate::zfs::property::PropertySource::Local }];
+        let text = render(&mut app, 160, 30).join("\n");
+        assert!(text.contains("acltype=posix") && text.contains("NFSv4"), "{text}");
     }
 }

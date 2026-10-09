@@ -74,9 +74,13 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
         Modal::Info { .. } => vec![h("any key", "Close", 0)],
-        Modal::Confirm { action, .. } => {
-            vec![h("y/Enter", "Confirm", 0).tone(action.call.tone()), h("n/Esc", "Cancel", 0)]
-        }
+        // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
+        // it is only advertised once there is a selection for it to apply.
+        Modal::Confirm { action, choice, .. } => match choice {
+            None => vec![h("y", "Yes", 0), h("n/Esc", "No", 0)],
+            Some(true) => vec![h("Enter", "Run", 0).tone(action.call.tone()), h("n/Esc", "No", 1)],
+            Some(false) => vec![h("Enter", "Cancel", 0), h("y", "Yes", 1)],
+        },
         Modal::ConfirmTyped { action, .. } => vec![
             h("type", "name to confirm", 2),
             h("Enter", "Confirm", 0).tone(action.call.tone()),
@@ -166,6 +170,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("n", "New", 2));
             if selected {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
+                v.push(h("D", "Destroy recursively", 3).tone(Tone::Danger));
                 v.push(h("s", "Snapshot", 2));
                 // Always advertised: when a share can't be created the key
                 // explains why (status message) instead of silently vanishing.
@@ -203,7 +208,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     if !app.acl_entries.is_empty() {
                         v.push(h("↑↓", "Move", 1));
                     }
-                    if app.selected_dataset_mountpoint().is_some() {
+                    if app.selected_dataset_mountpoint().is_some() && app.acl_unsupported().is_none() {
                         v.push(h("n", "Add entry", 2));
                         if app.acl_entries_table.selected().is_some_and(|i| i < app.acl_entries.len()) {
                             v.push(h("d", "Remove", 2).tone(Tone::Warn));
@@ -858,16 +863,20 @@ mod tests {
     }
 
     #[test]
-    fn plain_confirm_shows_y_and_n() {
-        let mut app = pools_middle();
-        app.modal = Some(Modal::Confirm {
-            prompt: "Scrub pool 'tank'? (y/n)".to_string(),
-            action: PendingAction { host: 0, section: Section::Pools, call: MutationCall::ScrubPool { pool: "tank".to_string() } },
-        });
-        let hs = hints(&app);
-        assert!(hs.iter().any(|h| h.key == "y/Enter"));
-        assert!(hs.iter().any(|h| h.key == "n/Esc"));
-        assert_eq!(hs.iter().find(|h| h.key == "y/Enter").unwrap().tone, Tone::Neutral);
+    fn a_confirm_shows_only_the_keys_that_make_sense_for_its_state() {
+        let confirm = |choice: Option<bool>, call: MutationCall| {
+            let mut app = pools_middle();
+            app.modal = Some(Modal::Confirm { prompt: "Scrub pool 'tank'? (y/n)".to_string(), action: PendingAction { host: 0, section: Section::Pools, call }, choice });
+            hints(&app)
+        };
+        let scrub = || MutationCall::ScrubPool { pool: "tank".to_string() };
+        let keys = |hs: &[Hint]| hs.iter().map(|h| (h.key, h.label)).collect::<Vec<_>>();
+        assert_eq!(keys(&confirm(None, scrub())), vec![("y", "Yes"), ("n/Esc", "No")], "nothing selected: no Enter hint, Enter does nothing");
+        let yes = confirm(Some(true), scrub());
+        assert_eq!(keys(&yes), vec![("Enter", "Run"), ("n/Esc", "No")]);
+        assert_eq!(confirm(Some(false), scrub()).iter().map(|h| (h.key, h.label)).collect::<Vec<_>>(), vec![("Enter", "Cancel"), ("y", "Yes")]);
+        let danger = confirm(Some(true), MutationCall::DestroyPool { pool: "tank".to_string() });
+        assert_eq!(danger.iter().find(|h| h.key == "Enter").unwrap().tone, Tone::Danger, "Run carries the action's tone");
     }
 
     #[test]
@@ -1216,5 +1225,27 @@ mod tests {
         let labels: Vec<(&str, &str)> = hints(&a).iter().map(|h| (h.key, h.label)).collect();
         assert!(labels.contains(&("B", "New backup job")), "{labels:?}");
         assert!(!labels.iter().any(|(k, _)| *k == "c"), "nothing is running");
+    }
+
+
+    #[test]
+    fn datasets_advertise_recursive_destroy_only_with_a_dataset_selected() {
+        let with = keys(&datasets_middle(false));
+        assert!(with.contains(&"D"), "{with:?}");
+        let h = hints(&datasets_middle(false));
+        let d = h.iter().find(|x| x.key == "D").unwrap();
+        assert_eq!((d.label, d.tone), ("Destroy recursively", Tone::Danger));
+        assert!(!keys(&datasets_none_selected()).contains(&"D"));
+    }
+
+
+    #[test]
+    fn the_acl_tab_hides_add_and_remove_on_a_posix_acltype_dataset() {
+        let mut a = datasets_right(DatasetDetailTab::Acl);
+        assert!(keys(&a).contains(&"n") && keys(&a).contains(&"d"));
+        a.dataset_properties_for = Some("tank/a".to_string());
+        a.dataset_properties = vec![Property { name: "acltype".to_string(), value: "posix".to_string(), source: PropertySource::Local }];
+        let k = keys(&a);
+        assert!(!k.contains(&"n") && !k.contains(&"d"), "{k:?}");
     }
 }

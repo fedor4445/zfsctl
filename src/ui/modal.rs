@@ -20,6 +20,7 @@ pub enum MutationCall {
     SetPoolProperty { pool: String, key: String, value: String },
     CreateDataset { name: String },
     DestroyDataset { name: String },
+    DestroyDatasetRecursive { name: String },
     SetDatasetProperty { dataset: String, key: String, value: String },
     CreateSnapshot { dataset: String, name: String },
     DestroySnapshot { dataset: String, name: String },
@@ -70,6 +71,7 @@ impl MutationCall {
         match self {
             MutationCall::DestroyPool { .. }
             | MutationCall::DestroyDataset { .. }
+            | MutationCall::DestroyDatasetRecursive { .. }
             | MutationCall::DestroySnapshot { .. }
             | MutationCall::RollbackSnapshot { .. }
             | MutationCall::DestroyBootEnv { .. } => Tone::Danger,
@@ -117,6 +119,7 @@ impl MutationCall {
             MutationCall::SetPoolProperty { .. } => "SET POOL PROPERTY",
             MutationCall::CreateDataset { .. } => "CREATE DATASET",
             MutationCall::DestroyDataset { .. } => "DESTROY DATASET",
+            MutationCall::DestroyDatasetRecursive { .. } => "DESTROY DATASET AND EVERYTHING UNDER IT",
             MutationCall::SetDatasetProperty { .. } => "SET DATASET PROPERTY",
             MutationCall::CreateSnapshot { .. } => "CREATE SNAPSHOT",
             MutationCall::DestroySnapshot { .. } => "DESTROY SNAPSHOT",
@@ -165,6 +168,7 @@ impl MutationCall {
             MutationCall::SetPoolProperty { pool, key, value } => crate::zfs::pool::set_pool_property(runner, pool, key, value),
             MutationCall::CreateDataset { name } => crate::zfs::dataset::create_dataset(runner, name),
             MutationCall::DestroyDataset { name } => crate::zfs::dataset::destroy_dataset(runner, name),
+            MutationCall::DestroyDatasetRecursive { name } => crate::zfs::dataset::destroy_dataset_recursive(runner, name),
             MutationCall::SetDatasetProperty { dataset, key, value } => {
                 crate::zfs::dataset::set_dataset_property(runner, dataset, key, value)
             }
@@ -311,8 +315,9 @@ impl FormKind {
 /// A modal dialog awaiting user input before a mutation runs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
-    /// Simple y/n confirmation for reversible/lower-risk operations.
-    Confirm { prompt: String, action: PendingAction },
+    /// y/n confirmation. Two steps, both outcomes: `y` or `n`/Esc only *select* (`choice`), and Enter
+    /// applies the selection, so a stray key or a held-down Enter can never run (or dismiss) it.
+    Confirm { prompt: String, action: PendingAction, choice: Option<bool> },
     /// Type-the-exact-name confirmation for irreversible operations.
     ConfirmTyped {
         prompt: String,
@@ -657,5 +662,17 @@ mod tone_tests {
         let runner = FakeRunner::failing("cannot destroy active boot environment", 5);
         let err = MutationCall::DestroyBootEnv { name: "default".into(), origin: false }.run(&runner).unwrap_err().to_string();
         assert!(err.contains("cannot destroy active boot environment"), "{err}");
+    }
+
+
+    #[test]
+    fn destroying_a_dataset_recursively_uses_dash_r_never_dash_capital_r_and_is_danger_toned() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::DestroyDatasetRecursive { name: "tank/data".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "-r".to_string(), "--".to_string(), "tank/data".to_string()]));
+        assert_eq!(call.tone(), Tone::Danger);
+        assert!(!calls[0].1.iter().any(|a| a == "-R"), "-R would also destroy clones elsewhere");
     }
 }

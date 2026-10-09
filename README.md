@@ -90,6 +90,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
+- **Confirmations take two keys.** A y/n window needs `y` (yes) or `n` / `Esc` (no) to *select*, then `Enter` to apply it; `Enter` on its own does nothing, so a stray key or a held-down Enter can never run, or even dismiss, a confirmation. The window shows what is selected and what Enter will do. Typed-name confirmations (destroying a pool, dataset or snapshot) need the exact name and then `Enter`, and `Esc` cancels them at once.
 - `?`: show the Help screen (full keybinding reference)
 - `A`: show the About screen
 - `!`: open a shell on the selected host and return to zfsctl when you exit it. On a remote host this is an interactive `ssh` login as the same unprivileged user zfsctl connects as, never a root shell (run the allowed `sudo zpool ...` yourself from there). Locally it is `$SHELL`. When the shell exits, the list on screen is refreshed.
@@ -103,7 +104,7 @@ On the four account fields (SMB valid user, NFS "Root user mapping" (users only)
 
 - `Tab` / `Down`: move to the next field (wraps from the last field back to the first)
 - `Shift+Tab` / `Up`: move to the previous field (wraps from the first field back to the last)
-- `Enter` on the last field: submit. An invalid value anywhere in the form is rejected with a status message explaining that submission failed — the form stays open, focus resets to the first field so you can `Tab`/`Down` through to find and fix the problem without needing to `Esc` and start over
+- `Enter` on the last field: submit. An invalid value anywhere in the form is rejected with a status message that names the field and what is wrong with it (for the permission and ACL forms: a permission that starts with `-`, a set name typed with its leading `@`, an unknown recipient or type) — the form stays open with everything you typed, focus resets to the first field so you can `Tab`/`Down` through to find and fix the problem without needing to `Esc` and start over
 - `Esc`: cancel, discarding whatever was typed
 
 ### Hosts
@@ -156,7 +157,7 @@ separate calls merges into one combined grant, it never overwrites.
 
 FreeBSD native NFSv4 access control lists (`getfacl`/`setfacl`) on the
 selected dataset's mountpoint — not available for a zvol or an
-unmounted filesystem (no mountpoint to point `getfacl` at).
+unmounted filesystem (no mountpoint to point `getfacl` at). On a dataset whose `acltype` property is `posix` the tab says so in its title, hides `n` and `d`, and explains in the status line if you press them: it edits NFSv4 ACLs only. In the Recipient fields (here and in the Permissions sub-tab) `user:` and `group:` may be written in any case with spaces around the colon (`User: carol`); the name keeps its case. `d` asks for confirmation naming the entry (`allow owner@: read_data/write_data`), not just its number.
 
 - `n`: add a new ACL entry, always appended at the end (prompts for
   Recipient — `owner` / `group` / `everyone` / `user:<name>` /
@@ -181,7 +182,8 @@ shown, and that order is also the position number `d`/`n` operate on.
 
 - `Right` / `Left`: move focus to/from the properties pane (same as Pools, above)
 - `n`: create a new dataset (prompts for name)
-- `d`: destroy the selected dataset (type the dataset's name to confirm)
+- `d`: destroy the selected dataset (type the dataset's name to confirm). zfs refuses a dataset that still has snapshots or child datasets; the prompt says so and how many
+- `D`: destroy the selected dataset **and** its child datasets and all their snapshots (`zfs destroy -r`). You type the dataset's name, and the prompt says exactly how many child datasets and snapshots go with it: counted at the last refresh, which the Datasets view repeats about every ten seconds along with the dataset list (a snapshot taken a moment ago may not be counted yet). If something under it is busy, zfs stops part-way, and what it had already destroyed stays destroyed. Snapshot clones inside the dataset go with it; clones outside it are never touched (`-R` is not used), so zfs refuses if any depend on it. `D` is refused on a pool's root dataset (it would wipe the pool: use the Pools section), on boot-environment datasets (use Boot Envs, which refuses the running and next-boot ones), and on anything holding the running system. `d` on a pool root says the same
 - `s`: snapshot the selected dataset (prompts for the snapshot's name only)
 - `J`: schedule recurring snapshots of the selected dataset, keeping the newest N (opens the snapshot-job form with the dataset filled in; see **Scheduled jobs** below)
 - `M`: create/edit a managed SMB share for the selected (mounted) dataset (see Shares → SMB shares). Always shown; if smbd isn't running, the dataset isn't mounted, or shares aren't loaded yet, it says so in the status line instead
@@ -233,6 +235,8 @@ Lists the host's boot environments (`bectl list`): Name, Active (`Now`, `Reboot`
 - `R`: rename. `m` / `u`: mount / unmount; the Mountpoint column shows the `/tmp/be_mount.XXXX` path.
 - `d`: destroy (type its name). `D`: destroy and remove its origin snapshot (`bectl destroy -o`).
 
+While a change to a boot environment is running (usually a second or two) the keys that change things wait and the status line says `Still working on '<name>'`, so a second `m` or `t` cannot queue a duplicate. After a rename the selection stays on the renamed boot environment. When the selected one is mounted, its mount path leads the pane title, so it is visible even when the Mountpoint column has dropped off a narrow terminal.
+
 `zfsctl` never reboots the host. bectl's own error text is shown verbatim when it refuses something; for example, destroying a mounted boot environment fails with `cannot destroy mounted boot env unless forced`, so unmount it (`u`) first.
 
 ### Jobs
@@ -243,7 +247,8 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 - `n`: new scrub job (host, pool, schedule, catch up; `F2` lists the configured hosts, the pools of the chosen host (fetched live) and schedule presets, and the form previews the next three run times as you type)
 - `R`: new replication job (source host and dataset, snapshot prefix, destination host and dataset, force, schedule, catch up; `F2` lists the configured hosts, the datasets of the chosen host (fetched live) and schedule presets)
 - `B`: new backup job (host, dataset, snapshot prefix, restic repository, password file, keep, schedule, catch up; `F2` lists the configured hosts, the datasets of the chosen host (fetched live) and schedule presets; see "A backup job" below)
-- `c`: cancel the selected replication or backup while it is running (it stops within a second or two; a replication resumes on the next run, a backup starts again)
+- `c`: cancel the selected replication or backup while it is running (it stops within a second or two; a replication resumes on the next run, a backup starts again). If the backup has finished and its retention prune is running, `c` stops the prune instead: the run is recorded as cancelled with the backup kept, and the retention is applied after the next successful backup (a run that finds nothing new is `skipped: up to date` and does not prune). On a remote host this stops the local `ssh` client; the remote restic may take a while to notice, and until it does it holds the repository's exclusive lock, so other jobs on that repository wait. That case is untested: no test host has restic installed yet
+- The Target column shows where a job's data goes: `tank/data → fbsd16:backup/data`, `tank/data → file:/dir`, or `tank/data → <repository>` for a backup (it widens to fit, as far as the terminal allows)
 - `N`: new snapshot job (host, dataset, recursive, prefix, keep, schedule, catch up; `F2` lists the configured hosts, the datasets of the chosen host (fetched live) and schedule presets)
 - `Enter`: edit the selected job (its id, creation time and enabled flag are kept)
 - `Space`: enable or disable the selected job
@@ -356,8 +361,8 @@ schedule = "30 3 * * *"
 - **One-time setup.** `pkg install restic` on the host (0.16 or newer: jobs that share a repository wait up to ten minutes for each other's locks with `--retry-lock`); put the repository password in a root-only file (`install -m 600 /dev/null /root/.restic-password`, then write it); create the repository once with `restic init --repo <repository> --password-file <file>`. A backup job never creates a repository (a mistyped path would silently make a new one); an uninitialised repository or wrong password fails the run with restic's own message.
 - **How a run works.** It picks the newest matching snapshot, skips (`up to date`) if the repository already holds a backup tagged `zfsctl-snapshot:<name>` from this job, then clones that snapshot read-only to `/var/run/zfsctl/<job id>`, backs up that path, and destroys the clone, whether the backup succeeded, failed or was cancelled. The path is the same every run on purpose: restic finds its parent backup by path, so unchanged files are skipped instead of read again. While the clone exists its snapshot cannot be destroyed: a snapshot job's prune leaves it for the next slot (`kept 1 in use by a clone`). A clone left by a crash is destroyed by the next run.
 - **Retention.** With `retention` set, a successful backup is followed by `restic forget --prune` limited to this job's own backups from this machine (matched by tag and the machine's real hostname, so two hubs that share a repository never skip or forget each other's backups); without it nothing is ever forgotten. Backups are dated by their snapshot's creation time, so `7d` means seven days of data, not seven runs. `prune` takes the repository lock and can be slow or costly on a big remote repository.
-- **Secrets.** The job holds no password or key, only the path of the password file on the host. The repository string is stored and shown in the Jobs details, so never put credentials in it (`rest:https://user:pass@host/` is the case to avoid; use an rclone remote, whose config holds the keys). Direct S3/Azure/B2 environment variables are not supported, because an environment cannot pass through `sudo -n` without allowing `env`, which would make the sudoers entry root-equivalent.
-- **Cancel and locks.** `c` stops a running backup; restic then leaves a stale repository lock. A backup does not mind, but `forget --prune` does: when it finds the repository locked, the run runs `restic unlock` once (it removes only stale locks, never a live one, and never uses `--remove-all`) and retries the forget once; you can also run `restic unlock` yourself. A cancelled or failed run does not forget. restic exit code 3 (snapshot saved but some files unreadable) is reported as a failure that says so.
+- **Secrets.** The job holds no password or key, only the path of the password file on the host. The repository string is stored and shown in the Jobs table and details, so it must not hold credentials: a URL with a password in it (`rest:https://user:pass@host/`) is refused when the job is saved; use an rclone remote, whose config holds the keys. Direct S3/Azure/B2 environment variables are not supported, because an environment cannot pass through `sudo -n` without allowing `env`, which would make the sudoers entry root-equivalent.
+- **Cancel and locks.** `c` stops a running backup; restic then leaves a stale repository lock. A backup does not mind, but `forget --prune` does: when it finds the repository locked, the run runs `restic unlock` once (it removes only stale locks, never a live one, and never uses `--remove-all`) and retries the forget once; you can also run `restic unlock` yourself. A failed backup does not forget; a run cancelled while it was forgetting may already have forgotten some snapshots (restic's prune is safe to interrupt). restic exit code 3 (snapshot saved but some files unreadable) is reported as a failure that says so.
 - **Restoring.** Use restic: `restic restore latest --repo <repository> --password-file <file> --tag zfsctl:<job id> --target /restore`. The backed-up path is `/var/run/zfsctl/<job id>`.
 - **Remote hosts.** restic runs on the job's host over SSH + `sudo -n`, so it must be installed there and `/usr/local/bin/restic` added to that host's sudoers entry. That entry is as broad as `zfs` or `bectl`: restic as root reads any file and writes anywhere, so whoever holds the SSH key effectively has root on that host. The hub (`local`) needs no change.
 

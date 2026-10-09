@@ -54,6 +54,30 @@ fn restic_query(runner: &dyn CommandRunner, repo: &str, args: &[String]) -> std:
     }
 }
 
+/// How `restic forget --prune` ended.
+enum Forgot {
+    Done,
+    Cancelled,
+    Failed(String),
+}
+
+/// Runs a retention command through the same cancellable line runner as the backup, so `c` can stop a long
+/// prune. A killed prune is safe: restic leaves the repository consistent and a stale lock, which the next
+/// run's unlock-and-retry removes.
+fn run_retention(env: &Env, runner: &dyn CommandRunner, repo: &str, args: &[String]) -> Forgot {
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let cmd = match runner.command("restic", &refs) {
+        Ok(c) => c,
+        Err(e) => return Forgot::Failed(redact(&e.to_string(), repo)),
+    };
+    match run_lines(cmd, env.cancel, |_| {}) {
+        Err(e) => Forgot::Failed(redact(&format!("could not run restic: {e}"), repo)),
+        Ok(lines) if lines.cancelled => Forgot::Cancelled,
+        Ok(lines) if lines.code == Some(0) => Forgot::Done,
+        Ok(lines) => Forgot::Failed(redact(&restic::failure_text(None, &lines.stderr), repo)),
+    }
+}
+
 /// restic's `--host` is the machine's real name, not zfsctl's label for it (usually `local`): two hubs
 /// that share a repository must not mistake each other's backups for their own. The label is the
 /// fallback when the host cannot say.
@@ -214,14 +238,18 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
             let policy = job.retention.as_deref().and_then(|t| restic::parse_retention(t).ok()).filter(|r| !r.is_empty());
             if let Some(policy) = policy {
                 let forget_args = restic::forget_args(&repo, &password_file, &machine, &job.id, &policy);
-                let mut forgot = restic_query(runner, &repo, &forget_args);
+                let mut forgot = run_retention(env, runner, &repo, &forget_args);
                 // A cancelled or killed run leaves a stale repository lock that blocks `forget --prune`.
                 // `restic unlock` removes only stale locks, so clear them once and retry once.
-                if forgot.as_ref().is_err_and(|e| e.contains("already locked")) && restic_query(runner, &repo, &restic::unlock_args(&repo, &password_file)).is_ok() {
-                    forgot = restic_query(runner, &repo, &forget_args);
+                if matches!(&forgot, Forgot::Failed(e) if e.contains("already locked")) && restic_query(runner, &repo, &restic::unlock_args(&repo, &password_file)).is_ok() {
+                    forgot = run_retention(env, runner, &repo, &forget_args);
                 }
-                if let Err(e) = forgot {
-                    return failed(format!("backed up {snapshot} but forget failed: {e}"));
+                match forgot {
+                    Forgot::Done => {}
+                    Forgot::Cancelled => {
+                        return finish(ctx, job, run_id, EventKind::Finished, RunResult::Cancelled, format!("{message}; retention cancelled, it is applied after the next successful backup"), slot);
+                    }
+                    Forgot::Failed(e) => return failed(format!("backed up {snapshot} but forget failed: {e}")),
                 }
             }
             finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, message, slot)
@@ -255,6 +283,8 @@ mod tests {
 
     /// One host: answers zfs and restic queries from fixed strings, remembers whether the clone
     /// exists, hands out a scripted shell for `restic backup`, and records every call.
+    // A scripted test double: its switches are independent flags, not a state machine.
+    #[allow(clippy::struct_excessive_bools)]
     struct Host {
         listing: String,
         restic_snapshots: std::result::Result<String, String>,
@@ -263,6 +293,8 @@ mod tests {
         clone_fails: bool,
         destroy_fails: bool,
         forget_fails: bool,
+        /// What a successful `restic forget` does.
+        forget_script: String,
         /// While true `restic forget` fails like a repository with a stale lock; `restic unlock` clears it.
         forget_locked: Mutex<bool>,
         unlock_fails: bool,
@@ -285,6 +317,7 @@ mod tests {
                 clone_fails: false,
                 destroy_fails: false,
                 forget_fails: false,
+                forget_script: "exit 0".to_string(),
                 forget_locked: Mutex::new(false),
                 unlock_fails: false,
                 hostname: Some("fb"),
@@ -340,12 +373,6 @@ mod tests {
                     Ok(json) => ok(json),
                     Err(e) => Ok(CommandOutput { stdout: String::new(), stderr: e.clone(), status: 12 }),
                 },
-                ("restic", Some("forget")) => {
-                    if *self.forget_locked.lock().unwrap() {
-                        return fail("unable to create lock in backend: repository is already locked by PID 14568 on fb by root");
-                    }
-                    if self.forget_fails { fail("Fatal: unable to save snapshot") } else { ok("") }
-                }
                 ("restic", Some("unlock")) => {
                     if self.unlock_fails {
                         return fail("Fatal: unlock broke");
@@ -374,9 +401,20 @@ mod tests {
         fn command(&self, cmd: &str, args: &[&str]) -> Result<Command> {
             assert_eq!(cmd, "restic");
             self.calls.lock().unwrap().push(format!("restic {}", args.join(" ")));
-            self.backup_args.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
+            let script = if args.first() == Some(&"forget") {
+                if *self.forget_locked.lock().unwrap() {
+                    "echo 'unable to create lock in backend: repository is already locked by PID 14568 on fb by root' >&2; exit 1".to_string()
+                } else if self.forget_fails {
+                    "echo 'Fatal: unable to save snapshot' >&2; exit 1".to_string()
+                } else {
+                    self.forget_script.clone()
+                }
+            } else {
+                self.backup_args.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
+                self.backup_script.clone()
+            };
             let mut c = Command::new("sh");
-            c.args(["-c", &self.backup_script]);
+            c.args(["-c", &script]);
             Ok(c)
         }
     }
@@ -750,5 +788,49 @@ mod tests {
         failing.backup_script = "echo 'Fatal: cannot write to /mnt/usb/restic/data' >&2; exit 1".to_string();
         let (outcome, _) = rig.run(&failing, &job());
         assert!(!outcome.message.contains("/mnt/usb/restic"), "{}", outcome.message);
+    }
+
+
+    #[test]
+    fn cancelling_during_retention_stops_the_prune_and_keeps_the_finished_backup() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.forget_script = "sleep 60".to_string();
+        let mut with_policy = job();
+        with_policy.retention = Some("1l".to_string());
+        let (outcome, history) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !host.called("restic forget") {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                rig.cancel.store(true, Ordering::SeqCst);
+            });
+            rig.run(&host, &with_policy)
+        });
+        assert_eq!(outcome.result, RunResult::Cancelled, "{}", outcome.message);
+        assert!(outcome.message.contains(&format!("backed up {B}")) && outcome.message.contains("retention cancelled"), "{}", outcome.message);
+        assert_eq!(history.last().and_then(|r| r.result), Some(RunResult::Cancelled));
+        assert!(!host.clone_exists());
+    }
+
+
+    #[test]
+    fn a_cancelled_retention_says_it_is_applied_after_the_next_successful_backup() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.forget_script = "sleep 60".to_string();
+        let mut with_policy = job();
+        with_policy.retention = Some("1l".to_string());
+        let (outcome, _) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !host.called("restic forget") {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                rig.cancel.store(true, Ordering::SeqCst);
+            });
+            rig.run(&host, &with_policy)
+        });
+        assert!(outcome.message.contains("applied after the next successful backup"), "{}", outcome.message);
+        assert!(!outcome.message.contains("the next run applies it"), "the next run is usually 'up to date' and never forgets");
     }
 }

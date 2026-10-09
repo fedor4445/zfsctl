@@ -158,6 +158,9 @@ pub struct App {
     pub pools: Vec<Pool>,
     pub datasets: Vec<Dataset>,
     pub snapshots: Vec<Snapshot>,
+    /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
+    /// snapshots can say "unknown" instead of a misleading 0.
+    pub snapshots_loaded: bool,
     pub pools_table: TableState,
     pub datasets_table: TableState,
     pub snapshots_table: TableState,
@@ -199,6 +202,11 @@ pub struct App {
     /// Why the Boot Envs section cannot list on this host (e.g. no `bectl`, not a boot-environment
     /// layout, an unreachable host), shown in its title. `None` once a list succeeds.
     pub bootenvs_unavailable: Option<String>,
+    /// The boot environment a change is being made to, and since when: while it is set (and under two minutes
+    /// old, so a lost result can never lock the section for good) the keys that change things wait.
+    pub bootenv_busy: Option<(String, Instant)>,
+    /// After a rename, the new name the selection should land on once the list shows it.
+    pub bootenv_pin: Option<String>,
     pub vdevs: Vec<VdevLine>,
     pub vdevs_table: TableState,
     /// The drilled-into pool's most recent scrub/resilver, refreshed
@@ -300,6 +308,7 @@ impl App {
             pools: Vec::new(),
             datasets: Vec::new(),
             snapshots: Vec::new(),
+            snapshots_loaded: false,
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
             snapshots_table: TableState::default(),
@@ -319,6 +328,8 @@ impl App {
             bootenvs_table: TableState::default(),
             bootenvs_loaded: false,
             bootenvs_unavailable: None,
+            bootenv_busy: None,
+            bootenv_pin: None,
             vdevs: Vec::new(),
             vdevs_table: TableState::default(),
             pool_scan_status: None,
@@ -441,6 +452,7 @@ impl App {
         }
         self.last_auto_refresh.insert(key, now);
         let already_running = self.is_refreshing(section, key.1);
+        let for_snapshots = runner.clone();
         match section {
             Section::Pools => self.refresh_pools(runner),
             Section::Datasets => self.refresh_datasets(runner),
@@ -452,6 +464,12 @@ impl App {
         }
         if !already_running {
             self.quiet_refresh.insert(key);
+        }
+        // The destroy prompts count a dataset's snapshots, so the Datasets view refreshes the snapshot list
+        // (quietly) with the datasets: the counts are as fresh as the list, never "unknown" or hours old.
+        if section == Section::Datasets && !self.is_refreshing(Section::Snapshots, key.1) {
+            self.refresh_snapshots(for_snapshots);
+            self.quiet_refresh.insert((Section::Snapshots, key.1));
         }
     }
 
@@ -579,6 +597,59 @@ impl App {
         self.datasets_table.selected().and_then(|i| self.datasets.get(i)).and_then(|d| d.mountpoint.clone())
     }
 
+    /// Why the ACL tab cannot edit the selected dataset, from its `acltype` property (only trusted when the
+    /// loaded properties belong to this very dataset).
+    pub fn acl_unsupported(&self) -> Option<&'static str> {
+        let name = self.selected_dataset_name()?;
+        if self.dataset_properties_for.as_deref() != Some(name.as_str()) {
+            return None;
+        }
+        let acltype = self.dataset_properties.iter().find(|p| p.name == "acltype")?;
+        (acltype.value == "posix").then_some("this dataset has acltype=posix: the ACL tab edits NFSv4 ACLs only")
+    }
+
+    /// Why `D` (zfs destroy -r) must not run on `name`, if it must not. A pool root would wipe the whole pool
+    /// (verified: `zfs destroy -r <pool>` removes every dataset and snapshot); boot-environment datasets have
+    /// their own, safer section; and anything holding the running system is never a candidate.
+    fn recursive_destroy_refusal(&self, name: &str) -> Option<String> {
+        if !name.contains('/') {
+            return Some(pool_root_message(name));
+        }
+        if name.ends_with("/ROOT") || name.contains("/ROOT/") {
+            return Some(format!("'{name}' is part of the boot environments: use the Boot Envs section, which refuses the running and next-boot ones"));
+        }
+        let prefix = format!("{name}/");
+        let holds_root = self.datasets.iter().any(|d| d.mountpoint.as_deref() == Some("/") && (d.name == name || d.name.starts_with(&prefix)));
+        holds_root.then(|| format!("'{name}' holds the running system (something under it is mounted at /): it cannot be destroyed recursively"))
+    }
+
+    /// How many child datasets and snapshots sit under `name` (the dataset's own snapshots included), from
+    /// the lists loaded at the last refresh. Snapshots are `None` until a snapshot list has arrived.
+    fn counts_under(&self, name: &str) -> (usize, Option<usize>) {
+        let prefix = format!("{name}/");
+        let children = self.datasets.iter().filter(|d| d.name.starts_with(&prefix)).count();
+        let snapshots = self.snapshots_loaded.then(|| self.snapshots.iter().filter(|s| s.dataset == name || s.dataset.starts_with(&prefix)).count());
+        (children, snapshots)
+    }
+
+    fn has_anything_under(&self, name: &str) -> bool {
+        let (children, snapshots) = self.counts_under(name);
+        children > 0 || snapshots.is_some_and(|n| n > 0)
+    }
+
+    /// "2 child datasets and 3 snapshots", or "... and snapshots: unknown (...)" before any snapshot list loaded.
+    fn what_is_under(&self, name: &str) -> String {
+        fn plural(n: usize, one: &str, many: &str) -> String {
+            format!("{n} {}", if n == 1 { one } else { many })
+        }
+        let (children, snapshots) = self.counts_under(name);
+        let kids = plural(children, "child dataset", "child datasets");
+        match snapshots {
+            Some(n) => format!("{kids} and {}", plural(n, "snapshot", "snapshots")),
+            None => format!("{kids}; snapshots: unknown (open the Snapshots section to count them)"),
+        }
+    }
+
     /// Clears data panes so a stale render from the previously-selected
     /// host is never left on screen looking current after switching hosts.
     fn clear_host_data(&mut self) {
@@ -586,6 +657,7 @@ impl App {
         self.pools.clear();
         self.datasets.clear();
         self.snapshots.clear();
+        self.snapshots_loaded = false;
         self.pools_table.select(None);
         self.datasets_table.select(None);
         self.snapshots_table.select(None);
@@ -601,6 +673,8 @@ impl App {
         self.bootenvs_table.select(None);
         self.bootenvs_unavailable = None;
         self.bootenvs_loaded = false;
+        self.bootenv_busy = None;
+        self.bootenv_pin = None;
         self.pane_focus = PaneFocus::Middle;
         self.pool_properties.clear();
         self.pool_properties_table.select(None);
@@ -824,7 +898,7 @@ impl App {
             KeyCode::Char('s') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
-                        self.modal = Some(Modal::Confirm {
+                        self.modal = Some(Modal::Confirm { choice: None,
                             prompt: format!("Scrub pool '{}'? (y/n)", pool.name),
                             action: PendingAction {
                                 host: self.selected_host,
@@ -838,7 +912,7 @@ impl App {
             KeyCode::Char('R') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
-                        self.modal = Some(Modal::Confirm {
+                        self.modal = Some(Modal::Confirm { choice: None,
                             prompt: format!("Resilver pool '{}'? (y/n)", pool.name),
                             action: PendingAction {
                                 host: self.selected_host,
@@ -970,7 +1044,7 @@ impl App {
                             PermissionRow::Grant { perms, .. } => Some(perms.clone()),
                             PermissionRow::Set { .. } | PermissionRow::CreateTime { .. } => None,
                         };
-                        self.modal = Some(Modal::Confirm {
+                        self.modal = Some(Modal::Confirm { choice: None,
                             prompt: format!("Revoke all permissions for this target on '{dataset}'? (y/n)"),
                             action: PendingAction {
                                 host: self.selected_host,
@@ -998,6 +1072,15 @@ impl App {
                         });
                     }
                 }
+            }
+            // acltype=posix: this tab edits NFSv4 ACLs only. Say so instead of offering keys that cannot work.
+            KeyCode::Char('n' | 'd')
+                if self.current_section() == Section::Datasets
+                    && self.pane_focus == PaneFocus::Right
+                    && self.dataset_detail_tab == DatasetDetailTab::Acl
+                    && self.acl_unsupported().is_some() =>
+            {
+                self.status_message = self.acl_unsupported().map(str::to_string);
             }
             KeyCode::Char('n')
                 if self.current_section() == Section::Datasets
@@ -1030,9 +1113,9 @@ impl App {
                     && self.dataset_detail_tab == DatasetDetailTab::Acl =>
             {
                 if let (Some(path), Some(i)) = (self.selected_dataset_mountpoint(), self.acl_entries_table.selected()) {
-                    if i < self.acl_entries.len() {
-                        self.modal = Some(Modal::Confirm {
-                            prompt: format!("Remove ACL entry #{i} on '{path}'? (y/n)"),
+                    if let Some(entry) = self.acl_entries.get(i) {
+                        self.modal = Some(Modal::Confirm { choice: None,
+                            prompt: format!("Remove ACL entry #{i} ({}) on '{path}'? (y/n)", entry.describe()),
                             action: PendingAction { host: self.selected_host, section: Section::DatasetAcl, call: MutationCall::RemoveAclEntry { path, position: i } },
                         });
                     }
@@ -1071,11 +1154,32 @@ impl App {
                     kind: FormKind::CreateDataset { host: self.selected_host },
                 });
             }
+            KeyCode::Char('D') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                if let Some(name) = self.selected_dataset_name() {
+                    if let Some(why) = self.recursive_destroy_refusal(&name) {
+                        self.status_message = Some(why);
+                        return;
+                    }
+                    let what = self.what_is_under(&name);
+                    self.modal = Some(Modal::ConfirmTyped {
+                        prompt: format!("Type the dataset name to destroy '{name}' AND everything under it: {what}.\nIf something is busy, zfs stops part-way and what it already destroyed stays destroyed. Snapshot clones inside it go with it; clones outside it are never touched (zfs refuses if any depend on it). (Counts as of the last refresh.)"),
+                        expected: name.clone(),
+                        input: String::new(),
+                        action: PendingAction { host: self.selected_host, section: Section::Datasets, call: MutationCall::DestroyDatasetRecursive { name } },
+                    });
+                }
+            }
             KeyCode::Char('d') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.datasets_table.selected() {
                     if let Some(ds) = self.datasets.get(i) {
+                        if !ds.name.contains('/') {
+                            self.status_message = Some(pool_root_message(&ds.name));
+                            return;
+                        }
+                        let under = self.has_anything_under(&ds.name);
+                        let warning = if under { format!("\nIt has {}, so zfs will refuse; press Esc, then D, to destroy them too.", self.what_is_under(&ds.name)) } else { String::new() };
                         self.modal = Some(Modal::ConfirmTyped {
-                            prompt: format!("Type the dataset name to destroy '{}':", ds.name),
+                            prompt: format!("Type the dataset name to destroy '{}':{warning}", ds.name),
                             expected: ds.name.clone(),
                             input: String::new(),
                             action: PendingAction {
@@ -1258,7 +1362,7 @@ impl App {
                 if let Some(job) = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)) {
                     let prompt = format!("Delete job '{}'? It stops running; its past runs stay in the history. (y/n)", job.id);
                     let call = MutationCall::DeleteJob { state_dir: self.state_dir.clone(), id: job.id.clone() };
-                    self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
+                    self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
                 }
             }
             KeyCode::Down if self.current_section() == Section::Jobs => {
@@ -1287,9 +1391,14 @@ impl App {
                                 MutationCall::RemoveSmbShare { dataset: dataset.clone() },
                             ),
                         };
-                        self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::Shares, call } });
+                        self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Shares, call } });
                     }
                 }
+            }
+            // A change to a boot environment is still running: do nothing else to the section until it has finished.
+            KeyCode::Char('n' | 'a' | 't' | 'T' | 'R' | 'm' | 'u' | 'd' | 'D') if self.current_section() == Section::BootEnvs && self.bootenv_busy_name().is_some() => {
+                let name = self.bootenv_busy_name().unwrap_or_default().to_string();
+                self.status_message = Some(format!("Still working on '{name}'… wait for it to finish"));
             }
             KeyCode::Char('n') if self.current_section() == Section::BootEnvs && self.bootenvs_unavailable.is_none() => {
                 let existing: Vec<String> = self.bootenvs.iter().map(|b| b.name.clone()).collect();
@@ -1308,19 +1417,19 @@ impl App {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_activate()).map(|b| b.name.clone()) else { return };
                 let prompt = format!("Make '{name}' the boot environment for every future boot? (y/n)");
                 let call = MutationCall::ActivateBootEnv { name, temporary: false };
-                self.modal = Some(Modal::Confirm { prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
+                self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
             }
             KeyCode::Char('t') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Activating '{name}' for the next boot only…"));
                 let call = MutationCall::ActivateBootEnv { name, temporary: true };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char('T') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Clearing the next-boot activation of '{name}'…"));
                 let call = MutationCall::ClearTemporaryBootEnv { name };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char('R') if self.current_section() == Section::BootEnvs => {
                 let Some(from) = self.selected_bootenv().map(|b| b.name.clone()) else { return };
@@ -1337,13 +1446,13 @@ impl App {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_mount()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Mounting '{name}'…"));
                 let call = MutationCall::MountBootEnv { name };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char('u') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_unmount()).map(|b| b.name.clone()) else { return };
                 self.status_message = Some(format!("Unmounting '{name}'…"));
                 let call = MutationCall::UnmountBootEnv { name };
-                self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
+                self.queue_bootenv_change(call);
             }
             KeyCode::Char(key @ ('d' | 'D')) if self.current_section() == Section::BootEnvs => {
                 let Some(be) = self.selected_bootenv() else { return };
@@ -1453,7 +1562,7 @@ impl App {
         } else {
             ("Offline", MutationCall::OfflineDisk { pool: pool.clone(), disk: disk.clone() })
         };
-        self.modal = Some(Modal::Confirm {
+        self.modal = Some(Modal::Confirm { choice: None,
             prompt: format!("{verb} disk '{disk}' in pool '{pool}'? (y/n)"),
             action: PendingAction { host: self.selected_host, section: Section::Vdevs, call },
         });
@@ -1469,11 +1578,21 @@ impl App {
     pub fn handle_modal_key(&mut self, key: KeyCode) -> Option<PendingAction> {
         let modal = self.modal.take()?;
         match modal {
-            Modal::Confirm { prompt, action } => match key {
-                KeyCode::Char('y') | KeyCode::Enter => Some(action),
-                KeyCode::Char('n') | KeyCode::Esc => None,
+            // Two steps for both outcomes: `y` / `n` / Esc only select, Enter applies the selection.
+            // Enter with nothing selected, and every other key, change nothing.
+            Modal::Confirm { prompt, action, choice } => match (key, choice) {
+                (KeyCode::Enter, Some(true)) => Some(action),
+                (KeyCode::Enter, Some(false)) => None,
+                (KeyCode::Char('y' | 'Y'), _) => {
+                    self.modal = Some(Modal::Confirm { prompt, action, choice: Some(true) });
+                    None
+                }
+                (KeyCode::Char('n' | 'N') | KeyCode::Esc, _) => {
+                    self.modal = Some(Modal::Confirm { prompt, action, choice: Some(false) });
+                    None
+                }
                 _ => {
-                    self.modal = Some(Modal::Confirm { prompt, action });
+                    self.modal = Some(Modal::Confirm { prompt, action, choice });
                     None
                 }
             },
@@ -1586,7 +1705,12 @@ impl App {
                         }
                     } else if matches!(kind, FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. }) {
                         match build_bootenv_action(&kind, &fields) {
-                            Ok(action) => Some(action),
+                            Ok(action) => {
+                                if let MutationCall::RenameBootEnv { to, .. } = &action.call {
+                                    self.bootenv_pin = Some(to.clone());
+                                }
+                                Some(action)
+                            }
                             Err(msg) => {
                                 self.set_error(msg);
                                 self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
@@ -1603,7 +1727,7 @@ impl App {
                             }
                         }
                     } else if let Some(action) = build_pending_action(&kind, &fields) { Some(action) } else {
-                        self.set_error("Could not submit -- check the field values against the hints in their labels".to_string());
+                        self.set_error(form_problem(&kind, &fields));
                         self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
                         None
                     }
@@ -1805,6 +1929,9 @@ impl App {
     /// clears it on submit) — this only executes the mutation itself.
     pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
         let PendingAction { host, section, call } = action;
+        if section == Section::BootEnvs {
+            self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
+        }
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = call.run(runner.as_ref());
@@ -1914,6 +2041,19 @@ impl App {
             let result = crate::zfs::bootenv::list(runner.as_ref());
             let _ = tx.send(WorkerMsg::BootEnvs(host, result));
         });
+    }
+
+    /// The boot environment a change is in flight for, unless that marker is stale.
+    fn bootenv_busy_name(&self) -> Option<&str> {
+        const STALE: Duration = Duration::from_mins(2);
+        self.bootenv_busy.as_ref().filter(|(_, since)| since.elapsed() < STALE).map(|(name, _)| name.as_str())
+    }
+
+    /// Queues a change to run on the next loop tick and marks the section busy right away, so a second key
+    /// pressed before it is dispatched cannot queue a duplicate.
+    fn queue_bootenv_change(&mut self, call: MutationCall) {
+        self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
+        self.pending_mutations.push(PendingAction { host: self.selected_host, section: Section::BootEnvs, call });
     }
 
     pub fn selected_bootenv(&self) -> Option<&crate::zfs::bootenv::BootEnv> {
@@ -2134,6 +2274,7 @@ impl App {
                             let previous = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)).map(|s| (s.dataset.clone(), s.name.clone()));
                             self.snapshots = snapshots;
                             pin_selection(&mut self.snapshots_table, previous, &self.snapshots, |s| (s.dataset.clone(), s.name.clone()));
+                            self.snapshots_loaded = true;
                             self.clear_status_after_refresh(quiet);
                         }
                         Err(e) => self.set_error(e.to_string()),
@@ -2203,7 +2344,13 @@ impl App {
                     }
                     match result {
                         Ok(envs) => {
-                            let previous = self.selected_bootenv().map(|b| b.name.clone());
+                            // A just-renamed boot environment keeps the selection under its new name, once the
+                            // list shows it (an earlier refresh that still has the old name must not use up the pin).
+                            let wanted = self.bootenv_pin.clone().filter(|n| envs.iter().any(|b| &b.name == n));
+                            let previous = wanted.clone().or_else(|| self.selected_bootenv().map(|b| b.name.clone()));
+                            if wanted.is_some() {
+                                self.bootenv_pin = None;
+                            }
                             self.bootenvs = envs;
                             pin_selection(&mut self.bootenvs_table, previous, &self.bootenvs, |b| b.name.clone());
                             self.bootenvs_unavailable = None;
@@ -2388,6 +2535,12 @@ impl App {
                 WorkerMsg::MutationDone(host, section, result) => {
                     if host != self.selected_host {
                         continue;
+                    }
+                    if section == Section::BootEnvs {
+                        self.bootenv_busy = None;
+                        if result.is_err() {
+                            self.bootenv_pin = None;
+                        }
                     }
                     match result {
                         Ok(()) => {
@@ -2945,7 +3098,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         }
         FormKind::GrantPermissionSet { host, dataset } => {
             let name = field_value(fields, 0).trim();
-            if name.is_empty() {
+            if name.is_empty() || name.contains('@') {
                 return None;
             }
             let perms = parse_required_perms_field(field_value(fields, 1))?;
@@ -3001,6 +3154,20 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
         FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+    }
+}
+
+/// The boot environment a boot-environment call is about (the old name for a rename).
+fn bootenv_call_name(call: &MutationCall) -> &str {
+    match call {
+        MutationCall::CreateBootEnv { name, .. }
+        | MutationCall::ActivateBootEnv { name, .. }
+        | MutationCall::ClearTemporaryBootEnv { name }
+        | MutationCall::MountBootEnv { name }
+        | MutationCall::UnmountBootEnv { name }
+        | MutationCall::DestroyBootEnv { name, .. } => name,
+        MutationCall::RenameBootEnv { from, .. } => from,
+        _ => "",
     }
 }
 
@@ -3112,24 +3279,28 @@ fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs:
 /// Parses the `Recipient` field's mini-language: `everyone`,
 /// `user:<name>`, or `group:<name>` — no bare-name fallback, since this
 /// app always passes explicit `-u`/`-g` to `zfs allow` (see the spec).
+fn pool_root_message(pool: &str) -> String {
+    format!("'{pool}' is a pool: destroying it as a dataset would remove everything in it. Use the Pools section (d) to destroy a pool")
+}
+
+/// Splits `user:carol`, ` User : carol `, `GROUP:wheel` into a lower-case keyword and a trimmed name (the
+/// name keeps its case). `None` when there is no colon or the name is blank.
+fn split_recipient(s: &str) -> Option<(String, &str)> {
+    let (keyword, name) = s.split_once(':')?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| (keyword.trim().to_ascii_lowercase(), name))
+}
+
 fn parse_recipient_field(s: &str) -> Option<crate::zfs::permission::Recipient> {
     let s = s.trim();
     if s.eq_ignore_ascii_case("everyone") {
         return Some(crate::zfs::permission::Recipient::Everyone);
     }
-    if let Some(name) = s.strip_prefix("user:") {
-        if !name.is_empty() {
-            return Some(crate::zfs::permission::Recipient::User(name.to_string()));
-        }
-        return None;
+    match split_recipient(s)? {
+        (keyword, name) if keyword == "user" => Some(crate::zfs::permission::Recipient::User(name.to_string())),
+        (keyword, name) if keyword == "group" => Some(crate::zfs::permission::Recipient::Group(name.to_string())),
+        _ => None,
     }
-    if let Some(name) = s.strip_prefix("group:") {
-        if !name.is_empty() {
-            return Some(crate::zfs::permission::Recipient::Group(name.to_string()));
-        }
-        return None;
-    }
-    None
 }
 
 /// Parses the `Scope` field — blank defaults to `Both`, anything else
@@ -3161,10 +3332,57 @@ fn parse_scope_field(s: &str) -> Option<crate::zfs::permission::Scope> {
 /// default for a permission list (unlike Shares' optional fields).
 fn parse_required_perms_field(s: &str) -> Option<Vec<String>> {
     let perms: Vec<String> = s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
-    if perms.is_empty() {
+    // A token starting with `-` would be read as an option by zfs/setfacl: refuse it here, with the form open.
+    if perms.is_empty() || perms.iter().any(|p| p.starts_with('-')) {
         None
     } else {
         Some(perms)
+    }
+}
+
+/// What is wrong with a required permissions field, in the words the form shows.
+fn perms_problem(s: &str) -> String {
+    match s.split(',').map(str::trim).find(|p| p.starts_with('-')) {
+        Some(token) => format!("Permissions: '{token}' is not a permission (it starts with '-')"),
+        None => "Permissions: choose at least one (F2 lists them)".to_string(),
+    }
+}
+
+/// The reason `build_pending_action` returned `None` for this form, naming the field, so the form can stay
+/// open with the typing intact and say what to fix.
+fn form_problem(kind: &FormKind, fields: &[FormField]) -> String {
+    let value = |i: usize| field_value(fields, i);
+    match kind {
+        FormKind::GrantPermission { .. } => {
+            if parse_recipient_field(value(0)).is_none() {
+                "Recipient: use everyone, user:<name> or group:<name>".to_string()
+            } else if parse_scope_field(value(1)).is_none() {
+                "Scope: local, descendent or both (blank means both)".to_string()
+            } else {
+                perms_problem(value(2))
+            }
+        }
+        FormKind::GrantPermissionSet { .. } => {
+            let name = value(0).trim();
+            if name.is_empty() {
+                "Set name: required".to_string()
+            } else if name.contains('@') {
+                "Set name: type it without the leading '@'".to_string()
+            } else {
+                perms_problem(value(1))
+            }
+        }
+        FormKind::GrantCreateTimePermission { .. } | FormKind::RevokePermissions { .. } => perms_problem(value(0)),
+        FormKind::AddAclEntry { .. } => {
+            if parse_acl_recipient_field(value(0)).is_none() {
+                "Recipient: use owner, group, everyone, user:<name> or group:<name>".to_string()
+            } else if parse_required_perms_field(value(1)).is_none() {
+                perms_problem(value(1))
+            } else {
+                "Type: allow or deny (blank means allow)".to_string()
+            }
+        }
+        _ => "Could not submit -- check the field values against the hints in their labels".to_string(),
     }
 }
 
@@ -3183,19 +3401,11 @@ fn parse_acl_recipient_field(s: &str) -> Option<crate::acl::AclTag> {
     if s.eq_ignore_ascii_case("everyone") {
         return Some(crate::acl::AclTag::Everyone);
     }
-    if let Some(name) = s.strip_prefix("user:") {
-        if !name.is_empty() {
-            return Some(crate::acl::AclTag::User(name.to_string()));
-        }
-        return None;
+    match split_recipient(s)? {
+        (keyword, name) if keyword == "user" => Some(crate::acl::AclTag::User(name.to_string())),
+        (keyword, name) if keyword == "group" => Some(crate::acl::AclTag::NamedGroup(name.to_string())),
+        _ => None,
     }
-    if let Some(name) = s.strip_prefix("group:") {
-        if !name.is_empty() {
-            return Some(crate::acl::AclTag::NamedGroup(name.to_string()));
-        }
-        return None;
-    }
-    None
 }
 
 /// Parses the ACL `Type` field — blank defaults to `Allow` (the more
@@ -3309,7 +3519,8 @@ Global
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
   F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
-  Esc              dismiss a status message, back out of a focused pane, or cancel a modal
+  Esc              dismiss a status message, back out of a focused pane, or cancel a modal (in a y/n confirmation Esc selects No, then Enter)
+  y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
   A                About
@@ -3338,7 +3549,8 @@ Pool/Dataset properties pane
 
 Datasets
   Right / Left     focus/unfocus the detail pane
-  n / d            create / destroy a dataset
+  n / d            create / destroy a dataset (type its name; zfs refuses if it has snapshots or children)
+  D                destroy a dataset AND its child datasets and snapshots (type its name; says how many; never -R)
   s                snapshot the selected dataset
   N                create/edit an NFS share
   M                create/edit an SMB share
@@ -3688,59 +3900,86 @@ mod tests {
         }
     }
 
-    #[test]
-    fn handle_modal_key_confirm_yes_returns_action_and_clears_modal() {
+    fn confirm_scrub() -> (App, crate::ui::modal::PendingAction) {
         let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action: action.clone() });
-        let result = app.handle_modal_key(KeyCode::Char('y'));
-        assert_eq!(result, Some(action));
+        let action = crate::ui::modal::PendingAction { host: 0, section: Section::Pools, call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() } };
+        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action: action.clone(), choice: None });
+        (app, action)
+    }
+
+    /// `None`: no confirm is open; `Some(None)`: open, nothing selected; `Some(Some(yes))`: the selection.
+    #[allow(clippy::option_option)]
+    fn choice_of(app: &App) -> Option<Option<bool>> {
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Confirm { choice, .. }) => Some(*choice),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_confirm_needs_y_and_then_enter_to_run() {
+        let (mut app, action) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None, "y alone runs nothing");
+        assert_eq!(choice_of(&app), Some(Some(true)), "y arms yes and keeps the window open");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), Some(action));
         assert!(app.modal.is_none());
     }
 
     #[test]
-    fn handle_modal_key_confirm_enter_also_submits() {
-        let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
-        let result = app.handle_modal_key(KeyCode::Enter);
-        assert!(result.is_some());
+    fn enter_on_its_own_does_nothing_at_all() {
+        let (mut app, _) = confirm_scrub();
+        for _ in 0..5 {
+            assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "mashing Enter must never run or dismiss it");
+        }
+        assert_eq!(choice_of(&app), Some(None));
     }
 
     #[test]
-    fn handle_modal_key_confirm_no_cancels_and_clears_modal() {
-        let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
-        let result = app.handle_modal_key(KeyCode::Char('n'));
-        assert_eq!(result, None);
+    fn n_then_enter_cancels_and_n_alone_does_not_close() {
+        let (mut app, _) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Char('n')), None);
+        assert_eq!(choice_of(&app), Some(Some(false)), "n arms no and keeps the window open");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none(), "Enter after n closes it without running anything");
+    }
+
+    #[test]
+    fn esc_also_arms_no_and_needs_enter_to_close() {
+        let (mut app, _) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Esc), None);
+        assert_eq!(choice_of(&app), Some(Some(false)), "Esc selects no, it does not close");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
         assert!(app.modal.is_none());
     }
 
     #[test]
-    fn handle_modal_key_confirm_unrecognized_key_keeps_modal_open() {
-        let mut app = App::new(vec!["local".to_string()]);
-        let action = crate::ui::modal::PendingAction {
-            host: 0,
-            section: Section::Pools,
-            call: crate::ui::modal::MutationCall::ScrubPool { pool: "tank".to_string() },
-        };
-        app.modal = Some(crate::ui::modal::Modal::Confirm { prompt: "Scrub tank? (y/n)".to_string(), action });
-        let result = app.handle_modal_key(KeyCode::Char('x'));
-        assert_eq!(result, None);
-        assert!(app.modal.is_some(), "an unrecognized key must not silently dismiss the confirmation");
+    fn the_last_choice_before_enter_wins() {
+        let (mut app, action) = confirm_scrub();
+        app.handle_modal_key(KeyCode::Char('y'));
+        app.handle_modal_key(KeyCode::Char('n'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "y then n: cancelled");
+        let (mut app, _) = confirm_scrub();
+        app.handle_modal_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Esc);
+        app.handle_modal_key(KeyCode::Char('y'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), Some(action), "n, Esc, y: runs");
+    }
+
+    #[test]
+    fn other_keys_never_change_or_dismiss_a_confirm() {
+        let (mut app, _) = confirm_scrub();
+        app.handle_modal_key(KeyCode::Char('y'));
+        for key in [KeyCode::Char('x'), KeyCode::Char(' '), KeyCode::Tab, KeyCode::Backspace, KeyCode::Up, KeyCode::Down] {
+            assert_eq!(app.handle_modal_key(key), None);
+        }
+        assert_eq!(choice_of(&app), Some(Some(true)), "stray keys keep the armed choice and the window");
+    }
+
+    #[test]
+    fn every_confirm_opened_from_a_key_starts_with_no_choice() {
+        let (mut app, _dir) = selected_jobs_app(&[scrub_job("a")]);
+        app.handle_key(KeyCode::Char('d'));
+        assert_eq!(choice_of(&app), Some(None), "a freshly opened confirm has nothing selected");
     }
 
     #[test]
@@ -8228,10 +8467,11 @@ mod tests {
     fn d_on_a_job_asks_for_a_warning_confirmation_and_deletes_only_that_job() {
         let (mut app, _dir) = selected_jobs_app(&[scrub_job("a"), scrub_job("b")]);
         app.handle_key(KeyCode::Char('d'));
-        let Some(Modal::Confirm { prompt, action }) = &app.modal else { panic!("{:?}", app.modal) };
+        let Some(Modal::Confirm { prompt, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
         assert!(prompt.contains("Delete job 'a'") && prompt.contains("history"), "{prompt}");
         assert_eq!(action.call.tone(), crate::ui::modal::Tone::Warn);
-        let action = app.handle_modal_key(KeyCode::Char('y')).expect("confirmed");
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("confirmed with y then Enter");
         assert_eq!(action.section, Section::Jobs);
         assert!(matches!(&action.call, MutationCall::DeleteJob { id, .. } if id == "a"), "{:?}", action.call);
     }
@@ -8245,6 +8485,8 @@ mod tests {
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Char('d'));
         assert!(app.handle_modal_key(KeyCode::Char('n')).is_none());
+        assert!(app.modal.is_some(), "n only selects no");
+        assert!(app.handle_modal_key(KeyCode::Enter).is_none());
         assert!(app.modal.is_none());
     }
 
@@ -8640,7 +8882,9 @@ mod tests {
             let mut app = in_section(section);
             app.auto_refresh(runner(""), Instant::now(), TEN);
             assert!(app.in_flight.contains(&(section, 0)), "{section:?} refresh not started");
-            assert_eq!(app.in_flight.len(), 1, "only the visible section is refreshed ({section:?})");
+            // Datasets also loads the snapshot list the first time (the destroy prompts count them).
+            let expected = if section == Section::Datasets { 2 } else { 1 };
+            assert_eq!(app.in_flight.len(), expected, "only the visible section is refreshed ({section:?})");
             assert!(app.quiet_refresh.contains(&(section, 0)), "{section:?} should be quiet");
         }
     }
@@ -9175,7 +9419,7 @@ mod tests {
     fn a_asks_to_confirm_then_activates_permanently_and_only_when_it_would_change_something() {
         let mut app = bootenv_app(vec![running(), spare()], 1);
         app.handle_key(KeyCode::Char('a'));
-        let Some(Modal::Confirm { prompt, action }) = &app.modal else { panic!("{:?}", app.modal) };
+        let Some(Modal::Confirm { prompt, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
         assert!(prompt.contains("'spare'"), "{prompt}");
         assert_eq!(action.call, MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: false });
         let mut app = bootenv_app(vec![running(), spare()], 0);
@@ -9389,5 +9633,394 @@ mod tests {
     fn help_documents_the_backup_key() {
         let text = help_text();
         assert!(text.contains("new backup job"), "{text}");
+    }
+
+    #[test]
+    fn help_explains_the_two_step_confirmation() {
+        let text = help_text();
+        assert!(text.contains("takes two keys") && text.contains("Enter alone does nothing"), "{text}");
+    }
+
+
+    fn destroy_app() -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        let ds = |name: &str| crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None };
+        app.datasets = vec![ds("tank/data"), ds("tank/data/a"), ds("tank/data/b"), ds("tank/data2"), ds("tank/other")];
+        app.datasets_table.select(Some(0));
+        let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 0 };
+        app.snapshots = vec![snap("tank/data", "s1"), snap("tank/data", "s2"), snap("tank/data/a", "s1"), snap("tank/data2", "x"), snap("tank/other", "x")];
+        app.snapshots_loaded = true;
+        app
+    }
+
+    #[test]
+    fn big_d_on_a_dataset_asks_for_its_name_and_says_what_goes_with_it() {
+        let mut app = destroy_app();
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, expected, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert_eq!(expected, "tank/data");
+        assert_eq!(action.call, MutationCall::DestroyDatasetRecursive { name: "tank/data".to_string() });
+        assert!(prompt.contains("2 child datasets") && prompt.contains("3 snapshots"), "siblings like tank/data2 are not counted: {prompt}");
+        assert!(prompt.contains("last refresh"), "{prompt}");
+        for c in "tank/data".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let run = app.handle_modal_key(KeyCode::Enter).expect("typed the name, then Enter");
+        assert_eq!(run.call, MutationCall::DestroyDatasetRecursive { name: "tank/data".to_string() });
+        assert_eq!(run.section, Section::Datasets);
+    }
+
+    #[test]
+    fn the_prompt_counts_singular_correctly_and_admits_when_snapshots_are_unknown() {
+        let mut app = destroy_app();
+        app.datasets.retain(|d| d.name != "tank/data/b");
+        app.snapshots.retain(|s| s.dataset == "tank/data" && s.name == "s1");
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("1 child dataset ") && prompt.contains("1 snapshot"), "{prompt}");
+        let mut app = destroy_app();
+        app.snapshots_loaded = false;
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("snapshots: unknown") && !prompt.contains("3 snapshots"), "{prompt}");
+    }
+
+    #[test]
+    fn plain_d_warns_that_zfs_will_refuse_and_points_at_big_d_only_when_there_is_something_under_it() {
+        let mut app = destroy_app();
+        app.handle_key(KeyCode::Char('d'));
+        let Some(Modal::ConfirmTyped { prompt, action, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("zfs will refuse") && prompt.contains("press Esc, then D"), "{prompt}");
+        assert_eq!(action.call, MutationCall::DestroyDataset { name: "tank/data".to_string() }, "d stays non-recursive");
+        let mut app = destroy_app();
+        app.datasets_table.select(Some(4)); // tank/other: one snapshot, no children
+        app.snapshots.retain(|s| s.dataset != "tank/other");
+        app.handle_key(KeyCode::Char('d'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(!prompt.contains("zfs will refuse"), "nothing under it: {prompt}");
+    }
+
+    #[test]
+    fn big_d_is_inert_without_a_selection_or_with_the_right_pane_focused() {
+        let mut app = destroy_app();
+        app.datasets_table.select(None);
+        app.handle_key(KeyCode::Char('D'));
+        assert!(app.modal.is_none());
+        let mut app = destroy_app();
+        app.pane_focus = PaneFocus::Right;
+        app.handle_key(KeyCode::Char('D'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn snapshots_count_as_loaded_after_a_refresh_and_not_after_a_host_switch() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        assert!(!app.snapshots_loaded);
+        app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![]))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.snapshots_loaded, "an empty list is still a loaded list");
+        app.handle_key(KeyCode::Down); // switch host (Hosts section)
+        assert!(!app.snapshots_loaded);
+    }
+
+    #[test]
+    fn help_documents_recursive_destroy() {
+        assert!(help_text().contains("D                destroy a dataset AND its child datasets and snapshots"), "{}", help_text());
+    }
+
+
+    fn rename_to(app: &mut App, new_name: &str) -> PendingAction {
+        app.handle_key(KeyCode::Char('R'));
+        for c in new_name.chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter).expect("the rename form submits")
+    }
+
+    fn names(app: &App) -> Vec<&str> {
+        app.bootenvs.iter().map(|b| b.name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_selection_follows_a_renamed_boot_environment_instead_of_sliding_to_its_neighbour() {
+        let rows = vec![running(), spare(), be("zeta", false, false, false, None)];
+        let mut app = bootenv_app(rows, 1); // spare
+        rename_to(&mut app, "zz");
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Ok(()))).unwrap();
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), be("zeta", false, false, false, None), be("zz", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(names(&app), ["default", "zeta", "zz"]);
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("zz"), "index 1 is now zeta: the key must not act on it");
+    }
+
+    #[test]
+    fn a_refresh_that_lands_before_the_rename_does_not_use_up_the_pin() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        rename_to(&mut app, "zz");
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), spare()]))).unwrap(); // an auto-refresh from before the rename
+        app.drain_worker_messages();
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("spare"));
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), be("zz", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("zz"), "the later list still honours the pin");
+    }
+
+    #[test]
+    fn a_failed_rename_drops_the_pin() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        rename_to(&mut app, "zz");
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Err(crate::error::AppError::Parse("no".into())))).unwrap();
+        app.drain_worker_messages();
+        // A later, unrelated list with a boot environment of that name must not steal the selection.
+        app.tx.send(WorkerMsg::BootEnvs(0, Ok(vec![running(), spare(), be("zz", false, false, false, None)]))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.selected_bootenv().map(|b| b.name.as_str()), Some("spare"));
+    }
+
+    #[test]
+    fn no_confirm_keys_cannot_fire_twice_before_the_first_change_has_finished() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1);
+        for key in ['m', 'u', 't', 'T', 'a', 'd', 'D', 'R', 'n'] {
+            app.handle_key(KeyCode::Char(key));
+        }
+        assert_eq!(app.pending_mutations.len(), 1, "nothing else was queued");
+        assert!(app.modal.is_none(), "no window opened for a change while one is running");
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Still working on 'spare'")), "{:?}", app.status_message);
+        app.tx.send(WorkerMsg::MutationDone(0, Section::BootEnvs, Ok(()))).unwrap();
+        app.drain_worker_messages();
+        app.pending_mutations.clear();
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1, "free again once the change finished");
+    }
+
+    #[test]
+    fn a_change_started_from_a_confirmation_marks_the_section_busy_until_it_finishes() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('a'));
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("confirmed");
+        app.dispatch_mutation(action, std::sync::Arc::new(FakeRunner::new("")));
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.pending_mutations.is_empty() && app.status_message.as_deref().is_some_and(|m| m.contains("Still working")), "{:?}", app.status_message);
+        wait_until(&mut app, |a| a.bootenv_busy.is_none());
+        assert!(app.bootenv_busy.is_none());
+    }
+
+    #[test]
+    fn a_stuck_busy_marker_expires_so_the_section_can_never_be_locked_for_good() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.bootenv_busy = Some(("spare".to_string(), Instant::now().checked_sub(Duration::from_mins(5)).unwrap()));
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.pending_mutations.len(), 1);
+    }
+
+    #[test]
+    fn switching_host_clears_the_busy_marker_and_the_pin() {
+        let mut app = App::new(vec!["local".to_string(), "backup".to_string()]);
+        app.bootenv_busy = Some(("x".to_string(), Instant::now()));
+        app.bootenv_pin = Some("y".to_string());
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::BackTab);
+        app.handle_key(KeyCode::Down);
+        assert!(app.bootenv_busy.is_none() && app.bootenv_pin.is_none());
+    }
+
+
+    #[test]
+    fn recipient_keywords_are_case_insensitive_and_whitespace_tolerant_but_names_keep_their_case() {
+        use crate::zfs::permission::Recipient;
+        assert_eq!(parse_recipient_field("User:Carol"), Some(Recipient::User("Carol".into())));
+        assert_eq!(parse_recipient_field("  GROUP : wheel  "), Some(Recipient::Group("wheel".into())));
+        assert_eq!(parse_recipient_field(" user:  bob "), Some(Recipient::User("bob".into())));
+        assert_eq!(parse_recipient_field("EVERYONE"), Some(Recipient::Everyone));
+        for bad in ["user:", "user:   ", "group", "users:bob", "", "bob"] {
+            assert_eq!(parse_recipient_field(bad), None, "{bad:?}");
+        }
+        use crate::acl::AclTag;
+        assert_eq!(parse_acl_recipient_field(" Owner "), Some(AclTag::Owner));
+        assert_eq!(parse_acl_recipient_field("GROUP"), Some(AclTag::OwningGroup));
+        assert_eq!(parse_acl_recipient_field("Group: Wheel"), Some(AclTag::NamedGroup("Wheel".into())));
+        assert_eq!(parse_acl_recipient_field("USER :carol"), Some(AclTag::User("carol".into())));
+        assert_eq!(parse_acl_recipient_field("user:  "), None);
+    }
+
+    fn open_form(app: &mut App, kind: FormKind, values: &[&str]) {
+        let fields = values.iter().map(|v| FormField { label: "f".to_string(), value: (*v).to_string() }).collect::<Vec<_>>();
+        app.modal = Some(Modal::Form { title: "t".to_string(), focused: fields.len() - 1, fields, description: None, kind });
+    }
+
+    fn submit_problem(kind: FormKind, values: &[&str]) -> String {
+        let mut app = App::new(vec!["local".to_string()]);
+        open_form(&mut app, kind, values);
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "an invalid form submits nothing");
+        assert!(matches!(app.modal, Some(Modal::Form { .. })), "and stays open so the typing is not lost");
+        app.status_message.unwrap_or_default()
+    }
+
+    #[test]
+    fn a_dash_prefixed_permission_keeps_the_form_open_and_names_the_token() {
+        let grant = || FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        let msg = submit_problem(grant(), &["user:carol", "both", "snapshot, -x"]);
+        assert!(msg.contains("Permissions") && msg.contains("-x") && msg.contains("'-'"), "{msg}");
+        let revoke = FormKind::RevokePermissions { host: 0, dataset: "tank/data".to_string(), target: crate::zfs::permission::PermissionTarget::CreateTime };
+        assert!(submit_problem(revoke, &["--help"]).contains("--help"));
+        let acl = FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
+        assert!(submit_problem(acl, &["owner", "read_data,-r", "", "allow"]).contains("-r"));
+    }
+
+    #[test]
+    fn each_form_problem_says_which_field_is_wrong() {
+        let grant = || FormKind::GrantPermission { host: 0, dataset: "tank/data".to_string() };
+        assert!(submit_problem(grant(), &["bob", "both", "snapshot"]).contains("Recipient"));
+        assert!(submit_problem(grant(), &["user:carol", "sideways", "snapshot"]).contains("Scope"));
+        assert!(submit_problem(grant(), &["user:carol", "both", " , "]).contains("Permissions"));
+        let set = || FormKind::GrantPermissionSet { host: 0, dataset: "tank/data".to_string() };
+        assert!(submit_problem(set(), &["@ro", "snapshot"]).contains("without the leading '@'"));
+        assert!(submit_problem(set(), &["", "snapshot"]).contains("Set name"));
+        let acl = || FormKind::AddAclEntry { host: 0, path: "/tank/data".to_string(), position: 0 };
+        assert!(submit_problem(acl(), &["nobody", "read_data", "", "allow"]).contains("Recipient"));
+        assert!(submit_problem(acl(), &["owner", "read_data", "", "maybe"]).contains("Type"));
+        // A form with no specific rule still says something useful.
+        assert!(submit_problem(FormKind::CreatePool { host: 0 }, &["", ""]).contains("Could not submit"));
+    }
+
+    fn acl_app_with_acltype(value: Option<&str>) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets_table.select(Some(0));
+        enter_datasets_acl_tab(&mut app);
+        app.acl_entries = vec![crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow }];
+        app.acl_entries_table.select(Some(0));
+        app.acl_entries_for = Some("/tank/data".to_string());
+        if let Some(v) = value {
+            app.dataset_properties_for = Some("tank/data".to_string());
+            app.dataset_properties = vec![Property { name: "acltype".to_string(), value: v.to_string(), source: PropertySource::Local }];
+        }
+        app
+    }
+
+    #[test]
+    fn the_acl_remove_confirm_shows_the_entry_it_would_remove() {
+        let mut app = acl_app_with_acltype(Some("nfsv4"));
+        app.handle_key(KeyCode::Char('d'));
+        let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("#0") && prompt.contains("allow owner@: read_data") && prompt.contains("/tank/data"), "{prompt}");
+    }
+
+    #[test]
+    fn a_posix_acltype_dataset_explains_itself_and_the_acl_keys_stay_inert() {
+        let mut app = acl_app_with_acltype(Some("posix"));
+        assert!(app.acl_unsupported().is_some_and(|r| r.contains("posix") && r.contains("NFSv4")));
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.modal.is_none() && app.status_message.as_deref().is_some_and(|m| m.contains("posix")), "{:?}", app.status_message);
+        app.status_message = None;
+        app.handle_key(KeyCode::Char('d'));
+        assert!(app.modal.is_none() && app.status_message.as_deref().is_some_and(|m| m.contains("posix")));
+        for other in [Some("nfsv4"), Some("off"), None] {
+            assert_eq!(acl_app_with_acltype(other).acl_unsupported(), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_acltype_of_another_dataset_is_never_applied() {
+        let mut app = acl_app_with_acltype(Some("posix"));
+        app.dataset_properties_for = Some("tank/other".to_string());
+        assert_eq!(app.acl_unsupported(), None, "stale properties of a different dataset say nothing about this one");
+    }
+
+
+    #[test]
+    fn the_datasets_view_refreshes_the_snapshot_list_quietly_with_the_datasets_so_destroy_prompts_can_count_them() {
+        let mut app = in_section(Section::Datasets);
+        app.status_message = Some("scrub started".to_string());
+        app.auto_refresh(runner(""), Instant::now(), TEN);
+        assert!(app.in_flight.contains(&(Section::Datasets, 0)) && app.in_flight.contains(&(Section::Snapshots, 0)));
+        assert!(app.quiet_refresh.contains(&(Section::Snapshots, 0)), "quiet: its arrival must not wipe an informational status");
+        wait_until(&mut app, |a| a.snapshots_loaded);
+        assert!(app.snapshots_loaded);
+        assert_eq!(app.status_message.as_deref(), Some("scrub started"));
+        app.in_flight.clear();
+        app.last_auto_refresh.clear();
+        app.auto_refresh(runner(""), Instant::now(), TEN);
+        assert!(app.in_flight.contains(&(Section::Snapshots, 0)), "every Datasets refresh also refreshes the snapshots, so the counts are as fresh as the list");
+    }
+
+
+    #[test]
+    fn uppercase_y_and_n_also_only_select_so_caps_lock_cannot_leave_the_user_stuck() {
+        let (mut app, action) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Char('Y')), None);
+        assert_eq!(choice_of(&app), Some(Some(true)));
+        assert_eq!(app.handle_modal_key(KeyCode::Char('N')), None);
+        assert_eq!(choice_of(&app), Some(Some(false)));
+        app.handle_modal_key(KeyCode::Char('Y'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), Some(action), "still two keys: select, then Enter");
+    }
+
+    fn ds_named(name: &str, mountpoint: Option<&str>) -> crate::zfs::dataset::Dataset {
+        crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string) }
+    }
+
+    fn datasets_app_selecting(datasets: Vec<crate::zfs::dataset::Dataset>, selected: &str) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        let index = datasets.iter().position(|d| d.name == selected).unwrap();
+        app.datasets = datasets;
+        app.datasets_table.select(Some(index));
+        app.snapshots_loaded = true;
+        app
+    }
+
+    #[test]
+    fn a_pool_root_cannot_be_destroyed_with_d_or_big_d_because_zfs_destroy_r_would_wipe_the_pool() {
+        for key in ['d', 'D'] {
+            let mut app = datasets_app_selecting(vec![ds_named("tank", Some("/tank")), ds_named("tank/data", Some("/tank/data"))], "tank");
+            app.handle_key(KeyCode::Char(key));
+            assert!(app.modal.is_none(), "{key}: no window may open for a pool root");
+            let status = app.status_message.clone().unwrap_or_default();
+            assert!(status.contains("pool") && status.contains("Pools"), "{key}: {status}");
+        }
+    }
+
+    #[test]
+    fn recursive_destroy_is_refused_on_boot_environment_datasets_and_on_anything_holding_the_running_root() {
+        let all = || vec![
+            ds_named("zroot", Some("/zroot")),
+            ds_named("zroot/ROOT", None),
+            ds_named("zroot/ROOT/default", Some("/")),
+            ds_named("zroot/ROOT/other", None),
+            ds_named("zroot/rootfs", None),
+            ds_named("zroot/rootfs/inner", Some("/")),
+            ds_named("zroot/home", Some("/home")),
+        ];
+        for refused in ["zroot/ROOT", "zroot/ROOT/default", "zroot/ROOT/other", "zroot/rootfs", "zroot/rootfs/inner"] {
+            let mut app = datasets_app_selecting(all(), refused);
+            app.handle_key(KeyCode::Char('D'));
+            assert!(app.modal.is_none(), "{refused} must be refused");
+            assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Boot Envs") || m.contains("running")), "{refused}: {:?}", app.status_message);
+        }
+        let mut ok = datasets_app_selecting(all(), "zroot/home");
+        ok.handle_key(KeyCode::Char('D'));
+        assert!(matches!(ok.modal, Some(Modal::ConfirmTyped { .. })), "an ordinary dataset still works");
+    }
+
+    #[test]
+    fn the_recursive_prompt_admits_partial_destruction_and_describes_clones_precisely() {
+        let mut app = destroy_app();
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("stops part-way") && prompt.contains("stays destroyed"), "{prompt}");
+        assert!(prompt.contains("clones inside it go with it") && prompt.contains("outside"), "{prompt}");
+    }
+
+    #[test]
+    fn help_does_not_claim_esc_cancels_every_modal() {
+        let text = help_text();
+        assert!(text.contains("in a y/n confirmation Esc selects No"), "{text}");
     }
 }

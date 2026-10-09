@@ -142,6 +142,22 @@ pub fn new_snapshot_job_id(host: &str, dataset: &str, prefix: &str, existing: &[
     unique(&format!("snap-{}-{}-{}", safe_key(host), safe_key(dataset), safe_key(prefix)), existing)
 }
 
+/// What the Jobs table's Target column shows: the pool or dataset, and for a replication or a backup where
+/// its data goes (a host and dataset, a hub directory, or the restic repository, which by contract holds no
+/// credentials).
+pub fn job_target(job: &Job) -> String {
+    let source = job.pool.clone().or_else(|| job.dataset.clone()).unwrap_or_default();
+    match job.kind.as_str() {
+        jobs::KIND_REPLICATE => match job.dest_host.as_deref() {
+            Some(jobs::DEST_FILE) => format!("{source} → file:{}", job.dest_dir.as_deref().unwrap_or("")),
+            Some(host) => format!("{source} → {host}:{}", job.dest_dataset.as_deref().unwrap_or("")),
+            None => source,
+        },
+        jobs::KIND_BACKUP => format!("{source} → {}", job.repository.as_deref().unwrap_or("")),
+        _ => source,
+    }
+}
+
 /// `just now`, `45m ago`, `3h ago`, `2d ago`. A time in the future reads as `just now`.
 pub fn age_text(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
     let secs = (now - then).num_seconds();
@@ -513,5 +529,18 @@ mod tests {
         assert_eq!(new_backup_job_id("local", "tank/data", &[]), "backup-local-tank-data");
         assert_eq!(new_backup_job_id("local", "tank/data", &["backup-local-tank-data".to_string()]), "backup-local-tank-data-2");
         assert!(new_backup_job_id("my host", "tank/we ird", &[]).chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')));
+    }
+
+
+    #[test]
+    fn the_target_names_where_the_data_goes() {
+        assert_eq!(job_target(&Job::test_snapshot("s", "tank/data", "auto", 3)), "tank/data");
+        assert_eq!(job_target(&job("x")), "tank");
+        assert_eq!(job_target(&Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")), "tank/data → fbsd16:backup/data");
+        let mut file = Job::test_replicate("r", "tank/data", "hourly", "file", "x");
+        file.dest_dataset = None;
+        file.dest_dir = Some("/mnt/usb/streams".to_string());
+        assert_eq!(job_target(&file), "tank/data → file:/mnt/usb/streams");
+        assert_eq!(job_target(&Job::test_backup("b", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw")), "tank/data → /mnt/usb/restic");
     }
 }
