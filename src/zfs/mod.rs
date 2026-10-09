@@ -4,6 +4,7 @@ pub mod dataset;
 pub mod disk;
 pub mod disk_detail;
 pub mod host;
+pub mod host_health;
 pub mod metrics;
 pub mod permission;
 pub mod pool;

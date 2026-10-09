@@ -217,35 +217,68 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
+    use crate::zfs::host_health::{HostProbe, Level};
     let theme = app.theme.clone();
-    let items: Vec<ListItem> = app
+    // Name and State always show; Address then Rtt only while they fit (Rtt is the first to go).
+    let inner = area.width.saturating_sub(2);
+    // The name column fits the longest host name (so a narrow table squeezes the State text, never the name).
+    let longest = app.hosts.iter().map(|h| h.chars().count()).max().unwrap_or(0);
+    let name_w = u16::try_from(longest + 2).unwrap_or(16).clamp(8, 16);
+    let (addr_w, rtt_w, state_min) = (18_u16, 6_u16, 22_u16);
+    let show_addr = inner >= 16 + state_min + addr_w + 2;
+    let show_rtt = show_addr && inner >= 16 + state_min + addr_w + rtt_w + 3;
+    let rows: Vec<Row> = app
         .hosts
         .iter()
         .enumerate()
-        .map(|(i, h)| {
-            let style = if i == app.selected_host {
-                theme.selected_row()
-            } else {
-                Style::default()
+        .map(|(i, name)| {
+            let assessment = app.host_assessment(i);
+            let (marker_style, name_style, state_style) = match assessment.level {
+                Level::Ok => (theme.ok, Style::default(), Style::default()),
+                Level::Warning => (theme.warn, theme.warn, theme.warn),
+                Level::Critical | Level::Disconnected => (theme.err, theme.err, theme.err),
+                Level::Probing => (theme.dim(), theme.dim(), theme.dim()),
             };
-            ListItem::new(h.as_str()).style(style)
+            let rtt = match app.host_probes.get(name).and_then(|s| s.last.as_ref()) {
+                Some(HostProbe::Reached { rtt_ms, .. }) => format!("{rtt_ms}ms"),
+                _ => "-".to_string(),
+            };
+            let mut cells = vec![Cell::from(Line::from(vec![Span::styled("● ", marker_style), Span::styled(name.clone(), name_style)]))];
+            if show_addr {
+                cells.push(Cell::from(app.host_address(i).to_string()));
+            }
+            cells.push(Cell::from(Span::styled(assessment.reason, state_style)));
+            if show_rtt {
+                cells.push(Cell::from(rtt));
+            }
+            let row = Row::new(cells);
+            if i == app.selected_host { row.style(theme.selected_row()) } else { row }
         })
         .collect();
-    let list_area = if app.hosts.len() == 1 {
-        let [list_part, hint_part] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(4)])
-            .areas(area);
-        let hint = Paragraph::new("Only this host is configured. Press 'n' to add another host.".to_string())
-            .wrap(Wrap { trim: false })
-            .style(theme.dim());
+    let mut widths = vec![Constraint::Length(name_w)];
+    let mut headers = vec!["Name"];
+    if show_addr {
+        widths.push(Constraint::Length(addr_w));
+        headers.push("Address");
+    }
+    widths.push(Constraint::Min(8));
+    headers.push("State");
+    if show_rtt {
+        widths.push(Constraint::Length(rtt_w));
+        headers.push("Rtt");
+    }
+    let table_area = if app.hosts.len() == 1 {
+        let [table_part, hint_part] = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(0), Constraint::Length(4)]).areas(area);
+        let hint = Paragraph::new("Only this host is configured. Press 'n' to add another host.".to_string()).wrap(Wrap { trim: false }).style(theme.dim());
         f.render_widget(hint, hint_part);
-        list_part
+        table_part
     } else {
         area
     };
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title("Hosts"));
-    f.render_widget(list, list_area);
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers))
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title("Hosts"));
+    f.render_widget(table, table_area);
 }
 
 /// Name column width the Pools table protects before it spends space on
@@ -2058,5 +2091,126 @@ mod tests {
         app.dataset_properties = vec![crate::zfs::property::Property { name: "acltype".to_string(), value: "posix".to_string(), source: crate::zfs::property::PropertySource::Local }];
         let text = render(&mut app, 160, 30).join("\n");
         assert!(text.contains("acltype=posix") && text.contains("NFSv4"), "{text}");
+    }
+
+    fn hosts_app() -> App {
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string(), "fbsd16t1".to_string(), "deadbox".to_string()]);
+        app.set_host_addresses(vec!["local".into(), "172.16.10.60".into(), "172.16.10.61".into(), "172.16.10.99".into()]);
+        let probe = |p: crate::zfs::host_health::HostProbe| crate::ui::state::HostProbeState { last: Some(p), in_flight: false, finished_at: Some(std::time::Instant::now()), started_at: None };
+        let pool = |n: &str, h: crate::zfs::pool::PoolHealth, c: u8| crate::zfs::host_health::PoolProbe { name: n.to_string(), health: h, capacity_percent: c, frag_percent: None, errors: Some(0), scan: None };
+        use crate::zfs::host_health::HostProbe;
+        app.host_probes.insert("local".into(), probe(HostProbe::Reached { rtt_ms: 3, pools: vec![pool("zroot", crate::zfs::pool::PoolHealth::Online, 20)] }));
+        app.host_probes.insert("fbsd16".into(), probe(HostProbe::Reached { rtt_ms: 12, pools: vec![pool("tank", crate::zfs::pool::PoolHealth::Degraded, 20)] }));
+        app.host_probes.insert("fbsd16t1".into(), probe(HostProbe::Reached { rtt_ms: 7, pools: vec![pool("tank", crate::zfs::pool::PoolHealth::Online, 85)] }));
+        app.host_probes.insert("deadbox".into(), probe(HostProbe::Disconnected));
+        app
+    }
+
+    /// The foreground color of the first cell of `needle` on the first row that contains it.
+    fn fg_of(app: &mut App, needle: &str, w: u16, h: u16) -> Option<ratatui::style::Color> {
+        let rows = render(app, w, h);
+        let buf = buffer_of(app, w, h);
+        for (y, row) in rows.iter().enumerate() {
+            if let Some(x) = row.find(needle) {
+                let col = row[..x].chars().count();
+                return buf[(u16::try_from(col).ok()?, u16::try_from(y).ok()?)].fg.into();
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_hosts_table_shows_name_address_state_and_rtt() {
+        let mut app = hosts_app();
+        app.selected_host = 0;
+        let text = render(&mut app, 120, 30).join("\n");
+        for want in ["Name", "Address", "State", "Rtt", "fbsd16", "172.16.10.60", "tank DEGRADED", "tank 85% full", "unreachable", "12ms", "ok"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        assert!(text.contains("local"), "the hub's address column says local");
+    }
+
+    #[test]
+    fn health_colors_the_marker_and_name_and_the_unreachable_host_is_red() {
+        let mut app = hosts_app();
+        app.selected_host = 0;
+        let theme = app.theme.clone();
+        assert_eq!(fg_of(&mut app, "fbsd16 ", 120, 30), theme.err.fg, "a degraded pool is red");
+        assert_eq!(fg_of(&mut app, "fbsd16t1", 120, 30), theme.warn.fg, "85% full is yellow");
+        assert_eq!(fg_of(&mut app, "deadbox", 120, 30), theme.err.fg, "unreachable is red");
+    }
+
+    #[test]
+    fn a_host_that_has_not_been_probed_is_dim_and_says_probing() {
+        let mut app = App::new(vec!["local".to_string(), "new".to_string()]);
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("probing"), "{text}");
+    }
+
+    #[test]
+    fn narrow_terminals_drop_rtt_then_address_but_keep_name_and_state() {
+        let mut app = hosts_app();
+        let wide = render(&mut app, 140, 30).join("\n");
+        assert!(wide.contains("Rtt") && wide.contains("Address"));
+        let mid = render(&mut app, 90, 30).join("\n");
+        assert!(!mid.contains("Rtt") && mid.contains("Address") && mid.contains("State"), "{mid}");
+        let narrow = render(&mut app, 50, 30).join("\n");
+        assert!(!narrow.contains("Address") && narrow.contains("Name") && narrow.contains("State") && narrow.contains("unreachable"), "{narrow}");
+    }
+
+    #[test]
+    fn the_single_host_hint_and_the_selection_are_kept() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("Only this host is configured"), "{text}");
+        let mut many = hosts_app();
+        many.selected_host = 1;
+        let buf = buffer_of(&mut many, 120, 30);
+        let rows = render(&mut many, 120, 30);
+        let y = rows.iter().position(|r| r.contains("172.16.10.60")).unwrap();
+        let x = rows[y].find("172.16.10.60").unwrap();
+        let selected = buf[(u16::try_from(x).unwrap(), u16::try_from(y).unwrap())].modifier;
+        let other = {
+            let y2 = rows.iter().position(|r| r.contains("172.16.10.61")).unwrap();
+            buf[(u16::try_from(x).unwrap(), u16::try_from(y2).unwrap())].modifier
+        };
+        assert_ne!(selected, other, "the selected host's row looks selected");
+    }
+
+    fn host_panel_app(w_extra: ()) -> App {
+        let _ = w_extra;
+        let mut app = App::new(vec!["local".to_string()]);
+        let target = MetricsTarget::Host;
+        app.metrics.retarget(Some(target.clone()));
+        app.metrics.apply(&target, Ok(crate::zfs::metrics::TargetSample { pool: crate::zfs::metrics::PoolSample::default(), space: None, host: Some(crate::ui::metrics::tests_support::rich_host()), snapshot: None, disk: None, share: None }), std::time::Instant::now());
+        app
+    }
+
+    #[test]
+    fn the_host_panel_shows_two_columns_when_wide_and_one_when_narrow_and_says_when_it_cuts_pool_rows() {
+        let mut wide = host_panel_app(());
+        let text = render(&mut wide, 190, 40).join("\n");
+        for want in ["Metrics — host local", "CPU", "36 cores", "Memory", "Swap", "L2ARC", "scratch", "tank", "zroot"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        let mut narrow = host_panel_app(());
+        let text = render(&mut narrow, 90, 40).join("\n");
+        assert!(text.contains("CPU") && text.contains("Swap"), "one column still shows everything:\n{text}");
+        let mut short = host_panel_app(());
+        let text = render(&mut short, 190, 24).join("\n");
+        assert!(text.contains("more pool row") || text.contains("scratch"), "never silently clipped:\n{text}");
+    }
+
+    #[test]
+    fn a_short_host_panel_keeps_the_pools_and_the_unhealthy_rows_and_says_how_much_it_hides() {
+        for (w, h) in [(80, 24), (100, 30)] {
+            let mut app = host_panel_app(());
+            let text = render(&mut app, w, h).join("\n");
+            assert!(text.contains("DEGRADED"), "{w}x{h}: the unhealthy pool row must survive:\n{text}");
+            assert!(text.contains("Status"), "{w}x{h}: the status line must survive:\n{text}");
+        }
+        let mut tiny = host_panel_app(());
+        let text = render(&mut tiny, 80, 24).join("\n");
+        assert!(text.contains("more lines: enlarge the terminal"), "{text}");
     }
 }

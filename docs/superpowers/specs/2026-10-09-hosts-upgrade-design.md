@@ -108,3 +108,11 @@ One implementation plan: the new parsers and `probe_host`, the health function, 
 ## Files touched (indicative)
 
 `src/zfs/host.rs`, `src/zfs/pool.rs` (reuse/extend the scan parser), `src/zfs/mod.rs`, `src/ui/state.rs` (health/address state, `WorkerMsg::HostProbe`), `src/ui/mod.rs` (probe scheduling), `src/ui/layout.rs` (`draw_hosts`), `src/ui/metrics.rs` (`host_lines`, panel layout), `src/ui/hints.rs` (if hints change), `README.md`.
+
+## Live results (2026-10-09)
+
+- Hub, `fbsd16`, `fbsd16t1` figures compared with the same values read by hand: cores, physical memory, swap, per-pool fragmentation and capacity, scrub dates all matched (free memory moves between reads).
+- Probing is staggered; all four hosts reach `ok` within ~10 s of start. A configured host at an address that does not answer showed `probing`, then `unreachable` about 15 s after start (stagger plus one 10 s SSH timeout), with the UI responsive throughout.
+- A throwaway file-backed mirror with one side offline showed the hub red with `zit-m DEGRADED`; a throwaway pool at 86% showed it yellow with `zit-h 86% full`. Both pools and the temporary host entry were removed afterwards.
+- Not tested live: the 90% red state (a small file-backed pool never exceeds ~50% `cap` because of ZFS slop space; covered by unit tests at 89/90), a failed job, the stale (dimmed) panel, the `no answer` state, device-level errors; all covered by unit/render tests only.
+- Review fixes made after the live run (device-level errors, panel never clips silently, hung or panicking probes) were re-deployed and the panel re-checked on the hub at 170x48 only; small terminal sizes are covered by render tests at 80x24 and 100x30.

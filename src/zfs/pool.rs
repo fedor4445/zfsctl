@@ -14,7 +14,7 @@ pub enum PoolHealth {
 }
 
 impl PoolHealth {
-    fn parse(s: &str) -> PoolHealth {
+    pub fn parse(s: &str) -> PoolHealth {
         match s {
             "ONLINE" => PoolHealth::Online,
             "DEGRADED" => PoolHealth::Degraded,

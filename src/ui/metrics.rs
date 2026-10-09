@@ -7,6 +7,7 @@ use crate::zfs::disk::human_size;
 use crate::zfs::disk::{DiskInfo, DiskMedia, DiskMembership};
 use crate::zfs::disk_detail::DiskLive;
 use crate::zfs::host::HostSummary;
+use crate::zfs::host_health::ScanSummary;
 use crate::zfs::snapshot_detail::SnapshotDetail;
 use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolFacts, PoolIo, TargetSample};
 use crate::zfs::pool::PoolHealth;
@@ -295,31 +296,146 @@ fn duration_text(secs: u64) -> String {
     }
 }
 
-fn host_lines(h: &HostSummary, theme: &Theme) -> Vec<Line<'static>> {
+pub struct HostPanel {
+    pub system: Vec<Line<'static>>,
+    pub zfs: Vec<Line<'static>>,
+    pub pools: Vec<Line<'static>>,
+    /// Every line in one column, most important first, for panels too small or narrow for two columns.
+    pub single: Vec<Line<'static>>,
+}
+
+/// `Thu Oct  8 19:48:07 2026` without the weekday, which the date already implies.
+fn short_time(when: &str) -> String {
+    match when.split_once(' ') {
+        Some((day, rest)) if day.len() == 3 && day.chars().all(|c| c.is_ascii_alphabetic()) => rest.trim_start().to_string(),
+        _ => when.to_string(),
+    }
+}
+
+fn scan_text(scan: Option<&ScanSummary>) -> (String, bool) {
+    match scan {
+        None => ("-".to_string(), false),
+        Some(ScanSummary::Never) => ("never".to_string(), false),
+        Some(ScanSummary::Running { percent: Some(p) }) => (format!("running {p}%"), false),
+        Some(ScanSummary::Running { percent: None }) => ("running".to_string(), false),
+        Some(ScanSummary::Canceled) => ("canceled".to_string(), false),
+        Some(ScanSummary::Finished { when, errors: 0 }) => (short_time(when), false),
+        Some(ScanSummary::Finished { when, errors }) => (format!("{}, found {errors} errors", short_time(when)), true),
+    }
+}
+
+/// The Hosts panel's text, split into the System and ZFS columns and the per-pool rows. A stale panel (the
+/// last sample failed) is drawn dim.
+pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
     let dash = || "-".to_string();
+    let dim = |s: Style| if stale { theme.dim() } else { s };
     let (alloc, size) = h.capacity();
     let unhealthy = h.unhealthy();
     let pools = if unhealthy == 0 { format!("{} (all ONLINE)", h.pools.len()) } else { format!("{}, {unhealthy} not ONLINE", h.pools.len()) };
-    let pools_style = if unhealthy == 0 { Style::default() } else { theme.err };
     let arc = h.arc.as_ref().map_or_else(dash, |a| {
         let hit = a.hit_percent().map_or_else(dash, |p| format!("{p:.1}%"));
         format!("{} / {}  hit {hit}", human_size(a.size), human_size(a.max))
     });
-    let load = h.load.map_or_else(dash, |[a, b, c]| format!("{a:.2} {b:.2} {c:.2}"));
-    let up = h.uptime_secs.map_or_else(dash, duration_text);
-    let rtt = h.rtt_ms.map_or_else(dash, |ms| format!("{ms}ms"));
+    // Cores and usage lead (they must stay visible); the long model name follows on its own line.
+    let cpu = h.cpu.as_ref().map_or_else(dash, |c| format!("{} cores{}", c.cores, c.percent.map_or_else(String::new, |p| format!("  {p:.0}%"))));
+    let memory = h.memory.as_ref().map_or_else(dash, |m| format!("{}  free {}  wired {}", human_size(m.physical), human_size(m.free), human_size(m.wired)));
+    let swap = h.swap.as_ref().map_or_else(|| "none".to_string(), |s| format!("{} / {}", human_size(s.used), human_size(s.total)));
     let status = h.status.clone().unwrap_or_else(dash);
     let status_style = if status.contains("healthy") { Style::default() } else { theme.warn };
-    vec![
-        Line::from(format!("OS      {}", h.os.clone().unwrap_or_else(dash))),
-        Line::from(format!("ZFS     {}", h.zfs_version.clone().unwrap_or_else(dash))),
-        Line::from(format!("Up      {up}   rtt {rtt}")),
-        Line::from(Span::styled(format!("Pools   {pools}"), pools_style)),
-        Line::from(format!("Space   {}  {} / {}", percent(alloc, size), human_size(alloc), human_size(size))),
-        Line::from(format!("ARC     {arc}")),
-        Line::from(format!("Load    {load}")),
-        Line::from(Span::styled(format!("Status  {status}"), status_style)),
-    ]
+    let line = |style: Style, text: String| Line::from(Span::styled(text, dim(style)));
+    let os = line(Style::default(), format!("OS      {}", h.os.clone().unwrap_or_else(dash)));
+    let up = line(Style::default(), format!("Up      {}   rtt {}", h.uptime_secs.map_or_else(dash, duration_text), h.rtt_ms.map_or_else(dash, |ms| format!("{ms}ms"))));
+    let load = line(Style::default(), format!("Load    {}", h.load.map_or_else(dash, |[a, b, c]| format!("{a:.2} {b:.2} {c:.2}"))));
+    let cpu_lines: Vec<Line<'static>> = std::iter::once(line(Style::default(), format!("CPU     {cpu}")))
+        .chain(h.cpu.as_ref().map(|c| line(Style::default(), format!("        {}", c.model))))
+        .collect();
+    let memory = line(Style::default(), format!("Memory  {memory}"));
+    let swap = line(Style::default(), format!("Swap    {swap}"));
+    let zfs_version = line(Style::default(), format!("ZFS     {}", h.zfs_version.clone().unwrap_or_else(dash)));
+    let pools_line = line(if unhealthy == 0 { Style::default() } else { theme.err }, format!("Pools   {pools}"));
+    let space = line(Style::default(), format!("Space   {}  {} / {}", percent(alloc, size), human_size(alloc), human_size(size)));
+    let arc = line(Style::default(), format!("ARC     {arc}"));
+    let l2arc: Option<Line<'static>> = h.l2arc.as_ref().map(|l2| {
+        let hit = l2.hit_percent().map_or_else(dash, |p| format!("{p:.1}%"));
+        line(Style::default(), format!("L2ARC   {}  hit {hit}", human_size(l2.size)))
+    });
+    let status_line = line(status_style, format!("Status  {status}"));
+    let rows: Vec<Line<'static>> = h
+        .pool_rows
+        .iter()
+        .map(|p| {
+            let (scrub, scrub_bad) = scan_text(p.scan.as_ref());
+            let frag = p.frag_percent.map_or_else(dash, |f| format!("{f}%"));
+            let bad = p.health != PoolHealth::Online || p.errors.is_some_and(|e| e > 0) || scrub_bad;
+            let health = format!("{:?}", p.health).to_uppercase();
+            line(if bad { theme.err } else if p.capacity_percent >= 80 { theme.warn } else { Style::default() }, format!("{:<12} {:>3}% frag {:>3} {:<8} scrub {scrub}", p.name, p.capacity_percent, frag, health))
+        })
+        .collect();
+    let mut single = vec![pools_line.clone(), status_line.clone()];
+    single.extend(rows.iter().cloned());
+    single.push(space.clone());
+    single.push(arc.clone());
+    single.extend(l2arc.iter().cloned());
+    single.extend(cpu_lines.iter().cloned());
+    single.extend([memory.clone(), swap.clone(), load.clone(), up.clone(), os.clone(), zfs_version.clone()]);
+    let mut system = vec![os, up, load];
+    system.extend(cpu_lines);
+    system.extend([memory, swap]);
+    let mut zfs = vec![zfs_version, pools_line, space, arc];
+    zfs.extend(l2arc);
+    zfs.push(status_line);
+    HostPanel { system, zfs, pools: rows, single }
+}
+
+/// Draws the host panel: the two graphs (20% each) and the text (60%): System and ZFS side by side when the
+/// text is wide enough, stacked otherwise, then one row per pool. Pool rows that do not fit are replaced by a
+/// final "+N more pool rows" line, never clipped silently.
+fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &HostSummary, stale: bool, theme: &Theme, area: Rect) {
+    let mut panel = host_panel(host, theme, stale);
+    // Below this width the graphs would leave the text too narrow to read: drop them and keep the rates as a line.
+    let text = if area.width < 90 {
+        let io = Line::raw(format!("I/O     read {}  write {}", per_sec(last.read_bps), per_sec(last.write_bps)));
+        panel.single.insert(0, io.clone());
+        panel.system.insert(0, io);
+        area
+    } else {
+        let [read, write, text] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(20), Constraint::Percentage(20), Constraint::Percentage(60)]).areas(area);
+        let reads: Vec<u64> = view.io_history.iter().map(|s| s.read_bps).collect();
+        let writes: Vec<u64> = view.io_history.iter().map(|s| s.write_bps).collect();
+        draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
+        draw_rate(f, write, "Write", &writes, last.write_ops, last.write_latency_ns, theme.warn);
+        text
+    };
+    let height = |lines: &[Line]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let columns = height(&panel.system).max(height(&panel.zfs));
+    let rows_need = u16::from(!panel.pools.is_empty());
+    if text.width >= 72 && text.height >= columns.saturating_add(rows_need) {
+        // System and ZFS side by side, the pool rows below.
+        let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(Rect { height: columns, ..text });
+        f.render_widget(Paragraph::new(panel.system.clone()), left);
+        f.render_widget(Paragraph::new(panel.zfs.clone()), right);
+        draw_pool_rows(f, &panel.pools, Rect { y: text.y + columns, height: text.height - columns, ..text });
+    } else {
+        // One column, most important lines first; whatever does not fit is counted, never cut silently.
+        let room = usize::from(text.height);
+        let mut shown: Vec<Line<'static>> = panel.single.iter().take(room).cloned().collect();
+        if panel.single.len() > room && room > 0 {
+            shown.truncate(room - 1);
+            shown.push(Line::raw(format!("+{} more lines: enlarge the terminal", panel.single.len() - (room - 1))));
+        }
+        f.render_widget(Paragraph::new(shown), text);
+    }
+}
+
+fn draw_pool_rows(f: &mut Frame, rows: &[Line<'static>], area: Rect) {
+    let room = usize::from(area.height);
+    let mut shown: Vec<Line<'static>> = rows.iter().take(room).cloned().collect();
+    if rows.len() > room && room > 0 {
+        let hidden = rows.len() - (room - 1);
+        shown.truncate(room - 1);
+        shown.push(Line::raw(format!("+{hidden} more pool row{}: enlarge the terminal", if hidden == 1 { "" } else { "s" })));
+    }
+    f.render_widget(Paragraph::new(shown), area);
 }
 
 fn dataset_lines(s: &DatasetSpace) -> Vec<Line<'static>> {
@@ -365,7 +481,7 @@ pub fn draw(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, are
             Some(n) => format!("Metrics — SMB share \\\\{n} ({dataset})"),
             None => format!("Metrics — NFS share {dataset}"),
         },
-        Some(MetricsTarget::Host) => format!("Metrics — host {} (all pools)", ctx.host_name),
+        Some(MetricsTarget::Host) => format!("Metrics — host {} (all pools){}", ctx.host_name, if view.error.is_some() && view.host.is_some() { " (stale)" } else { "" }),
         None => "Metrics".to_string(),
     };
     let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(false)).title(title);
@@ -391,7 +507,7 @@ fn draw_body(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, ar
         return;
     }
     if let (Some(host), Some(last)) = (&view.host, view.io_history.back()) {
-        draw_graphs_and_text(f, view, last, host_lines(host, theme), theme, area);
+        draw_host_panel(f, view, last, host, view.error.is_some(), theme, area);
         return;
     }
     let (Some(facts), Some(last)) = (&view.facts, view.io_history.back()) else {
@@ -429,6 +545,39 @@ fn draw_graphs_and_text(f: &mut Frame, view: &MetricsView, last: &PoolIo, lines:
     draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
     draw_rate(f, write, "Write", &writes, last.write_ops, last.write_latency_ns, theme.warn);
     f.render_widget(Paragraph::new(lines), text);
+}
+
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use crate::zfs::host::{CpuInfo, HostSummary, L2arc, Memory, Swap};
+    use crate::zfs::host_health::{PoolProbe, ScanSummary};
+    use crate::zfs::pool::PoolHealth;
+
+    pub fn rich_host() -> HostSummary {
+        HostSummary {
+            os: Some("FreeBSD 15.1-RELEASE-p4".into()),
+            zfs_version: Some("2.4.2-1".into()),
+            uptime_secs: Some(90_000),
+            load: Some([0.1, 0.2, 0.3]),
+            rtt_ms: Some(4),
+            status: Some("all pools are healthy".into()),
+            cpu: Some(CpuInfo { model: "Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz".into(), cores: 36, percent: Some(12.4) }),
+            memory: Some(Memory { physical: 21_418_688_512, free: 10_000_000_000, wired: 7_000_000_000 }),
+            swap: Some(Swap { total: 2_147_483_648, used: 524_288 }),
+            l2arc: Some(L2arc { size: 12_884_901_888, hits: 600, misses: 400 }),
+            arc: Some(crate::zfs::host::ArcStats { size: 1 << 30, max: 2 << 30, hits: 90, misses: 10 }),
+            pools: vec![
+                crate::zfs::pool::Pool { name: "scratch".into(), size: 100, allocated: 42, free: 58, health: PoolHealth::Online },
+                crate::zfs::pool::Pool { name: "tank".into(), size: 100, allocated: 91, free: 9, health: PoolHealth::Degraded },
+                crate::zfs::pool::Pool { name: "zroot".into(), size: 100, allocated: 24, free: 76, health: PoolHealth::Online },
+            ],
+            pool_rows: vec![
+                PoolProbe { name: "scratch".into(), health: PoolHealth::Online, capacity_percent: 42, frag_percent: Some(39), errors: Some(0), scan: Some(ScanSummary::Finished { when: "Thu Oct  8 19:48:07 2026".into(), errors: 0 }) },
+                PoolProbe { name: "tank".into(), health: PoolHealth::Degraded, capacity_percent: 91, frag_percent: None, errors: Some(3), scan: Some(ScanSummary::Running { percent: Some(34) }) },
+                PoolProbe { name: "zroot".into(), health: PoolHealth::Online, capacity_percent: 24, frag_percent: Some(33), errors: Some(0), scan: Some(ScanSummary::Never) },
+            ],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -550,5 +699,64 @@ mod tests {
         assert_eq!(latency(Some(250_000)), "250µs");
         assert_eq!(latency(Some(1_200_000)), "1.2ms");
         assert_eq!(latency(Some(2_500_000_000)), "2.5s");
+    }
+
+    use super::tests_support::rich_host;
+
+    fn text_of(lines: &[Line]) -> String {
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_panel_names_cpu_memory_swap_and_l2arc() {
+        let panel = host_panel(&rich_host(), &Theme::ansi(), false);
+        let system = text_of(&panel.system);
+        for want in ["Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz", "36 cores", "12%", "Memory", "19.9G", "Swap", "512K / 2.0G"] {
+            assert!(system.contains(want), "missing {want:?} in\n{system}");
+        }
+        let zfs = text_of(&panel.zfs);
+        assert!(zfs.contains("L2ARC") && zfs.contains("12.0G") && zfs.contains("60.0%"), "{zfs}");
+    }
+
+    #[test]
+    fn missing_figures_show_a_dash_and_l2arc_is_absent_without_a_cache_device() {
+        let mut h = rich_host();
+        h.cpu = None;
+        h.memory = None;
+        h.swap = None;
+        h.l2arc = None;
+        let panel = host_panel(&h, &Theme::ansi(), false);
+        let all = format!("{}\n{}", text_of(&panel.system), text_of(&panel.zfs));
+        assert!(!all.contains("L2ARC"), "{all}");
+        assert!(all.contains("CPU     -") && all.contains("Memory  -") && all.contains("Swap    none"), "{all}");
+    }
+
+    #[test]
+    fn each_pool_gets_a_row_with_its_capacity_fragmentation_health_and_last_scrub() {
+        let panel = host_panel(&rich_host(), &Theme::ansi(), false);
+        let rows = text_of(&panel.pools);
+        for want in ["scratch", "42%", "39%", "ONLINE", "Oct  8 19:48:07 2026", "tank", "91%", "DEGRADED", "running 34%", "never"] {
+            assert!(rows.contains(want), "missing {want:?} in\n{rows}");
+        }
+        assert!(rows.contains("tank") && rows.lines().any(|l| l.contains("tank") && l.contains(" - ")), "an unknown fragmentation is a dash:\n{rows}");
+    }
+
+    #[test]
+    fn a_pool_that_is_not_online_or_has_scrub_errors_is_drawn_in_the_error_color() {
+        let theme = Theme::ansi();
+        let panel = host_panel(&rich_host(), &theme, false);
+        let tank = panel.pools.iter().find(|l| text_of(std::slice::from_ref(l)).contains("tank")).unwrap();
+        assert!(tank.spans.iter().any(|s| s.style == theme.err), "{tank:?}");
+        let scratch = panel.pools.iter().find(|l| text_of(std::slice::from_ref(l)).contains("scratch")).unwrap();
+        assert!(!scratch.spans.iter().any(|s| s.style == theme.err));
+    }
+
+    #[test]
+    fn a_stale_panel_is_drawn_dim() {
+        let theme = Theme::ansi();
+        let fresh = host_panel(&rich_host(), &theme, false);
+        let stale = host_panel(&rich_host(), &theme, true);
+        assert!(stale.system.iter().all(|l| l.spans.iter().all(|s| s.style.add_modifier.contains(ratatui::style::Modifier::DIM) || s.style == theme.dim())), "{:?}", stale.system);
+        assert!(!fresh.system.iter().all(|l| l.spans.iter().all(|s| s.style == theme.dim())));
     }
 }
