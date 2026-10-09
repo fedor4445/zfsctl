@@ -67,8 +67,8 @@ Append inside `mod tests` of `src/zfs/host.rs`:
 
 ```rust
     // Captured on 2026-10-09: the FreeBSD 15.1 hub (36 cores), then fbsd16 (16.0-CURRENT, 4 cores).
-    const CORE_HUB: &str = "Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz\\n36\\n21418688512\\n4096\\n2563464\\n1706935\\n";
-    const CORE_16: &str = "Intel Xeon E312xx (Sandy Bridge, IBRS update)\\n4\\n8534835200\\n4096\\n1627099\\n304669\\n";
+    const CORE_HUB: &str = "Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz\n36\n21418688512\n4096\n2563464\n1706935\n";
+    const CORE_16: &str = "Intel Xeon E312xx (Sandy Bridge, IBRS update)\n4\n8534835200\n4096\n1627099\n304669\n";
 
     #[test]
     fn core_sysctls_give_the_model_cores_and_memory_in_bytes() {
@@ -82,15 +82,15 @@ Append inside `mod tests` of `src/zfs/host.rs`:
     #[test]
     fn core_sysctls_that_are_incomplete_or_garbled_give_nothing() {
         assert_eq!(parse_core_sysctls(""), None);
-        assert_eq!(parse_core_sysctls("model\\n4\\n"), None, "too few lines");
-        assert_eq!(parse_core_sysctls("model\\nfour\\n1\\n4096\\n1\\n1\\n"), None, "cores must be a number");
-        assert_eq!(parse_core_sysctls("model\\n4\\n1000\\n0\\n1\\n1\\n"), None, "a page size of 0 is not a page size");
+        assert_eq!(parse_core_sysctls("model\n4\n"), None, "too few lines");
+        assert_eq!(parse_core_sysctls("model\nfour\n1\n4096\n1\n1\n"), None, "cores must be a number");
+        assert_eq!(parse_core_sysctls("model\n4\n1000\n0\n1\n1\n"), None, "a page size of 0 is not a page size");
     }
 
     #[test]
     fn cpu_times_are_five_counters_on_one_line() {
-        assert_eq!(parse_cpu_times("5976 0 31301 3223 74232938\\n"), Some(CpuTimes { user: 5976, nice: 0, sys: 31301, intr: 3223, idle: 74_232_938 }));
-        assert_eq!(parse_cpu_times("1 2 3\\n"), None);
+        assert_eq!(parse_cpu_times("5976 0 31301 3223 74232938\n"), Some(CpuTimes { user: 5976, nice: 0, sys: 31301, intr: 3223, idle: 74_232_938 }));
+        assert_eq!(parse_cpu_times("1 2 3\n"), None);
         assert_eq!(parse_cpu_times("a b c d e"), None);
     }
 
@@ -108,21 +108,21 @@ Append inside `mod tests` of `src/zfs/host.rs`:
 
     #[test]
     fn swapinfo_reports_total_and_used_in_bytes_or_nothing_without_swap() {
-        let one = "Device          1K-blocks     Used    Avail Capacity\\n/dev/ada0p3       2097152        0  2097152     0%\\n";
+        let one = "Device          1K-blocks     Used    Avail Capacity\n/dev/ada0p3       2097152        0  2097152     0%\n";
         assert_eq!(parse_swapinfo(one), Some(Swap { total: 2_097_152 * 1024, used: 0 }));
-        let two = "Device          1K-blocks     Used    Avail Capacity\\n/dev/ada0p3       1000      100      900    10%\\n/dev/ada1p3       1000      300      700    30%\\nTotal             2000      400     1600    20%\\n";
+        let two = "Device          1K-blocks     Used    Avail Capacity\n/dev/ada0p3       1000      100      900    10%\n/dev/ada1p3       1000      300      700    30%\nTotal             2000      400     1600    20%\n";
         assert_eq!(parse_swapinfo(two), Some(Swap { total: 2000 * 1024, used: 400 * 1024 }), "the Total row wins when there are several devices");
-        assert_eq!(parse_swapinfo("Device          1K-blocks     Used    Avail Capacity\\n"), None);
+        assert_eq!(parse_swapinfo("Device          1K-blocks     Used    Avail Capacity\n"), None);
         assert_eq!(parse_swapinfo(""), None);
     }
 
     #[test]
     fn l2arc_is_three_kstat_lines_with_a_hit_rate() {
-        assert_eq!(parse_l2arc("0\\n0\\n0\\n"), Some(L2arc { size: 0, hits: 0, misses: 0 }));
-        let l2 = parse_l2arc("12884901888\\n600\\n400\\n").unwrap();
+        assert_eq!(parse_l2arc("0\n0\n0\n"), Some(L2arc { size: 0, hits: 0, misses: 0 }));
+        let l2 = parse_l2arc("12884901888\n600\n400\n").unwrap();
         assert_eq!(l2.hit_percent(), Some(60.0));
         assert_eq!(L2arc { size: 1, hits: 0, misses: 0 }.hit_percent(), None);
-        assert_eq!(parse_l2arc("1\\n2\\n"), None);
+        assert_eq!(parse_l2arc("1\n2\n"), None);
     }
 ```
 
@@ -274,8 +274,8 @@ mod tests {
     use std::sync::Mutex;
 
     // Real `zpool list -Hp -o name,size,alloc,free,frag,health` and `zpool status` output, hub, 2026-10-09.
-    const LIST: &str = "scratch\\t251658240\\t106573824\\t145084416\\t39\\tONLINE\\ntpool\\t20937965568\\t8663924736\\t12274040832\\t2\\tONLINE\\nzroot\\t45634027520\\t11182317568\\t34451709952\\t33\\tONLINE\\n";
-    const STATUS: &str = "  pool: scratch\\n state: ONLINE\\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Thu Oct  8 19:48:07 2026\\nconfig:\\n\\n\\tNAME                            STATE     READ WRITE CKSUM\\n\\tscratch                         ONLINE       0     0     0\\n\\t  mirror-0                      ONLINE       0     0     0\\n\\t    /root/zfsctl-scratch/vdev3  ONLINE       0     0     0\\n\\nerrors: No known data errors\\n\\n  pool: tpool\\n state: ONLINE\\n  scan: resilvered 501M in 00:00:30 with 0 errors on Sat Sep 26 13:15:14 2026\\nconfig:\\n\\n\\tNAME        STATE     READ WRITE CKSUM\\n\\ttpool       ONLINE       0     0     0\\n\\t  raidz2-0  ONLINE       0     0     0\\n\\nerrors: No known data errors\\n\\n  pool: zroot\\n state: ONLINE\\nconfig:\\n\\n\\tNAME        STATE     READ WRITE CKSUM\\n\\tzroot       ONLINE       0     0     0\\n\\t  ada0p4    ONLINE       0     0     0\\n\\nerrors: No known data errors\\n";
+    const LIST: &str = "scratch\t251658240\t106573824\t145084416\t39\tONLINE\ntpool\t20937965568\t8663924736\t12274040832\t2\tONLINE\nzroot\t45634027520\t11182317568\t34451709952\t33\tONLINE\n";
+    const STATUS: &str = "  pool: scratch\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tscratch                         ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /root/zfsctl-scratch/vdev3  ONLINE       0     0     0\n\nerrors: No known data errors\n\n  pool: tpool\n state: ONLINE\n  scan: resilvered 501M in 00:00:30 with 0 errors on Sat Sep 26 13:15:14 2026\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttpool       ONLINE       0     0     0\n\t  raidz2-0  ONLINE       0     0     0\n\nerrors: No known data errors\n\n  pool: zroot\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\tzroot       ONLINE       0     0     0\n\t  ada0p4    ONLINE       0     0     0\n\nerrors: No known data errors\n";
 
     fn pool(name: &str, health: PoolHealth, capacity: u8) -> PoolProbe {
         PoolProbe { name: name.to_string(), health, capacity_percent: capacity, frag_percent: Some(1), errors: Some(0), scan: Some(ScanSummary::Never) }
@@ -291,9 +291,9 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!((rows[0].0.name.as_str(), rows[0].0.size, rows[0].0.allocated, rows[0].1), ("scratch", 251_658_240, 106_573_824, Some(39)));
         assert_eq!(rows[2].1, Some(33));
-        let dash = parse_pool_list_frag("tank\\t100\\t10\\t90\\t-\\tONLINE\\n").unwrap();
+        let dash = parse_pool_list_frag("tank\t100\t10\t90\t-\tONLINE\n").unwrap();
         assert_eq!(dash[0].1, None, "a dash means unknown fragmentation");
-        assert!(parse_pool_list_frag("tank\\t100\\t10\\n").is_err());
+        assert!(parse_pool_list_frag("tank\t100\t10\n").is_err());
         assert_eq!(parse_pool_list_frag("").unwrap().len(), 0);
     }
 
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn scan_variants_and_error_counts_are_read_from_their_own_pool_block() {
-        let status = "  pool: a\\n state: DEGRADED\\n  scan: scrub in progress since Thu Oct  8 19:00:00 2026\\n\\t1G scanned at 100M/s, 500M issued at 50M/s, 2G total\\n\\t0B repaired, 24.40% done, 00:00:30 to go\\nconfig:\\n\\n\\tNAME  STATE  READ WRITE CKSUM\\n\\ta     DEGRADED  3  0  1.2K\\n\\n  pool: ab\\n state: ONLINE\\n  scan: scrub repaired 0B in 00:00:01 with 4 errors on Thu Oct  8 19:48:07 2026\\nconfig:\\n\\n\\tNAME  STATE  READ WRITE CKSUM\\n\\tab    ONLINE  0  0  0\\n\\n  pool: c\\n state: ONLINE\\n  scan: scrub canceled on Thu Oct  8 19:48:07 2026\\nconfig:\\n\\n\\tNAME  STATE  READ WRITE CKSUM\\n\\tc     ONLINE  0  0  0\\n";
+        let status = "  pool: a\n state: DEGRADED\n  scan: scrub in progress since Thu Oct  8 19:00:00 2026\n\t1G scanned at 100M/s, 500M issued at 50M/s, 2G total\n\t0B repaired, 24.40% done, 00:00:30 to go\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\ta     DEGRADED  3  0  1.2K\n\n  pool: ab\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 4 errors on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tab    ONLINE  0  0  0\n\n  pool: c\n state: ONLINE\n  scan: scrub canceled on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tc     ONLINE  0  0  0\n";
         let facts = parse_status_all(status);
         assert_eq!(facts.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["a", "ab", "c"], "a pool whose name is a prefix of another stays separate");
         assert!(matches!(facts[0].scan, ScanSummary::Running { percent: Some(24) }), "{:?}", facts[0].scan);
@@ -371,11 +371,11 @@ mod tests {
 
     #[test]
     fn any_other_failure_is_unavailable_with_the_reason() {
-        let sudo = answers(out("", "sudo: a password is required\\n", 1), out("", "", 0));
+        let sudo = answers(out("", "sudo: a password is required\n", 1), out("", "", 0));
         assert_eq!(probe_host(&sudo), HostProbe::Unavailable { reason: "sudo: a password is required".to_string() });
         let none = answers(out("", "", 127), out("", "", 0));
         assert!(matches!(probe_host(&none), HostProbe::Unavailable { reason } if reason.contains("127")));
-        let garbled = answers(out("tank\\t1\\n", "", 0), out("", "", 0));
+        let garbled = answers(out("tank\t1\n", "", 0), out("", "", 0));
         assert!(matches!(probe_host(&garbled), HostProbe::Unavailable { .. }));
     }
 
@@ -534,7 +534,7 @@ const LIST_ARGS: &[&str] = &["list", "-Hp", "-o", "name,size,alloc,free,frag,hea
 pub fn parse_pool_list_frag(output: &str) -> Result<Vec<(Pool, Option<u8>)>> {
     let mut rows = Vec::new();
     for line in output.lines().filter(|l| !l.trim().is_empty()) {
-        let fields: Vec<&str> = line.split('\\t').collect();
+        let fields: Vec<&str> = line.split('\t').collect();
         let &[name, size, alloc, free, frag, health] = fields.as_slice() else {
             return Err(AppError::Parse(format!("expected 6 fields in zpool list line: {line:?}")));
         };
@@ -586,7 +586,7 @@ pub fn parse_status_all(output: &str) -> Vec<StatusFacts> {
     blocks
         .into_iter()
         .map(|(name, lines)| {
-            let text = lines.join("\\n");
+            let text = lines.join("\n");
             let after_header = lines.iter().skip_while(|l| !l.trim_start().starts_with("NAME")).skip(1);
             let errors = after_header.into_iter().find_map(|l| {
                 let f: Vec<&str> = l.split_whitespace().collect();
@@ -755,24 +755,24 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
         }
     }
 
-    const LIST: &str = "scratch\\t251658240\\t106573824\\t145084416\\t39\\tONLINE\\nzroot\\t45634027520\\t11182317568\\t34451709952\\t33\\tONLINE\\n";
-    const STATUS: &str = "  pool: scratch\\n state: ONLINE\\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Thu Oct  8 19:48:07 2026\\nconfig:\\n\\n\\tNAME  STATE  READ WRITE CKSUM\\n\\tscratch  ONLINE  0  0  0\\n\\n  pool: zroot\\n state: ONLINE\\nconfig:\\n\\n\\tNAME  STATE  READ WRITE CKSUM\\n\\tzroot  ONLINE  0  0  0\\n";
-    const SWAP: &str = "Device          1K-blocks     Used    Avail Capacity\\n/dev/ada0p3       2097152   524288  1572864    25%\\n";
+    const LIST: &str = "scratch\t251658240\t106573824\t145084416\t39\tONLINE\nzroot\t45634027520\t11182317568\t34451709952\t33\tONLINE\n";
+    const STATUS: &str = "  pool: scratch\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tscratch  ONLINE  0  0  0\n\n  pool: zroot\n state: ONLINE\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tzroot  ONLINE  0  0  0\n";
+    const SWAP: &str = "Device          1K-blocks     Used    Avail Capacity\n/dev/ada0p3       2097152   524288  1572864    25%\n";
 
     fn full_host() -> Scripted {
         Scripted::new()
             .on("zpool list", LIST)
             .on("zpool status", STATUS)
-            .on("zpool iostat", "scratch\\t1\\t2\\t0\\t0\\t0\\t0\\n")
-            .on("uname", "FreeBSD 15.1-RELEASE-p4\\n")
-            .on("date", "1791500000\\n")
-            .on("sysctl -n kern.boottime", "{ sec = 1791413600, usec = 1 } Wed\\n")
-            .on("sysctl -n vm.loadavg", "{ 0.10 0.20 0.30 }\\n")
-            .on("sysctl -n kstat.zfs.misc.arcstats.size", "100\\n200\\n30\\n10\\n")
-            .on("sysctl -n hw.model", "Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz\\n36\\n21418688512\\n4096\\n2563464\\n1706935\\n")
-            .on("sysctl -n kstat.zfs.misc.arcstats.l2_size", "0\\n0\\n0\\n")
+            .on("zpool iostat", "scratch\t1\t2\t0\t0\t0\t0\n")
+            .on("uname", "FreeBSD 15.1-RELEASE-p4\n")
+            .on("date", "1791500000\n")
+            .on("sysctl -n kern.boottime", "{ sec = 1791413600, usec = 1 } Wed\n")
+            .on("sysctl -n vm.loadavg", "{ 0.10 0.20 0.30 }\n")
+            .on("sysctl -n kstat.zfs.misc.arcstats.size", "100\n200\n30\n10\n")
+            .on("sysctl -n hw.model", "Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz\n36\n21418688512\n4096\n2563464\n1706935\n")
+            .on("sysctl -n kstat.zfs.misc.arcstats.l2_size", "0\n0\n0\n")
             .on("swapinfo", SWAP)
-            .on("zfs version", "zfs-2.4.2-1-FreeBSD\\nzfs-kmod-2.4.2-1\\n")
+            .on("zfs version", "zfs-2.4.2-1-FreeBSD\nzfs-kmod-2.4.2-1\n")
             .cpu(&["100 0 100 0 800", "150 0 150 0 900"])
     }
 
@@ -792,7 +792,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
     fn l2arc_is_only_reported_when_a_cache_device_exists() {
         let (none, _) = sample_host(&full_host()).unwrap();
         assert_eq!(none.l2arc, None, "l2_size 0: no cache device, no line");
-        let with = full_host().on("sysctl -n kstat.zfs.misc.arcstats.l2_size", "12884901888\\n600\\n400\\n");
+        let with = full_host().on("sysctl -n kstat.zfs.misc.arcstats.l2_size", "12884901888\n600\n400\n");
         let (summary, _) = sample_host(&with).unwrap();
         assert_eq!(summary.l2arc, Some(L2arc { size: 12_884_901_888, hits: 600, misses: 400 }));
     }
@@ -1208,9 +1208,9 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
     fn the_hosts_table_shows_name_address_state_and_rtt() {
         let mut app = hosts_app();
         app.selected_host = 0;
-        let text = render(&mut app, 120, 30).join("\\n");
+        let text = render(&mut app, 120, 30).join("\n");
         for want in ["Name", "Address", "State", "Rtt", "fbsd16", "172.16.10.60", "tank DEGRADED", "tank 85% full", "unreachable", "12ms", "ok"] {
-            assert!(text.contains(want), "missing {want:?} in\\n{text}");
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
         assert!(text.contains("local"), "the hub's address column says local");
     }
@@ -1228,25 +1228,25 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
     #[test]
     fn a_host_that_has_not_been_probed_is_dim_and_says_probing() {
         let mut app = App::new(vec!["local".to_string(), "new".to_string()]);
-        let text = render(&mut app, 120, 30).join("\\n");
+        let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("probing"), "{text}");
     }
 
     #[test]
     fn narrow_terminals_drop_rtt_then_address_but_keep_name_and_state() {
         let mut app = hosts_app();
-        let wide = render(&mut app, 140, 30).join("\\n");
+        let wide = render(&mut app, 140, 30).join("\n");
         assert!(wide.contains("Rtt") && wide.contains("Address"));
-        let mid = render(&mut app, 70, 30).join("\\n");
+        let mid = render(&mut app, 70, 30).join("\n");
         assert!(!mid.contains("Rtt") && mid.contains("Address") && mid.contains("State"), "{mid}");
-        let narrow = render(&mut app, 50, 30).join("\\n");
+        let narrow = render(&mut app, 50, 30).join("\n");
         assert!(!narrow.contains("Address") && narrow.contains("Name") && narrow.contains("State") && narrow.contains("unreachable"), "{narrow}");
     }
 
     #[test]
     fn the_single_host_hint_and_the_selection_are_kept() {
         let mut app = App::new(vec!["local".to_string()]);
-        let text = render(&mut app, 120, 30).join("\\n");
+        let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("Only this host is configured"), "{text}");
         let mut many = hosts_app();
         many.selected_host = 1;
@@ -1391,7 +1391,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
     }
 
     fn text_of(lines: &[Line]) -> String {
-        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\\n")
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n")
     }
 
     #[test]
@@ -1399,7 +1399,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
         let panel = host_panel(&rich_host(), &Theme::ansi(), false);
         let system = text_of(&panel.system);
         for want in ["Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz", "36 cores", "12%", "Memory", "20.0G", "Swap", "512K / 2.0G"] {
-            assert!(system.contains(want), "missing {want:?} in\\n{system}");
+            assert!(system.contains(want), "missing {want:?} in\n{system}");
         }
         let zfs = text_of(&panel.zfs);
         assert!(zfs.contains("L2ARC") && zfs.contains("12.0G") && zfs.contains("60.0%"), "{zfs}");
@@ -1413,7 +1413,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
         h.swap = None;
         h.l2arc = None;
         let panel = host_panel(&h, &Theme::ansi(), false);
-        let all = format!("{}\\n{}", text_of(&panel.system), text_of(&panel.zfs));
+        let all = format!("{}\n{}", text_of(&panel.system), text_of(&panel.zfs));
         assert!(!all.contains("L2ARC"), "{all}");
         assert!(all.contains("CPU     -") && all.contains("Memory  -") && all.contains("Swap    none"), "{all}");
     }
@@ -1423,9 +1423,9 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
         let panel = host_panel(&rich_host(), &Theme::ansi(), false);
         let rows = text_of(&panel.pools);
         for want in ["scratch", "42%", "39%", "ONLINE", "Thu Oct  8 19:48:07 2026", "tank", "91%", "DEGRADED", "running 34%", "never"] {
-            assert!(rows.contains(want), "missing {want:?} in\\n{rows}");
+            assert!(rows.contains(want), "missing {want:?} in\n{rows}");
         }
-        assert!(rows.contains("tank") && rows.lines().any(|l| l.contains("tank") && l.contains(" - ")), "an unknown fragmentation is a dash:\\n{rows}");
+        assert!(rows.contains("tank") && rows.lines().any(|l| l.contains("tank") && l.contains(" - ")), "an unknown fragmentation is a dash:\n{rows}");
     }
 
     #[test]
@@ -1463,16 +1463,16 @@ and in `src/ui/layout.rs` tests (it has `render`, `app_in_pools`-style helpers):
     #[test]
     fn the_host_panel_shows_two_columns_when_wide_and_one_when_narrow_and_says_when_it_cuts_pool_rows() {
         let mut wide = host_panel_app(());
-        let text = render(&mut wide, 190, 40).join("\\n");
+        let text = render(&mut wide, 190, 40).join("\n");
         for want in ["Metrics — host local", "CPU", "36 cores", "Memory", "Swap", "L2ARC", "scratch", "tank", "zroot"] {
-            assert!(text.contains(want), "missing {want:?} in\\n{text}");
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
         let mut narrow = host_panel_app(());
-        let text = render(&mut narrow, 90, 40).join("\\n");
-        assert!(text.contains("CPU") && text.contains("Swap"), "one column still shows everything:\\n{text}");
+        let text = render(&mut narrow, 90, 40).join("\n");
+        assert!(text.contains("CPU") && text.contains("Swap"), "one column still shows everything:\n{text}");
         let mut short = host_panel_app(());
-        let text = render(&mut short, 190, 24).join("\\n");
-        assert!(text.contains("more pool row") || text.contains("scratch"), "never silently clipped:\\n{text}");
+        let text = render(&mut short, 190, 24).join("\n");
+        assert!(text.contains("more pool row") || text.contains("scratch"), "never silently clipped:\n{text}");
     }
 ```
 
