@@ -70,6 +70,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
             let mut app = App::new(host_names);
             app.theme = resolved.theme;
             app.status_message = resolved.note;
+            app.set_host_addresses(inventory.hosts.iter().map(|h| state::address_of(h.ssh_target.as_deref())).collect());
             if let Some(first_host) = inventory.hosts.first() {
                 app.refresh_pools(first_host.runner.clone());
             }
@@ -96,6 +97,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
 fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_path: &std::path::Path) {
     for (name, target) in std::mem::take(&mut app.pending_new_hosts) {
         app.hosts.push(name.clone());
+        app.host_addresses.push(state::address_of(Some(&target)));
         if let Err(e) = inventory.apply_new_host(config_path, name, target) {
             app.set_error(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
         }
@@ -113,6 +115,15 @@ fn apply_pending_account_fetches(app: &mut App, inventory: &HostInventory) {
             app.fetch_accounts(h.runner.clone(), host);
         } else {
             app.fail_account_fetch(host, AppError::Parse(format!("unknown host index {host}")));
+        }
+    }
+}
+
+/// Starts the host health probes that are due (one worker per host, never two at once for a host).
+fn poll_host_probes(app: &mut App, inventory: &HostInventory) {
+    for index in app.due_host_probes(Instant::now()) {
+        if let Some(host) = inventory.hosts.get(index) {
+            app.start_host_probe(index, host.runner.clone());
         }
     }
 }
@@ -167,6 +178,7 @@ fn event_loop(
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
+        poll_host_probes(app, inventory);
         app.clear_stale_scan_status();
 
         if last_vdevs_auto_refresh.is_none_or(|t| t.elapsed() >= VDEVS_AUTO_REFRESH_INTERVAL) {
@@ -391,6 +403,7 @@ mod tests {
         assert_eq!(app.hosts, vec!["local".to_string(), "hosta".to_string(), "hostb".to_string()]);
         let inventory_names: Vec<&str> = inventory.hosts.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(inventory_names, vec!["local", "hosta", "hostb"]);
+        assert_eq!(app.host_addresses, vec!["local", "hosta.example.com", "hostb.example.com"], "addresses stay aligned with hosts");
         assert!(app.pending_new_hosts.is_empty());
     }
 

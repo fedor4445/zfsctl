@@ -140,6 +140,8 @@ pub enum WorkerMsg {
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
     HostProbe(String, String, Result<()>),
+    /// The latest health probe of the named host (the background probe, not the Add Host check above).
+    HostHealth(String, crate::zfs::host_health::HostProbe),
     /// The outcome of a live account fetch for host index `usize`.
     Accounts(usize, Result<crate::zfs::accounts::HostAccounts>),
     /// The outcome of a live pool-name fetch for the job form's Pool picker.
@@ -148,6 +150,29 @@ pub enum WorkerMsg {
 
 pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
 pub const ACCOUNT_FETCH_STUCK_AFTER: Duration = Duration::from_secs(30);
+
+/// How often each host is probed for its health, and how far apart the first probes of different hosts start.
+const HOST_PROBE_INTERVAL: Duration = Duration::from_secs(30);
+const HOST_PROBE_STAGGER: Duration = Duration::from_secs(1);
+
+/// What the probe loop knows about one host.
+#[derive(Debug, Default)]
+pub struct HostProbeState {
+    pub last: Option<crate::zfs::host_health::HostProbe>,
+    pub in_flight: bool,
+    pub finished_at: Option<Instant>,
+}
+
+/// The address shown for a host: the host part of its `ssh_target` as configured (no lookup), `local` for the hub.
+pub fn address_of(ssh_target: Option<&str>) -> String {
+    match ssh_target {
+        None => "local".to_string(),
+        Some(t) => {
+            let host = t.rsplit_once('@').map_or(t, |(_, h)| h).trim();
+            if host.is_empty() { "-".to_string() } else { host.to_string() }
+        }
+    }
+}
 
 #[allow(clippy::struct_excessive_bools)] // independent UI state flags, not a state machine
 pub struct App {
@@ -179,6 +204,12 @@ pub struct App {
     /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
     pub state_dir: std::path::PathBuf,
     last_jobs_refresh: Option<Instant>,
+    /// The address shown for each host (index-aligned with `hosts`); see `address_of`.
+    pub host_addresses: Vec<String>,
+    /// The latest health probe of each host, by host name.
+    pub host_probes: HashMap<String, HostProbeState>,
+    /// When probing started: host `i` is first probed `i` seconds after it.
+    pub probe_epoch: Instant,
     /// `None` means "not yet checked" — kept distinct from `Some(false)`
     /// so the Shares title doesn't flash a false "unavailable" hint
     /// before the first refresh, consistent with every other section
@@ -300,6 +331,7 @@ pub struct App {
 impl App {
     pub fn new(hosts: Vec<String>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
+        let hosts_for_addr = hosts.clone();
         App {
             sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs],
             selected_section: 0,
@@ -318,6 +350,9 @@ impl App {
             shares: Vec::new(),
             shares_table: TableState::default(),
             jobs_view: crate::ui::jobs::JobsView::default(),
+            host_addresses: hosts_for_addr.iter().map(|n| if n == "local" { "local".to_string() } else { "-".to_string() }).collect(),
+            host_probes: HashMap::new(),
+            probe_epoch: Instant::now(),
             jobs_table: TableState::default(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
             last_jobs_refresh: None,
@@ -542,6 +577,53 @@ impl App {
 
     /// Reloads the Jobs data from the state directory. These are small local files, so
     /// there is no runner and no thread. The selection stays on the same job.
+    pub fn set_host_addresses(&mut self, addresses: Vec<String>) {
+        self.host_addresses = addresses;
+    }
+
+    pub fn host_address(&self, index: usize) -> &str {
+        self.host_addresses.get(index).map_or("-", String::as_str)
+    }
+
+    /// Hosts whose probe is due: never probed (host `i` becomes due `i` seconds after start, so the hosts are
+    /// not all probed in the same second) or last finished at least the interval ago; never while one is running.
+    pub fn due_host_probes(&self, now: Instant) -> Vec<usize> {
+        self.hosts
+            .iter()
+            .enumerate()
+            .filter(|(i, name)| {
+                let state = self.host_probes.get(*name);
+                if state.is_some_and(|s| s.in_flight) {
+                    return false;
+                }
+                match state.and_then(|s| s.finished_at) {
+                    None => now >= self.probe_epoch + HOST_PROBE_STAGGER * u32::try_from(*i).unwrap_or(u32::MAX),
+                    Some(done) => now.duration_since(done) >= HOST_PROBE_INTERVAL,
+                }
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Starts one probe on a worker thread (the event loop resolves the runner; `App` cannot).
+    pub fn start_host_probe(&mut self, index: usize, runner: Arc<dyn CommandRunner>) {
+        let Some(name) = self.hosts.get(index).cloned() else { return };
+        self.host_probes.entry(name.clone()).or_default().in_flight = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let probe = crate::zfs::host_health::probe_host(runner.as_ref());
+            let _ = tx.send(WorkerMsg::HostHealth(name, probe));
+        });
+    }
+
+    /// The health of host `index` from its latest probe and from the Jobs data (an enabled job of this host
+    /// whose latest run failed).
+    pub fn host_assessment(&self, index: usize) -> crate::zfs::host_health::Assessment {
+        let Some(name) = self.hosts.get(index) else { return crate::zfs::host_health::assess(None, false) };
+        let job_failed = self.jobs_view.jobs.iter().any(|j| j.enabled && &j.host == name && self.jobs_view.last_run(&j.id).is_some_and(|r| r.result == Some(crate::daemon::history::RunResult::Failed)));
+        crate::zfs::host_health::assess(self.host_probes.get(name).and_then(|s| s.last.as_ref()), job_failed)
+    }
+
     pub fn refresh_jobs(&mut self) {
         let selected = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).map(|j| j.id.clone());
         self.jobs_view = crate::ui::jobs::load(&self.state_dir, &self.hosts, Some(&self.jobs_view));
@@ -2518,6 +2600,15 @@ impl App {
                             }
                             Err(e) => p.load = crate::ui::picker::PickerLoad::Failed(e.to_string()),
                         }
+                    }
+                }
+                WorkerMsg::HostHealth(name, probe) => {
+                    // A result for a host that was removed or renamed while the probe ran is dropped.
+                    if self.hosts.contains(&name) {
+                        let state = self.host_probes.entry(name).or_default();
+                        state.in_flight = false;
+                        state.last = Some(probe);
+                        state.finished_at = Some(Instant::now());
                     }
                 }
                 WorkerMsg::HostProbe(name, target, result) => {
@@ -10022,5 +10113,100 @@ mod tests {
     fn help_does_not_claim_esc_cancels_every_modal() {
         let text = help_text();
         assert!(text.contains("in a y/n confirmation Esc selects No"), "{text}");
+    }
+
+    fn probes_app() -> App {
+        App::new(vec!["local".to_string(), "fbsd16".to_string(), "fbsd16t1".to_string()])
+    }
+
+    #[test]
+    fn address_of_strips_the_user_and_names_local_for_the_hub() {
+        assert_eq!(address_of(None), "local");
+        assert_eq!(address_of(Some("fbsd@172.16.10.61")), "172.16.10.61");
+        assert_eq!(address_of(Some("172.16.10.62")), "172.16.10.62");
+        assert_eq!(address_of(Some("root@nas.example.com")), "nas.example.com");
+        assert_eq!(address_of(Some("")), "-");
+    }
+
+    #[test]
+    fn addresses_default_to_local_and_a_dash_and_follow_set_host_addresses() {
+        let mut app = probes_app();
+        assert_eq!((app.host_address(0), app.host_address(1)), ("local", "-"));
+        app.set_host_addresses(vec!["local".into(), "172.16.10.60".into(), "172.16.10.61".into()]);
+        assert_eq!(app.host_address(1), "172.16.10.60");
+        assert_eq!(app.host_address(9), "-", "an index with no host");
+    }
+
+    #[test]
+    fn nothing_is_due_before_the_stagger_and_every_host_is_due_once_it_has_passed() {
+        let app = probes_app();
+        let t0 = app.probe_epoch;
+        assert_eq!(app.due_host_probes(t0), vec![0], "host 0 immediately, the others one second apart");
+        assert_eq!(app.due_host_probes(t0 + Duration::from_secs(1)), vec![0, 1]);
+        assert_eq!(app.due_host_probes(t0 + Duration::from_secs(5)), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_host_is_not_probed_again_while_a_probe_runs_or_before_the_interval() {
+        let mut app = probes_app();
+        let t0 = app.probe_epoch;
+        app.start_host_probe(0, std::sync::Arc::new(FakeRunner::new("")));
+        assert!(app.host_probes["local"].in_flight);
+        assert!(!app.due_host_probes(t0 + Duration::from_secs(600)).contains(&0), "one probe in flight per host");
+        wait_until(&mut app, |a| !a.host_probes["local"].in_flight);
+        let done = app.host_probes["local"].finished_at.unwrap();
+        assert!(!app.due_host_probes(done + Duration::from_secs(29)).contains(&0), "not before the 30 s interval");
+        assert!(app.due_host_probes(done + Duration::from_secs(30)).contains(&0), "due again after it");
+    }
+
+    #[test]
+    fn a_probe_result_is_stored_for_its_host_and_assessed() {
+        let mut app = probes_app();
+        app.tx.send(WorkerMsg::HostHealth("fbsd16".to_string(), crate::zfs::host_health::HostProbe::Disconnected)).unwrap();
+        app.drain_worker_messages();
+        let a = app.host_assessment(1);
+        assert_eq!((a.level, a.reason.as_str()), (crate::zfs::host_health::Level::Disconnected, "unreachable"));
+        assert_eq!(app.host_assessment(2).level, crate::zfs::host_health::Level::Probing, "never probed");
+    }
+
+    #[test]
+    fn a_result_for_a_host_that_no_longer_exists_is_discarded() {
+        let mut app = probes_app();
+        app.tx.send(WorkerMsg::HostHealth("ghost".to_string(), crate::zfs::host_health::HostProbe::Disconnected)).unwrap();
+        app.drain_worker_messages();
+        assert!(!app.host_probes.contains_key("ghost"));
+    }
+
+    #[test]
+    fn a_failed_job_of_that_host_warns_only_for_an_enabled_job_whose_latest_run_failed() {
+        use crate::daemon::history::{Event, EventKind, History, RunResult};
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = scrub_job("a");
+        a.host = "fbsd16".to_string();
+        let mut off = scrub_job("off");
+        off.host = "fbsd16t1".to_string();
+        off.enabled = false;
+        let mut other = scrub_job("other");
+        other.host = "local".to_string();
+        crate::jobs::save(&dir.path().join("jobs.toml"), &[a, off, other]).unwrap();
+        let h = History::new(dir.path().join("history.jsonl"));
+        let ev = |id: &str, run: &str, at: &str, result| Event { job_id: id.into(), run_id: run.into(), event: EventKind::Finished, at: chrono::DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&chrono::Utc), scheduled_for: None, result: Some(result), message: String::new(), catch_up: false, summary: None };
+        h.append(&ev("a", "a1", "2026-10-09T01:00:00Z", RunResult::Failed)).unwrap();
+        h.append(&ev("off", "o1", "2026-10-09T01:00:00Z", RunResult::Failed)).unwrap();
+        h.append(&ev("other", "x1", "2026-10-09T01:00:00Z", RunResult::Ok)).unwrap();
+        let mut app = probes_app();
+        app.state_dir = dir.path().to_path_buf();
+        app.refresh_jobs();
+        let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![] };
+        for name in ["local", "fbsd16", "fbsd16t1"] {
+            app.tx.send(WorkerMsg::HostHealth(name.to_string(), healthy())).unwrap();
+        }
+        app.drain_worker_messages();
+        assert_eq!(app.host_assessment(1).reason, "job failed", "fbsd16 has an enabled job whose latest run failed");
+        assert_eq!(app.host_assessment(2).reason, "ok", "its only failing job is disabled");
+        assert_eq!(app.host_assessment(0).reason, "ok", "another host's failure is not this host's");
+        h.append(&ev("a", "a2", "2026-10-09T02:00:00Z", RunResult::Ok)).unwrap();
+        app.refresh_jobs();
+        assert_eq!(app.host_assessment(1).reason, "ok", "a later success clears it");
     }
 }
