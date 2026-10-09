@@ -465,9 +465,9 @@ impl App {
         if !already_running {
             self.quiet_refresh.insert(key);
         }
-        // The destroy prompts count a dataset's snapshots, so the Datasets view loads the snapshot list once
-        // (quietly) instead of leaving the count "unknown" until the Snapshots section has been opened.
-        if section == Section::Datasets && !self.snapshots_loaded && !self.is_refreshing(Section::Snapshots, key.1) {
+        // The destroy prompts count a dataset's snapshots, so the Datasets view refreshes the snapshot list
+        // (quietly) with the datasets: the counts are as fresh as the list, never "unknown" or hours old.
+        if section == Section::Datasets && !self.is_refreshing(Section::Snapshots, key.1) {
             self.refresh_snapshots(for_snapshots);
             self.quiet_refresh.insert((Section::Snapshots, key.1));
         }
@@ -606,6 +606,21 @@ impl App {
         }
         let acltype = self.dataset_properties.iter().find(|p| p.name == "acltype")?;
         (acltype.value == "posix").then_some("this dataset has acltype=posix: the ACL tab edits NFSv4 ACLs only")
+    }
+
+    /// Why `D` (zfs destroy -r) must not run on `name`, if it must not. A pool root would wipe the whole pool
+    /// (verified: `zfs destroy -r <pool>` removes every dataset and snapshot); boot-environment datasets have
+    /// their own, safer section; and anything holding the running system is never a candidate.
+    fn recursive_destroy_refusal(&self, name: &str) -> Option<String> {
+        if !name.contains('/') {
+            return Some(pool_root_message(name));
+        }
+        if name.ends_with("/ROOT") || name.contains("/ROOT/") {
+            return Some(format!("'{name}' is part of the boot environments: use the Boot Envs section, which refuses the running and next-boot ones"));
+        }
+        let prefix = format!("{name}/");
+        let holds_root = self.datasets.iter().any(|d| d.mountpoint.as_deref() == Some("/") && (d.name == name || d.name.starts_with(&prefix)));
+        holds_root.then(|| format!("'{name}' holds the running system (something under it is mounted at /): it cannot be destroyed recursively"))
     }
 
     /// How many child datasets and snapshots sit under `name` (the dataset's own snapshots included), from
@@ -1141,9 +1156,13 @@ impl App {
             }
             KeyCode::Char('D') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(name) = self.selected_dataset_name() {
+                    if let Some(why) = self.recursive_destroy_refusal(&name) {
+                        self.status_message = Some(why);
+                        return;
+                    }
                     let what = self.what_is_under(&name);
                     self.modal = Some(Modal::ConfirmTyped {
-                        prompt: format!("Type the dataset name to destroy '{name}' AND everything under it: {what}.\n(Counts are as of the last refresh. Clones are never touched: zfs refuses if there are any.)"),
+                        prompt: format!("Type the dataset name to destroy '{name}' AND everything under it: {what}.\nIf something is busy, zfs stops part-way and what it already destroyed stays destroyed. Snapshot clones inside it go with it; clones outside it are never touched (zfs refuses if any depend on it). (Counts as of the last refresh.)"),
                         expected: name.clone(),
                         input: String::new(),
                         action: PendingAction { host: self.selected_host, section: Section::Datasets, call: MutationCall::DestroyDatasetRecursive { name } },
@@ -1153,6 +1172,10 @@ impl App {
             KeyCode::Char('d') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.datasets_table.selected() {
                     if let Some(ds) = self.datasets.get(i) {
+                        if !ds.name.contains('/') {
+                            self.status_message = Some(pool_root_message(&ds.name));
+                            return;
+                        }
                         let under = self.has_anything_under(&ds.name);
                         let warning = if under { format!("\nIt has {}, so zfs will refuse; press Esc, then D, to destroy them too.", self.what_is_under(&ds.name)) } else { String::new() };
                         self.modal = Some(Modal::ConfirmTyped {
@@ -1560,11 +1583,11 @@ impl App {
             Modal::Confirm { prompt, action, choice } => match (key, choice) {
                 (KeyCode::Enter, Some(true)) => Some(action),
                 (KeyCode::Enter, Some(false)) => None,
-                (KeyCode::Char('y'), _) => {
+                (KeyCode::Char('y' | 'Y'), _) => {
                     self.modal = Some(Modal::Confirm { prompt, action, choice: Some(true) });
                     None
                 }
-                (KeyCode::Char('n') | KeyCode::Esc, _) => {
+                (KeyCode::Char('n' | 'N') | KeyCode::Esc, _) => {
                     self.modal = Some(Modal::Confirm { prompt, action, choice: Some(false) });
                     None
                 }
@@ -3256,6 +3279,10 @@ fn build_smb_action(kind: &FormKind, fields: &[FormField], shares: &[crate::zfs:
 /// Parses the `Recipient` field's mini-language: `everyone`,
 /// `user:<name>`, or `group:<name>` — no bare-name fallback, since this
 /// app always passes explicit `-u`/`-g` to `zfs allow` (see the spec).
+fn pool_root_message(pool: &str) -> String {
+    format!("'{pool}' is a pool: destroying it as a dataset would remove everything in it. Use the Pools section (d) to destroy a pool")
+}
+
 /// Splits `user:carol`, ` User : carol `, `GROUP:wheel` into a lower-case keyword and a trimmed name (the
 /// name keeps its case). `None` when there is no colon or the name is blank.
 fn split_recipient(s: &str) -> Option<(String, &str)> {
@@ -3492,7 +3519,7 @@ Global
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
   F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
-  Esc              dismiss a status message, back out of a focused pane, or cancel a modal
+  Esc              dismiss a status message, back out of a focused pane, or cancel a modal (in a y/n confirmation Esc selects No, then Enter)
   y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
@@ -3880,6 +3907,8 @@ mod tests {
         (app, action)
     }
 
+    /// `None`: no confirm is open; `Some(None)`: open, nothing selected; `Some(Some(yes))`: the selection.
+    #[allow(clippy::option_option)]
     fn choice_of(app: &App) -> Option<Option<bool>> {
         match &app.modal {
             Some(crate::ui::modal::Modal::Confirm { choice, .. }) => Some(*choice),
@@ -3940,7 +3969,7 @@ mod tests {
     fn other_keys_never_change_or_dismiss_a_confirm() {
         let (mut app, _) = confirm_scrub();
         app.handle_modal_key(KeyCode::Char('y'));
-        for key in [KeyCode::Char('x'), KeyCode::Char('Y'), KeyCode::Char(' '), KeyCode::Tab, KeyCode::Backspace, KeyCode::Up, KeyCode::Down] {
+        for key in [KeyCode::Char('x'), KeyCode::Char(' '), KeyCode::Tab, KeyCode::Backspace, KeyCode::Up, KeyCode::Down] {
             assert_eq!(app.handle_modal_key(key), None);
         }
         assert_eq!(choice_of(&app), Some(Some(true)), "stray keys keep the armed choice and the window");
@@ -9663,7 +9692,7 @@ mod tests {
         let mut app = destroy_app();
         app.handle_key(KeyCode::Char('d'));
         let Some(Modal::ConfirmTyped { prompt, action, .. }) = &app.modal else { panic!() };
-        assert!(prompt.contains("zfs will refuse") && prompt.contains("D"), "{prompt}");
+        assert!(prompt.contains("zfs will refuse") && prompt.contains("press Esc, then D"), "{prompt}");
         assert_eq!(action.call, MutationCall::DestroyDataset { name: "tank/data".to_string() }, "d stays non-recursive");
         let mut app = destroy_app();
         app.datasets_table.select(Some(4)); // tank/other: one snapshot, no children
@@ -9784,7 +9813,7 @@ mod tests {
     #[test]
     fn a_stuck_busy_marker_expires_so_the_section_can_never_be_locked_for_good() {
         let mut app = bootenv_app(vec![running(), spare()], 1);
-        app.bootenv_busy = Some(("spare".to_string(), Instant::now().checked_sub(Duration::from_secs(300)).unwrap()));
+        app.bootenv_busy = Some(("spare".to_string(), Instant::now().checked_sub(Duration::from_mins(5)).unwrap()));
         app.handle_key(KeyCode::Char('m'));
         assert_eq!(app.pending_mutations.len(), 1);
     }
@@ -9905,7 +9934,7 @@ mod tests {
 
 
     #[test]
-    fn the_datasets_view_loads_the_snapshot_list_once_quietly_so_destroy_prompts_can_count_them() {
+    fn the_datasets_view_refreshes_the_snapshot_list_quietly_with_the_datasets_so_destroy_prompts_can_count_them() {
         let mut app = in_section(Section::Datasets);
         app.status_message = Some("scrub started".to_string());
         app.auto_refresh(runner(""), Instant::now(), TEN);
@@ -9917,6 +9946,81 @@ mod tests {
         app.in_flight.clear();
         app.last_auto_refresh.clear();
         app.auto_refresh(runner(""), Instant::now(), TEN);
-        assert!(!app.in_flight.contains(&(Section::Snapshots, 0)), "only the first time: the Snapshots section keeps them fresh after that");
+        assert!(app.in_flight.contains(&(Section::Snapshots, 0)), "every Datasets refresh also refreshes the snapshots, so the counts are as fresh as the list");
+    }
+
+
+    #[test]
+    fn uppercase_y_and_n_also_only_select_so_caps_lock_cannot_leave_the_user_stuck() {
+        let (mut app, action) = confirm_scrub();
+        assert_eq!(app.handle_modal_key(KeyCode::Char('Y')), None);
+        assert_eq!(choice_of(&app), Some(Some(true)));
+        assert_eq!(app.handle_modal_key(KeyCode::Char('N')), None);
+        assert_eq!(choice_of(&app), Some(Some(false)));
+        app.handle_modal_key(KeyCode::Char('Y'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), Some(action), "still two keys: select, then Enter");
+    }
+
+    fn ds_named(name: &str, mountpoint: Option<&str>) -> crate::zfs::dataset::Dataset {
+        crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string) }
+    }
+
+    fn datasets_app_selecting(datasets: Vec<crate::zfs::dataset::Dataset>, selected: &str) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab); // -> Datasets
+        let index = datasets.iter().position(|d| d.name == selected).unwrap();
+        app.datasets = datasets;
+        app.datasets_table.select(Some(index));
+        app.snapshots_loaded = true;
+        app
+    }
+
+    #[test]
+    fn a_pool_root_cannot_be_destroyed_with_d_or_big_d_because_zfs_destroy_r_would_wipe_the_pool() {
+        for key in ['d', 'D'] {
+            let mut app = datasets_app_selecting(vec![ds_named("tank", Some("/tank")), ds_named("tank/data", Some("/tank/data"))], "tank");
+            app.handle_key(KeyCode::Char(key));
+            assert!(app.modal.is_none(), "{key}: no window may open for a pool root");
+            let status = app.status_message.clone().unwrap_or_default();
+            assert!(status.contains("pool") && status.contains("Pools"), "{key}: {status}");
+        }
+    }
+
+    #[test]
+    fn recursive_destroy_is_refused_on_boot_environment_datasets_and_on_anything_holding_the_running_root() {
+        let all = || vec![
+            ds_named("zroot", Some("/zroot")),
+            ds_named("zroot/ROOT", None),
+            ds_named("zroot/ROOT/default", Some("/")),
+            ds_named("zroot/ROOT/other", None),
+            ds_named("zroot/rootfs", None),
+            ds_named("zroot/rootfs/inner", Some("/")),
+            ds_named("zroot/home", Some("/home")),
+        ];
+        for refused in ["zroot/ROOT", "zroot/ROOT/default", "zroot/ROOT/other", "zroot/rootfs", "zroot/rootfs/inner"] {
+            let mut app = datasets_app_selecting(all(), refused);
+            app.handle_key(KeyCode::Char('D'));
+            assert!(app.modal.is_none(), "{refused} must be refused");
+            assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Boot Envs") || m.contains("running")), "{refused}: {:?}", app.status_message);
+        }
+        let mut ok = datasets_app_selecting(all(), "zroot/home");
+        ok.handle_key(KeyCode::Char('D'));
+        assert!(matches!(ok.modal, Some(Modal::ConfirmTyped { .. })), "an ordinary dataset still works");
+    }
+
+    #[test]
+    fn the_recursive_prompt_admits_partial_destruction_and_describes_clones_precisely() {
+        let mut app = destroy_app();
+        app.handle_key(KeyCode::Char('D'));
+        let Some(Modal::ConfirmTyped { prompt, .. }) = &app.modal else { panic!() };
+        assert!(prompt.contains("stops part-way") && prompt.contains("stays destroyed"), "{prompt}");
+        assert!(prompt.contains("clones inside it go with it") && prompt.contains("outside"), "{prompt}");
+    }
+
+    #[test]
+    fn help_does_not_claim_esc_cancels_every_modal() {
+        let text = help_text();
+        assert!(text.contains("in a y/n confirmation Esc selects No"), "{text}");
     }
 }

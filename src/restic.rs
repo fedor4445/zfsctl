@@ -64,7 +64,15 @@ fn plain(s: &str) -> bool {
 /// A restic repository string: non-empty, no surrounding whitespace, no control newlines, and not
 /// starting with `-`. It may hold a host or path but must not hold credentials (documented).
 pub fn valid_repository(s: &str) -> bool {
-    !s.is_empty() && s.trim() == s && !s.starts_with('-') && plain(s)
+    !s.is_empty() && s.trim() == s && !s.starts_with('-') && plain(s) && !has_url_password(s)
+}
+
+/// `rest:https://user:secret@host/...`: a password inside the URL would be stored in `jobs.toml` and shown in
+/// the Jobs table. A user name alone (`user@host`) and a port (`host:8000`) are fine.
+fn has_url_password(s: &str) -> bool {
+    let Some((_, rest)) = s.split_once("://") else { return false };
+    let authority = rest.split('/').next().unwrap_or("");
+    authority.split_once('@').is_some_and(|(userinfo, _)| userinfo.contains(':'))
 }
 
 /// An absolute path on the job's host with no empty, `.` or `..` component.
@@ -318,9 +326,10 @@ mod tests {
 
     #[test]
     fn many_per_file_errors_are_summarised_not_dumped() {
+        use std::fmt::Write as _;
         let mut err = String::new();
         for i in 0..50 {
-            err.push_str(&format!("{{\"message_type\":\"error\",\"error\":{{\"message\":\"open /x/f{i}: permission denied\"}},\"during\":\"archival\",\"item\":\"/x/f{i}\"}}\n"));
+            let _ = writeln!(err, "{{\"message_type\":\"error\",\"error\":{{\"message\":\"open /x/f{i}: permission denied\"}},\"during\":\"archival\",\"item\":\"/x/f{i}\"}}");
         }
         let text = failure_text(None, &err);
         assert!(text.starts_with("50 files could not be read"), "{text}");
@@ -334,5 +343,16 @@ mod tests {
         let text = failure_text(None, &long);
         assert!(text.chars().count() <= 400 && text.ends_with('…'), "{}", text.chars().count());
         assert_eq!(failure_text(None, "short"), "short");
+    }
+
+
+    #[test]
+    fn a_repository_with_a_password_in_its_url_is_refused() {
+        for bad in ["rest:https://user:secret@host:8000/repo", "rest:http://u:p@host/", "https://a:b@h"] {
+            assert!(!valid_repository(bad), "{bad}");
+        }
+        for ok in ["rest:https://user@host:8000/repo", "rest:http://host:8000/", "sftp:backup@host:/srv/restic", "s3:https://s3.amazonaws.com/bucket/path", "rclone:b2:bucket", "/mnt/usb/restic"] {
+            assert!(valid_repository(ok), "{ok}");
+        }
     }
 }

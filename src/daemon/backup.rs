@@ -247,7 +247,7 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
                 match forgot {
                     Forgot::Done => {}
                     Forgot::Cancelled => {
-                        return finish(ctx, job, run_id, EventKind::Finished, RunResult::Cancelled, format!("{message}; retention cancelled, the next run applies it"), slot);
+                        return finish(ctx, job, run_id, EventKind::Finished, RunResult::Cancelled, format!("{message}; retention cancelled, it is applied after the next successful backup"), slot);
                     }
                     Forgot::Failed(e) => return failed(format!("backed up {snapshot} but forget failed: {e}")),
                 }
@@ -283,6 +283,8 @@ mod tests {
 
     /// One host: answers zfs and restic queries from fixed strings, remembers whether the clone
     /// exists, hands out a scripted shell for `restic backup`, and records every call.
+    // A scripted test double: its switches are independent flags, not a state machine.
+    #[allow(clippy::struct_excessive_bools)]
     struct Host {
         listing: String,
         restic_snapshots: std::result::Result<String, String>,
@@ -809,5 +811,26 @@ mod tests {
         assert!(outcome.message.contains(&format!("backed up {B}")) && outcome.message.contains("retention cancelled"), "{}", outcome.message);
         assert_eq!(history.last().and_then(|r| r.result), Some(RunResult::Cancelled));
         assert!(!host.clone_exists());
+    }
+
+
+    #[test]
+    fn a_cancelled_retention_says_it_is_applied_after_the_next_successful_backup() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.forget_script = "sleep 60".to_string();
+        let mut with_policy = job();
+        with_policy.retention = Some("1l".to_string());
+        let (outcome, _) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !host.called("restic forget") {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                rig.cancel.store(true, Ordering::SeqCst);
+            });
+            rig.run(&host, &with_policy)
+        });
+        assert!(outcome.message.contains("applied after the next successful backup"), "{}", outcome.message);
+        assert!(!outcome.message.contains("the next run applies it"), "the next run is usually 'up to date' and never forgets");
     }
 }
