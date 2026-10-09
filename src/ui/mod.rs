@@ -104,8 +104,10 @@ fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_
     }
 }
 
-/// A held Enter repeats about every 30 ms; a deliberate second press is far slower. Enters inside this window
-/// of the previous one are dropped, so a held key can neither resubmit a form nor answer a prompt it just opened.
+/// A held Enter repeats about every 30 ms once the keyboard's initial repeat delay has passed; a deliberate second
+/// press is slower. Enters inside this window of the previous one are dropped, which stops the repeats of a held key
+/// (the first repeat after a long initial delay still arrives). The real protection against a held key is the
+/// two-step confirmation: an unanswered confirmation ignores Enter.
 const ENTER_REPEAT_WINDOW: Duration = Duration::from_millis(250);
 
 #[derive(Default)]

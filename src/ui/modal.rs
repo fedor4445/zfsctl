@@ -77,6 +77,7 @@ impl MutationCall {
             | MutationCall::DestroyBootEnv { .. } => Tone::Danger,
             MutationCall::OfflineDisk { .. }
             | MutationCall::ReplaceDisk { .. }
+            | MutationCall::CreatePool { .. }
             | MutationCall::AddVdev { .. }
             | MutationCall::UnallowPermission { .. }
             | MutationCall::RemoveAclEntry { .. }
@@ -86,7 +87,6 @@ impl MutationCall {
             MutationCall::ScrubPool { .. }
             | MutationCall::ResilverPool { .. }
             | MutationCall::OnlineDisk { .. }
-            | MutationCall::CreatePool { .. }
             | MutationCall::CreateDataset { .. }
             | MutationCall::CreateSnapshot { .. }
             | MutationCall::AllowPermission { .. }
@@ -674,5 +674,10 @@ mod tone_tests {
         assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "-r".to_string(), "--".to_string(), "tank/data".to_string()]));
         assert_eq!(call.tone(), Tone::Danger);
         assert!(!calls[0].1.iter().any(|a| a == "-R"), "-R would also destroy clones elsewhere");
+    }
+
+    #[test]
+    fn creating_a_pool_overwrites_disks_so_it_is_a_warning() {
+        assert_eq!(MutationCall::CreatePool { name: "p".into(), vdev_spec: vec!["da0".into()] }.tone(), Tone::Warn);
     }
 }

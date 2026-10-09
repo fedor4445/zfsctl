@@ -1821,7 +1821,7 @@ impl App {
                         }
                     } else if let Some(action) = build_pending_action(&kind, &fields) {
                         // What cannot be taken back is shown as the exact command and needs y then Enter.
-                        if let Some(prompt) = irreversible_prompt(&action) {
+                        if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
                             self.modal = Some(Modal::Confirm { choice: None, prompt, action });
                             None
                         } else {
@@ -3075,24 +3075,46 @@ fn field_value(fields: &[FormField], index: usize) -> &str {
     fields.get(index).map_or("", |f| f.value.as_str())
 }
 
-/// The confirmation text for a form whose result cannot be undone, naming the exact command.
-fn irreversible_prompt(action: &PendingAction) -> Option<String> {
+/// The confirmation text for a form whose result cannot be undone: the host, the exact command on a line of
+/// its own, then what makes it irreversible.
+fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> Option<String> {
+    let host = hosts.get(action.host).map_or("?", String::as_str);
+    let ask = |command: String, why: &str| Some(format!("On {host}:\n  {command}\n\n{why} (y/n)"));
     match &action.call {
-        MutationCall::CreatePool { name, vdev_spec } => Some(format!(
-            "Run: zpool create {name} {}  -- this overwrites whatever is on those disks. Create the pool? (y/n)",
-            vdev_spec.join(" ")
-        )),
-        MutationCall::AddVdev { pool, vdev_spec } => Some(format!(
-            "Run: zpool add {pool} {}  -- a vdev added to a pool usually cannot be removed again. Add it? (y/n)",
-            vdev_spec.join(" ")
-        )),
-        MutationCall::ReplaceDisk { pool, old_disk, new_disk } => Some(format!(
-            "Run: zpool replace {pool} {old_disk} {new_disk}  -- the new disk is overwritten. Replace it? (y/n)"
-        )),
-        MutationCall::UnallowPermission { dataset, perms, .. } => Some(format!(
-            "Revoke {} on {dataset}? (y/n)",
-            perms.as_ref().map_or_else(|| "all delegated permissions".to_string(), |p| p.join(","))
-        )),
+        MutationCall::CreatePool { name, vdev_spec } => ask(
+            format!("zpool create {name} {}", vdev_spec.join(" ")),
+            "This overwrites whatever is on those disks. Create the pool?",
+        ),
+        MutationCall::AddVdev { pool, vdev_spec } => ask(
+            format!("zpool add {pool} {}", vdev_spec.join(" ")),
+            "A vdev added to a pool usually cannot be removed again. Add it?",
+        ),
+        MutationCall::ReplaceDisk { pool, old_disk, new_disk } => ask(
+            format!("zpool replace {pool} {old_disk} {new_disk}"),
+            "The new disk is overwritten. Replace it?",
+        ),
+        MutationCall::UnallowPermission { dataset, target, perms } => {
+            use crate::zfs::permission::{PermissionTarget, Recipient};
+            let whose = match target {
+                PermissionTarget::CreateTime => "create-time permissions".to_string(),
+                PermissionTarget::Set(name) => format!("permission set @{name}"),
+                PermissionTarget::Grant { recipient: Recipient::User(u), .. } => format!("user {u}"),
+                PermissionTarget::Grant { recipient: Recipient::Group(g), .. } => format!("group {g}"),
+                PermissionTarget::Grant { recipient: Recipient::Everyone, .. } => "everyone".to_string(),
+            };
+            Some(format!(
+                "On {host}:\n  Revoke {} from {whose} on {dataset}\n\nThe delegation is removed. Revoke it? (y/n)",
+                perms.as_ref().map_or_else(|| "all delegated permissions".to_string(), |p| p.join(","))
+            ))
+        }
+        MutationCall::SetDatasetProperty { dataset, key, value } if key == "volsize" => ask(
+            format!("zfs set volsize={value} {dataset}"),
+            "Shrinking a volume destroys the data past the new size. Set it?",
+        ),
+        MutationCall::SetPoolProperty { pool, key, value } if key.starts_with("feature@") => ask(
+            format!("zpool set {key}={value} {pool}"),
+            "Enabling a pool feature cannot be undone and can make the pool unreadable by older systems. Set it?",
+        ),
         _ => None,
     }
 }
@@ -3652,7 +3674,7 @@ Global
   r                refresh the focused pane
   F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal (in a y/n confirmation Esc selects No, then Enter)
-  y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing
+  y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing. Forms that cannot be undone (create pool, add vdev, replace disk, revoke, shrinking a volume, pool features) end in one, showing the exact command
   ?                this Help screen
   !                open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl
   A                About
@@ -3712,7 +3734,7 @@ Shares
 Boot Envs
   n                new boot environment (F2 on the second field picks one to clone)
   a                make the selected one the boot environment for every future boot (confirms)
-  t / T            use it for the next boot only / clear that
+  t / T            use it for the next boot only (confirms) / clear that
   R                rename
   m / u            mount / unmount (the Mountpoint column shows where)
   d / D            destroy (type its name) / destroy and remove its origin snapshot
@@ -10395,5 +10417,50 @@ mod tests {
         let mut app = bootenv_app(vec![running(), spare()], 0);
         app.handle_key(KeyCode::Char('t'));
         assert!(app.modal.is_none(), "the running boot environment has nothing to boot once");
+    }
+
+    fn property_form(kind: FormKind, value: &str) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form { title: "t".to_string(), fields: vec![FormField { label: "value".into(), value: value.into() }], focused: 0, description: None, kind });
+        app
+    }
+
+    #[test]
+    fn shrinking_a_volume_and_enabling_a_pool_feature_confirm_but_ordinary_properties_do_not() {
+        let mut app = property_form(FormKind::EditDatasetProperty { host: 0, dataset: "tank/vol".into(), key: "volsize".into() }, "1G");
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zfs set volsize=1G tank/vol") && prompt.contains("data past the new size"), "{prompt}");
+        let mut app = property_form(FormKind::EditPoolProperty { host: 0, pool: "tank".into(), key: "feature@async_destroy".into() }, "enabled");
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool set feature@async_destroy=enabled tank") && prompt.contains("cannot be undone"), "{prompt}");
+        let mut app = property_form(FormKind::EditDatasetProperty { host: 0, dataset: "tank/data".into(), key: "compression".into() }, "lz4");
+        assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "an ordinary property still applies on Enter");
+    }
+
+    #[test]
+    fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_whose_permissions() {
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+        app.selected_host = 1;
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "pool".into(), value: "tank".into() }, FormField { label: "b".into(), value: "mirror".into() }],
+            focused: 1,
+            description: None,
+            kind: FormKind::AddVdevFromDisks { host: 1, disks: vec!["da0".into(), "da1".into()] },
+        });
+        let prompt = submit_to_confirm(&mut app);
+        let lines: Vec<&str> = prompt.lines().collect();
+        assert!(lines[0].contains("fbsd16"), "{prompt}");
+        assert!(lines.iter().any(|l| l.trim_start().starts_with("zpool add tank")), "the command is a line of its own: {prompt}");
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "perms".into(), value: "mount".into() }],
+            focused: 0,
+            description: None,
+            kind: FormKind::RevokePermissions { host: 0, dataset: "tank/data".into(), target: crate::zfs::permission::PermissionTarget::Grant { recipient: crate::zfs::permission::Recipient::User("alice".into()), scope: crate::zfs::permission::Scope::Both } },
+        });
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("alice"), "{prompt}");
     }
 }
