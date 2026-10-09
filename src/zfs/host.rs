@@ -5,7 +5,7 @@
 //! FreeBSD at all, just shows `-` for that line instead of an error.
 
 use super::metrics::PoolIo;
-use super::pool::{parse_pool_list, Pool, PoolHealth, POOL_LIST_ARGS};
+use super::pool::{Pool, PoolHealth};
 use super::{parse_numeric_or_dash, run_checked};
 use crate::error::Result;
 use crate::exec::CommandRunner;
@@ -40,6 +40,20 @@ pub struct HostSummary {
     pub status: Option<String>,
     /// Milliseconds one unprivileged command took to round-trip.
     pub rtt_ms: Option<u64>,
+    pub cpu: Option<CpuInfo>,
+    pub memory: Option<Memory>,
+    pub swap: Option<Swap>,
+    /// Only when a cache device exists (`l2_size` above 0).
+    pub l2arc: Option<L2arc>,
+    /// Per-pool detail for the panel (capacity, fragmentation, health, errors, last scrub).
+    pub pool_rows: Vec<crate::zfs::host_health::PoolProbe>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CpuInfo {
+    pub model: String,
+    pub cores: u32,
+    pub percent: Option<f64>,
 }
 
 impl HostSummary {
@@ -197,13 +211,32 @@ fn stdout_of(output: Result<crate::exec::CommandOutput>) -> Option<String> {
 /// One host refresh: the summary plus all-pools I/O for a 1-second window.
 /// Blocks for about a second, so it belongs on a worker thread.
 pub fn sample_host(runner: &dyn CommandRunner) -> Result<(HostSummary, PoolIo)> {
-    let pools = parse_pool_list(&run_checked(runner, "zpool", POOL_LIST_ARGS, "zpool list")?.stdout)?;
+    use crate::zfs::host_health::{parse_pool_list_frag, parse_status_all, PoolProbe};
+    let rows = parse_pool_list_frag(&run_checked(runner, "zpool", &["list", "-Hp", "-o", "name,size,alloc,free,frag,health"], "zpool list")?.stdout)?;
+    let status = stdout_of(runner.run("zpool", &["status"])).map(|s| parse_status_all(&s));
+    let pool_rows: Vec<PoolProbe> = rows
+        .iter()
+        .map(|(pool, frag)| {
+            let facts = status.as_ref().and_then(|all| all.iter().find(|f| f.name == pool.name));
+            let capacity = if pool.size == 0 { 0 } else { u8::try_from(u128::from(pool.allocated) * 100 / u128::from(pool.size)).unwrap_or(100).min(100) };
+            PoolProbe { name: pool.name.clone(), health: pool.health.clone(), capacity_percent: capacity, frag_percent: *frag, errors: facts.and_then(|f| f.errors), scan: facts.map(|f| f.scan.clone()) }
+        })
+        .collect();
+    let pools: Vec<Pool> = rows.into_iter().map(|(p, _)| p).collect();
     let started = Instant::now();
     let os = stdout_of(runner.run_unprivileged("uname", &["-sr"])).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let rtt_ms = os.is_some().then(|| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     let now = stdout_of(runner.run_unprivileged("date", &["+%s"])).and_then(|s| s.trim().parse::<u64>().ok());
     let boot = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kern.boottime"])).and_then(|s| parse_boottime(&s));
-    let summary = HostSummary {
+    let core = stdout_of(runner.run_unprivileged(
+        "sysctl",
+        &["-n", "hw.model", "hw.ncpu", "hw.physmem", "hw.pagesize", "vm.stats.vm.v_free_count", "vm.stats.vm.v_wire_count"],
+    ))
+    .and_then(|s| parse_core_sysctls(&s));
+    let l2arc = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kstat.zfs.misc.arcstats.l2_size", "kstat.zfs.misc.arcstats.l2_hits", "kstat.zfs.misc.arcstats.l2_misses"]))
+        .and_then(|s| parse_l2arc(&s))
+        .filter(|l| l.size > 0);
+    let summary_without_cpu = HostSummary {
         os,
         zfs_version: stdout_of(runner.run("zfs", &["version"])).and_then(|s| parse_zfs_version(&s)),
         uptime_secs: now.zip(boot).map(|(n, b)| n.saturating_sub(b)),
@@ -216,8 +249,19 @@ pub fn sample_host(runner: &dyn CommandRunner) -> Result<(HostSummary, PoolIo)> 
         pools,
         status: stdout_of(runner.run("zpool", &["status", "-x"])).and_then(|s| s.lines().next().map(|l| l.trim().to_string())),
         rtt_ms,
+        cpu: None,
+        memory: core.as_ref().map(|c| c.memory),
+        swap: stdout_of(runner.run_unprivileged("swapinfo", &["-k"])).and_then(|s| parse_swapinfo(&s)),
+        l2arc,
+        pool_rows,
     };
+    // The CPU usage needs two readings; the 1-second iostat window below sits between them, so the
+    // measurement costs no extra waiting.
+    let cpu_before = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kern.cp_time"])).and_then(|s| parse_cpu_times(&s));
     let io = stdout_of(runner.run("zpool", &["iostat", "-Hpy", "1", "1"])).map(|s| parse_iostat_total(&s)).unwrap_or_default();
+    let cpu_after = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kern.cp_time"])).and_then(|s| parse_cpu_times(&s));
+    let percent = cpu_before.zip(cpu_after).and_then(|(a, b)| cpu_percent(a, b));
+    let summary = HostSummary { cpu: core.map(|c| CpuInfo { model: c.model, cores: c.cores, percent }), ..summary_without_cpu };
     Ok((summary, io))
 }
 
@@ -259,7 +303,7 @@ mod tests {
     fn sample_host_needs_the_pool_list_but_tolerates_every_other_failure() {
         assert!(sample_host(&FakeRunner::failing("no zfs", 1)).is_err());
         let runner = FakeRunner::new("")
-            .route("zpool", "list", "tank\t3000\t1000\t2000\tONLINE\nbad\t100\t50\t50\tDEGRADED\n")
+            .route("zpool", "list", "tank\t3000\t1000\t2000\t5\tONLINE\nbad\t100\t50\t50\t-\tDEGRADED\n")
             .route_failure("zpool", "status", "boom", 1);
         let (s, io) = sample_host(&runner).unwrap();
         assert_eq!((s.pools.len(), s.unhealthy(), s.capacity()), (2, 1, (1050, 3100)));
@@ -269,7 +313,7 @@ mod tests {
     #[test]
     fn sample_host_reads_unprivileged_info_without_sudo_and_derives_uptime() {
         let runner = FakeRunner::new("")
-            .route("zpool", "list", "tank\t3000\t1000\t2000\tONLINE\n")
+            .route("zpool", "list", "tank\t3000\t1000\t2000\t5\tONLINE\n")
             .route("uname", "-sr", "FreeBSD 15.1-RELEASE-p4\n")
             .route("date", "+%s", "1791295391\n")
             .route("sysctl", "-n", "{ sec = 1791293984, usec = 6 } Tue\n")
@@ -281,7 +325,7 @@ mod tests {
         assert_eq!(s.status.as_deref(), Some("all pools are healthy"));
         assert_eq!(io.write_bps, 2048);
         let unpriv = runner.unprivileged_calls.lock().unwrap();
-        assert!(unpriv.iter().all(|(cmd, _)| ["uname", "date", "sysctl"].contains(&cmd.as_str())), "{unpriv:?}");
+        assert!(unpriv.iter().all(|(cmd, _)| ["uname", "date", "sysctl", "swapinfo"].contains(&cmd.as_str())), "{unpriv:?}");
         assert!(runner.calls.lock().unwrap().iter().any(|(c, a)| c == "zfs" && a == &["version"]));
     }
 
@@ -342,5 +386,130 @@ mod tests {
         assert_eq!(l2.hit_percent(), Some(60.0));
         assert_eq!(L2arc { size: 1, hits: 0, misses: 0 }.hit_percent(), None);
         assert_eq!(parse_l2arc("1\n2\n"), None);
+    }
+
+    use std::sync::Mutex;
+
+    /// Answers each command by the longest registered prefix of `cmd args...`, recording every call.
+    struct Scripted {
+        answers: Vec<(String, Option<String>)>,
+        calls: Mutex<Vec<String>>,
+        cp_time: Mutex<Vec<String>>,
+    }
+
+    impl Scripted {
+        fn new() -> Self {
+            Scripted { answers: Vec::new(), calls: Mutex::new(vec![]), cp_time: Mutex::new(vec![]) }
+        }
+        fn on(mut self, prefix: &str, stdout: &str) -> Self {
+            self.answers.push((prefix.to_string(), Some(stdout.to_string())));
+            self
+        }
+        fn failing(mut self, prefix: &str) -> Self {
+            self.answers.push((prefix.to_string(), None));
+            self
+        }
+        /// Successive `kern.cp_time` readings.
+        fn cpu(self, readings: &[&str]) -> Self {
+            *self.cp_time.lock().unwrap() = readings.iter().rev().map(|s| (*s).to_string()).collect();
+            self
+        }
+    }
+
+    impl CommandRunner for Scripted {
+        fn run(&self, cmd: &str, args: &[&str]) -> Result<crate::exec::CommandOutput> {
+            let line = format!("{cmd} {}", args.join(" "));
+            self.calls.lock().unwrap().push(line.clone());
+            let ok = |s: String| Ok(crate::exec::CommandOutput { stdout: s, stderr: String::new(), status: 0 });
+            if line == "sysctl -n kern.cp_time" {
+                return match self.cp_time.lock().unwrap().pop() {
+                    Some(s) => ok(s),
+                    None => Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: "no".into(), status: 1 }),
+                };
+            }
+            let best = self.answers.iter().filter(|(p, _)| line.starts_with(p.as_str())).max_by_key(|(p, _)| p.len());
+            match best {
+                Some((_, Some(s))) => ok(s.clone()),
+                _ => Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: "unavailable".into(), status: 1 }),
+            }
+        }
+        fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+        fn run_unprivileged(&self, c: &str, a: &[&str]) -> Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+    }
+
+    const LIST: &str = "scratch\t251658240\t106573824\t145084416\t39\tONLINE\nzroot\t45634027520\t11182317568\t34451709952\t33\tONLINE\n";
+    const STATUS: &str = "  pool: scratch\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tscratch  ONLINE  0  0  0\n\n  pool: zroot\n state: ONLINE\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tzroot  ONLINE  0  0  0\n";
+    const SWAP: &str = "Device          1K-blocks     Used    Avail Capacity\n/dev/ada0p3       2097152   524288  1572864    25%\n";
+
+    fn full_host() -> Scripted {
+        Scripted::new()
+            .on("zpool list", LIST)
+            .on("zpool status", STATUS)
+            .on("zpool iostat", "scratch\t1\t2\t0\t0\t0\t0\n")
+            .on("uname", "FreeBSD 15.1-RELEASE-p4\n")
+            .on("date", "1791500000\n")
+            .on("sysctl -n kern.boottime", "{ sec = 1791413600, usec = 1 } Wed\n")
+            .on("sysctl -n vm.loadavg", "{ 0.10 0.20 0.30 }\n")
+            .on("sysctl -n kstat.zfs.misc.arcstats.size", "100\n200\n30\n10\n")
+            .on("sysctl -n hw.model", "Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz\n36\n21418688512\n4096\n2563464\n1706935\n")
+            .on("sysctl -n kstat.zfs.misc.arcstats.l2_size", "0\n0\n0\n")
+            .on("swapinfo", SWAP)
+            .on("zfs version", "zfs-2.4.2-1-FreeBSD\nzfs-kmod-2.4.2-1\n")
+            .cpu(&["100 0 100 0 800", "150 0 150 0 900"])
+    }
+
+    #[test]
+    fn the_sample_carries_cpu_memory_swap_and_pool_rows() {
+        let (summary, _) = sample_host(&full_host()).unwrap();
+        let cpu = summary.cpu.as_ref().unwrap();
+        assert_eq!((cpu.model.as_str(), cpu.cores, cpu.percent), ("Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz", 36, Some(50.0)));
+        assert_eq!(summary.memory.unwrap().physical, 21_418_688_512);
+        assert_eq!(summary.swap, Some(Swap { total: 2_097_152 * 1024, used: 524_288 * 1024 }));
+        assert_eq!(summary.pools.len(), 2, "the existing pools field still works");
+        assert_eq!(summary.pool_rows.iter().map(|p| (p.name.as_str(), p.frag_percent)).collect::<Vec<_>>(), [("scratch", Some(39)), ("zroot", Some(33))]);
+        assert!(matches!(summary.pool_rows[0].scan, Some(crate::zfs::host_health::ScanSummary::Finished { .. })));
+    }
+
+    #[test]
+    fn l2arc_is_only_reported_when_a_cache_device_exists() {
+        let (none, _) = sample_host(&full_host()).unwrap();
+        assert_eq!(none.l2arc, None, "l2_size 0: no cache device, no line");
+        let with = full_host().on("sysctl -n kstat.zfs.misc.arcstats.l2_size", "12884901888\n600\n400\n");
+        let (summary, _) = sample_host(&with).unwrap();
+        assert_eq!(summary.l2arc, Some(L2arc { size: 12_884_901_888, hits: 600, misses: 400 }));
+    }
+
+    #[test]
+    fn the_cpu_usage_is_measured_around_the_iostat_window_with_no_extra_wait() {
+        let host = full_host();
+        sample_host(&host).unwrap();
+        let calls = host.calls.lock().unwrap().clone();
+        let at = |p: &str| calls.iter().position(|c| c.starts_with(p)).unwrap_or_else(|| panic!("no {p} in {calls:?}"));
+        let first = calls.iter().position(|c| c == "sysctl -n kern.cp_time").unwrap();
+        let last = calls.iter().rposition(|c| c == "sysctl -n kern.cp_time").unwrap();
+        assert!(first < at("zpool iostat") && at("zpool iostat") < last, "{calls:?}");
+    }
+
+    #[test]
+    fn every_new_figure_is_best_effort_and_a_missing_one_leaves_the_rest() {
+        let host = full_host().failing("sysctl -n hw.model").failing("swapinfo").failing("sysctl -n kern.cp_time").failing("zpool status");
+        let (summary, _) = sample_host(&host).unwrap();
+        assert_eq!((summary.cpu.clone(), summary.memory, summary.swap), (None, None, None));
+        assert_eq!(summary.pools.len(), 2, "the required part still works");
+        assert!(summary.pool_rows.iter().all(|p| p.errors.is_none() && p.scan.is_none()), "no zpool status: unknown, not clean");
+        assert_eq!(summary.os.as_deref(), Some("FreeBSD 15.1-RELEASE-p4"));
+    }
+
+    #[test]
+    fn a_cpu_model_without_a_usage_reading_still_shows_the_model_and_cores() {
+        let host = full_host();
+        host.cp_time.lock().unwrap().clear();
+        let (summary, _) = sample_host(&host).unwrap();
+        let cpu = summary.cpu.unwrap();
+        assert_eq!((cpu.cores, cpu.percent), (36, None));
     }
 }
