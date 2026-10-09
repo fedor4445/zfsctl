@@ -77,6 +77,7 @@ impl MutationCall {
             | MutationCall::DestroyBootEnv { .. } => Tone::Danger,
             MutationCall::OfflineDisk { .. }
             | MutationCall::ReplaceDisk { .. }
+            | MutationCall::AddVdev { .. }
             | MutationCall::UnallowPermission { .. }
             | MutationCall::RemoveAclEntry { .. }
             | MutationCall::RemoveSmbShare { .. }
@@ -86,7 +87,6 @@ impl MutationCall {
             | MutationCall::ResilverPool { .. }
             | MutationCall::OnlineDisk { .. }
             | MutationCall::CreatePool { .. }
-            | MutationCall::AddVdev { .. }
             | MutationCall::CreateDataset { .. }
             | MutationCall::CreateSnapshot { .. }
             | MutationCall::AllowPermission { .. }

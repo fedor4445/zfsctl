@@ -104,6 +104,27 @@ fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_
     }
 }
 
+/// A held Enter repeats about every 30 ms; a deliberate second press is far slower. Enters inside this window
+/// of the previous one are dropped, so a held key can neither resubmit a form nor answer a prompt it just opened.
+const ENTER_REPEAT_WINDOW: Duration = Duration::from_millis(250);
+
+#[derive(Default)]
+struct EnterDebounce {
+    last_enter: Option<Instant>,
+}
+
+impl EnterDebounce {
+    /// Whether this key should be handled. Every Enter, dropped or not, restarts the window.
+    fn accept(&mut self, code: KeyCode, now: Instant) -> bool {
+        if code != KeyCode::Enter {
+            return true;
+        }
+        let repeat = self.last_enter.is_some_and(|t| now.duration_since(t) < ENTER_REPEAT_WINDOW);
+        self.last_enter = Some(now);
+        !repeat
+    }
+}
+
 /// Drains `app.pending_account_fetch` and starts one worker per host.
 /// `App` cannot resolve a host index to a runner, so the event loop does
 /// it (same split as `apply_pending_new_hosts`). An index with no host
@@ -171,6 +192,7 @@ fn event_loop(
 ) -> Result<()> {
     // `None` = never refreshed yet, so the first poll happens immediately.
     let mut last_vdevs_auto_refresh: Option<Instant> = None;
+    let mut enter_gate = EnterDebounce::default();
     let signals = shell::ShellSignals::install().map_err(|e| e.to_string());
     loop {
         let refreshes = app.drain_worker_messages();
@@ -240,9 +262,10 @@ fn event_loop(
         if event::poll(Duration::from_millis(250))
             .map_err(|e| AppError::Config(format!("polling events: {e}")))?
         {
-            if let Event::Key(key) =
-                event::read().map_err(|e| AppError::Config(format!("reading event: {e}")))?
-            {
+            if let Some(key) = match event::read().map_err(|e| AppError::Config(format!("reading event: {e}")))? {
+                Event::Key(key) if enter_gate.accept(key.code, Instant::now()) => Some(key),
+                _ => None,
+            } {
                 if app.picker.is_some() {
                     app.handle_picker_key(key.code);
                 } else if app.modal.is_some() {
@@ -491,5 +514,26 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(app.picker.as_ref().unwrap().values, vec!["tank/data"]);
+    }
+
+    #[test]
+    fn enter_repeating_faster_than_a_deliberate_press_is_ignored() {
+        let mut gate = EnterDebounce::default();
+        let t0 = Instant::now();
+        assert!(gate.accept(KeyCode::Enter, t0), "the first Enter counts");
+        assert!(!gate.accept(KeyCode::Enter, t0 + Duration::from_millis(30)), "a held key repeating");
+        assert!(!gate.accept(KeyCode::Enter, t0 + Duration::from_millis(60)), "still held: each ignored repeat extends the window");
+        assert!(gate.accept(KeyCode::Enter, t0 + Duration::from_millis(60 + 251)), "a fresh press after the window counts");
+    }
+
+    #[test]
+    fn other_keys_always_pass_and_do_not_open_the_window() {
+        let mut gate = EnterDebounce::default();
+        let t0 = Instant::now();
+        assert!(gate.accept(KeyCode::Char('y'), t0));
+        assert!(gate.accept(KeyCode::Char('y'), t0 + Duration::from_millis(5)), "typing is never debounced");
+        assert!(gate.accept(KeyCode::Enter, t0 + Duration::from_millis(10)), "an Enter after other keys is a first Enter");
+        assert!(gate.accept(KeyCode::Down, t0 + Duration::from_millis(20)));
+        assert!(!gate.accept(KeyCode::Enter, t0 + Duration::from_millis(40)));
     }
 }

@@ -1514,9 +1514,9 @@ impl App {
             }
             KeyCode::Char('t') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
-                self.status_message = Some(format!("Activating '{name}' for the next boot only…"));
+                let prompt = format!("Boot '{name}' on the NEXT boot only? Later boots go back to the usual boot environment. (y/n)");
                 let call = MutationCall::ActivateBootEnv { name, temporary: true };
-                self.queue_bootenv_change(call);
+                self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
             }
             KeyCode::Char('T') if self.current_section() == Section::BootEnvs => {
                 let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return };
@@ -1819,7 +1819,15 @@ impl App {
                                 None
                             }
                         }
-                    } else if let Some(action) = build_pending_action(&kind, &fields) { Some(action) } else {
+                    } else if let Some(action) = build_pending_action(&kind, &fields) {
+                        // What cannot be taken back is shown as the exact command and needs y then Enter.
+                        if let Some(prompt) = irreversible_prompt(&action) {
+                            self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+                            None
+                        } else {
+                            Some(action)
+                        }
+                    } else {
                         self.set_error(form_problem(&kind, &fields));
                         self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
                         None
@@ -3065,6 +3073,28 @@ fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
 /// already treats as "not filled in" (forms are built with a fixed field count per kind).
 fn field_value(fields: &[FormField], index: usize) -> &str {
     fields.get(index).map_or("", |f| f.value.as_str())
+}
+
+/// The confirmation text for a form whose result cannot be undone, naming the exact command.
+fn irreversible_prompt(action: &PendingAction) -> Option<String> {
+    match &action.call {
+        MutationCall::CreatePool { name, vdev_spec } => Some(format!(
+            "Run: zpool create {name} {}  -- this overwrites whatever is on those disks. Create the pool? (y/n)",
+            vdev_spec.join(" ")
+        )),
+        MutationCall::AddVdev { pool, vdev_spec } => Some(format!(
+            "Run: zpool add {pool} {}  -- a vdev added to a pool usually cannot be removed again. Add it? (y/n)",
+            vdev_spec.join(" ")
+        )),
+        MutationCall::ReplaceDisk { pool, old_disk, new_disk } => Some(format!(
+            "Run: zpool replace {pool} {old_disk} {new_disk}  -- the new disk is overwritten. Replace it? (y/n)"
+        )),
+        MutationCall::UnallowPermission { dataset, perms, .. } => Some(format!(
+            "Revoke {} on {dataset}? (y/n)",
+            perms.as_ref().map_or_else(|| "all delegated permissions".to_string(), |p| p.join(","))
+        )),
+        _ => None,
+    }
 }
 
 fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<PendingAction> {
@@ -5193,7 +5223,7 @@ mod tests {
         for c in "mirror da0 da1".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert_eq!(
             result,
             Some(crate::ui::modal::PendingAction {
@@ -5337,7 +5367,7 @@ mod tests {
         for c in "mirror da2 da3".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert_eq!(
             result,
             Some(crate::ui::modal::PendingAction {
@@ -5378,7 +5408,7 @@ mod tests {
         for c in "da2".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert_eq!(
             result,
             Some(crate::ui::modal::PendingAction {
@@ -6279,7 +6309,7 @@ mod tests {
             app.handle_modal_key(KeyCode::Char(c));
         }
         app.handle_modal_key(KeyCode::Tab); // move to the Redundancy field
-        let result = app.handle_modal_key(KeyCode::Enter);
+        let result = submit_and_confirm(&mut app);
         assert!(result.is_some(), "the form still submits and returns a PendingAction");
         assert!(
             app.selected_disks.contains("da0"),
@@ -9530,12 +9560,7 @@ mod tests {
     }
 
     #[test]
-    fn t_activates_for_the_next_boot_without_a_confirm_and_big_t_clears_it() {
-        let mut app = bootenv_app(vec![running(), spare()], 1);
-        app.handle_key(KeyCode::Char('t'));
-        assert!(app.modal.is_none());
-        assert_eq!(only_pending(&app), &MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: true });
-        assert!(app.status_message.is_some());
+    fn big_t_clears_a_temporary_activation_without_a_confirm() {
         let mut app = bootenv_app(vec![running(), spare()], 1);
         app.handle_key(KeyCode::Char('T'));
         assert!(app.pending_mutations.is_empty(), "spare has no temporary activation to clear");
@@ -10232,5 +10257,143 @@ mod tests {
         assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
         app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()) });
         assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
+    }
+
+    /// Enter on a finished irreversible form, then the confirmation's `y` and Enter.
+    fn submit_and_confirm(app: &mut App) -> Option<PendingAction> {
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        app.handle_modal_key(KeyCode::Char('y'));
+        app.handle_modal_key(KeyCode::Enter)
+    }
+
+    /// Presses Enter on a finished irreversible form and returns the prompt of the confirmation it opens,
+    /// asserting nothing ran yet.
+    fn submit_to_confirm(app: &mut App) -> String {
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "an irreversible form must not run on Enter");
+        match &app.modal {
+            Some(Modal::Confirm { prompt, choice: None, .. }) => prompt.clone(),
+            other => panic!("expected an unanswered confirmation, got {other:?}"),
+        }
+    }
+
+    fn pool_for_forms(app: &mut App) {
+        app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+        app.handle_key(KeyCode::Tab);
+        app.pools_table.select(Some(0));
+        app.drilled_pool = Some("tank".to_string());
+    }
+
+    #[test]
+    fn add_vdev_shows_the_exact_command_and_runs_only_after_y_then_enter() {
+        let mut app = App::new(vec!["local".to_string()]);
+        pool_for_forms(&mut app);
+        app.vdevs = vec![VdevLine { depth: 1, name: "mirror-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('a'));
+        for c in "mirror da2 da3".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool add tank mirror da2 da3"), "{prompt}");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter with nothing selected does nothing");
+        assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
+        let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter runs it");
+        assert_eq!(action.call, MutationCall::AddVdev { pool: "tank".to_string(), vdev_spec: vec!["mirror".into(), "da2".into(), "da3".into()] });
+    }
+
+    #[test]
+    fn declining_an_irreversible_form_takes_two_steps_and_runs_nothing() {
+        let mut app = App::new(vec!["local".to_string()]);
+        pool_for_forms(&mut app);
+        app.vdevs = vec![VdevLine { depth: 1, name: "da1".to_string(), health: crate::zfs::pool::PoolHealth::Faulted }];
+        app.vdevs_table.select(Some(0));
+        app.handle_key(KeyCode::Char('x'));
+        for c in "da2".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool replace tank da1 da2"), "{prompt}");
+        assert_eq!(app.handle_modal_key(KeyCode::Char('n')), None);
+        assert!(app.modal.is_some(), "n only selects");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn create_pool_forms_confirm_with_the_command_and_the_warning_about_the_disks() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "newpool".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        for c in "mirror da0 da1".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("zpool create newpool mirror da0 da1") && prompt.contains("overwrit"), "{prompt}");
+    }
+
+    #[test]
+    fn the_from_disks_forms_confirm_too() {
+        for kind in [FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }, FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }] {
+            let mut app = App::new(vec!["local".to_string()]);
+            let (a, b) = if matches!(kind, FormKind::CreatePoolFromDisks { .. }) { ("newpool", "mirror") } else { ("tank", "mirror") };
+            app.modal = Some(Modal::Form {
+                title: "t".to_string(),
+                fields: vec![FormField { label: "a".into(), value: a.into() }, FormField { label: "b".into(), value: b.into() }],
+                focused: 1,
+                description: None,
+                kind,
+            });
+            let prompt = submit_to_confirm(&mut app);
+            assert!(prompt.contains("da0 da1"), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn revoking_permissions_confirms_and_names_the_permissions() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "perms".into(), value: "snapshot,mount".into() }],
+            focused: 0,
+            description: None,
+            kind: FormKind::RevokePermissions { host: 0, dataset: "tank/data".into(), target: crate::zfs::permission::PermissionTarget::CreateTime },
+        });
+        let prompt = submit_to_confirm(&mut app);
+        assert!(prompt.contains("snapshot,mount") && prompt.contains("tank/data"), "{prompt}");
+    }
+
+    #[test]
+    fn routine_forms_still_submit_on_enter() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "t".to_string(),
+            fields: vec![FormField { label: "name".into(), value: "tank/new".into() }],
+            focused: 0,
+            description: None,
+            kind: FormKind::CreateDataset { host: 0 },
+        });
+        assert!(app.handle_modal_key(KeyCode::Enter).is_some());
+    }
+
+    #[test]
+    fn boot_once_asks_first_and_only_y_then_enter_queues_it() {
+        let mut app = bootenv_app(vec![running(), spare()], 1);
+        app.handle_key(KeyCode::Char('t'));
+        match &app.modal {
+            Some(Modal::Confirm { prompt, choice: None, .. }) => assert!(prompt.contains("'spare'") && prompt.contains("NEXT boot"), "{prompt}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(app.pending_mutations.is_empty(), "nothing is queued before the answer");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("runs after y then Enter");
+        assert_eq!(action.call, MutationCall::ActivateBootEnv { name: "spare".to_string(), temporary: true });
+        let mut app = bootenv_app(vec![running(), spare()], 0);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.modal.is_none(), "the running boot environment has nothing to boot once");
     }
 }
