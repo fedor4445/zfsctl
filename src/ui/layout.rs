@@ -178,6 +178,75 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+/// Default share of the Pools/Datasets row given to the list (the rest goes to the detail pane).
+const SPLIT_LEFT_PERCENT: u16 = 60;
+/// Narrowest the list / detail pane may be squeezed to make room for the other side.
+const SPLIT_LEFT_MIN: u16 = 30;
+const SPLIT_RIGHT_MIN: u16 = 36;
+
+/// Splits `total` columns into (list, detail). Starts from 60/40 and moves
+/// width toward whichever side is truncating (`*_want` is the width its
+/// content needs, borders included), never taking the donor below its
+/// minimum or below what it needs itself. If both sides truncate, or the
+/// terminal is too narrow to honour the minimums, the default split stands.
+fn split_widths(total: u16, left_want: u16, right_want: u16) -> (u16, u16) {
+    let left = total * SPLIT_LEFT_PERCENT / 100;
+    let right = total - left;
+    if total < SPLIT_LEFT_MIN + SPLIT_RIGHT_MIN {
+        return (left, right);
+    }
+    match (left_want > left, right_want > right) {
+        (true, false) => {
+            let give = (left_want - left).min(right.saturating_sub(right_want.max(SPLIT_RIGHT_MIN)));
+            (left + give, right - give)
+        }
+        (false, true) => {
+            let give = (right_want - right).min(left.saturating_sub(left_want.max(SPLIT_LEFT_MIN)));
+            (left - give, right + give)
+        }
+        _ => (left, right),
+    }
+}
+
+/// Name column width the Datasets table keeps before it is squeezed.
+const DATASET_NAME_MIN: u16 = 24;
+
+/// Longest value shown in the Properties table's Value column.
+const PROPERTY_VALUE_MIN: u16 = 16;
+const PROPERTY_VALUE_MAX: u16 = 40;
+
+fn longest_property_value(props: &[Property]) -> u16 {
+    let longest = props.iter().map(|p| p.value.chars().count()).max().unwrap_or(0);
+    u16::try_from(longest).unwrap_or(PROPERTY_VALUE_MAX).min(PROPERTY_VALUE_MAX)
+}
+
+fn property_value_width(props: &[Property]) -> u16 {
+    longest_property_value(props).max(PROPERTY_VALUE_MIN)
+}
+
+/// Detail-pane width the Properties table needs: Property(16) + the longest value + Source(10), gaps, borders.
+fn property_pane_want(props: &[Property]) -> u16 {
+    16 + longest_property_value(props) + 10 + 2 + 2
+}
+
+/// Widths (borders included) the list and detail pane would like, for `split_widths`.
+/// Permissions and ACL tabs keep their fixed columns, so they never ask for more.
+fn split_wants(app: &App, section: Section) -> (u16, u16) {
+    let widest = |names: Vec<usize>| u16::try_from(names.into_iter().max().unwrap_or(0)).unwrap_or(u16::MAX);
+    if section == Section::Pools {
+        let name = widest(app.pools.iter().map(|p| p.name.chars().count()).collect()).max(POOL_NAME_MINIMUM);
+        // Name + Health(12) + compact Used(5), one gap each, plus borders.
+        (name.saturating_add(12 + 5 + 3 + 2), property_pane_want(&app.pool_properties))
+    } else {
+        let name = widest(app.datasets.iter().map(|d| d.name.chars().count()).collect()).max(DATASET_NAME_MIN);
+        let right = match app.dataset_detail_tab {
+            DatasetDetailTab::Properties => property_pane_want(&app.dataset_properties),
+            _ => 0,
+        };
+        (name.saturating_add(14 + 14 + 12 + 3 + 2), right)
+    }
+}
+
 fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
     if app.drilled_pool.is_some() {
         draw_vdevs(f, app, area);
@@ -185,9 +254,11 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let section = app.current_section();
     if section == Section::Pools || section == Section::Datasets {
+        let (left_want, right_want) = split_wants(app, section);
+        let (left_w, _) = split_widths(area.width, left_want, right_want);
         let [left, right] = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .constraints([Constraint::Length(left_w), Constraint::Min(0)])
             .areas(area);
         match section {
             Section::Pools => {
@@ -381,7 +452,7 @@ fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app.pool_properties.iter().map(|p| {
         Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(&theme, p))
     });
-    let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
+    let widths = [Constraint::Length(16), Constraint::Length(property_value_width(&app.pool_properties)), Constraint::Min(10)];
     let pool = app.selected_pool_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
     let table = Table::new(rows, widths)
@@ -418,7 +489,7 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
         ])
     });
     let widths = [
-        Constraint::Length(24),
+        Constraint::Min(DATASET_NAME_MIN),
         Constraint::Length(14),
         Constraint::Length(14),
         Constraint::Length(12),
@@ -447,7 +518,7 @@ fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app.dataset_properties.iter().map(|p| {
         Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(&theme, p))
     });
-    let widths = [Constraint::Length(16), Constraint::Length(16), Constraint::Min(10)];
+    let widths = [Constraint::Length(16), Constraint::Length(property_value_width(&app.dataset_properties)), Constraint::Min(10)];
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
@@ -1145,6 +1216,45 @@ mod tests {
         assert_eq!(super::failed_popup_height(&body, 40, 6), 6);
     }
 
+    #[test]
+    fn split_widths_keeps_sixty_forty_when_both_sides_fit() {
+        assert_eq!(split_widths(100, 50, 30), (60, 40));
+    }
+
+    #[test]
+    fn split_widths_gives_a_truncating_list_the_detail_panes_spare_width() {
+        // right needs 36 (its minimum) so it can donate 40-36=4
+        assert_eq!(split_widths(100, 70, 20), (64, 36));
+        // asks for less than the spare: only what is needed moves
+        assert_eq!(split_widths(100, 62, 20), (62, 38));
+    }
+
+    #[test]
+    fn split_widths_gives_a_truncating_detail_pane_the_lists_spare_width() {
+        assert_eq!(split_widths(100, 35, 55), (45, 55));
+        // list never drops below its own need or below 30
+        assert_eq!(split_widths(100, 50, 70), (50, 50));
+        assert_eq!(split_widths(100, 10, 90), (30, 70));
+    }
+
+    #[test]
+    fn split_widths_keeps_the_default_when_both_sides_truncate_or_the_terminal_is_tiny() {
+        assert_eq!(split_widths(100, 80, 60), (60, 40));
+        assert_eq!(split_widths(60, 80, 10), (36, 24));
+    }
+
+    #[test]
+    fn split_widths_always_sums_to_total() {
+        for total in 0..200u16 {
+            for lw in (0..200).step_by(7) {
+                for rw in (0..200).step_by(11) {
+                    let (l, r) = split_widths(total, lw, rw);
+                    assert_eq!(l + r, total);
+                }
+            }
+        }
+    }
+
     use super::*;
     use crate::ui::theme::Theme;
     // Explicit (not via `super::*`): Task 7 removes `Color` from the
@@ -1273,6 +1383,38 @@ mod tests {
 
     fn pool(name: &str, allocated: u64, size: u64, health: PoolHealth) -> Pool {
         Pool { name: name.to_string(), size, allocated, free: size.saturating_sub(allocated), health }
+    }
+
+    fn app_in_datasets(names: &[&str]) -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Datasets).unwrap();
+        app.datasets = names
+            .iter()
+            .map(|n| crate::zfs::dataset::Dataset { name: (*n).to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None })
+            .collect();
+        app.datasets_table.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn a_long_dataset_name_widens_the_list_at_the_detail_panes_expense() {
+        let long = "tank/backups/hosts/webserver-01/home/alice";
+        let mut app = app_in_datasets(&[long]);
+        assert!(!render(&mut app, 120, 24).join("\n").contains(long), "premise: a fixed 60/40 split clips this name");
+        let mut app = app_in_datasets(&[long]);
+        app.dataset_properties = vec![crate::zfs::property::Property { name: "compression".to_string(), value: "lz4".to_string(), source: crate::zfs::property::PropertySource::Default }];
+        // 150 cols - 22 sidebar = 128: 60% = 76 can't hold the 87 the name table needs; the detail pane can lend 14.
+        let text = render(&mut app, 150, 24).join("\n");
+        assert!(text.contains(long), "{text}");
+    }
+
+    #[test]
+    fn short_names_keep_the_default_split() {
+        let mut app = app_in_datasets(&["tank/a"]);
+        let rows = render(&mut app, 130, 24);
+        // The detail pane's left border sits in the same column on every row where it starts.
+        let col = rows[0].find("Properties").map(|i| rows[0][..i].chars().count());
+        assert!(col.is_some_and(|c| c >= 22 + 60), "{:?}", rows[0]);
     }
 
     fn app_in_pools(pools: Vec<Pool>) -> App {
