@@ -2176,4 +2176,28 @@ mod tests {
         };
         assert_ne!(selected, other, "the selected host's row looks selected");
     }
+
+    fn host_panel_app(w_extra: ()) -> App {
+        let _ = w_extra;
+        let mut app = App::new(vec!["local".to_string()]);
+        let target = MetricsTarget::Host;
+        app.metrics.retarget(Some(target.clone()));
+        app.metrics.apply(&target, Ok(crate::zfs::metrics::TargetSample { pool: crate::zfs::metrics::PoolSample::default(), space: None, host: Some(crate::ui::metrics::tests_support::rich_host()), snapshot: None, disk: None, share: None }), std::time::Instant::now());
+        app
+    }
+
+    #[test]
+    fn the_host_panel_shows_two_columns_when_wide_and_one_when_narrow_and_says_when_it_cuts_pool_rows() {
+        let mut wide = host_panel_app(());
+        let text = render(&mut wide, 190, 40).join("\n");
+        for want in ["Metrics — host local", "CPU", "36 cores", "Memory", "Swap", "L2ARC", "scratch", "tank", "zroot"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        let mut narrow = host_panel_app(());
+        let text = render(&mut narrow, 90, 40).join("\n");
+        assert!(text.contains("CPU") && text.contains("Swap"), "one column still shows everything:\n{text}");
+        let mut short = host_panel_app(());
+        let text = render(&mut short, 190, 24).join("\n");
+        assert!(text.contains("more pool row") || text.contains("scratch"), "never silently clipped:\n{text}");
+    }
 }
