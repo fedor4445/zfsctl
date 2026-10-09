@@ -154,6 +154,8 @@ pub const ACCOUNT_FETCH_STUCK_AFTER: Duration = Duration::from_secs(30);
 /// How often each host is probed for its health, and how far apart the first probes of different hosts start.
 const HOST_PROBE_INTERVAL: Duration = Duration::from_secs(30);
 const HOST_PROBE_STAGGER: Duration = Duration::from_secs(1);
+/// A probe still running after this long is reported as "no answer".
+const HOST_PROBE_GIVE_UP: Duration = Duration::from_secs(45);
 
 /// What the probe loop knows about one host.
 #[derive(Debug, Default)]
@@ -161,6 +163,8 @@ pub struct HostProbeState {
     pub last: Option<crate::zfs::host_health::HostProbe>,
     pub in_flight: bool,
     pub finished_at: Option<Instant>,
+    /// When the probe now running started, so one that never answers can be flagged.
+    pub started_at: Option<Instant>,
 }
 
 /// The address shown for a host: the host part of its `ssh_target` as configured (no lookup), `local` for the hub.
@@ -608,10 +612,12 @@ impl App {
     /// Starts one probe on a worker thread (the event loop resolves the runner; `App` cannot).
     pub fn start_host_probe(&mut self, index: usize, runner: Arc<dyn CommandRunner>) {
         let Some(name) = self.hosts.get(index).cloned() else { return };
-        self.host_probes.entry(name.clone()).or_default().in_flight = true;
+        let state = self.host_probes.entry(name.clone()).or_default();
+        state.in_flight = true;
+        state.started_at = Some(Instant::now());
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let probe = crate::zfs::host_health::probe_host(runner.as_ref());
+            let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref());
             let _ = tx.send(WorkerMsg::HostHealth(name, probe));
         });
     }
@@ -620,6 +626,11 @@ impl App {
     /// whose latest run failed).
     pub fn host_assessment(&self, index: usize) -> crate::zfs::host_health::Assessment {
         let Some(name) = self.hosts.get(index) else { return crate::zfs::host_health::assess(None, false) };
+        // A probe that has been running far longer than any healthy one (a hung ssh, a wedged pool) must not
+        // leave the last good answer on screen.
+        if let Some(waited) = self.host_probes.get(name).filter(|s| s.in_flight).and_then(|s| s.started_at).map(|t| t.elapsed()).filter(|d| *d > HOST_PROBE_GIVE_UP) {
+            return crate::zfs::host_health::Assessment { level: crate::zfs::host_health::Level::Warning, reason: format!("no answer for {}s", waited.as_secs()) };
+        }
         let job_failed = self.jobs_view.jobs.iter().any(|j| j.enabled && &j.host == name && self.jobs_view.last_run(&j.id).is_some_and(|r| r.result == Some(crate::daemon::history::RunResult::Failed)));
         crate::zfs::host_health::assess(self.host_probes.get(name).and_then(|s| s.last.as_ref()), job_failed)
     }
@@ -10208,5 +10219,18 @@ mod tests {
         h.append(&ev("a", "a2", "2026-10-09T02:00:00Z", RunResult::Ok)).unwrap();
         app.refresh_jobs();
         assert_eq!(app.host_assessment(1).reason, "ok", "a later success clears it");
+    }
+
+    #[test]
+    fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result() {
+        let mut app = probes_app();
+        let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![] };
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
+        app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago) });
+        let a = app.host_assessment(1);
+        assert_eq!(a.level, crate::zfs::host_health::Level::Warning);
+        assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
+        app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()) });
+        assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
     }
 }

@@ -2096,7 +2096,7 @@ mod tests {
     fn hosts_app() -> App {
         let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string(), "fbsd16t1".to_string(), "deadbox".to_string()]);
         app.set_host_addresses(vec!["local".into(), "172.16.10.60".into(), "172.16.10.61".into(), "172.16.10.99".into()]);
-        let probe = |p: crate::zfs::host_health::HostProbe| crate::ui::state::HostProbeState { last: Some(p), in_flight: false, finished_at: Some(std::time::Instant::now()) };
+        let probe = |p: crate::zfs::host_health::HostProbe| crate::ui::state::HostProbeState { last: Some(p), in_flight: false, finished_at: Some(std::time::Instant::now()), started_at: None };
         let pool = |n: &str, h: crate::zfs::pool::PoolHealth, c: u8| crate::zfs::host_health::PoolProbe { name: n.to_string(), health: h, capacity_percent: c, frag_percent: None, errors: Some(0), scan: None };
         use crate::zfs::host_health::HostProbe;
         app.host_probes.insert("local".into(), probe(HostProbe::Reached { rtt_ms: 3, pools: vec![pool("zroot", crate::zfs::pool::PoolHealth::Online, 20)] }));
@@ -2199,5 +2199,18 @@ mod tests {
         let mut short = host_panel_app(());
         let text = render(&mut short, 190, 24).join("\n");
         assert!(text.contains("more pool row") || text.contains("scratch"), "never silently clipped:\n{text}");
+    }
+
+    #[test]
+    fn a_short_host_panel_keeps_the_pools_and_the_unhealthy_rows_and_says_how_much_it_hides() {
+        for (w, h) in [(80, 24), (100, 30)] {
+            let mut app = host_panel_app(());
+            let text = render(&mut app, w, h).join("\n");
+            assert!(text.contains("DEGRADED"), "{w}x{h}: the unhealthy pool row must survive:\n{text}");
+            assert!(text.contains("Status"), "{w}x{h}: the status line must survive:\n{text}");
+        }
+        let mut tiny = host_panel_app(());
+        let text = render(&mut tiny, 80, 24).join("\n");
+        assert!(text.contains("more lines: enlarge the terminal"), "{text}");
     }
 }

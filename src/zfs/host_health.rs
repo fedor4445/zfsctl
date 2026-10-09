@@ -75,9 +75,20 @@ pub struct StatusFacts {
     pub scan: ScanSummary,
 }
 
-/// A READ/WRITE/CKSUM token: a number, or a count with a suffix (`1.2K`), which is at least 1.
+/// A READ/WRITE/CKSUM token: a number, or a count with a suffix (`1.2K` is 1200). Anything else non-zero is at least 1.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a rounded, non-negative display count
 fn count_token(token: &str) -> u64 {
-    token.parse().unwrap_or_else(|_| u64::from(token != "0"))
+    if let Ok(n) = token.parse() {
+        return n;
+    }
+    let (digits, factor) = match token.chars().last() {
+        Some('K') => (&token[..token.len() - 1], 1e3),
+        Some('M') => (&token[..token.len() - 1], 1e6),
+        Some('G') => (&token[..token.len() - 1], 1e9),
+        Some('T') => (&token[..token.len() - 1], 1e12),
+        _ => (token, 0.0),
+    };
+    digits.parse::<f64>().ok().filter(|_| factor > 0.0).map_or_else(|| u64::from(token != "0"), |n| (n * factor).round() as u64)
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=100
@@ -110,14 +121,33 @@ pub fn parse_status_all(output: &str) -> Vec<StatusFacts> {
         .into_iter()
         .map(|(name, lines)| {
             let text = lines.join("\n");
-            let after_header = lines.iter().skip_while(|l| !l.trim_start().starts_with("NAME")).skip(1);
-            let errors = after_header.into_iter().find_map(|l| {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                (f.first() == Some(&name.as_str())).then(|| f.get(2..5).map(|t| t.iter().map(|x| count_token(x)).sum::<u64>())).flatten()
+            // Every row of the config tree counts, not just the pool's own line: ZFS corrects errors from one
+            // mirror leg and reports a clean pool while that disk is failing.
+            let mut rows = lines.iter().skip_while(|l| !l.trim_start().starts_with("NAME")).skip(1).take_while(|l| !l.trim().is_empty() && !l.trim_start().starts_with("errors:")).peekable();
+            let has_rows = rows.peek().is_some();
+            let device_errors: u64 = rows
+                .filter_map(|l| {
+                    let f: Vec<&str> = l.split_whitespace().collect();
+                    (f.len() >= 5).then(|| f.get(2..5).map_or(0, |t| t.iter().map(|x| count_token(x)).sum::<u64>()))
+                })
+                .sum();
+            let data_errors = lines.iter().find_map(|l| l.trim_start().strip_prefix("errors:")).map_or(0, |rest| {
+                let rest = rest.trim();
+                if rest.starts_with("No known data errors") || rest.is_empty() {
+                    0
+                } else {
+                    rest.split_whitespace().next().and_then(|t| t.parse().ok()).unwrap_or(1)
+                }
             });
+            let errors = has_rows.then(|| device_errors + data_errors);
             StatusFacts { scan: scan_summary(&text), name, errors }
         })
         .collect()
+}
+
+/// `probe_host`, but a panic inside it becomes `Unavailable` instead of a worker thread that never reports back.
+pub fn probe_host_guarded(runner: &dyn CommandRunner) -> HostProbe {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_host(runner))).unwrap_or_else(|_| HostProbe::Unavailable { reason: "the probe crashed".to_string() })
 }
 
 fn first_line(text: &str) -> String {
@@ -180,7 +210,8 @@ pub fn assess(probe: Option<&HostProbe>, job_failed: bool) -> Assessment {
         return say(Level::Critical, &format!("{} {}% full", p.name, p.capacity_percent));
     }
     if let Some(p) = pools.iter().find(|p| p.errors.is_some_and(|e| e > 0)) {
-        return say(Level::Warning, &format!("{} {} errors", p.name, p.errors.unwrap_or(0)));
+        let n = p.errors.unwrap_or(0);
+        return say(Level::Warning, &format!("{} {n} error{}", p.name, if n == 1 { "" } else { "s" }));
     }
     if let Some(p) = pools.iter().find(|p| matches!(p.scan, Some(ScanSummary::Finished { errors, .. }) if errors > 0)) {
         return say(Level::Warning, &format!("scrub found errors on {}", p.name));
@@ -242,7 +273,7 @@ mod tests {
         let facts = parse_status_all(status);
         assert_eq!(facts.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["a", "ab", "c"], "a pool whose name is a prefix of another stays separate");
         assert!(matches!(facts[0].scan, ScanSummary::Running { percent: Some(24) }), "{:?}", facts[0].scan);
-        assert_eq!(facts[0].errors, Some(1 + 3), "READ 3 plus a CKSUM token with a suffix (counted as at least 1)");
+        assert_eq!(facts[0].errors, Some(3 + 1200), "READ 3 plus a CKSUM of 1.2K");
         assert_eq!(facts[1].scan, ScanSummary::Finished { when: "Thu Oct  8 19:48:07 2026".to_string(), errors: 4 });
         assert_eq!(facts[2].scan, ScanSummary::Canceled);
     }
@@ -392,5 +423,46 @@ mod tests {
     fn the_worst_pool_decides_when_there_are_several() {
         let probe = reached(vec![pool("fine", PoolHealth::Online, 10), pool("full", PoolHealth::Online, 91), pool("warm", PoolHealth::Online, 85)]);
         assert_eq!(level(Some(&probe), false), (Level::Critical, "full 91% full".to_string()));
+    }
+
+    const MIRROR_BAD_LEAF: &str = "  pool: tank\n state: ONLINE\nstatus: One or more devices has experienced an unrecoverable error.\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        ONLINE       0     0     0\n\t  mirror-0  ONLINE       0     0     0\n\t    ada1    ONLINE       0     0    12\n\t    ada2    ONLINE       0     0     0\n\nerrors: No known data errors\n";
+
+    #[test]
+    fn errors_on_a_member_device_count_even_when_the_pool_line_is_clean() {
+        assert_eq!(parse_status_all(MIRROR_BAD_LEAF)[0].errors, Some(12), "ZFS corrected them, but the disk is failing");
+    }
+
+    #[test]
+    fn permanent_data_errors_are_errors_and_a_clean_pool_is_still_zero() {
+        let bad = MIRROR_BAD_LEAF.replace("    12", "     0").replace("No known data errors", "3 data errors, use '-v' for a list");
+        assert_eq!(parse_status_all(&bad)[0].errors, Some(3));
+        let clean = MIRROR_BAD_LEAF.replace("    12", "     0");
+        assert_eq!(parse_status_all(&clean)[0].errors, Some(0));
+        let unnumbered = clean.replace("No known data errors", "Permanent errors have been detected in the following files:");
+        assert_eq!(parse_status_all(&unnumbered)[0].errors, Some(1), "an errors: line that is not the clean one is at least one error");
+    }
+
+    #[test]
+    fn the_reason_says_error_in_the_singular() {
+        let mut p = pool("tank", PoolHealth::Online, 10);
+        p.errors = Some(1);
+        assert_eq!(level(Some(&reached(vec![p])), false), (Level::Warning, "tank 1 error".to_string()));
+    }
+
+    #[test]
+    fn a_probe_that_panics_is_unavailable_not_a_dead_thread() {
+        struct Boom;
+        impl crate::exec::CommandRunner for Boom {
+            fn run(&self, _: &str, _: &[&str]) -> crate::error::Result<CommandOutput> {
+                panic!("boom")
+            }
+            fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<CommandOutput> {
+                self.run(c, a)
+            }
+            fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<CommandOutput> {
+                self.run(c, a)
+            }
+        }
+        assert!(matches!(probe_host_guarded(&Boom), HostProbe::Unavailable { reason } if reason.contains("crashed")));
     }
 }

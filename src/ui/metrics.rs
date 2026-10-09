@@ -300,6 +300,16 @@ pub struct HostPanel {
     pub system: Vec<Line<'static>>,
     pub zfs: Vec<Line<'static>>,
     pub pools: Vec<Line<'static>>,
+    /// Every line in one column, most important first, for panels too small or narrow for two columns.
+    pub single: Vec<Line<'static>>,
+}
+
+/// `Thu Oct  8 19:48:07 2026` without the weekday, which the date already implies.
+fn short_time(when: &str) -> String {
+    match when.split_once(' ') {
+        Some((day, rest)) if day.len() == 3 && day.chars().all(|c| c.is_ascii_alphabetic()) => rest.trim_start().to_string(),
+        _ => when.to_string(),
+    }
 }
 
 fn scan_text(scan: Option<&ScanSummary>) -> (String, bool) {
@@ -309,8 +319,8 @@ fn scan_text(scan: Option<&ScanSummary>) -> (String, bool) {
         Some(ScanSummary::Running { percent: Some(p) }) => (format!("running {p}%"), false),
         Some(ScanSummary::Running { percent: None }) => ("running".to_string(), false),
         Some(ScanSummary::Canceled) => ("canceled".to_string(), false),
-        Some(ScanSummary::Finished { when, errors: 0 }) => (when.clone(), false),
-        Some(ScanSummary::Finished { when, errors }) => (format!("{when}, found {errors} errors"), true),
+        Some(ScanSummary::Finished { when, errors: 0 }) => (short_time(when), false),
+        Some(ScanSummary::Finished { when, errors }) => (format!("{}, found {errors} errors", short_time(when)), true),
     }
 }
 
@@ -333,29 +343,24 @@ pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
     let status = h.status.clone().unwrap_or_else(dash);
     let status_style = if status.contains("healthy") { Style::default() } else { theme.warn };
     let line = |style: Style, text: String| Line::from(Span::styled(text, dim(style)));
-    let mut system = vec![
-        line(Style::default(), format!("OS      {}", h.os.clone().unwrap_or_else(dash))),
-        line(Style::default(), format!("Up      {}   rtt {}", h.uptime_secs.map_or_else(dash, duration_text), h.rtt_ms.map_or_else(dash, |ms| format!("{ms}ms")))),
-        line(Style::default(), format!("Load    {}", h.load.map_or_else(dash, |[a, b, c]| format!("{a:.2} {b:.2} {c:.2}")))),
-        line(Style::default(), format!("CPU     {cpu}")),
-        line(Style::default(), format!("Memory  {memory}")),
-        line(Style::default(), format!("Swap    {swap}")),
-    ];
-    if let Some(c) = &h.cpu {
-        system.insert(4, line(Style::default(), format!("        {}", c.model)));
-    }
-    let mut zfs = vec![
-        line(Style::default(), format!("ZFS     {}", h.zfs_version.clone().unwrap_or_else(dash))),
-        line(if unhealthy == 0 { Style::default() } else { theme.err }, format!("Pools   {pools}")),
-        line(Style::default(), format!("Space   {}  {} / {}", percent(alloc, size), human_size(alloc), human_size(size))),
-        line(Style::default(), format!("ARC     {arc}")),
-    ];
-    if let Some(l2) = &h.l2arc {
+    let os = line(Style::default(), format!("OS      {}", h.os.clone().unwrap_or_else(dash)));
+    let up = line(Style::default(), format!("Up      {}   rtt {}", h.uptime_secs.map_or_else(dash, duration_text), h.rtt_ms.map_or_else(dash, |ms| format!("{ms}ms"))));
+    let load = line(Style::default(), format!("Load    {}", h.load.map_or_else(dash, |[a, b, c]| format!("{a:.2} {b:.2} {c:.2}"))));
+    let cpu_lines: Vec<Line<'static>> = std::iter::once(line(Style::default(), format!("CPU     {cpu}")))
+        .chain(h.cpu.as_ref().map(|c| line(Style::default(), format!("        {}", c.model))))
+        .collect();
+    let memory = line(Style::default(), format!("Memory  {memory}"));
+    let swap = line(Style::default(), format!("Swap    {swap}"));
+    let zfs_version = line(Style::default(), format!("ZFS     {}", h.zfs_version.clone().unwrap_or_else(dash)));
+    let pools_line = line(if unhealthy == 0 { Style::default() } else { theme.err }, format!("Pools   {pools}"));
+    let space = line(Style::default(), format!("Space   {}  {} / {}", percent(alloc, size), human_size(alloc), human_size(size)));
+    let arc = line(Style::default(), format!("ARC     {arc}"));
+    let l2arc: Option<Line<'static>> = h.l2arc.as_ref().map(|l2| {
         let hit = l2.hit_percent().map_or_else(dash, |p| format!("{p:.1}%"));
-        zfs.push(line(Style::default(), format!("L2ARC   {}  hit {hit}", human_size(l2.size))));
-    }
-    zfs.push(line(status_style, format!("Status  {status}")));
-    let rows = h
+        line(Style::default(), format!("L2ARC   {}  hit {hit}", human_size(l2.size)))
+    });
+    let status_line = line(status_style, format!("Status  {status}"));
+    let rows: Vec<Line<'static>> = h
         .pool_rows
         .iter()
         .map(|p| {
@@ -363,38 +368,63 @@ pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
             let frag = p.frag_percent.map_or_else(dash, |f| format!("{f}%"));
             let bad = p.health != PoolHealth::Online || p.errors.is_some_and(|e| e > 0) || scrub_bad;
             let health = format!("{:?}", p.health).to_uppercase();
-            line(if bad { theme.err } else if p.capacity_percent >= 80 { theme.warn } else { Style::default() }, format!("{:<14} {:>4}%  frag {:>4}  {:<9} scrub {scrub}", p.name, p.capacity_percent, frag, health))
+            line(if bad { theme.err } else if p.capacity_percent >= 80 { theme.warn } else { Style::default() }, format!("{:<12} {:>3}% frag {:>3} {:<8} scrub {scrub}", p.name, p.capacity_percent, frag, health))
         })
         .collect();
-    HostPanel { system, zfs, pools: rows }
+    let mut single = vec![pools_line.clone(), status_line.clone()];
+    single.extend(rows.iter().cloned());
+    single.push(space.clone());
+    single.push(arc.clone());
+    single.extend(l2arc.iter().cloned());
+    single.extend(cpu_lines.iter().cloned());
+    single.extend([memory.clone(), swap.clone(), load.clone(), up.clone(), os.clone(), zfs_version.clone()]);
+    let mut system = vec![os, up, load];
+    system.extend(cpu_lines);
+    system.extend([memory, swap]);
+    let mut zfs = vec![zfs_version, pools_line, space, arc];
+    zfs.extend(l2arc);
+    zfs.push(status_line);
+    HostPanel { system, zfs, pools: rows, single }
 }
 
 /// Draws the host panel: the two graphs (20% each) and the text (60%): System and ZFS side by side when the
 /// text is wide enough, stacked otherwise, then one row per pool. Pool rows that do not fit are replaced by a
 /// final "+N more pool rows" line, never clipped silently.
 fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &HostSummary, stale: bool, theme: &Theme, area: Rect) {
-    let [read, write, text] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(20), Constraint::Percentage(20), Constraint::Percentage(60)]).areas(area);
-    let reads: Vec<u64> = view.io_history.iter().map(|s| s.read_bps).collect();
-    let writes: Vec<u64> = view.io_history.iter().map(|s| s.write_bps).collect();
-    draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
-    draw_rate(f, write, "Write", &writes, last.write_ops, last.write_latency_ns, theme.warn);
-    let panel = host_panel(host, theme, stale);
+    let mut panel = host_panel(host, theme, stale);
+    // Below this width the graphs would leave the text too narrow to read: drop them and keep the rates as a line.
+    let text = if area.width < 90 {
+        let io = Line::raw(format!("I/O     read {}  write {}", per_sec(last.read_bps), per_sec(last.write_bps)));
+        panel.single.insert(0, io.clone());
+        panel.system.insert(0, io);
+        area
+    } else {
+        let [read, write, text] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(20), Constraint::Percentage(20), Constraint::Percentage(60)]).areas(area);
+        let reads: Vec<u64> = view.io_history.iter().map(|s| s.read_bps).collect();
+        let writes: Vec<u64> = view.io_history.iter().map(|s| s.write_bps).collect();
+        draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
+        draw_rate(f, write, "Write", &writes, last.write_ops, last.write_latency_ns, theme.warn);
+        text
+    };
     let height = |lines: &[Line]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let used = if text.width >= 72 {
-        // System and ZFS side by side.
-        let used = height(&panel.system).max(height(&panel.zfs)).min(text.height);
-        let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(Rect { height: used, ..text });
+    let columns = height(&panel.system).max(height(&panel.zfs));
+    let rows_need = u16::from(!panel.pools.is_empty());
+    if text.width >= 72 && text.height >= columns.saturating_add(rows_need) {
+        // System and ZFS side by side, the pool rows below.
+        let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(Rect { height: columns, ..text });
         f.render_widget(Paragraph::new(panel.system.clone()), left);
         f.render_widget(Paragraph::new(panel.zfs.clone()), right);
-        used
+        draw_pool_rows(f, &panel.pools, Rect { y: text.y + columns, height: text.height - columns, ..text });
     } else {
-        // One column.
-        let lines: Vec<Line<'static>> = panel.system.iter().chain(&panel.zfs).cloned().collect();
-        let used = height(&lines).min(text.height);
-        f.render_widget(Paragraph::new(lines), Rect { height: used, ..text });
-        used
-    };
-    draw_pool_rows(f, &panel.pools, Rect { y: text.y + used, height: text.height - used, ..text });
+        // One column, most important lines first; whatever does not fit is counted, never cut silently.
+        let room = usize::from(text.height);
+        let mut shown: Vec<Line<'static>> = panel.single.iter().take(room).cloned().collect();
+        if panel.single.len() > room && room > 0 {
+            shown.truncate(room - 1);
+            shown.push(Line::raw(format!("+{} more lines: enlarge the terminal", panel.single.len() - (room - 1))));
+        }
+        f.render_widget(Paragraph::new(shown), text);
+    }
 }
 
 fn draw_pool_rows(f: &mut Frame, rows: &[Line<'static>], area: Rect) {
@@ -536,7 +566,11 @@ pub(crate) mod tests_support {
             swap: Some(Swap { total: 2_147_483_648, used: 524_288 }),
             l2arc: Some(L2arc { size: 12_884_901_888, hits: 600, misses: 400 }),
             arc: Some(crate::zfs::host::ArcStats { size: 1 << 30, max: 2 << 30, hits: 90, misses: 10 }),
-            pools: vec![],
+            pools: vec![
+                crate::zfs::pool::Pool { name: "scratch".into(), size: 100, allocated: 42, free: 58, health: PoolHealth::Online },
+                crate::zfs::pool::Pool { name: "tank".into(), size: 100, allocated: 91, free: 9, health: PoolHealth::Degraded },
+                crate::zfs::pool::Pool { name: "zroot".into(), size: 100, allocated: 24, free: 76, health: PoolHealth::Online },
+            ],
             pool_rows: vec![
                 PoolProbe { name: "scratch".into(), health: PoolHealth::Online, capacity_percent: 42, frag_percent: Some(39), errors: Some(0), scan: Some(ScanSummary::Finished { when: "Thu Oct  8 19:48:07 2026".into(), errors: 0 }) },
                 PoolProbe { name: "tank".into(), health: PoolHealth::Degraded, capacity_percent: 91, frag_percent: None, errors: Some(3), scan: Some(ScanSummary::Running { percent: Some(34) }) },
@@ -701,7 +735,7 @@ mod tests {
     fn each_pool_gets_a_row_with_its_capacity_fragmentation_health_and_last_scrub() {
         let panel = host_panel(&rich_host(), &Theme::ansi(), false);
         let rows = text_of(&panel.pools);
-        for want in ["scratch", "42%", "39%", "ONLINE", "Thu Oct  8 19:48:07 2026", "tank", "91%", "DEGRADED", "running 34%", "never"] {
+        for want in ["scratch", "42%", "39%", "ONLINE", "Oct  8 19:48:07 2026", "tank", "91%", "DEGRADED", "running 34%", "never"] {
             assert!(rows.contains(want), "missing {want:?} in\n{rows}");
         }
         assert!(rows.contains("tank") && rows.lines().any(|l| l.contains("tank") && l.contains(" - ")), "an unknown fragmentation is a dash:\n{rows}");
