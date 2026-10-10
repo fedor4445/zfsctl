@@ -35,7 +35,7 @@ Non-goals (YAGNI): sorting or grouping, CPU/memory/load columns (sampled only fo
 
 Detected with one unprivileged command, `sysctl -n kern.vm_guest security.jail.jailed` (`sysctl` is already a registered unprivileged remote command, so the sudoers line does not change). `jailed` of 1 gives `jail`; otherwise `kern.vm_guest` of `none` gives `metal` and any other value (`bhyve`, `kvm`, `xen`, `vmware`, `hv`, ...) gives `vm`. A failed or unparsable answer (non-FreeBSD host, sysctl missing) gives `-`.
 
-It runs once per host, inside that host's first successful probe, and the result is cached for the session (it cannot change while the host is up). A host whose probe has not yet succeeded shows `-`. The hypervisor name (`bhyve`) is kept and shown in the host's bottom panel next to the OS line; the table shows only the word.
+It runs once per host, inside that host's first successful probe, and the result is cached for the session (it cannot change while the host is up). A host whose probe has not yet succeeded shows `-`. The hypervisor name (`bhyve`) is kept in the detected value for later use; v1 shows only the word, and the bottom panel is unchanged.
 
 The Type word has its own colour, distinct from the health colours: `metal` in the normal text colour, `vm` in the accent colour, `jail` in the secondary accent. The `●` and State keep the health colours.
 
