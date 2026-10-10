@@ -39,7 +39,7 @@ pub fn load(config_path: &Path, state_dir: &Path) -> AlertsView {
     match toml::from_str::<Config>(&text) {
         Ok(config) => {
             view.saved = config.notify.clone();
-            view.hook = config.daemon.notify_command.clone();
+            view.hook.clone_from(&config.daemon.notify_command);
             match config.notify.resolve() {
                 Ok(settings) => view.settings = Some(settings),
                 Err(problem) => view.problem = Some(problem),
@@ -84,7 +84,7 @@ impl AlertsView {
         let c = &self.saved;
         let plural = |n: u64, unit: &str| if n == 1 { format!("{n} {unit}") } else { format!("{n} {unit}s") };
         let row = |label: &str, value: Option<String>, default: String| (label.to_string(), value.clone().unwrap_or(default), value.is_none());
-        let hook = self.hook.as_ref().map_or("(not set)".to_string(), |h| h.clone());
+        let hook = self.hook.as_ref().map_or("(not set)".to_string(), Clone::clone);
         vec![
             row("Email to", c.mail_to.clone(), "(not set)".to_string()),
             row("Mail command", c.mail_command.clone(), crate::config::DEFAULT_MAIL_COMMAND.to_string()),
@@ -134,6 +134,15 @@ mod tests {
         assert!(rows.iter().any(|(l, val, d)| l == "Daily report" && val == "off" && !*d));
         assert!(rows.iter().any(|(l, val, d)| l == "Remind every" && val == "never" && !*d));
         assert!(rows.iter().any(|(l, val, _)| l == "Hook command" && val.starts_with("curl -s x") && val.contains("edit in config.toml")), "{rows:?}");
+    }
+
+    #[test]
+    fn an_invalid_notify_section_says_why_the_monitor_is_off_even_with_a_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[daemon]\nnotify_command = \"true\"\n\n[notify]\ncheck_interval_minutes = 0\n").unwrap();
+        let v = load(&dir.path().join("config.toml"), dir.path());
+        assert!(!v.monitor_on());
+        assert!(v.monitor_text().contains("check_interval_minutes"), "{}", v.monitor_text());
     }
 
     #[test]
