@@ -2906,6 +2906,12 @@ fn build_backup_job_action(kind: &FormKind, fields: &[FormField], state_dir: &st
         enabled: true,
         created_at: Some(now),
     };
+    if let Some(old) = existing {
+        let old_pool = old.dataset.as_deref().and_then(|d| d.split('/').next()).unwrap_or("");
+        if old.host != host || old_pool != dataset.split('/').next().unwrap_or("") {
+            return Err("Changing the host or pool of a backup job would strand its clone; delete this job and create a new one.".to_string());
+        }
+    }
     let job = match existing {
         Some(old) => crate::jobs::Job { id: old.id.clone(), enabled: old.enabled, created_at: old.created_at, ..base },
         None => crate::jobs::Job { id: crate::ui::jobs::new_backup_job_id(host, dataset, &taken), ..base },
@@ -9866,6 +9872,25 @@ mod tests {
         let action = build_backup_job_action(&kind, &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
         let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
         assert_eq!((job.id.as_str(), job.enabled, job.repository.as_deref()), ("backup-x", false, Some("/mnt/other")));
+    }
+
+    fn edit_backup_err_or_job(host: &str, dataset: &str) -> std::result::Result<crate::jobs::Job, String> {
+        let job = crate::jobs::Job::test_backup("backup-x", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        let mut values = BACKUP_GOOD;
+        values[0] = host;
+        values[1] = dataset;
+        build_backup_job_action(&backup_kind(Some(job.clone()), vec![job]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).map(|a| match a.call {
+            MutationCall::SaveJob { job, .. } => *job,
+            other => panic!("{other:?}"),
+        })
+    }
+
+    #[test]
+    fn editing_a_backup_job_refuses_a_new_host_or_pool_but_allows_another_dataset_in_the_same_pool() {
+        let e = edit_backup_err_or_job("fbsd16", "tank/data").unwrap_err();
+        assert!(e.contains("host or pool") && e.contains("create a new one"), "{e}");
+        assert!(edit_backup_err_or_job("local", "other/data").unwrap_err().contains("host or pool"));
+        assert_eq!(edit_backup_err_or_job("local", "tank/other").unwrap().dataset.as_deref(), Some("tank/other"));
     }
 
     #[test]
