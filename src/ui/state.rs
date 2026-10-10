@@ -165,6 +165,8 @@ pub struct HostProbeState {
     pub finished_at: Option<Instant>,
     /// When the probe now running started, so one that never answers can be flagged.
     pub started_at: Option<Instant>,
+    /// The detected host type, kept once seen: it cannot change while the host is up, so it is asked for once.
+    pub kind: Option<crate::zfs::host_health::HostKind>,
 }
 
 /// The address shown for a host: the host part of its `ssh_target` as configured (no lookup), `local` for the hub.
@@ -210,6 +212,16 @@ pub struct App {
     last_jobs_refresh: Option<Instant>,
     /// The address shown for each host (index-aligned with `hosts`); see `address_of`.
     pub host_addresses: Vec<String>,
+    /// The tag of each host (index-aligned with `hosts`; empty = none).
+    pub host_tags: Vec<String>,
+    /// Tags typed in the Add Host form, by lowercase host name, until the host is confirmed reachable.
+    pub new_host_tags: HashMap<String, String>,
+    /// The Hosts filter text (empty = none) and whether it is being typed. Only the drawn rows and Up/Down use
+    /// it: `hosts` and `selected_host` stay global indices.
+    pub host_filter: String,
+    pub host_filter_editing: bool,
+    /// The host that was active when the filter input opened, put back if the input is cancelled.
+    host_filter_origin: Option<usize>,
     /// The latest health probe of each host, by host name.
     pub host_probes: HashMap<String, HostProbeState>,
     /// When probing started: host `i` is first probed `i` seconds after it.
@@ -357,6 +369,11 @@ impl App {
             shares: Vec::new(),
             shares_table: TableState::default(),
             jobs_view: crate::ui::jobs::JobsView::default(),
+            host_tags: vec![String::new(); hosts_for_addr.len()],
+            new_host_tags: HashMap::new(),
+            host_filter: String::new(),
+            host_filter_editing: false,
+            host_filter_origin: None,
             host_addresses: hosts_for_addr.iter().map(|n| if n == "local" { "local".to_string() } else { "-".to_string() }).collect(),
             host_probes: HashMap::new(),
             probe_epoch: Instant::now(),
@@ -589,6 +606,62 @@ impl App {
         self.host_addresses = addresses;
     }
 
+    /// Whether host `index` matches `needle` (case-insensitive substring of its name, address, tag or type word).
+    pub fn host_matches(&self, index: usize, needle: &str) -> bool {
+        let needle = needle.to_lowercase();
+        let Some(name) = self.hosts.get(index) else { return false };
+        let kind = self.host_probes.get(name).and_then(|s| s.kind.as_ref()).map_or("", |k| if matches!(k, crate::zfs::host_health::HostKind::Unknown) { "" } else { k.word() });
+        [name.as_str(), self.host_address(index), self.host_tag(index), kind].iter().any(|f| f.to_lowercase().contains(&needle))
+    }
+
+    /// Global indices of the hosts the filter lets through, in order (all of them when there is no filter).
+    pub fn visible_hosts(&self) -> Vec<usize> {
+        (0..self.hosts.len()).filter(|i| self.host_filter.is_empty() || self.host_matches(*i, &self.host_filter)).collect()
+    }
+
+    /// Keeps the selection on a visible host when the filter hides it (so no section can act on a host the user
+    /// cannot see). With no match at all the selection stays put: such a filter cannot be committed.
+    fn ensure_visible_selection(&mut self) {
+        if let Some(first) = self.visible_hosts().first().copied().filter(|_| !self.visible_hosts().contains(&self.selected_host)) {
+            self.selected_host = first;
+            self.clear_host_data();
+        }
+    }
+
+    fn handle_filter_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char(c) => {
+                self.host_filter.push(c);
+                self.ensure_visible_selection();
+            }
+            KeyCode::Backspace => {
+                self.host_filter.pop();
+                self.ensure_visible_selection();
+            }
+            KeyCode::Esc => {
+                self.host_filter.clear();
+                self.host_filter_editing = false;
+                if let Some(origin) = self.host_filter_origin.take().filter(|o| *o != self.selected_host && *o < self.hosts.len()) {
+                    self.selected_host = origin;
+                    self.clear_host_data();
+                }
+            }
+            KeyCode::Enter if self.host_filter.is_empty() || !self.visible_hosts().is_empty() => {
+                self.host_filter_editing = false;
+                self.host_filter_origin = None;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn set_host_tags(&mut self, tags: Vec<String>) {
+        self.host_tags = tags;
+    }
+
+    pub fn host_tag(&self, index: usize) -> &str {
+        self.host_tags.get(index).map_or("", String::as_str)
+    }
+
     pub fn host_address(&self, index: usize) -> &str {
         self.host_addresses.get(index).map_or("-", String::as_str)
     }
@@ -619,9 +692,10 @@ impl App {
         let state = self.host_probes.entry(name.clone()).or_default();
         state.in_flight = true;
         state.started_at = Some(Instant::now());
+        let detect_kind = state.kind.is_none();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref());
+            let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref(), detect_kind);
             let _ = tx.send(WorkerMsg::HostHealth(name, probe));
         });
     }
@@ -637,6 +711,13 @@ impl App {
         }
         let job_failed = self.jobs_view.jobs.iter().any(|j| j.enabled && &j.host == name && self.jobs_view.last_run(&j.id).is_some_and(|r| r.result == Some(crate::daemon::history::RunResult::Failed)));
         crate::zfs::host_health::assess(self.host_probes.get(name).and_then(|s| s.last.as_ref()), job_failed)
+    }
+
+    /// `(failed, total)` over the enabled jobs of host `name`; failed means the latest run failed.
+    pub fn host_jobs_counts(&self, name: &str) -> (usize, usize) {
+        let mine = || self.jobs_view.jobs.iter().filter(|j| j.enabled && j.host == name);
+        let failed = mine().filter(|j| self.jobs_view.last_run(&j.id).is_some_and(|r| r.result == Some(crate::daemon::history::RunResult::Failed))).count();
+        (failed, mine().count())
     }
 
     pub fn refresh_jobs(&mut self) {
@@ -813,6 +894,10 @@ impl App {
     // without changing which guard wins.
     #[allow(clippy::match_same_arms)]
     pub fn handle_key(&mut self, key: KeyCode) {
+        if self.host_filter_editing {
+            self.handle_filter_key(key);
+            return;
+        }
         match key {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => {
@@ -837,6 +922,9 @@ impl App {
             }
             KeyCode::Esc if self.current_section() == Section::Disks && !self.selected_disks.is_empty() => {
                 self.selected_disks.clear();
+            }
+            KeyCode::Esc if self.current_section() == Section::Hosts && !self.host_filter.is_empty() => {
+                self.host_filter.clear();
             }
             KeyCode::Esc => self.status_message = None,
             KeyCode::Enter if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
@@ -930,24 +1018,29 @@ impl App {
             KeyCode::Left if self.pane_focus == PaneFocus::Right => {
                 self.pane_focus = PaneFocus::Middle;
             }
-            KeyCode::Down if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
-                self.selected_host = (self.selected_host + 1) % self.hosts.len();
-                self.clear_host_data();
+            KeyCode::Down | KeyCode::Up if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
+                let visible = self.visible_hosts();
+                if !visible.is_empty() {
+                    let at = visible.iter().position(|i| *i == self.selected_host).unwrap_or(0);
+                    let next = if key == KeyCode::Down { (at + 1) % visible.len() } else { (at + visible.len() - 1) % visible.len() };
+                    if let Some(&host) = visible.get(next) {
+                        self.selected_host = host;
+                        self.clear_host_data();
+                    }
+                }
             }
-            KeyCode::Up if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
-                self.selected_host = if self.selected_host == 0 {
-                    self.hosts.len() - 1
-                } else {
-                    self.selected_host - 1
-                };
-                self.clear_host_data();
+            KeyCode::Char('/') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() && self.drilled_pool.is_none() => {
+                self.host_filter_editing = true;
+                self.host_filter_origin = Some(self.selected_host);
             }
             KeyCode::Char('n') if self.current_section() == Section::Hosts => {
+                self.host_filter.clear();
                 self.modal = Some(Modal::Form {
                     title: "Add Host".to_string(),
                     fields: vec![
                         FormField { label: "Name".to_string(), value: String::new() },
                         FormField { label: "SSH target (e.g. user@host)".to_string(), value: String::new() },
+                        FormField { label: "Tag (optional)".to_string(), value: String::new() },
                     ],
                     focused: 0,
                     description: None,
@@ -1780,7 +1873,10 @@ impl App {
                             self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                             None
                         } else {
-                            self.pending_probes.insert(name_lower);
+                            self.pending_probes.insert(name_lower.clone());
+                            if let Some(tag) = crate::config::clean_tag(field_value(&fields, 2)) {
+                                self.new_host_tags.insert(name_lower, tag);
+                            }
                             self.begin_add_host(name, target);
                             None
                         }
@@ -2662,6 +2758,9 @@ impl App {
                     if self.hosts.contains(&name) {
                         let state = self.host_probes.entry(name).or_default();
                         state.in_flight = false;
+                        if let crate::zfs::host_health::HostProbe::Reached { kind: Some(k), .. } = &probe {
+                            state.kind = Some(k.clone());
+                        }
                         state.last = Some(probe);
                         state.finished_at = Some(Instant::now());
                     }
@@ -2674,6 +2773,7 @@ impl App {
                             self.status_message = None;
                         }
                         Err(e) => {
+                            self.new_host_tags.remove(&name.to_lowercase());
                             self.set_error(format!("Could not add host '{name}': {e}"));
                         }
                     }
@@ -3783,7 +3883,8 @@ Global
 
 Hosts
   Up / Down        select the active host
-  n                add a new host (prompts for Name and SSH target)
+  /                filter the host list by name, address, tag or type (Enter keeps it, Esc clears it)
+  n                add a new host (prompts for Name, SSH target and an optional Tag)
 
 Pools
   Enter            drill into vdev/disk tree
@@ -7355,7 +7456,7 @@ mod tests {
         match &app.modal {
             Some(Modal::Form { title, fields, kind, .. }) => {
                 assert_eq!(title, "Add Host");
-                assert_eq!(fields.len(), 2);
+                assert_eq!(fields.len(), 3);
                 assert_eq!(*kind, FormKind::AddHost);
             }
             other => panic!("expected Form modal, got {other:?}"),
@@ -7625,6 +7726,7 @@ mod tests {
         for c in "example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "a name differing only by case from an existing host must be rejected as a duplicate");
@@ -7642,6 +7744,7 @@ mod tests {
         for c in "example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "\"local\" (case-insensitively) must always be rejected as a duplicate");
@@ -7659,6 +7762,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_none(), "a valid submission must close the form immediately, not wait for the async probe");
@@ -7715,6 +7819,179 @@ mod tests {
     }
 
     #[test]
+    fn host_jobs_counts_total_enabled_jobs_and_failed_latest_runs_per_host() {
+        let mut a = crate::jobs::Job::test_backup("j1", "tank/x", "p", "/r", "/pw");
+        a.host = "fbsd16".into();
+        let mut b = crate::jobs::Job::test_backup("j2", "tank/y", "p", "/r", "/pw");
+        b.host = "fbsd16".into();
+        let mut c = crate::jobs::Job::test_backup("j3", "tank/z", "p", "/r", "/pw");
+        c.host = "fbsd16".into();
+        c.enabled = false;
+        let (mut app, dir) = app_with_jobs(&[a, b, c]);
+        app.hosts = vec!["local".into(), "fbsd16".into()];
+        let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
+        h.append(&crate::daemon::history::Event { job_id: "j1".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Finished, at: chrono::Utc::now(), scheduled_for: None, result: Some(crate::daemon::history::RunResult::Failed), message: String::new(), catch_up: false, summary: None }).unwrap();
+        app.refresh_jobs();
+        assert_eq!(app.host_jobs_counts("fbsd16"), (1, 2), "the disabled job counts nowhere");
+        assert_eq!(app.host_jobs_counts("local"), (0, 0));
+    }
+
+    fn filter_app() -> App {
+        let mut app = in_section(Section::Hosts);
+        app.hosts = vec!["local".into(), "fbsd16".into(), "t1".into(), "nas".into()];
+        app.set_host_addresses(vec!["local".into(), "10.0.0.60".into(), "10.0.0.61".into(), "10.0.0.9".into()]);
+        app.set_host_tags(vec![String::new(), String::new(), String::new(), "Backup".into()]);
+        app.host_probes.insert("t1".into(), HostProbeState { kind: Some(crate::zfs::host_health::HostKind::Vm("bhyve".into())), ..HostProbeState::default() });
+        app
+    }
+
+    fn type_filter(app: &mut App, text: &str) {
+        app.handle_key(KeyCode::Char('/'));
+        for c in text.chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn slash_filters_live_by_name_address_tag_and_type_ignoring_case() {
+        let mut app = filter_app();
+        type_filter(&mut app, "back");
+        assert_eq!(app.visible_hosts(), vec![3], "tag, case-insensitive");
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        for c in "10.0.0.6".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_hosts(), vec![1, 2], "address");
+        for _ in 0..8 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        assert_eq!(app.visible_hosts().len(), 4, "an empty filter shows everything");
+        for c in "vm".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_hosts(), vec![2], "type word");
+        for _ in 0..2 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        for c in "FBSD".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_hosts(), vec![1], "name");
+    }
+
+    #[test]
+    fn typing_in_the_filter_does_not_trigger_other_keys() {
+        let mut app = filter_app();
+        type_filter(&mut app, "qn");
+        assert!(!app.should_quit && app.modal.is_none(), "q and n are text while the filter is open");
+    }
+
+    #[test]
+    fn the_selection_moves_to_a_visible_host_when_the_filter_hides_it() {
+        let mut app = filter_app();
+        app.selected_host = 0;
+        type_filter(&mut app, "nas");
+        assert_eq!(app.selected_host, 3);
+    }
+
+    #[test]
+    fn up_and_down_move_among_visible_hosts_and_wrap() {
+        let mut app = filter_app();
+        type_filter(&mut app, "10.0.0.");
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.visible_hosts(), vec![1, 2, 3]);
+        assert_eq!(app.selected_host, 1);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_host, 2);
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_host, 1, "wraps within the visible hosts");
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.selected_host, 3);
+    }
+
+    #[test]
+    fn enter_with_no_match_keeps_the_input_open_and_esc_clears_everything() {
+        let mut app = filter_app();
+        app.selected_host = 2;
+        type_filter(&mut app, "zzz");
+        assert!(app.visible_hosts().is_empty());
+        assert_eq!(app.selected_host, 2, "no match: the selection stays where it was, on a host that exists");
+        app.handle_key(KeyCode::Enter);
+        assert!(app.host_filter_editing, "cannot commit a filter that matches nothing");
+        app.handle_key(KeyCode::Esc);
+        assert!(app.host_filter.is_empty() && !app.host_filter_editing);
+        assert_eq!(app.visible_hosts().len(), 4);
+    }
+
+    #[test]
+    fn esc_after_a_committed_filter_clears_it() {
+        let mut app = filter_app();
+        type_filter(&mut app, "nas");
+        app.handle_key(KeyCode::Enter);
+        assert!(!app.host_filter_editing && app.host_filter == "nas");
+        app.handle_key(KeyCode::Esc);
+        assert!(app.host_filter.is_empty());
+    }
+
+    #[test]
+    fn slash_outside_hosts_is_not_a_filter_and_add_host_clears_one() {
+        let mut app = in_section(Section::Pools);
+        app.handle_key(KeyCode::Char('/'));
+        assert!(!app.host_filter_editing);
+        let mut app = filter_app();
+        type_filter(&mut app, "nas");
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.host_filter.is_empty(), "opening Add Host clears the filter so the new host will be visible");
+    }
+
+    #[test]
+    fn esc_while_typing_a_filter_puts_the_selection_back_where_it_was() {
+        let mut app = filter_app();
+        app.selected_host = 0;
+        type_filter(&mut app, "nas");
+        assert_eq!(app.selected_host, 3, "the selection follows the filter while typing");
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.selected_host, 0, "cancelling restores the host that was active");
+        // A committed filter's Esc only clears the text: the user navigated on purpose.
+        type_filter(&mut app, "nas");
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.selected_host, 3);
+    }
+
+    #[test]
+    fn help_documents_the_hosts_filter_key() {
+        let text = help_text();
+        assert!(text.contains("filter"), "{text}");
+    }
+
+    #[test]
+    fn the_type_is_cached_once_seen_and_a_failed_probe_does_not_erase_it() {
+        use crate::zfs::host_health::{HostKind, HostProbe};
+        let mut app = App::new(vec!["local".into(), "a".into()]);
+        let reached = |kind| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind };
+        app.tx.send(WorkerMsg::HostHealth("a".into(), reached(Some(HostKind::Vm("bhyve".into()))))).unwrap();
+        app.drain_worker_messages();
+        app.tx.send(WorkerMsg::HostHealth("a".into(), reached(None))).unwrap();
+        app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Disconnected)).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.host_probes["a"].kind, Some(HostKind::Vm("bhyve".into())));
+    }
+
+    #[test]
+    fn an_unknown_type_is_cached_so_it_is_not_asked_again() {
+        use crate::zfs::host_health::{HostKind, HostProbe};
+        let mut app = App::new(vec!["local".into(), "a".into()]);
+        app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Unknown) })).unwrap();
+        app.drain_worker_messages();
+        assert!(app.host_probes["a"].kind.is_some());
+    }
+
+    #[test]
     fn host_probe_failure_clears_the_in_flight_marker_so_the_name_can_be_retried() {
         let mut app = App::new(vec!["local".to_string()]);
         app.handle_key(KeyCode::Char('n'));
@@ -7725,6 +8002,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         app.handle_modal_key(KeyCode::Enter); // starts probing "newhost"
         app.tx
             .send(WorkerMsg::HostProbe(
@@ -7745,6 +8023,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab);
         app.handle_modal_key(KeyCode::Enter);
         assert!(app.modal.is_none(), "a retry after the first probe failed must be accepted");
     }
@@ -7760,6 +8039,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         app.handle_modal_key(KeyCode::Enter); // first submission: starts probing "newhost", self.hosts doesn't have it yet
         assert!(app.modal.is_none());
 
@@ -7771,6 +8051,7 @@ mod tests {
         for c in "different.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "a name already being probed (case-insensitively) must be rejected, not started a second time");
@@ -8818,6 +9099,52 @@ mod tests {
         app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
         app.pane_focus = PaneFocus::Middle;
         app
+    }
+
+    #[test]
+    fn add_host_has_an_optional_third_tag_field_and_submits_on_it() {
+        let mut app = in_section(Section::Hosts);
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(form_values(&app).len(), 3);
+        for c in "box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        for c in "u@box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(app.modal.is_some(), "Enter on the second field moves on, it does not submit");
+        for c in " nas ".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(app.new_host_tags.get("box").map(String::as_str), Some("nas"));
+    }
+
+    #[test]
+    fn a_blank_tag_is_not_remembered() {
+        let mut app = in_section(Section::Hosts);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        for c in "u@box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(app.modal.is_none() && app.new_host_tags.is_empty());
+    }
+
+    #[test]
+    fn host_tags_default_to_empty_and_follow_set_host_tags() {
+        let mut app = App::new(vec!["local".into(), "a".into()]);
+        assert_eq!((app.host_tag(0), app.host_tag(1), app.host_tag(9)), ("", "", ""));
+        app.set_host_tags(vec![String::new(), "backup".into()]);
+        assert_eq!(app.host_tag(1), "backup");
     }
 
     fn two_props() -> Vec<Property> {
@@ -10387,7 +10714,7 @@ mod tests {
         let mut app = probes_app();
         app.state_dir = dir.path().to_path_buf();
         app.refresh_jobs();
-        let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![] };
+        let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
         for name in ["local", "fbsd16", "fbsd16t1"] {
             app.tx.send(WorkerMsg::HostHealth(name.to_string(), healthy())).unwrap();
         }
@@ -10403,13 +10730,13 @@ mod tests {
     #[test]
     fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result() {
         let mut app = probes_app();
-        let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![] };
+        let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
         let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
-        app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago) });
+        app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None });
         let a = app.host_assessment(1);
         assert_eq!(a.level, crate::zfs::host_health::Level::Warning);
         assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
-        app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()) });
+        app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None });
         assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
     }
 

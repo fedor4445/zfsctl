@@ -287,22 +287,74 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Which Hosts columns fit. Name and State always show; Address while State keeps its minimum width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // one independent show/hide flag per column
+pub struct HostColumns {
+    pub addr: bool,
+    pub type_: bool,
+    pub tag: bool,
+    pub used: bool,
+    pub pools: bool,
+    pub scrub: bool,
+    pub jobs: bool,
+    pub rtt: bool,
+}
+
+type Step = (u16, fn(&mut HostColumns));
+const TYPE_W: u16 = 6;
+const USED_W: u16 = 5;
+const POOLS_W: u16 = 5;
+const SCRUB_W: u16 = 13;
+const JOBS_W: u16 = 5;
+const RTT_W: u16 = 6;
+const ADDR_W: u16 = 18;
+const STATE_MIN: u16 = 22;
+
+/// The optional columns are added in the reverse of their drop order (Type, Used, Tag, Pools, Scrub, Jobs, Rtt)
+/// while they fit, stopping at the first that does not, so a narrower column can never outlive a wider one that
+/// goes before it. `tag_w` is the longest tag (0 = no host has one, so no Tag column).
+pub fn fit_host_columns(inner: u16, name_w: u16, tag_w: u16) -> HostColumns {
+    let addr = inner >= 16 + STATE_MIN + ADDR_W + 2;
+    let mut rest = inner.saturating_sub(name_w + 1 + STATE_MIN + if addr { ADDR_W + 1 } else { 0 });
+    let mut c = HostColumns { addr, type_: false, tag: false, used: false, pools: false, scrub: false, jobs: false, rtt: false };
+    let tag_cols = tag_w.clamp(3, 14);
+    let steps: [Step; 7] = [
+        (TYPE_W, |c| c.type_ = true),
+        (USED_W, |c| c.used = true),
+        (tag_cols, |c| c.tag = true),
+        (POOLS_W, |c| c.pools = true),
+        (SCRUB_W, |c| c.scrub = true),
+        (JOBS_W, |c| c.jobs = true),
+        (RTT_W, |c| c.rtt = true),
+    ];
+    for (i, (w, set)) in steps.into_iter().enumerate() {
+        if i == 2 && tag_w == 0 {
+            continue;
+        }
+        if rest < w + 1 {
+            break;
+        }
+        rest -= w + 1;
+        set(&mut c);
+    }
+    c
+}
+
 fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
+    use crate::zfs::host_health::{jobs_cell, pools_cell, scan_cell, used_cell, HostKind, HostProbe, Level};
     use ratatui::widgets::TableState;
-    use crate::zfs::host_health::{HostProbe, Level};
     let theme = app.theme.clone();
-    // Name and State always show; Address then Rtt only while they fit (Rtt is the first to go).
     let inner = area.width.saturating_sub(2);
     // The name column fits the longest host name (so a narrow table squeezes the State text, never the name).
     let longest = app.hosts.iter().map(|h| h.chars().count()).max().unwrap_or(0);
     let name_w = u16::try_from(longest + 2).unwrap_or(16).clamp(8, 16);
-    let (addr_w, rtt_w, state_min) = (18_u16, 6_u16, 22_u16);
-    let show_addr = inner >= 16 + state_min + addr_w + 2;
-    let show_rtt = show_addr && inner >= 16 + state_min + addr_w + rtt_w + 3;
-    let rows: Vec<Row> = app
-        .hosts
+    let tag_w = u16::try_from(app.host_tags.iter().map(|t| t.chars().count()).max().unwrap_or(0)).unwrap_or(14).min(14);
+    let cols = fit_host_columns(inner, name_w, tag_w);
+    let visible = app.visible_hosts();
+    let rows: Vec<Row> = visible
         .iter()
-        .enumerate()
+        .filter_map(|&i| app.hosts.get(i).map(|name| (i, name)))
         .map(|(i, name)| {
             let assessment = app.host_assessment(i);
             let (marker_style, name_style, state_style) = match assessment.level {
@@ -311,17 +363,50 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
                 Level::Critical | Level::Disconnected => (theme.err, theme.err, theme.err),
                 Level::Probing => (theme.dim(), theme.dim(), theme.dim()),
             };
-            let rtt = match app.host_probes.get(name).and_then(|s| s.last.as_ref()) {
-                Some(HostProbe::Reached { rtt_ms, .. }) => format!("{rtt_ms}ms"),
-                _ => "-".to_string(),
+            let state = app.host_probes.get(name);
+            let reached = match state.and_then(|s| s.last.as_ref()) {
+                Some(HostProbe::Reached { rtt_ms, pools, .. }) => Some((*rtt_ms, pools.as_slice())),
+                _ => None,
             };
             let mut cells = vec![Cell::from(Line::from(vec![Span::styled("● ", marker_style), Span::styled(name.clone(), name_style)]))];
-            if show_addr {
+            if cols.addr {
                 cells.push(Cell::from(app.host_address(i).to_string()));
             }
             cells.push(Cell::from(Span::styled(assessment.reason, state_style)));
-            if show_rtt {
-                cells.push(Cell::from(rtt));
+            if cols.type_ {
+                let (word, style) = match state.and_then(|s| s.kind.as_ref()) {
+                    Some(k @ HostKind::Vm(_)) => (k.word(), theme.info),
+                    Some(k @ HostKind::Jail) => (k.word(), theme.alt),
+                    Some(k) => (k.word(), Style::default()),
+                    None => ("-", Style::default()),
+                };
+                cells.push(Cell::from(Span::styled(word, style)));
+            }
+            if cols.tag {
+                cells.push(Cell::from(app.host_tag(i).to_string()));
+            }
+            if cols.used {
+                let (text, level) = reached.map_or(("-".to_string(), Level::Ok), |(_, pools)| used_cell(pools));
+                let style = match level {
+                    Level::Critical => theme.err,
+                    Level::Warning => theme.warn,
+                    _ => Style::default(),
+                };
+                cells.push(Cell::from(Span::styled(text, style)));
+            }
+            if cols.pools {
+                cells.push(Cell::from(reached.map_or("-".to_string(), |(_, pools)| pools_cell(pools))));
+            }
+            if cols.scrub {
+                cells.push(Cell::from(reached.map_or("-".to_string(), |(_, pools)| scan_cell(pools))));
+            }
+            if cols.jobs {
+                let (failed, total) = app.host_jobs_counts(name);
+                let (text, bad) = jobs_cell(failed, total);
+                cells.push(Cell::from(Span::styled(text, if bad { theme.err } else { Style::default() })));
+            }
+            if cols.rtt {
+                cells.push(Cell::from(reached.map_or("-".to_string(), |(rtt, _)| format!("{rtt}ms"))));
             }
             let row = Row::new(cells);
             if i == app.selected_host { row.style(theme.selected_row()) } else { row }
@@ -329,15 +414,17 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     let mut widths = vec![Constraint::Length(name_w)];
     let mut headers = vec!["Name"];
-    if show_addr {
-        widths.push(Constraint::Length(addr_w));
+    if cols.addr {
+        widths.push(Constraint::Length(ADDR_W));
         headers.push("Address");
     }
     widths.push(Constraint::Min(8));
     headers.push("State");
-    if show_rtt {
-        widths.push(Constraint::Length(rtt_w));
-        headers.push("Rtt");
+    for (on, w, h) in [(cols.type_, TYPE_W, "Type"), (cols.tag, tag_w.max(3), "Tag"), (cols.used, USED_W, "Used"), (cols.pools, POOLS_W, "Pools"), (cols.scrub, SCRUB_W, "Scrub"), (cols.jobs, JOBS_W, "Jobs"), (cols.rtt, RTT_W, "Rtt")] {
+        if on {
+            widths.push(Constraint::Length(w));
+            headers.push(h);
+        }
     }
     let table_area = if app.hosts.len() == 1 {
         let [table_part, hint_part] = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(0), Constraint::Length(4)]).areas(area);
@@ -347,12 +434,21 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     } else {
         area
     };
+    let title = if app.host_filter.is_empty() && !app.host_filter_editing {
+        "Hosts".to_string()
+    } else {
+        format!("Hosts (filter: {}{} — {}/{})", app.host_filter, if app.host_filter_editing { "_" } else { "" }, visible.len(), app.hosts.len())
+    };
     let table = Table::new(rows, widths)
         .header(Row::new(headers))
-        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title("Hosts"));
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title));
     // The offset follows the selection, so the selected host stays on screen however many hosts there are.
-    let mut state = TableState::default().with_selected(Some(app.selected_host));
+    let mut state = TableState::default().with_selected(visible.iter().position(|i| *i == app.selected_host));
     f.render_stateful_widget(table, table_area, &mut state);
+    if visible.is_empty() && table_area.height > 3 {
+        let line = Rect { x: table_area.x + 1, y: table_area.y + 2, width: table_area.width.saturating_sub(2), height: 1 };
+        f.render_widget(Paragraph::new("no host matches").style(theme.dim()), line);
+    }
 }
 
 /// Name column width the Pools table protects before it spends space on
@@ -2245,13 +2341,18 @@ mod tests {
     fn hosts_app() -> App {
         let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string(), "fbsd16t1".to_string(), "deadbox".to_string()]);
         app.set_host_addresses(vec!["local".into(), "172.16.10.60".into(), "172.16.10.61".into(), "172.16.10.99".into()]);
-        let probe = |p: crate::zfs::host_health::HostProbe| crate::ui::state::HostProbeState { last: Some(p), in_flight: false, finished_at: Some(std::time::Instant::now()), started_at: None };
+        let probe = |p: crate::zfs::host_health::HostProbe| crate::ui::state::HostProbeState { last: Some(p), in_flight: false, finished_at: Some(std::time::Instant::now()), started_at: None, kind: None };
         let pool = |n: &str, h: crate::zfs::pool::PoolHealth, c: u8| crate::zfs::host_health::PoolProbe { name: n.to_string(), health: h, capacity_percent: c, frag_percent: None, errors: Some(0), scan: None };
         use crate::zfs::host_health::HostProbe;
-        app.host_probes.insert("local".into(), probe(HostProbe::Reached { rtt_ms: 3, pools: vec![pool("zroot", crate::zfs::pool::PoolHealth::Online, 20)] }));
-        app.host_probes.insert("fbsd16".into(), probe(HostProbe::Reached { rtt_ms: 12, pools: vec![pool("tank", crate::zfs::pool::PoolHealth::Degraded, 20)] }));
-        app.host_probes.insert("fbsd16t1".into(), probe(HostProbe::Reached { rtt_ms: 7, pools: vec![pool("tank", crate::zfs::pool::PoolHealth::Online, 85)] }));
+        app.host_probes.insert("local".into(), probe(HostProbe::Reached { rtt_ms: 3, pools: vec![pool("zroot", crate::zfs::pool::PoolHealth::Online, 20)], kind: None }));
+        app.host_probes.insert("fbsd16".into(), probe(HostProbe::Reached { rtt_ms: 12, pools: vec![pool("tank", crate::zfs::pool::PoolHealth::Degraded, 20)], kind: None }));
+        app.host_probes.insert("fbsd16t1".into(), probe(HostProbe::Reached { rtt_ms: 7, pools: vec![pool("tank", crate::zfs::pool::PoolHealth::Online, 85)], kind: None }));
         app.host_probes.insert("deadbox".into(), probe(HostProbe::Disconnected));
+        use crate::zfs::host_health::HostKind;
+        app.host_probes.get_mut("local").unwrap().kind = Some(HostKind::Metal);
+        app.host_probes.get_mut("fbsd16").unwrap().kind = Some(HostKind::Vm("bhyve".into()));
+        app.host_probes.get_mut("fbsd16t1").unwrap().kind = Some(HostKind::Jail);
+        app.set_host_tags(vec![String::new(), "backup".into(), String::new(), String::new()]);
         app
     }
 
@@ -2266,6 +2367,77 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn the_host_columns_drop_in_the_documented_order_and_the_required_three_stay() {
+        // Array order is the drop order: Rtt first, Type last.
+        let order = |c: &HostColumns| [c.rtt, c.jobs, c.scrub, c.pools, c.tag, c.used, c.type_];
+        let wide = fit_host_columns(200, 10, 8);
+        assert!(order(&wide).iter().all(|b| *b) && wide.addr, "everything fits at 200");
+        for w in 30..200 {
+            let on = order(&fit_host_columns(w, 10, 8));
+            // a column that survives implies every column that drops after it survives too
+            assert!(on.windows(2).all(|p| !(p[0] && !p[1])), "width {w}: {on:?}");
+            // widening never removes a column (except when Address appears, which takes priority over them)
+            let (now, next) = (fit_host_columns(w, 10, 8), fit_host_columns(w + 1, 10, 8));
+            if now.addr == next.addr {
+                assert!(on.iter().zip(order(&next)).all(|(a, b)| !*a || b), "width {w}");
+            }
+        }
+        assert!(!order(&fit_host_columns(30, 10, 8)).iter().any(|b| *b), "at 30 columns only the required ones remain");
+        assert!(!order(&fit_host_columns(200, 10, 0))[4], "no tags configured: no Tag column");
+    }
+
+    #[test]
+    fn a_one_or_two_character_tag_is_fitted_as_wide_as_it_is_drawn() {
+        // The drawn Tag column is at least 3 wide (its header), so the fitting must count it that way.
+        for inner in 0..200 {
+            assert_eq!(fit_host_columns(inner, 8, 1), fit_host_columns(inner, 8, 3), "inner {inner}");
+            assert_eq!(fit_host_columns(inner, 8, 2), fit_host_columns(inner, 8, 3), "inner {inner}");
+        }
+    }
+
+    #[test]
+    fn the_hosts_table_shows_the_new_columns_and_cells() {
+        let mut app = hosts_app();
+        app.selected_host = 0;
+        let text = render(&mut app, 170, 30).join("\n");
+        for want in ["Type", "Tag", "Used", "Pools", "Scrub", "Jobs", "Rtt", "vm", "metal", "jail", "backup", "85%", "20%"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_type_words_have_their_own_colors_apart_from_the_health_colors() {
+        let mut app = hosts_app();
+        let vm = fg_of(&mut app, "vm", 170, 30);
+        let jail = fg_of(&mut app, "jail", 170, 30);
+        let ok = fg_of(&mut app, "ok", 170, 30);
+        assert!(vm.is_some() && vm != ok && jail != ok && vm != jail, "{vm:?} {jail:?} {ok:?}");
+    }
+
+    #[test]
+    fn a_narrow_hosts_table_still_shows_name_address_and_state() {
+        let mut app = hosts_app();
+        let text = render(&mut app, 100, 30).join("\n");
+        for want in ["Name", "Address", "State", "172.16.10.60"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_hosts_title_shows_the_filter_and_only_matching_rows_are_drawn() {
+        let mut app = hosts_app();
+        app.host_filter = "dead".into();
+        app.selected_host = 3;
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("deadbox") && !text.contains("fbsd16t1"), "{text}");
+        assert!(text.contains("filter: dead") && text.contains("1/4"), "{text}");
+        app.host_filter_editing = true;
+        assert!(render(&mut app, 120, 30).join("\n").contains("filter: dead_"), "a cursor while typing");
+        app.host_filter = "zzz".into();
+        assert!(render(&mut app, 120, 30).join("\n").contains("no host matches"));
     }
 
     #[test]
@@ -2284,7 +2456,7 @@ mod tests {
     fn the_hosts_table_shows_name_address_state_and_rtt() {
         let mut app = hosts_app();
         app.selected_host = 0;
-        let text = render(&mut app, 120, 30).join("\n");
+        let text = render(&mut app, 150, 30).join("\n");
         for want in ["Name", "Address", "State", "Rtt", "fbsd16", "172.16.10.60", "tank DEGRADED", "tank 85% full", "unreachable", "12ms", "ok"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }

@@ -67,6 +67,16 @@ pub struct HostConfig {
     /// always set this.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ssh_target: Option<String>,
+    /// A free label for this host (`backup`, `garage`), shown in the Hosts table and matched by its filter.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tag: Option<String>,
+}
+
+/// A tag as stored: trimmed, at most 40 characters, `None` when blank.
+pub fn clean_tag(raw: &str) -> Option<String> {
+    let t: String = raw.trim().chars().take(40).collect();
+    let t = t.trim_end().to_string();
+    (!t.is_empty()).then_some(t)
 }
 
 impl Config {
@@ -119,10 +129,11 @@ mod tests {
         let path = dir.path().join("nested").join("config.toml");
         let config = Config {
             hosts: vec![
-                HostConfig { name: "local".to_string(), ssh_target: None },
+                HostConfig { name: "local".to_string(), ssh_target: None, tag: None },
                 HostConfig {
                     name: "backup".to_string(),
                     ssh_target: Some("backup.example.com".to_string()),
+                    tag: None,
                 },
             ],
             ..Default::default()
@@ -130,6 +141,25 @@ mod tests {
         config.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
         assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn clean_tag_trims_drops_blank_and_limits_to_forty_characters() {
+        assert_eq!(clean_tag("  backup "), Some("backup".to_string()));
+        assert_eq!(clean_tag("   "), None);
+        assert_eq!(clean_tag(&"x".repeat(60)).unwrap().chars().count(), 40);
+    }
+
+    #[test]
+    fn a_config_without_a_tag_loads_and_a_tag_round_trips_and_is_omitted_when_none() {
+        let old = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n";
+        let c: Config = toml::from_str(old).unwrap();
+        assert_eq!(c.hosts[0].tag, None);
+        assert!(!toml::to_string(&c).unwrap().contains("tag"));
+        let with = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"backup\"\n";
+        let c: Config = toml::from_str(with).unwrap();
+        assert_eq!(c.hosts[0].tag.as_deref(), Some("backup"));
+        assert!(toml::to_string(&c).unwrap().contains("tag = \"backup\""));
     }
 
     #[test]
@@ -154,7 +184,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let config = Config {
-            hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) }],
+            hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None }],
             ui: UiConfig { theme: Some("mono".to_string()), auto_refresh_secs: None },
             ..Default::default()
         };

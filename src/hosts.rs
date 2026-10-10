@@ -11,6 +11,8 @@ pub struct Host {
     pub runner: Arc<dyn CommandRunner>,
     /// SSH destination this host is reached at; `None` for the local host.
     pub ssh_target: Option<String>,
+    /// The free label from `config.toml` (or the Add Host form).
+    pub tag: Option<String>,
 }
 
 pub struct HostInventory {
@@ -25,6 +27,7 @@ impl HostInventory {
             name: "local".to_string(),
             runner: Arc::new(LocalRunner),
             ssh_target: None,
+            tag: None,
         }];
         for host_cfg in &config.hosts {
             let runner: Arc<dyn CommandRunner> = match &host_cfg.ssh_target {
@@ -35,6 +38,7 @@ impl HostInventory {
                 name: host_cfg.name.clone(),
                 runner,
                 ssh_target: host_cfg.ssh_target.clone(),
+                tag: host_cfg.tag.as_deref().and_then(crate::config::clean_tag),
             });
         }
         HostInventory { hosts }
@@ -51,14 +55,15 @@ impl HostInventory {
     /// config, appending, and saving. The inventory push happening
     /// first and unconditionally is what guarantees it's never rolled
     /// back by a later persistence failure.
-    pub fn apply_new_host(&mut self, config_path: &Path, name: String, target: String) -> Result<()> {
+    pub fn apply_new_host(&mut self, config_path: &Path, name: String, target: String, tag: Option<String>) -> Result<()> {
         self.hosts.push(Host {
             name: name.clone(),
             runner: Arc::new(SshRunner::new(target.clone())),
             ssh_target: Some(target.clone()),
+            tag: tag.clone(),
         });
         let mut config = Config::load(config_path)?;
-        config.hosts.push(HostConfig { name, ssh_target: Some(target) });
+        config.hosts.push(HostConfig { name, ssh_target: Some(target), tag });
         config.save(config_path)
     }
 }
@@ -80,8 +85,8 @@ mod tests {
     fn includes_configured_remote_hosts_in_order() {
         let config = Config {
             hosts: vec![
-                HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) },
-                HostConfig { name: "offsite".to_string(), ssh_target: Some("offsite.example.com".to_string()) },
+                HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None },
+                HostConfig { name: "offsite".to_string(), ssh_target: Some("offsite.example.com".to_string()), tag: None },
             ],
             ..Default::default()
         };
@@ -91,13 +96,29 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_edited_tag_is_cleaned_like_one_from_the_form() {
+        let tagged = |t: &str| HostConfig { name: "a".into(), ssh_target: Some("u@a".into()), tag: Some(t.into()) };
+        let config = Config { hosts: vec![tagged("   "), tagged(&"x".repeat(200))], ..Config::default() };
+        let inv = HostInventory::from_config(&config);
+        assert_eq!(inv.hosts[1].tag, None);
+        assert_eq!(inv.hosts[2].tag.as_deref().map(|t| t.chars().count()), Some(40));
+    }
+
+    #[test]
+    fn from_config_carries_the_tag_to_the_host() {
+        let config = Config { hosts: vec![HostConfig { name: "a".into(), ssh_target: Some("u@a".into()), tag: Some("backup".into()) }], ..Config::default() };
+        let inv = HostInventory::from_config(&config);
+        assert_eq!((inv.hosts[0].tag.clone(), inv.hosts[1].tag.clone()), (None, Some("backup".to_string())));
+    }
+
+    #[test]
     fn apply_new_host_pushes_into_live_inventory_and_persists_to_config() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         let mut inventory = HostInventory::from_config(&Config::default());
         assert_eq!(inventory.hosts.len(), 1);
 
-        inventory.apply_new_host(&config_path, "newhost".to_string(), "newhost.example.com".to_string()).unwrap();
+        inventory.apply_new_host(&config_path, "newhost".to_string(), "newhost.example.com".to_string(), Some("lab".to_string())).unwrap();
 
         assert_eq!(inventory.hosts.len(), 2);
         assert_eq!(inventory.hosts[1].name, "newhost");
@@ -105,7 +126,7 @@ mod tests {
         let persisted = Config::load(&config_path).unwrap();
         assert_eq!(
             persisted.hosts,
-            vec![HostConfig { name: "newhost".to_string(), ssh_target: Some("newhost.example.com".to_string()) }]
+            vec![HostConfig { name: "newhost".to_string(), ssh_target: Some("newhost.example.com".to_string()), tag: Some("lab".to_string()) }]
         );
     }
 
@@ -122,7 +143,7 @@ mod tests {
         let config_path = blocking_file.join("config.toml");
 
         let mut inventory = HostInventory::from_config(&Config::default());
-        let result = inventory.apply_new_host(&config_path, "newhost".to_string(), "newhost.example.com".to_string());
+        let result = inventory.apply_new_host(&config_path, "newhost".to_string(), "newhost.example.com".to_string(), Some("lab".to_string()));
 
         assert!(result.is_err());
         assert_eq!(inventory.hosts.len(), 2, "the inventory push must never be rolled back, even when persisting fails");
@@ -133,8 +154,8 @@ mod tests {
     fn hosts_remember_their_ssh_target_and_the_local_host_has_none() {
         let config = Config {
             hosts: vec![
-                HostConfig { name: "backup".to_string(), ssh_target: Some("fbsd@backup.example.com".to_string()) },
-                HostConfig { name: "alias".to_string(), ssh_target: None },
+                HostConfig { name: "backup".to_string(), ssh_target: Some("fbsd@backup.example.com".to_string()), tag: None },
+                HostConfig { name: "alias".to_string(), ssh_target: None, tag: None },
             ],
             ..Default::default()
         };
@@ -148,14 +169,14 @@ mod tests {
     fn a_host_added_at_runtime_remembers_its_ssh_target() {
         let dir = tempfile::tempdir().unwrap();
         let mut inventory = HostInventory::from_config(&Config::default());
-        inventory.apply_new_host(&dir.path().join("config.toml"), "newhost".to_string(), "fbsd@newhost".to_string()).unwrap();
+        inventory.apply_new_host(&dir.path().join("config.toml"), "newhost".to_string(), "fbsd@newhost".to_string(), None).unwrap();
         assert_eq!(inventory.hosts[1].ssh_target.as_deref(), Some("fbsd@newhost"));
     }
 
     #[test]
     fn get_finds_host_by_name_or_returns_none() {
         let config = Config {
-            hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()) }],
+            hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None }],
             ..Default::default()
         };
         let inventory = HostInventory::from_config(&config);

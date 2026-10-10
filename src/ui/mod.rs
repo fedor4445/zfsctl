@@ -71,6 +71,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
             app.theme = resolved.theme;
             app.status_message = resolved.note;
             app.set_host_addresses(inventory.hosts.iter().map(|h| state::address_of(h.ssh_target.as_deref())).collect());
+            app.set_host_tags(inventory.hosts.iter().map(|h| h.tag.clone().unwrap_or_default()).collect());
             if let Some(first_host) = inventory.hosts.first() {
                 app.refresh_pools(first_host.runner.clone());
             }
@@ -98,7 +99,9 @@ fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_
     for (name, target) in std::mem::take(&mut app.pending_new_hosts) {
         app.hosts.push(name.clone());
         app.host_addresses.push(state::address_of(Some(&target)));
-        if let Err(e) = inventory.apply_new_host(config_path, name, target) {
+        let tag = app.new_host_tags.remove(&name.to_lowercase());
+        app.host_tags.push(tag.clone().unwrap_or_default());
+        if let Err(e) = inventory.apply_new_host(config_path, name, target, tag) {
             app.set_error(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
         }
     }
@@ -418,6 +421,7 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         let mut app = App::new(vec!["local".to_string()]);
         let mut inventory = HostInventory::from_config(&Config::default());
+        app.new_host_tags.insert("hosta".to_string(), "lab".to_string());
         app.pending_new_hosts = vec![
             ("hosta".to_string(), "hosta.example.com".to_string()),
             ("hostb".to_string(), "hostb.example.com".to_string()),
@@ -430,6 +434,9 @@ mod tests {
         assert_eq!(inventory_names, vec!["local", "hosta", "hostb"]);
         assert_eq!(app.host_addresses, vec!["local", "hosta.example.com", "hostb.example.com"], "addresses stay aligned with hosts");
         assert!(app.pending_new_hosts.is_empty());
+        assert_eq!(app.host_tags, vec![String::new(), "lab".to_string(), String::new()]);
+        assert_eq!(inventory.hosts[1].tag.as_deref(), Some("lab"));
+        assert!(app.new_host_tags.is_empty());
     }
 
     #[test]
@@ -454,7 +461,7 @@ mod tests {
         let runner = FakeRunner::new("")
             .route("getent", "passwd", "root:*:0:0::/root:/bin/sh\n")
             .route("getent", "group", "wheel:*:0:root\n");
-        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner), ssh_target: None }] };
+        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner), ssh_target: None, tag: None }] };
         app.pending_account_fetch = vec![0];
         apply_pending_account_fetches(&mut app, &inventory);
         assert!(app.pending_account_fetch.is_empty());
@@ -501,7 +508,7 @@ mod tests {
         use std::sync::Arc;
         let mut app = App::new(vec!["local".to_string()]);
         let runner = FakeRunner::new("tank/data\t1\t2\t3\t/tank/data\tfilesystem\tyes\n");
-        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner), ssh_target: None }] };
+        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(runner), ssh_target: None, tag: None }] };
         let kind = crate::ui::modal::FormKind::SnapshotJob { hosts: vec!["local".to_string()], existing: None, jobs: Vec::new() };
         app.picker = crate::ui::picker::build_picker_state(&kind, 1, "");
         app.pending_pool_fetch = vec![(0, crate::ui::picker::LiveNames::Datasets)];
