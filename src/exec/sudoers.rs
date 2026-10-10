@@ -2,6 +2,7 @@
 //! the host (`check-host`). Pure pieces first; the two commands are below.
 
 use super::privilege::{self, Entry, Feature, Kind};
+use super::CommandRunner;
 
 /// Why a run stopped. `Unreachable` (ssh exit 255) maps to exit code 2 so a script can tell "the host is
 /// down" from "the host is misconfigured".
@@ -113,6 +114,35 @@ pub fn render(host: &str, user: &str, features: &[Feature], resolved: &[Resolved
     text
 }
 
+fn unreachable(host: &str, detail: impl std::fmt::Display) -> Failure {
+    Failure::Unreachable(format!("cannot reach {host}: {detail}"))
+}
+
+/// Asks the host where each command lives, over the unprivileged ssh path (no sudo, so it works before
+/// any sudoers entry exists), and vets the answers.
+pub fn resolve(runner: &dyn CommandRunner, host: &str, entries: &[&'static Entry]) -> Result<Vec<Resolved>, Failure> {
+    let mut args: Vec<&str> = vec!["-c", RESOLVE_SCRIPT, "sh"];
+    args.extend(entries.iter().map(|e| e.name));
+    let out = runner.run_unprivileged("sh", &args).map_err(|e| unreachable(host, e))?;
+    if out.status == 255 {
+        return Err(unreachable(host, out.stderr.trim()));
+    }
+    if !out.success() {
+        return Err(problem(format!("looking up paths on {host} failed: {}", out.stderr.trim())));
+    }
+    parse_resolution(host, &out.stdout, entries)
+}
+
+pub fn print_sudoers(runner: &dyn CommandRunner, host: &str, ssh_target: &str, features: &[Feature], generated: &str) -> Result<String, Failure> {
+    let user = user_of(ssh_target)?;
+    let entries = privilege::privileged_for(features);
+    if entries.is_empty() {
+        return Err(problem("the selected features need no privileged commands, so there is nothing to put in a sudoers entry"));
+    }
+    let resolved = resolve(runner, host, &entries)?;
+    Ok(render(host, user, features, &resolved, generated))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,4 +246,116 @@ mod tests {
         assert!(text.contains("/usr/local/bin/restic"), "{text}");
         assert!(!text.contains("smbpasswd") && !text.contains("tee"), "{text}");
     }
+    use crate::error::Result as AppResult;
+    use crate::exec::{CommandOutput, CommandRunner};
+    use std::sync::Mutex;
+
+    /// Answers every call through `answer(cmd, args)` and records the call.
+    struct Scripted {
+        calls: Mutex<Vec<String>>,
+        answer: Box<dyn Fn(&str, &[&str]) -> CommandOutput + Send + Sync>,
+    }
+
+    impl Scripted {
+        fn new(answer: impl Fn(&str, &[&str]) -> CommandOutput + Send + Sync + 'static) -> Self {
+            Scripted { calls: Mutex::new(Vec::new()), answer: Box::new(answer) }
+        }
+        fn count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl CommandRunner for Scripted {
+        fn run(&self, cmd: &str, args: &[&str]) -> AppResult<CommandOutput> {
+            self.calls.lock().unwrap().push(format!("{cmd} {}", args.join(" ")));
+            Ok((self.answer)(cmd, args))
+        }
+        fn run_with_stdin(&self, cmd: &str, args: &[&str], _stdin: &str) -> AppResult<CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> AppResult<CommandOutput> {
+            self.run(cmd, args)
+        }
+    }
+
+    fn out(stdout: &str, status: i32) -> CommandOutput {
+        CommandOutput { stdout: stdout.to_string(), stderr: String::new(), status }
+    }
+
+    /// `sh -c SCRIPT sh name...` answered from a table of where each command lives.
+    fn host_with(paths: &'static [(&'static str, &'static str)]) -> Scripted {
+        Scripted::new(move |cmd, args| {
+            assert_eq!(cmd, "sh");
+            assert_eq!(&args[..3], ["-c", RESOLVE_SCRIPT, "sh"]);
+            let lines: String = args[3..].iter().map(|n| format!("{n}={}\n", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p))).collect();
+            out(&lines, 0)
+        })
+    }
+
+    const ALL_PATHS: &[(&str, &str)] = &[
+        ("zpool", "/sbin/zpool"), ("zfs", "/sbin/zfs"), ("getfacl", "/bin/getfacl"), ("setfacl", "/bin/setfacl"), ("geom", "/sbin/geom"),
+        ("bectl", "/sbin/bectl"), ("service", "/usr/sbin/service"), ("smbpasswd", "/usr/local/bin/smbpasswd"), ("smbstatus", "/usr/local/bin/smbstatus"),
+        ("cat", "/bin/cat"), ("tee", "/usr/bin/tee"), ("restic", "/usr/local/bin/restic"),
+    ];
+
+    #[test]
+    fn print_sudoers_asks_the_host_once_for_exactly_the_selected_commands() {
+        let runner = host_with(ALL_PATHS);
+        let features = select(&[], &[]).unwrap();
+        let text = print_sudoers(&runner, "fbsd16", "fbsd@172.16.10.60", &features, "2026-10-09").unwrap();
+        assert_eq!(runner.count(), 1);
+        let call = runner.calls.lock().unwrap()[0].clone();
+        assert!(call.ends_with("sh zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee"), "{call}");
+        assert!(text.contains("fbsd ALL=(root) NOPASSWD: \\\n    /sbin/zpool"), "{text}");
+        assert!(!text.contains("restic"), "{text}");
+    }
+
+    #[test]
+    fn with_restic_the_host_is_asked_for_restic_too() {
+        let runner = host_with(ALL_PATHS);
+        let features = select(&["restic".to_string()], &[]).unwrap();
+        let text = print_sudoers(&runner, "fbsd16", "fbsd@h", &features, "d").unwrap();
+        assert!(runner.calls.lock().unwrap()[0].ends_with("tee restic"));
+        assert!(text.contains("/usr/local/bin/restic"), "{text}");
+    }
+
+    #[test]
+    fn an_alias_target_is_refused_before_any_ssh_call() {
+        let runner = host_with(ALL_PATHS);
+        let err = print_sudoers(&runner, "fb16", "fb16", &select(&[], &[]).unwrap(), "d").unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(runner.count(), 0, "no line may be produced and nothing may be asked of the host");
+    }
+
+    #[test]
+    fn a_user_writable_resolution_is_refused_and_no_line_is_printed() {
+        let runner = host_with(&[("zpool", "/home/fbsd/bin/zpool")]);
+        let err = print_sudoers(&runner, "h", "fbsd@h", &[Feature::Core], "d").unwrap_err();
+        assert!(err.message().contains("/home/fbsd/bin/zpool"), "{}", err.message());
+    }
+
+    #[test]
+    fn a_missing_command_stops_the_run_with_exit_1() {
+        let runner = host_with(&[("zpool", "/sbin/zpool")]);
+        let err = print_sudoers(&runner, "h", "fbsd@h", &[Feature::Core], "d").unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert!(err.message().contains("zfs"), "{}", err.message());
+    }
+
+    #[test]
+    fn an_unreachable_host_is_exit_2() {
+        let runner = Scripted::new(|_, _| CommandOutput { stdout: String::new(), stderr: "ssh: connect to host h port 22: Operation timed out".to_string(), status: 255 });
+        let err = print_sudoers(&runner, "h", "fbsd@h", &[Feature::Core], "d").unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("timed out"), "{}", err.message());
+    }
+
+    #[test]
+    fn selecting_no_privileged_commands_is_a_problem_not_an_empty_line() {
+        let runner = host_with(ALL_PATHS);
+        let err = print_sudoers(&runner, "h", "fbsd@h", &[], "d").unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(runner.count(), 0);
+    }
+
 }
