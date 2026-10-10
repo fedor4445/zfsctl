@@ -18,7 +18,7 @@ pub struct Notice {
     pub message: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotifyError {
     Spawn(String),
     TimedOut,
@@ -35,35 +35,49 @@ impl std::fmt::Display for NotifyError {
     }
 }
 
-/// Runs `command` with the notice in its environment and waits up to `timeout`.
-/// Its output goes to the daemon's own stdout/stderr, which the rc script
-/// sends to the log. A command that outlives the timeout is killed.
-pub fn run(command: &str, notice: &Notice, timeout: Duration) -> Result<(), NotifyError> {
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .env("ZFSCTL_JOB", &notice.job)
-        .env("ZFSCTL_HOST", &notice.host)
-        .env("ZFSCTL_KIND", &notice.kind)
-        .env("ZFSCTL_RESULT", &notice.result)
-        .env("ZFSCTL_MESSAGE", &notice.message)
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(|e| NotifyError::Spawn(e.to_string()))?;
+/// Runs `command` through `sh -c` with `env` added and `stdin` on its standard input, waiting up to `timeout`.
+/// Output goes to the daemon's own stdout/stderr, which the rc script sends to the log. A command that
+/// outlives the timeout is killed. The command sees the package directories on `PATH` and the account's home.
+pub fn run_command(command: &str, env: &[(&str, &str)], stdin: &str, timeout: Duration) -> Result<(), NotifyError> {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(command).stdin(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    crate::exec::local::prepare_child(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| NotifyError::Spawn(e.to_string()))?;
+    // Feed stdin on its own thread: a command that never reads it must not block us, nor a full pipe.
+    let feeder = child.stdin.take().map(|mut pipe| {
+        let text = stdin.to_string();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = pipe.write_all(text.as_bytes());
+        })
+    });
     let started = Instant::now();
-    loop {
+    let result = loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => return Err(NotifyError::Exit(status.code().unwrap_or(-1))),
+            Ok(Some(status)) if status.success() => break Ok(()),
+            Ok(Some(status)) => break Err(NotifyError::Exit(status.code().unwrap_or(-1))),
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(NotifyError::TimedOut);
+                break Err(NotifyError::TimedOut);
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(NotifyError::Spawn(e.to_string())),
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => break Err(NotifyError::Spawn(e.to_string())),
         }
+    };
+    if let Some(feeder) = feeder {
+        let _ = feeder.join();
     }
+    result
+}
+
+/// Runs `command` with the job notice in its environment (and nothing on stdin).
+pub fn run(command: &str, notice: &Notice, timeout: Duration) -> Result<(), NotifyError> {
+    let env = [("ZFSCTL_JOB", notice.job.as_str()), ("ZFSCTL_HOST", notice.host.as_str()), ("ZFSCTL_KIND", notice.kind.as_str()), ("ZFSCTL_RESULT", notice.result.as_str()), ("ZFSCTL_MESSAGE", notice.message.as_str())];
+    run_command(command, &env, "", timeout)
 }
 
 #[cfg(test)]

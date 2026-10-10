@@ -7,6 +7,7 @@ pub mod history;
 pub mod notify;
 pub mod scheduler;
 pub mod cancel;
+pub mod deliver;
 pub mod progress;
 pub mod replicate;
 pub mod replicate_file;
