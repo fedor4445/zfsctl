@@ -1,0 +1,24 @@
+┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — ? ('r' refresh, Ente┐
+│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
+│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Disks                 ││                                                 ││                                 │
+│Shares                ││                                                 ││                                 │
+│Boot Envs             ││                                                 ││                                 │
+│Jobs                  ││                                                 ││                                 │
+│Alerts               ┌Create Pool─────────────────────────────────────────────────────┐                     │
+│                     │> Name:                                                         │                     │
+│                     │  Vdev spec (e.g. mirror da0 da1):                              │─────────────────────┘
+│                     │                                                                │─────────────────────┐
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  Esc Cancel

@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for p┐┌Properties — tpool ('r' refresh, Enter to edit,┐
+│Hosts                 ││Name             Health       Used ││Property         Value               Source    │
+│Pools                 ││scratch          ● ONLINE     42%  ││size             20937965568         -         │
+│Datasets              ││tpool            ● ONLINE     41%  ││capacity         41                  -         │
+│Snapshots             ││zroot            ● ONLINE     24%  ││altroot          -                   default   │
+│Disks                 ││                                   ││health           ONLINE              -         │
+│Shares                ││                                   ││guid             5954732628176323138 -         │
+│Boot Envs             ││                                   ││version          -                   default   │
+│Jobs                  ││                                   ││bootfs           -                   default   │
+│Alerts                ││                                   ││delegation       on                  default   │
+│                      ││                                   ││autoreplace      on                  local     │
+│                      ││                                   ││cachefile        -                   default   │
+│                      ││                                   ││failmode         wait                default   │
+│                      ││                                   ││listsnapshots    on                  local     │
+│                      │└───────────────────────────────────┘└───────────────────────────────────────────────┘
+│                      │┌Metrics — tpool─────────────────────────────────────────────────────────────────────┐
+│                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Health  ● ONLINE               │
+│                      ││0 ops  lat -               0 ops  lat -              Used    41%  8.1G / 19.5G      │
+│                      ││                                                     Vdevs      1  (1 raidz2)       │
+│                      ││                                                     Disks      4  (4 data)         │
+│                      ││                                                     Datasets   1 filesystem        │
+│                      ││                                                     Snapshots  2                   │
+│                      ││                                                     Compress   on 1.00x   Trim off │
+│                      ││                                                     Frag    2%   Dedup 1.00x       │
+│                      ││                                                     Errors  R0 W0 C0               │
+│                      ││                                                     Scrub   Sep 26 13:15:14 2026   │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
