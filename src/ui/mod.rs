@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod hints;
 pub mod jobs;
 pub mod layout;
