@@ -319,6 +319,7 @@ fn scan_text(scan: Option<&ScanSummary>) -> (String, bool) {
         Some(ScanSummary::Running { percent: Some(p) }) => (format!("running {p}%"), false),
         Some(ScanSummary::Running { percent: None }) => ("running".to_string(), false),
         Some(ScanSummary::Canceled) => ("canceled".to_string(), false),
+        Some(ScanSummary::Paused) => ("paused".to_string(), false),
         Some(ScanSummary::Finished { when, errors: 0 }) => (short_time(when), false),
         Some(ScanSummary::Finished { when, errors }) => (format!("{}, found {errors} errors", short_time(when)), true),
     }
