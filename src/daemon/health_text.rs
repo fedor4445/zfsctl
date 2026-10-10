@@ -222,7 +222,7 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
     let job_of = |id: &str| jobs.iter().find(|j| j.id == id);
     let mut kinds: Vec<(String, usize, usize)> = Vec::new();
     for r in &finished {
-        let kind = job_of(&r.job_id).map_or("?".to_string(), |j| j.kind.clone());
+        let kind = job_of(&r.job_id).map_or("removed jobs".to_string(), |j| j.kind.clone());
         let failed = usize::from(r.result == Some(RunResult::Failed));
         match kinds.iter_mut().find(|(k, _, _)| *k == kind) {
             Some((_, n, f)) => {
@@ -242,8 +242,9 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
         .iter()
         .filter(|r| r.result == Some(RunResult::Failed))
         .map(|r| {
-            let host = job_of(&r.job_id).map_or("?", |j| j.host.as_str());
-            format!("  failed: {} on {host} at {}: {}", r.job_id, r.finished_at.unwrap_or(r.started_at).format("%H:%M"), r.message)
+            // A job that has since been removed from jobs.toml no longer says which host it ran on.
+            let host = job_of(&r.job_id).map_or(String::new(), |j| format!(" on {}", j.host));
+            format!("  failed: {}{host} at {}: {}", r.job_id, r.finished_at.unwrap_or(r.started_at).format("%H:%M"), r.message)
         })
         .collect();
     for line in cut_list(failed) {
@@ -367,6 +368,14 @@ mod tests {
             assert!(m.body.contains(want), "{want:?} in\n{}", m.body);
         }
         assert!(!m.body.contains("too old") && !m.body.contains("t1 alert"), "outside the window:\n{}", m.body);
+    }
+
+    #[test]
+    fn runs_of_a_removed_job_are_still_counted_and_listed_without_a_question_mark() {
+        let runs = vec![run("gone", Some(RunResult::Failed), "boom", t(10))];
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &[], &[]);
+        assert!(m.body.contains("removed jobs: 1 run, 1 failed") && m.body.contains("failed: gone at 00:10: boom"), "{}", m.body);
+        assert!(!m.body.contains('?'), "{}", m.body);
     }
 
     #[test]
