@@ -204,9 +204,10 @@ fn pool_info_lines(facts: &PoolFacts, contents: Option<&PoolContents>, failed: b
         Some(l) if l.vdevs > 0 || l.disks > 0 => (format!("{}  ({})", l.vdevs, breakdown(&l.kinds)), format!("{}  ({})", l.disks, breakdown(&l.classes))),
         _ => ("-".to_string(), "-".to_string()),
     };
+    let plural = |n: usize, one: &str| if n == 1 { format!("{n} {one}") } else { format!("{n} {one}s") };
     let datasets = counted(&|c| match c.volumes {
-        0 => format!("{} filesystems", c.filesystems),
-        v => format!("{} filesystems, {v} volumes", c.filesystems),
+        0 => plural(c.filesystems, "filesystem"),
+        v => format!("{}, {}", plural(c.filesystems, "filesystem"), plural(v, "volume")),
     });
     let snapshots = counted(&|c| c.snapshots.to_string());
     let compression = counted(&|c| match (&c.compression, c.compress_ratio) {
@@ -673,7 +674,7 @@ fn draw_body(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, ar
     let mut pool = pool_lines(health, facts, theme);
     if matches!(view.target, Some(MetricsTarget::Pool(_))) {
         let (scrub, bad) = scan_text(facts.scrub.as_ref());
-        pool.push(Line::from(Span::styled(format!("Scrub    {scrub}"), if bad { theme.err } else { Style::default() })));
+        pool.push(Line::from(Span::styled(format!("Scrub   {scrub}"), if bad { theme.err } else { Style::default() })));
         let right = pool_info_lines(facts, view.contents.as_ref(), view.contents_failed);
         draw_graphs_and_text(f, view, last, pool, right, theme, area);
         return;

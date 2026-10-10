@@ -1578,7 +1578,16 @@ mod tests {
         let mut short = pools_app_with_info(Some(Ok(crate::zfs::pool_info::PoolContents { snapshots: 482, ..Default::default() })));
         let text = render(&mut short, 100, 24).join("\n");
         assert!(text.contains("Snapshots  482") && text.contains("more lines"), "{text}");
-        assert!(!text.contains("Scrub    "), "{text}");
+        assert!(!text.contains("Scrub   "), "{text}");
+    }
+
+    #[test]
+    fn one_filesystem_and_one_volume_are_not_pluralised() {
+        use crate::zfs::pool_info::PoolContents;
+        let mut app = pools_app_with_info(Some(Ok(PoolContents { filesystems: 1, volumes: 1, snapshots: 0, ..Default::default() })));
+        let text = render(&mut app, 170, 40).join("\n");
+        assert!(text.contains("1 filesystem, 1 volume") && !text.contains("1 filesystems"), "{text}");
+        assert!(text.contains("Snapshots  0"), "an empty count is 0, not a dash:\n{text}");
     }
 
     #[test]

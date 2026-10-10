@@ -143,6 +143,8 @@ The bottom panel of the selected host adds, on top of OS, uptime, load, ZFS vers
 
 ### Pools
 
+The bottom panel of the selected pool shows its Read and Write graphs (braille area graphs, with the peak of what is drawn in the header) beside its health, space, fragmentation, dedup, error counters and last scrub, and a second column of what the pool is made of and holds: **Vdevs** (the top-level data, special, dedup and log vdevs, by kind: `2 mirror, 1 raidz1`, a single disk counting as `disk`), **Disks** (every physical disk, by class: `data`, `log`, `cache`, `spare`, `special`, `dedup`), **Datasets** (`12 filesystems, 3 volumes`), **Snapshots** (only the count, never the list), and the root dataset's compression and the pool's `autotrim`. The vdev and disk numbers come from the `zpool status` the panel already reads. Datasets and snapshots are counted with one extra `zfs list` that asks only for the type column, and it runs when you select a pool and then at most every 30 seconds (a pool with tens of thousands of snapshots can take a few seconds to count), so the counts show `…` until the first one arrives and `-` if counting failed. On a narrow terminal the two columns become one, health and space first, then these counts, with a `+N more lines` note when the rest does not fit.
+
 - `Enter` on a selected pool: drill into its vdev/disk tree
 - `Right`: move focus to the properties pane on the right (fetches the selected pool's `zpool` properties)
 - `Left` (while the properties pane is focused): move focus back to the pool list
