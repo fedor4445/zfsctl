@@ -23,14 +23,39 @@ fn main() {
 enum Command {
     Tui,
     Daemon { state_dir: PathBuf },
+    PrintSudoers { host: String, with: Vec<String>, without: Vec<String> },
+    CheckHost { host: String, with: Vec<String>, without: Vec<String> },
+}
+
+const USAGE: &str = "usage: zfsctl [daemon [--state-dir DIR] | print-sudoers HOST [--with FEATURE] [--without FEATURE] | check-host HOST [--with FEATURE] [--without FEATURE]]";
+
+/// `HOST [--with F]... [--without F]...` for the two admin commands.
+fn parse_host_flags(rest: &[String]) -> Option<(String, Vec<String>, Vec<String>)> {
+    let (host, flags) = rest.split_first()?;
+    if host.starts_with('-') {
+        return None;
+    }
+    let (mut with, mut without) = (Vec::new(), Vec::new());
+    let mut it = flags.iter();
+    while let Some(flag) = it.next() {
+        let value = it.next()?.clone();
+        match flag.as_str() {
+            "--with" => with.push(value),
+            "--without" => without.push(value),
+            _ => return None,
+        }
+    }
+    Some((host.clone(), with, without))
 }
 
 fn parse_args(args: &[String]) -> error::Result<Command> {
-    let usage = || error::AppError::Config("usage: zfsctl [daemon [--state-dir DIR]]".to_string());
+    let usage = || error::AppError::Config(USAGE.to_string());
     match args {
         [] => Ok(Command::Tui),
         [cmd] if cmd == "daemon" => Ok(Command::Daemon { state_dir: PathBuf::from(daemon::engine::DEFAULT_STATE_DIR) }),
         [cmd, flag, dir] if cmd == "daemon" && flag == "--state-dir" => Ok(Command::Daemon { state_dir: PathBuf::from(dir) }),
+        [cmd, rest @ ..] if cmd == "print-sudoers" => parse_host_flags(rest).map(|(host, with, without)| Command::PrintSudoers { host, with, without }).ok_or_else(usage),
+        [cmd, rest @ ..] if cmd == "check-host" => parse_host_flags(rest).map(|(host, with, without)| Command::CheckHost { host, with, without }).ok_or_else(usage),
         _ => Err(usage()),
     }
 }
@@ -47,6 +72,14 @@ fn run() -> error::Result<()> {
         }
         return daemon::run(&config_path, daemon::engine::Paths::new(state_dir), &stop);
     }
+    if matches!(command, Command::PrintSudoers { .. } | Command::CheckHost { .. }) {
+        let config = config::Config::load(&config_path)?;
+        let code = admin(&command, &config)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     let config = config::Config::load(&config_path)?;
     let inventory = hosts::HostInventory::from_config(&config);
     // Resolved before the terminal enters raw mode, so a bad `theme`
@@ -54,6 +87,41 @@ fn run() -> error::Result<()> {
     let resolved = ui::theme::resolve(config.ui.theme.as_deref(), &ui::theme::ThemeEnv::from_process())?;
     ui::theme::apply_color_policy();
     ui::run_app(inventory, &config_path, resolved, config.ui.auto_refresh_interval())
+}
+
+/// `print-sudoers` / `check-host`: read-only, over the host's normal unprivileged ssh path. Returns the exit code.
+fn admin(command: &Command, config: &config::Config) -> error::Result<i32> {
+    let (host, with, without, check) = match command {
+        Command::PrintSudoers { host, with, without } => (host, with, without, false),
+        Command::CheckHost { host, with, without } => (host, with, without, true),
+        _ => unreachable!("admin() is only called for the two admin commands"),
+    };
+    let features = exec::privilege::select(with, without)?;
+    let inventory = hosts::HostInventory::from_config(config);
+    let Some(found) = inventory.get(host) else {
+        let names: Vec<&str> = inventory.hosts.iter().map(|h| h.name.as_str()).collect();
+        return Err(error::AppError::Config(format!("unknown host '{host}'; configured hosts: {}", names.join(", "))));
+    };
+    let Some(target) = found.ssh_target.as_deref() else {
+        println!("{host} is the hub: zfsctl runs as root here, so there is nothing to configure.");
+        return Ok(0);
+    };
+    let result = if check {
+        exec::sudoers::check_host(found.runner.as_ref(), host, &features).map(|report| (report.render(), report.exit_code()))
+    } else {
+        let generated = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        exec::sudoers::print_sudoers(found.runner.as_ref(), host, target, &features, &generated).map(|text| (text, 0))
+    };
+    match result {
+        Ok((text, code)) => {
+            print!("{text}");
+            Ok(code)
+        }
+        Err(failure) => {
+            eprintln!("error: {}", failure.message());
+            Ok(failure.exit_code())
+        }
+    }
 }
 
 fn check_root() -> error::Result<()> {
@@ -97,4 +165,24 @@ mod tests {
             assert!(matches!(result, Err(error::AppError::Config(_))));
         }
     }
+    #[test]
+    fn print_sudoers_and_check_host_take_a_host_and_repeatable_flags() {
+        assert_eq!(
+            parse_args(&args(&["print-sudoers", "fbsd16"])).unwrap(),
+            Command::PrintSudoers { host: "fbsd16".to_string(), with: vec![], without: vec![] }
+        );
+        assert_eq!(
+            parse_args(&args(&["check-host", "fbsd16", "--with", "restic", "--without", "samba", "--without", "acl"])).unwrap(),
+            Command::CheckHost { host: "fbsd16".to_string(), with: vec!["restic".to_string()], without: vec!["samba".to_string(), "acl".to_string()] }
+        );
+    }
+
+    #[test]
+    fn the_admin_commands_reject_a_missing_host_a_dangling_flag_and_unknown_flags() {
+        for bad in [&["print-sudoers"][..], &["check-host"], &["print-sudoers", "h", "--with"], &["print-sudoers", "h", "--wat", "x"], &["print-sudoers", "h", "extra"], &["check-host", "--with", "restic"]] {
+            let err = parse_args(&args(bad)).unwrap_err().to_string();
+            assert!(err.contains("usage"), "{bad:?}: {err}");
+        }
+    }
+
 }

@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn run_checked_returns_output_on_success() {
         let runner = FakeRunner::new("hello\n");
-        let output = run_checked(&runner, "echo", &["hello"], "echo hello").unwrap();
+        let output = run_checked(&runner, "zpool", &["list"], "zpool list").unwrap();
         assert_eq!(output.stdout, "hello\n");
     }
 
