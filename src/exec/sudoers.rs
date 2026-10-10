@@ -50,7 +50,9 @@ pub const RESOLVE_SCRIPT: &str = r#"PATH="$PATH:/sbin:/usr/sbin:/usr/local/sbin:
 /// The account zfsctl connects as: the part of `ssh_target` before `@`. An alias with no user part is refused:
 /// the sudoers line would have to guess whose account it is for.
 pub fn user_of(ssh_target: &str) -> Result<&str, Failure> {
-    let ok = |user: &str| !user.is_empty() && !user.starts_with('-') && user.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    // `ALL` and any name of only capitals, digits and underscores is an alias to sudoers, not an account.
+    let alias_like = |user: &str| user.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') && user.chars().any(|c| c.is_ascii_uppercase());
+    let ok = |user: &str| !user.is_empty() && !user.starts_with('-') && !alias_like(user) && user.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     match ssh_target.split_once('@') {
         Some((user, _)) if ok(user) => Ok(user),
         _ => Err(problem(format!("ssh_target '{ssh_target}' needs a plain user@host form (letters, digits, . _ -), so the sudoers line knows which account it is for"))),
@@ -99,6 +101,9 @@ pub fn sudoers_items(resolved: &[Resolved]) -> Vec<String> {
 }
 
 pub fn render(host: &str, user: &str, features: &[Feature], resolved: &[Resolved], generated: &str) -> String {
+    // The host name is the user's own config text: control characters would start a new line, which in a
+    // sudoers file is a new rule.
+    let host: String = host.chars().map(|c| if c.is_control() { '?' } else { c }).collect();
     let mut text = format!("# zfsctl sudoers entry for host {host}, generated {generated}\n");
     let _ = writeln!(text, "# features: {}", features.iter().map(|f| f.name()).collect::<Vec<_>>().join(", "));
     let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "restic")).collect();
@@ -192,6 +197,8 @@ impl Report {
 
 struct Asked {
     allowed: bool,
+    /// The first line sudo printed to stderr when it refused (empty when it said nothing).
+    refusal: String,
     /// The path sudo says it would run (the first word of `sudo -l`'s answer), empty when refused.
     printed: String,
 }
@@ -207,7 +214,8 @@ fn sudo_ask(runner: &dyn CommandRunner, host: &str, name: &str, args: &[&str]) -
         return Err(unreachable(host, out.stderr.trim()));
     }
     let printed = if out.success() { out.stdout.split_whitespace().next().unwrap_or("").to_string() } else { String::new() };
-    Ok(Asked { allowed: out.success(), printed })
+    let refusal = if out.success() { String::new() } else { out.stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string() };
+    Ok(Asked { allowed: out.success(), refusal, printed })
 }
 
 /// How many of the account's sudo rules would ask for a password, counted from `sudo -ll`: an entry without
@@ -217,6 +225,13 @@ pub fn password_rules(listing: &str) -> usize {
     listing.split("Sudoers entry:").skip(1).filter(|block| !block.lines().any(|l| l.trim_start().starts_with("Options:") && l.contains("!authenticate"))).count()
 }
 
+/// `check_host` for a configured host: the account in `ssh_target` is vetted first, exactly as `print_sudoers`
+/// does, so both commands agree on which targets they will work with.
+pub fn check_host_target(runner: &dyn CommandRunner, host: &str, ssh_target: &str, features: &[Feature]) -> Result<Report, Failure> {
+    user_of(ssh_target)?;
+    check_host(runner, host, features)
+}
+
 pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) -> Result<Report, Failure> {
     let entries = privilege::privileged_for(features);
     if entries.is_empty() {
@@ -224,6 +239,7 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) 
     }
     let resolved = resolve(runner, host, &entries)?;
     let mut lines = Vec::new();
+    let mut first_refusal = String::new();
     for r in &resolved {
         // Each pinned form, with the extra arguments sudo must refuse after it: a different argument in its
         // place, and one appended (a wildcard such as `smb4.conf*` refuses the first and allows the second).
@@ -236,6 +252,9 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) 
         for (args, probes) in forms {
             let mut detail = if args.is_empty() { r.path.clone() } else { format!("{} {}", r.path, args.join(" ")) };
             let asked = sudo_ask(runner, host, r.entry.name, args)?;
+            if first_refusal.is_empty() {
+                first_refusal.clone_from(&asked.refusal);
+            }
             let status = if !asked.allowed {
                 Status::Missing
             } else if asked.printed != r.path {
@@ -255,6 +274,9 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) 
         }
     }
     let mut notes = Vec::new();
+    if !first_refusal.is_empty() && lines.iter().all(|l| l.status == Status::Missing) {
+        notes.push(format!("sudo said: {first_refusal}"));
+    }
     // Last, so a host that drops mid-run fails on the checks first. A failure to list is no verdict.
     if let Ok(out) = runner.run_unprivileged("sudo", &["-n", "-ll"]) {
         if out.success() {
@@ -285,6 +307,52 @@ mod tests {
     fn the_user_is_the_part_before_the_at_sign() {
         assert_eq!(user_of("fbsd@172.16.10.60"), Ok("fbsd"));
         assert_eq!(user_of("zfs.admin_1@host"), Ok("zfs.admin_1"));
+    }
+
+    #[test]
+    fn a_user_name_sudoers_would_read_as_an_alias_is_refused() {
+        // `ALL` is every user; an all-uppercase name is a User_Alias. Neither names an account.
+        for bad in ["ALL@h", "FBSD@h", "A_1@h", "X9@h"] {
+            assert_eq!(user_of(bad).unwrap_err().exit_code(), 1, "{bad:?}");
+        }
+        assert_eq!(user_of("Fbsd@h"), Ok("Fbsd"));
+        assert_eq!(user_of("a1@h"), Ok("a1"));
+    }
+
+    #[test]
+    fn control_characters_in_a_host_name_cannot_start_a_new_line_in_the_output() {
+        let features = select(&[], &[]).unwrap();
+        let resolved = parse_resolution("h", DEFAULT_LINES, &privilege::privileged_for(&features)).unwrap();
+        let text = render("evil\n%root ALL=(ALL) NOPASSWD: ALL\r", "fbsd", &features, &resolved, "2026-10-10");
+        assert!(text.lines().all(|l| l.starts_with('#') || l.starts_with("fbsd ") || l.starts_with("    ")), "{text}");
+        assert!(text.contains("evil?%root"), "{text}");
+    }
+
+    #[test]
+    fn check_host_vets_the_user_like_print_sudoers_and_asks_nothing_when_it_is_refused() {
+        let runner = sudo_host(EXACT, ALL_PATHS);
+        let err = check_host_target(&runner, "h", "ALL@h", &select(&[], &[]).unwrap()).unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(runner.count(), 0);
+        assert!(check_host_target(&runner, "h", "fbsd@h", &select(&[], &[]).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn when_sudo_refuses_everything_its_own_message_is_shown() {
+        let runner = Scripted::new(|cmd, args| match cmd {
+            "sh" => {
+                let lines = args[3..].iter().fold(String::new(), |mut acc, n| {
+                    let _ = writeln!(acc, "{n}=/sbin/{n}");
+                    acc
+                });
+                out(&lines, 0)
+            }
+            _ => CommandOutput { stdout: String::new(), stderr: "sudo: a password is required\n".to_string(), status: 1 },
+        });
+        let report = check_host(&runner, "h", &[Feature::Core]).unwrap();
+        assert!(report.lines.iter().all(|l| l.status == Status::Missing));
+        assert!(report.render().contains("sudo said: sudo: a password is required"), "{}", report.render());
+        assert_eq!(report.exit_code(), 1);
     }
 
     #[test]

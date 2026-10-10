@@ -86,24 +86,24 @@ fn shell_quote(s: &str) -> String {
 
 impl CommandRunner for SshRunner {
     fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
-        super::privilege::require_registered(cmd)?;
+        super::privilege::require_registered(cmd, true)?;
         Self::run_ssh(&self.build_args(cmd, args))
     }
 
     fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
-        super::privilege::require_registered(cmd)?;
+        super::privilege::require_registered(cmd, false)?;
         Self::run_ssh(&self.build_args_unprivileged(cmd, args))
     }
 
     fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
-        super::privilege::require_registered(cmd)?;
+        super::privilege::require_registered(cmd, true)?;
         let mut command = Command::new("ssh");
         command.args(self.build_args(cmd, args));
         super::run_command_with_stdin(command, "ssh", stdin)
     }
 
     fn command(&self, cmd: &str, args: &[&str]) -> Result<Command> {
-        super::privilege::require_registered(cmd)?;
+        super::privilege::require_registered(cmd, true)?;
         let mut command = Command::new("ssh");
         command.args(self.build_args(cmd, args));
         Ok(command)
@@ -244,6 +244,16 @@ mod tests {
             assert!(err.contains("rm is not a registered remote command"), "{err}");
         }
         assert!(runner.command("rm", &[]).is_err());
+    }
+
+    #[test]
+    fn a_command_registered_for_the_other_way_of_running_is_refused_too() {
+        let runner = SshRunner::new("host");
+        for result in [runner.run("uname", &["-sr"]), runner.run_with_stdin("uname", &[], "x")] {
+            assert!(result.unwrap_err().to_string().contains("registered as unprivileged"));
+        }
+        assert!(runner.command("uname", &[]).is_err());
+        assert!(runner.run_unprivileged("zfs", &["list"]).unwrap_err().to_string().contains("registered as privileged"));
     }
 
 }

@@ -89,11 +89,21 @@ pub fn is_registered(name: &str) -> bool {
     lookup(name).is_some()
 }
 
+/// Whether `name` is registered for the way it is about to run: through `sudo` (`privileged`) or without.
+/// A command registered only as unprivileged would run under `sudo` with no sudoers entry, and the other way
+/// round it would go out without sudo although the entry says it needs it.
+pub fn is_registered_as(name: &str, privileged: bool) -> bool {
+    lookup(name).is_some_and(|e| matches!(e.kind, Kind::Privileged { .. }) == privileged)
+}
+
 /// What `SshRunner` calls before it sends anything: a command nobody registered would have no sudoers
 /// entry generated for it, so it is refused here instead of failing later on a real host.
-pub fn require_registered(name: &str) -> Result<()> {
-    if is_registered(name) {
+pub fn require_registered(name: &str, privileged: bool) -> Result<()> {
+    if is_registered_as(name, privileged) {
         Ok(())
+    } else if is_registered(name) {
+        let (is, run) = if privileged { ("unprivileged", "through sudo") } else { ("privileged", "without sudo") };
+        Err(AppError::Config(format!("{name} is registered as {is} but is being run {run} (fix the call or its exec::privilege::ENTRIES kind)")))
     } else {
         Err(AppError::Config(format!("{name} is not a registered remote command (add it to exec::privilege::ENTRIES)")))
     }
@@ -218,9 +228,18 @@ mod tests {
 
     #[test]
     fn require_registered_accepts_known_commands_and_refuses_others() {
-        assert!(require_registered("zfs").is_ok());
-        let err = require_registered("rm").unwrap_err().to_string();
+        assert!(require_registered("zfs", true).is_ok());
+        assert!(require_registered("uname", false).is_ok());
+        let err = require_registered("rm", true).unwrap_err().to_string();
         assert!(err.contains("rm is not a registered remote command"), "{err}");
+    }
+
+    #[test]
+    fn a_command_must_be_registered_for_the_way_it_runs() {
+        let err = require_registered("uname", true).unwrap_err().to_string();
+        assert!(err.contains("registered as unprivileged") && err.contains("through sudo"), "{err}");
+        let err = require_registered("zfs", false).unwrap_err().to_string();
+        assert!(err.contains("registered as privileged") && err.contains("without sudo"), "{err}");
     }
 
     #[test]
@@ -284,17 +303,42 @@ mod tests {
         }
     }
 
+    /// What a README sudoers section fails to say: each privileged command as `name` or a path ending in `/name`,
+    /// and each pinned form as `name arg...` (so dropping the `smb4.conf` pin from the prose is noticed).
+    fn readme_gaps(section: &str) -> Vec<String> {
+        let mut gaps = Vec::new();
+        for entry in ENTRIES {
+            let Kind::Privileged { pinned, .. } = &entry.kind else { continue };
+            if !section.contains(&format!("`{}`", entry.name)) && !section.contains(&format!("/{}", entry.name)) {
+                gaps.push(format!("{} is not named", entry.name));
+            }
+            for args in *pinned {
+                let form = format!("{} {}", entry.name, args.join(" "));
+                if !section.contains(&form) {
+                    gaps.push(format!("the pinned form '{form}' is missing"));
+                }
+            }
+        }
+        gaps
+    }
+
+    #[test]
+    fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic`";
+        assert_eq!(readme_gaps(full), Vec::<String>::new());
+        assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
+        assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);
+        // A word in prose is not a mention of the command.
+        assert!(readme_gaps(&full.replace("`getfacl`", "getfacl")).contains(&"getfacl is not named".to_string()));
+    }
+
     #[test]
     fn the_readme_names_every_privileged_command() {
         let readme = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
         let start = readme.find("### Remote host setup").expect("the README has a Remote host setup section");
         let section = &readme[start..];
         let section = &section[..section.find("\n## ").unwrap_or(section.len())];
-        for entry in ENTRIES {
-            if matches!(entry.kind, Kind::Privileged { .. }) {
-                assert!(section.contains(&format!("`{}`", entry.name)) || section.contains(&format!(" {} ", entry.name)) || section.contains(&format!("/{}", entry.name)), "the README's sudoers section does not mention {}", entry.name);
-            }
-        }
+        assert_eq!(readme_gaps(section), Vec::<String>::new());
         assert!(section.contains("print-sudoers") && section.contains("check-host"), "the README must point to the generated entry");
     }
 

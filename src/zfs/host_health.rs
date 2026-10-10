@@ -295,9 +295,6 @@ pub fn scan_cell(pools: &[PoolProbe]) -> String {
     let parse = |w: &str| chrono::NaiveDateTime::parse_from_str(&w.split_whitespace().collect::<Vec<_>>().join(" "), "%a %b %d %H:%M:%S %Y").ok();
     let dated: Vec<chrono::NaiveDateTime> = whens.iter().filter_map(|w| parse(w)).collect();
     let first = whens.first().copied().unwrap_or("-").to_string();
-    if dated.len() != whens.len() {
-        return first;
-    }
     dated.iter().min().map_or(first, |d| d.format("%b %-d %Y").to_string())
 }
 
@@ -480,6 +477,7 @@ mod tests {
         assert_eq!(scan_cell(&[pp("a", 1, None)]), "-");
         assert_eq!(scan_cell(&[]), "-");
         assert_eq!(scan_cell(&[pp("a", 1, fin("garbled"))]), "garbled");
+        assert_eq!(scan_cell(&[pp("a", 1, fin("garbled")), pp("b", 1, fin("Sat Sep 26 13:15:14 2026")), pp("c", 1, fin("Thu Oct  8 19:48:07 2026"))]), "Sep 26 2026", "an unreadable date does not hide the oldest readable one");
         assert_eq!(scan_cell(&[pp("a", 1, Some(ScanSummary::Canceled))]), "canceled");
     }
 
