@@ -1,0 +1,18 @@
+[[hosts]]
+name = "fbsd16"
+ssh_target = "fbsd@172.16.10.60"
+
+[[hosts]]
+name = "fbsd16t1"
+ssh_target = "fbsd@172.16.10.61"
+
+[[hosts]]
+name = "fbsd16t2"
+ssh_target = "fbsd@172.16.10.62"
+
+[ui]
+theme = "solarized-dark"
+
+[notify]
+mail_to = "you@example.com"
+mail_command = "msmtp -a default -t"

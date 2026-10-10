@@ -1,0 +1,12 @@
+ok        zpool      /sbin/zpool
+ok        zfs        /sbin/zfs
+ok        getfacl    /bin/getfacl
+ok        setfacl    /bin/setfacl
+ok        geom       /sbin/geom
+ok        bectl      /sbin/bectl
+ok        service    /usr/sbin/service
+ok        smbpasswd  /usr/local/bin/smbpasswd
+ok        smbstatus  /usr/local/bin/smbstatus -S
+ok        cat        /bin/cat /usr/local/etc/smb4.conf
+ok        tee        /usr/bin/tee /usr/local/etc/smb4.conf
+11 ok, 0 missing, 0 too broad

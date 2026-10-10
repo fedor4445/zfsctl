@@ -13,7 +13,8 @@ from pathlib import Path
 SECTIONS = ["Hosts", "Pools", "Datasets", "Snapshots", "Disks", "Shares", "Boot Envs", "Jobs", "Alerts"]
 KEYS = {"<Tab>": "\t", "<S-Tab>": "\x1b[Z", "<Enter>": "\r", "<Esc>": "\x1b", "<Down>": "\x1b[B", "<Up>": "\x1b[A",
         "<Left>": "\x1b[D", "<Right>": "\x1b[C", "<Space>": " ", "<Backspace>": "\x7f"}
-EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
+# An address, but not user@192.0.2.1 (an ssh target with a numeric host is not an email address).
+EMAIL = re.compile(r"[\w.+-]+@(?!\d+\.\d+\.\d+\.\d+)[\w-]+(\.[\w-]+)+")
 
 
 def expand(keys):
