@@ -2535,6 +2535,21 @@ mod tests {
     }
 
     #[test]
+    fn a_long_cpu_model_is_cut_before_it_reaches_the_zfs_column() {
+        let mut app = host_panel_app(());
+        let target = MetricsTarget::Host;
+        let mut host = crate::ui::metrics::tests_support::rich_host();
+        host.cpu.as_mut().unwrap().model = "Intel Xeon E312xx (Sandy Bridge, IBRS update) with a long tail".to_string();
+        app.metrics.apply(&target, Ok(crate::zfs::metrics::TargetSample { pool: crate::zfs::metrics::PoolSample::default(), space: None, host: Some(host), snapshot: None, disk: None, share: None }), std::time::Instant::now());
+        let rows = render(&mut app, 170, 48);
+        let model_row = rows.iter().find(|r| r.contains("Intel Xeon E312xx")).expect("the model line is shown");
+        assert!(model_row.contains('…'), "{model_row}");
+        let status_row = rows.iter().find(|r| r.contains("Status")).unwrap();
+        let at = status_row.find("Status").unwrap();
+        assert!(status_row[..at].ends_with("  "), "the ZFS column keeps a gutter: {status_row}");
+    }
+
+    #[test]
     fn a_short_host_panel_keeps_the_pools_and_the_unhealthy_rows_and_says_how_much_it_hides() {
         for (w, h) in [(80, 24), (100, 30)] {
             let mut app = host_panel_app(());

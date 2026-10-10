@@ -391,6 +391,37 @@ pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
 /// Draws the host panel: the two graphs (20% each) and the text (60%): System and ZFS side by side when the
 /// text is wide enough, stacked otherwise, then one row per pool. Pool rows that do not fit are replaced by a
 /// final "+N more pool rows" line, never clipped silently.
+/// The panel's three areas: the read graph, the write graph and the text, with a gutter between each so a graph
+/// never touches the neighbouring text.
+fn panel_areas(area: Rect) -> [Rect; 3] {
+    Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(20), Constraint::Percentage(20), Constraint::Percentage(60)]).spacing(3).areas(area)
+}
+
+/// `line` cut to `width` columns, ending in an ellipsis when something was dropped, so a long value (a CPU model
+/// name) never runs into the column beside it.
+fn clip_line(line: &Line<'static>, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    if line.width() <= width {
+        return line.clone();
+    }
+    let mut left = width.saturating_sub(1);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for span in &line.spans {
+        let take: String = span.content.chars().take(left).collect();
+        left -= take.chars().count();
+        spans.push(Span::styled(take, span.style));
+        if left == 0 {
+            break;
+        }
+    }
+    spans.push(Span::raw("…"));
+    Line::from(spans)
+}
+
+fn clip_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
+    lines.iter().map(|l| clip_line(l, width)).collect()
+}
+
 fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &HostSummary, stale: bool, theme: &Theme, area: Rect) {
     let mut panel = host_panel(host, theme, stale);
     // Below this width the graphs would leave the text too narrow to read: drop them and keep the rates as a line.
@@ -400,7 +431,7 @@ fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &Host
         panel.system.insert(0, io);
         area
     } else {
-        let [read, write, text] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(20), Constraint::Percentage(20), Constraint::Percentage(60)]).areas(area);
+        let [read, write, text] = panel_areas(area);
         let reads: Vec<u64> = view.io_history.iter().map(|s| s.read_bps).collect();
         let writes: Vec<u64> = view.io_history.iter().map(|s| s.write_bps).collect();
         draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
@@ -412,9 +443,9 @@ fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &Host
     let rows_need = u16::from(!panel.pools.is_empty());
     if text.width >= 72 && text.height >= columns.saturating_add(rows_need) {
         // System and ZFS side by side, the pool rows below.
-        let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(Rect { height: columns, ..text });
-        f.render_widget(Paragraph::new(panel.system.clone()), left);
-        f.render_widget(Paragraph::new(panel.zfs.clone()), right);
+        let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(2).areas(Rect { height: columns, ..text });
+        f.render_widget(Paragraph::new(clip_lines(&panel.system, left.width)), left);
+        f.render_widget(Paragraph::new(clip_lines(&panel.zfs, right.width)), right);
         draw_pool_rows(f, &panel.pools, Rect { y: text.y + columns, height: text.height - columns, ..text });
     } else {
         // One column, most important lines first; whatever does not fit is counted, never cut silently.
@@ -424,7 +455,7 @@ fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &Host
             shown.truncate(room - 1);
             shown.push(Line::raw(format!("+{} more lines: enlarge the terminal", panel.single.len() - (room - 1))));
         }
-        f.render_widget(Paragraph::new(shown), text);
+        f.render_widget(Paragraph::new(clip_lines(&shown, text.width)), text);
     }
 }
 
@@ -595,6 +626,29 @@ mod tests {
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
         Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None, disk: None, share: None })
+    }
+
+    #[test]
+    fn the_graphs_and_the_text_are_separated_by_a_gutter() {
+        for width in [90, 120, 170, 240] {
+            let [read, write, text] = panel_areas(Rect { x: 0, y: 0, width, height: 10 });
+            assert!(write.x >= read.x + read.width + 2, "{width}: read and write graphs touch");
+            assert!(text.x >= write.x + write.width + 2, "{width}: the write graph touches the text");
+        }
+    }
+
+    #[test]
+    fn a_long_line_is_cut_with_an_ellipsis_and_keeps_its_styles() {
+        let theme = Theme::ansi();
+        let line = Line::from(vec![Span::raw("CPU     "), Span::styled("Intel Xeon E312xx (Sandy Bridge, IBRS update)", theme.warn)]);
+        let cut = clip_line(&line, 20);
+        assert_eq!(cut.width(), 20);
+        assert!(cut.to_string().ends_with('…') && cut.to_string().starts_with("CPU     Intel Xeon"), "{cut}");
+        assert_eq!(cut.spans[1].style, theme.warn);
+        let short = Line::raw("short");
+        assert_eq!(clip_line(&short, 20), short);
+        assert_eq!(clip_line(&line, 3).width(), 3);
+        assert!(clip_line(&line, 0).width() <= 1, "a zero-width column never panics");
     }
 
     #[test]

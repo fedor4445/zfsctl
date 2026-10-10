@@ -65,7 +65,7 @@ The Type word has its own colour, distinct from the health colours: `metal` in t
 
 ## Live results (2026-10-10)
 
-- On the hub (a bhyve guest) with fbsd16, t1 and t2 (bhyve guests): Type read `vm` for all four; Used, Pools and Scrub matched `zpool list` / `zpool status` (the hub `Sep 5 2026`, the others `never`); Jobs `-` (no jobs configured there); Rtt present.
+- On the hub (a KVM guest) with fbsd16, t1 and t2 (KVM guests): Type read `vm` for all four (`kern.vm_guest` = `kvm`); Used, Pools and Scrub matched `zpool list` / `zpool status` (the hub `Sep 5 2026`, the others `never`); Jobs `-` (no jobs configured there); Rtt present.
 - A temporary `tag = "test"` on fbsd16 showed in the Tag column and `/test` narrowed to that host (the config was restored afterwards). `/t1` narrowed to t1, Esc restored all four, `/fbsd16` gave 3/4 and Down moved within them, `/zzz` + Enter stayed open with "no host matches" and the title `0/4`.
 - At 110x40 and 80x24 Name and State stay (Address drops on the 80-column pane, as it did before this change), then Type, Tag, Used and Pools appear as room allows.
 - Not tested live: `metal` and `jail` (no bare-metal host or jail on the test boxes; the parsing is unit-tested), a Jobs cell with real jobs (unit-tested).
