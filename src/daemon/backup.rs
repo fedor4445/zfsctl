@@ -238,12 +238,11 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
             let policy = job.retention.as_deref().and_then(|t| restic::parse_retention(t).ok()).filter(|r| !r.is_empty());
             if let Some(policy) = policy {
                 let forget_args = restic::forget_args(&repo, &password_file, &machine, &job.id, &policy);
-                let mut forgot = run_retention(env, runner, &repo, &forget_args);
-                // A cancelled or killed run leaves a stale repository lock that blocks `forget --prune`.
-                // `restic unlock` removes only stale locks, so clear them once and retry once.
-                if matches!(&forgot, Forgot::Failed(e) if e.contains("already locked")) && restic_query(runner, &repo, &restic::unlock_args(&repo, &password_file)).is_ok() {
-                    forgot = run_retention(env, runner, &repo, &forget_args);
-                }
+                // A cancelled or killed run leaves a stale repository lock, and `forget --prune` would wait out its
+                // whole `--retry-lock` for it. `restic unlock` removes only stale locks (never a live one), so clear
+                // them first; a failure here is ignored and surfaces, if it matters, as the forget's own error.
+                let _ = restic_query(runner, &repo, &restic::unlock_args(&repo, &password_file));
+                let forgot = run_retention(env, runner, &repo, &forget_args);
                 match forgot {
                     Forgot::Done => {}
                     Forgot::Cancelled => {
@@ -685,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_lock_left_by_an_earlier_cancelled_run_is_cleared_once_and_forget_is_retried() {
+    fn a_stale_lock_left_by_an_earlier_cancelled_run_is_cleared_before_forget_runs_once() {
         let rig = Rig::new();
         let host = Host::new();
         *host.forget_locked.lock().unwrap() = true;
@@ -695,14 +694,23 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
         let calls = host.calls();
         let forgets: Vec<usize> = calls.iter().enumerate().filter(|(_, c)| c.starts_with("restic forget")).map(|(i, _)| i).collect();
-        let unlock = calls.iter().position(|c| c.starts_with("restic unlock")).expect("unlock ran");
-        assert_eq!(forgets.len(), 2, "{calls:?}");
-        assert!(forgets[0] < unlock && unlock < forgets[1], "{calls:?}");
-        assert_eq!(calls[unlock], "restic unlock --repo=/mnt/usb/restic --password-file=/root/pw", "only stale locks: no --remove-all");
+        let unlocks: Vec<usize> = calls.iter().enumerate().filter(|(_, c)| c.starts_with("restic unlock")).map(|(i, _)| i).collect();
+        assert_eq!((forgets.len(), unlocks.len()), (1, 1), "{calls:?}");
+        assert!(unlocks[0] < forgets[0], "unlock must come first, or forget waits out --retry-lock: {calls:?}");
+        assert_eq!(calls[unlocks[0]], "restic unlock --repo=/mnt/usb/restic --password-file=/root/pw", "only stale locks: no --remove-all");
     }
 
     #[test]
-    fn a_forget_that_fails_for_another_reason_does_not_unlock_anything() {
+    fn a_job_without_retention_never_unlocks() {
+        let rig = Rig::new();
+        let host = Host::new();
+        let (outcome, _) = rig.run(&host, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(!host.called("restic unlock") && !host.called("restic forget"));
+    }
+
+    #[test]
+    fn a_forget_that_fails_for_another_reason_is_reported_and_not_retried() {
         let rig = Rig::new();
         let mut host = Host::new();
         host.forget_fails = true;
@@ -710,11 +718,11 @@ mod tests {
         with_policy.retention = Some("1l".to_string());
         let (outcome, _) = rig.run(&host, &with_policy);
         assert_eq!(outcome.result, RunResult::Failed);
-        assert!(!host.called("restic unlock"));
+        assert_eq!(host.calls().iter().filter(|c| c.starts_with("restic forget")).count(), 1);
     }
 
     #[test]
-    fn a_failing_unlock_is_reported_with_the_original_lock_error() {
+    fn a_failing_unlock_is_ignored_and_the_forgets_own_lock_error_is_reported() {
         let rig = Rig::new();
         let mut host = Host::new();
         *host.forget_locked.lock().unwrap() = true;
