@@ -97,3 +97,12 @@ No new privileged command and no sudoers change. The TUI already runs as root on
 - **Screen/render:** settings with `(default)` markers, the monitor-off line, status lines, the events list (newest first, cut at 15); the hook is read-only; narrow terminals cut with an ellipsis; `e` disabled when the file does not parse.
 - **Keys:** `t` asks first and names the recipient; with nothing configured it says so; the result arrives as a status message; `p` shows the preview in a pop-up; unadvertised keys stay inert (the hint-bar drift guard covers the new section).
 - **Live on the hub** (with the user's agreement before anything is sent): change the check interval from the TUI and see the daemon log `health monitor settings changed`; the hub's real config keeps its comments and its other sections byte for byte (diff against the backup shows only the `[notify]` lines); `t` sends one test message; `p` previews; restore the config afterwards.
+
+## Live results (2026-10-10)
+
+- On the hub (the rc daemon untouched, the TUI run from the build directory): the Alerts screen showed the saved settings with `(default)` marks, `Monitor on (every 5 min, report at 07:00)`, the last report date and the daemon-start event, matching `config.toml` and `/var/db/zfsctl`.
+- `e`, Check every = 3, `y` + Enter: the diff against the backup was exactly one added line (`check_interval_minutes = 3`) with comments and every other section identical; `config.toml.bak` held the previous bytes; the file kept its owner, group and mode (`root wheel 0644`); the daemon logged `health monitor settings changed`; the screen then read `Monitor on (every 3 min, ...)`.
+- `e` then Esc wrote nothing. `p` showed the report preview in a pop-up (all four hosts) and sent nothing.
+- `t` named the recipient (`someone@example.net`) and the command, sent only after `y` + Enter, and reported `Test message sent: the mail command accepted it`.
+- The hub's config was restored byte for byte and the backups removed.
+- Not tested live: saving over a symlinked config or a config owned by another user (unit-tested for the symlink; the chown path needs root and a different owner), and a save while another editor changes the file (the guard has no deterministic test).
