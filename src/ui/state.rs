@@ -4127,6 +4127,12 @@ Jobs
   Space            enable / disable the job
   d                delete the job (y/n; its past runs stay in the history)
 
+Alerts
+  e                edit the alert settings (saved into the [notify] section of config.toml only; y/n to confirm)
+  t                send a test message through the saved settings (a real message; asks first)
+  p                preview the daily report as it would be sent now (sends nothing)
+  Up / Down        scroll the recent events
+
 Press any key to close."
         .to_string()
 }
@@ -8386,6 +8392,14 @@ mod tests {
         app.drain_worker_messages();
         assert!(!app.alerts_preview_busy);
         assert!(matches!(&app.modal, Some(Modal::Info { body, .. }) if body.contains("Subject: x")));
+    }
+
+    #[test]
+    fn help_documents_the_alerts_section_and_its_keys() {
+        let text = help_text();
+        for want in ["Alerts", "edit the alert settings", "test message", "preview"] {
+            assert!(text.contains(want), "missing {want:?}");
+        }
     }
 
     #[test]
