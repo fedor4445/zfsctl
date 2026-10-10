@@ -210,6 +210,10 @@ pub struct App {
     last_jobs_refresh: Option<Instant>,
     /// The address shown for each host (index-aligned with `hosts`); see `address_of`.
     pub host_addresses: Vec<String>,
+    /// The tag of each host (index-aligned with `hosts`; empty = none).
+    pub host_tags: Vec<String>,
+    /// Tags typed in the Add Host form, by lowercase host name, until the host is confirmed reachable.
+    pub new_host_tags: HashMap<String, String>,
     /// The latest health probe of each host, by host name.
     pub host_probes: HashMap<String, HostProbeState>,
     /// When probing started: host `i` is first probed `i` seconds after it.
@@ -357,6 +361,8 @@ impl App {
             shares: Vec::new(),
             shares_table: TableState::default(),
             jobs_view: crate::ui::jobs::JobsView::default(),
+            host_tags: vec![String::new(); hosts_for_addr.len()],
+            new_host_tags: HashMap::new(),
             host_addresses: hosts_for_addr.iter().map(|n| if n == "local" { "local".to_string() } else { "-".to_string() }).collect(),
             host_probes: HashMap::new(),
             probe_epoch: Instant::now(),
@@ -587,6 +593,14 @@ impl App {
     /// there is no runner and no thread. The selection stays on the same job.
     pub fn set_host_addresses(&mut self, addresses: Vec<String>) {
         self.host_addresses = addresses;
+    }
+
+    pub fn set_host_tags(&mut self, tags: Vec<String>) {
+        self.host_tags = tags;
+    }
+
+    pub fn host_tag(&self, index: usize) -> &str {
+        self.host_tags.get(index).map_or("", String::as_str)
     }
 
     pub fn host_address(&self, index: usize) -> &str {
@@ -948,6 +962,7 @@ impl App {
                     fields: vec![
                         FormField { label: "Name".to_string(), value: String::new() },
                         FormField { label: "SSH target (e.g. user@host)".to_string(), value: String::new() },
+                        FormField { label: "Tag (optional)".to_string(), value: String::new() },
                     ],
                     focused: 0,
                     description: None,
@@ -1780,7 +1795,10 @@ impl App {
                             self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                             None
                         } else {
-                            self.pending_probes.insert(name_lower);
+                            self.pending_probes.insert(name_lower.clone());
+                            if let Some(tag) = crate::config::clean_tag(field_value(&fields, 2)) {
+                                self.new_host_tags.insert(name_lower, tag);
+                            }
                             self.begin_add_host(name, target);
                             None
                         }
@@ -2674,6 +2692,7 @@ impl App {
                             self.status_message = None;
                         }
                         Err(e) => {
+                            self.new_host_tags.remove(&name.to_lowercase());
                             self.set_error(format!("Could not add host '{name}': {e}"));
                         }
                     }
@@ -7355,7 +7374,7 @@ mod tests {
         match &app.modal {
             Some(Modal::Form { title, fields, kind, .. }) => {
                 assert_eq!(title, "Add Host");
-                assert_eq!(fields.len(), 2);
+                assert_eq!(fields.len(), 3);
                 assert_eq!(*kind, FormKind::AddHost);
             }
             other => panic!("expected Form modal, got {other:?}"),
@@ -7625,6 +7644,7 @@ mod tests {
         for c in "example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "a name differing only by case from an existing host must be rejected as a duplicate");
@@ -7642,6 +7662,7 @@ mod tests {
         for c in "example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "\"local\" (case-insensitively) must always be rejected as a duplicate");
@@ -7659,6 +7680,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_none(), "a valid submission must close the form immediately, not wait for the async probe");
@@ -7725,6 +7747,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         app.handle_modal_key(KeyCode::Enter); // starts probing "newhost"
         app.tx
             .send(WorkerMsg::HostProbe(
@@ -7745,6 +7768,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab);
         app.handle_modal_key(KeyCode::Enter);
         assert!(app.modal.is_none(), "a retry after the first probe failed must be accepted");
     }
@@ -7760,6 +7784,7 @@ mod tests {
         for c in "newhost.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         app.handle_modal_key(KeyCode::Enter); // first submission: starts probing "newhost", self.hosts doesn't have it yet
         assert!(app.modal.is_none());
 
@@ -7771,6 +7796,7 @@ mod tests {
         for c in "different.example.com".chars() {
             app.handle_modal_key(KeyCode::Char(c));
         }
+        app.handle_modal_key(KeyCode::Tab); // past the optional Tag field
         let result = app.handle_modal_key(KeyCode::Enter);
         assert_eq!(result, None);
         assert!(app.modal.is_some(), "a name already being probed (case-insensitively) must be rejected, not started a second time");
@@ -8818,6 +8844,52 @@ mod tests {
         app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
         app.pane_focus = PaneFocus::Middle;
         app
+    }
+
+    #[test]
+    fn add_host_has_an_optional_third_tag_field_and_submits_on_it() {
+        let mut app = in_section(Section::Hosts);
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(form_values(&app).len(), 3);
+        for c in "box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        for c in "u@box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(app.modal.is_some(), "Enter on the second field moves on, it does not submit");
+        for c in " nas ".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(app.new_host_tags.get("box").map(String::as_str), Some("nas"));
+    }
+
+    #[test]
+    fn a_blank_tag_is_not_remembered() {
+        let mut app = in_section(Section::Hosts);
+        app.handle_key(KeyCode::Char('n'));
+        for c in "box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        for c in "u@box".chars() {
+            app.handle_modal_key(KeyCode::Char(c));
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(app.modal.is_none() && app.new_host_tags.is_empty());
+    }
+
+    #[test]
+    fn host_tags_default_to_empty_and_follow_set_host_tags() {
+        let mut app = App::new(vec!["local".into(), "a".into()]);
+        assert_eq!((app.host_tag(0), app.host_tag(1), app.host_tag(9)), ("", "", ""));
+        app.set_host_tags(vec![String::new(), "backup".into()]);
+        assert_eq!(app.host_tag(1), "backup");
     }
 
     fn two_props() -> Vec<Property> {
