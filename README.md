@@ -23,6 +23,7 @@ Host inventory lives in `/usr/local/etc/zfsctl/config.toml`:
 [[hosts]]
 name = "backup"
 ssh_target = "backup.example.com"
+tag = "offsite"      # optional label shown in the Hosts table and matched by its / filter
 ```
 
 The local machine is always available as the "local" host and does not need a config entry.
@@ -120,12 +121,23 @@ On the four account fields (SMB valid user, NFS "Root user mapping" (users only)
 ### Hosts
 
 - `Up` / `Down`: select the active host
-- `n`: add a new host (prompts for Name and an SSH target, e.g. `user@host`). Validates the name isn't blank or a case-insensitive duplicate of an existing host (including `"local"`), then probes SSH reachability in the background (up to 10 seconds) before accepting it — on success the host is usable immediately, no restart, and is written to `config.toml` so it survives one; on failure (bad name, unreachable host, auth rejected) the attempt is abandoned and the specific SSH error is shown — press `n` again to retry.
+- `/`: filter the list by name, address, tag or type (case-insensitive, live as you type). `Enter` keeps the filter, `Esc` clears it; `Up`/`Down` skip hidden hosts and the selection always stays on a visible one. A filter that matches nothing cannot be kept.
+- `n`: add a new host (prompts for Name, an SSH target such as `user@host`, and an optional Tag). Validates the name isn't blank or a case-insensitive duplicate of an existing host (including `"local"`), then probes SSH reachability in the background (up to 10 seconds) before accepting it — on success the host is usable immediately, no restart, and is written to `config.toml` so it survives one; on failure (bad name, unreachable host, auth rejected) the attempt is abandoned and the specific SSH error is shown — press `n` again to retry.
 
-The Hosts list is a table: `● Name | Address | State | Rtt`. Every host is probed in the background about every 30 seconds (staggered, one probe at a time per host; an unreachable host costs a single 10-second SSH timeout and never blocks the UI). The marker, the name and the State text take the host's health colour: normal when fine, yellow for a warning, red for critical or unreachable, dim while the first probe is still running. Address is the host part of the configured `ssh_target` as written (no lookup; `local` for the hub). The State column names the first reason of the worst level: The State column tells a network failure (`unreachable`) from an ssh refusal (`ssh login refused`, `host key not accepted`), and the panel shows a paused scrub as `paused`. The table scrolls with the selection.
+The Hosts list is a table: `● Name | Address | State | Type | Tag | Used | Pools | Scrub | Jobs | Rtt`. Every host is probed in the background about every 30 seconds (staggered, one probe at a time per host; an unreachable host costs a single 10-second SSH timeout and never blocks the UI). The marker, the name and the State text take the host's health colour: normal when fine, yellow for a warning, red for critical or unreachable, dim while the first probe is still running. Address is the host part of the configured `ssh_target` as written (no lookup; `local` for the hub). The State column names the first reason of the worst level:
 
 - red: `unreachable` (the SSH connection failed); a pool that is not ONLINE (`tank DEGRADED`); a pool 90% full or more (`tank 91% full`)
 - yellow: read/write/checksum errors on the pool or on any device inside it, or permanent data errors (`tank 3 errors`); the last scrub or resilver finished with errors (`scrub found errors on tank`); a pool 80% full or more; the latest run of an enabled job on that host failed (`job failed`); the host answers but cannot be inspected, such as sudo refused (`cannot inspect: <reason>`); a probe that has not finished after 45 seconds (`no answer for 60s`)
+
+State also tells a network failure (`unreachable`) from an ssh refusal (`ssh login refused`, `host key not accepted`). The other columns:
+
+- **Type**: `metal`, `vm` or `jail`, read once per host with `sysctl -n kern.vm_guest security.jail.jailed` (no sudo; a host where that fails shows `-`). `vm` is coloured cyan and `jail` magenta, apart from the health colours.
+- **Tag**: a free label per host, `tag = "backup"` under its `[[hosts]]` entry in `config.toml` or the optional third field of the Add Host form (change it later by editing `config.toml` and restarting). Shown only when some host has one.
+- **Used**: the fullest pool's capacity, yellow from 80%, red from 90%. **Pools**: how many. **Scrub**: `running 34%` or `paused` if any pool is, else `never` if any pool never scrubbed, else the date of the oldest last scrub.
+- **Jobs**: `failed/total` of the host's enabled jobs (a job counts as failed when its latest run failed).
+- **Rtt**: the round trip of the last probe.
+
+Name, Address and State always show (Address drops only on a very narrow pane); on a narrower terminal the other columns go in this order: Rtt, Jobs, Scrub, Pools, Tag, Used, Type. The table scrolls with the selection, and a paused scrub is shown as `paused` rather than finished.
 
 The bottom panel of the selected host adds, on top of OS, uptime, load, ZFS version, pools, space and ARC: the CPU (cores and live usage over a one-second window, with the model below), memory (physical, free, wired), swap, the L2ARC size and hit rate when a cache device exists, and one row per pool with its used percentage, fragmentation, health and last scrub (the date `zpool status` prints, without the weekday, because that time has no time zone). Every figure is best-effort: a host that lacks one shows `-`. When the last sample failed, the panel keeps the previous figures, dimmed, with `(stale)` in its title; on a narrow or short panel the lines are stacked in one column, most important first (pools and status, then pool rows, space, ARC, CPU and so on), the graphs give way to a one-line I/O rate, and whatever still does not fit is counted in a `+N more lines: enlarge the terminal` line instead of being cut silently.
 
