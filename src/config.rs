@@ -104,6 +104,183 @@ impl NotifyConfig {
     }
 }
 
+fn toml_string(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
+}
+
+/// The `[notify]` section for the keys that are set: a blank field is a default and writes nothing.
+pub fn render_notify_section(c: &NotifyConfig) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("[notify]\n");
+    let mut put = |key: &str, value: String| {
+        let _ = writeln!(out, "{key} = {value}");
+    };
+    if let Some(v) = &c.mail_to {
+        put("mail_to", toml_string(v));
+    }
+    if let Some(v) = &c.mail_command {
+        put("mail_command", toml_string(v));
+    }
+    if let Some(v) = &c.mail_from {
+        put("mail_from", toml_string(v));
+    }
+    if let Some(v) = c.check_interval_minutes {
+        put("check_interval_minutes", v.to_string());
+    }
+    if let Some(v) = &c.report_time {
+        put("report_time", toml_string(v));
+    }
+    if let Some(v) = c.remind_hours {
+        put("remind_hours", v.to_string());
+    }
+    out
+}
+
+const NOTIFY_KEYS: [&str; 6] = ["mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours"];
+
+/// A line that sets one of the keys this screen owns (`mail_to = ...`).
+fn is_notify_key_line(line: &str) -> bool {
+    let t = line.trim_start();
+    NOTIFY_KEYS.iter().any(|k| t.strip_prefix(k).is_some_and(|rest| rest.trim_start().starts_with('=')))
+}
+
+/// A value that opens a multi-line string it does not close on the same line (not something these keys have).
+fn opens_multiline_string(line: &str) -> bool {
+    let value = line.split_once('=').map_or("", |(_, v)| v.trim_start());
+    ["\"\"\"", "'''"].iter().any(|q| value.starts_with(q) && !value[q.len()..].contains(q))
+}
+
+/// Replaces (or appends) the `[notify]` section of `text`, keeping every other byte: inside an existing section only
+/// the lines that set this screen's own keys are replaced, so its comments, blank lines and any other key stay.
+/// Refuses what it cannot edit safely (a dotted `notify.` key, an inline `notify = {...}`, a `[notify.x]` sub-table,
+/// two `[notify]` headers) and anything that would change the file beyond `[notify]` or not say what was asked.
+pub fn set_notify_section(text: &str, section: &str) -> std::result::Result<String, String> {
+    const BY_HAND: &str = "config.toml writes [notify] in a form this screen cannot edit safely: edit it by hand";
+    let crlf = text.contains("\r\n");
+    let fix = |s: &str| if crlf { s.replace('\n', "\r\n") } else { s.to_string() };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let is_header = |l: &str| l.trim_start().starts_with('[');
+    let is_notify_header = |l: &str| {
+        let t = l.trim();
+        t == "[notify]" || t.strip_prefix("[notify]").is_some_and(|rest| rest.trim_start().starts_with('#'))
+    };
+    for l in &lines {
+        let t = l.trim_start();
+        let key_is_notify = t.starts_with("notify.") || t.strip_prefix("notify").is_some_and(|r| r.trim_start().starts_with('='));
+        if key_is_notify || t.starts_with("[notify.") {
+            return Err(BY_HAND.to_string());
+        }
+    }
+    let headers: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| is_notify_header(l)).map(|(i, _)| i).collect();
+    if headers.len() > 1 {
+        return Err(BY_HAND.to_string());
+    }
+    let new_keys = fix(&section.split_inclusive('\n').skip(1).collect::<String>());
+    let result = if let Some(&start) = headers.first() {
+        let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(i, _)| i);
+        let mut out: String = lines.iter().take(start + 1).copied().collect();
+        if !out.ends_with('\n') {
+            out.push_str(&fix("\n"));
+        }
+        out.push_str(&new_keys);
+        for l in lines.iter().take(end).skip(start + 1) {
+            if is_notify_key_line(l) {
+                if opens_multiline_string(l) {
+                    return Err(BY_HAND.to_string());
+                }
+                continue;
+            }
+            out.push_str(l);
+        }
+        out.push_str(&lines.iter().skip(end).copied().collect::<String>());
+        out
+    } else {
+        let mut out = text.to_string();
+        if !out.is_empty() {
+            if !out.ends_with('\n') {
+                out.push_str(&fix("\n"));
+            }
+            out.push_str(&fix("\n"));
+        }
+        out.push_str(&fix(section));
+        out
+    };
+    let want = toml::from_str::<Config>(section).map_err(|e| format!("the new [notify] section does not parse: {e}"))?.notify;
+    let got = toml::from_str::<Config>(&result).map_err(|e| format!("config.toml would no longer parse: {e}"))?.notify;
+    if got != want {
+        return Err("config.toml would not say what was asked: edit it by hand".to_string());
+    }
+    // Nothing outside [notify] may change: compare the whole file as data, so a surprise in a string or an unknown
+    // table is caught too.
+    let rest = |t: &str| -> std::result::Result<toml::Table, String> {
+        let mut table: toml::Table = t.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
+        table.remove("notify");
+        Ok(table)
+    };
+    if rest(text)? != rest(&result)? {
+        return Err(BY_HAND.to_string());
+    }
+    Ok(result)
+}
+
+/// Writes the new `[notify]` section into the file: the old file is copied to `<file>.bak`, the new text goes to a
+/// private temporary file next to it (same permissions and owner, flushed to disk) and is renamed over it. A
+/// symlinked `config.toml` is followed, so the link stays a link. Any failure leaves the original untouched.
+pub fn save_notify_section(path: &Path, section: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = real.file_name().map_or_else(|| "config.toml".to_string(), |n| n.to_string_lossy().into_owned());
+    let before = std::fs::metadata(&real).ok();
+    let old = match std::fs::read_to_string(&real) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(AppError::Config(format!("reading {}: {e}", real.display()))),
+    };
+    if before.as_ref().is_some_and(|m| m.len() > 0) && old.as_deref().is_some_and(str::is_empty) {
+        return Err(AppError::Config(format!("{} reads as empty although it is not: it is being rewritten; try again", real.display())));
+    }
+    let new = set_notify_section(old.as_deref().unwrap_or(""), section).map_err(AppError::Config)?;
+    if let Some(parent) = real.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| AppError::Config(format!("creating {}: {e}", parent.display())))?;
+    }
+    if old.is_some() {
+        let bak = real.with_file_name(format!("{name}.bak"));
+        std::fs::copy(&real, &bak).map_err(|e| AppError::Config(format!("writing {}: {e}", bak.display())))?;
+    }
+    let tmp = real.with_file_name(format!("{name}.tmp.{}", std::process::id()));
+    let mode = before.as_ref().map_or(0o644, |m| m.mode() & 0o7777);
+    let fail = |what: &str, e: std::io::Error| {
+        let _ = std::fs::remove_file(&tmp);
+        AppError::Config(format!("{what} {}: {e}", tmp.display()))
+    };
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp).map_err(|e| AppError::Config(format!("writing {}: {e}", tmp.display())))?;
+    file.write_all(new.as_bytes()).map_err(|e| fail("writing", e))?;
+    file.sync_all().map_err(|e| fail("flushing", e))?;
+    drop(file);
+    // The mode given at creation is cut by the umask: set it exactly. A failure is a failure.
+    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(mode)).map_err(|e| fail("setting the permissions of", e))?;
+    if let Some(m) = &before {
+        if m.uid() != nix::unistd::geteuid().as_raw() || m.gid() != nix::unistd::getegid().as_raw() {
+            nix::unistd::chown(&tmp, Some(nix::unistd::Uid::from_raw(m.uid())), Some(nix::unistd::Gid::from_raw(m.gid()))).map_err(|e| fail("giving the original owner to", e.into()))?;
+        }
+    }
+    // Refuse to overwrite a change made while we worked (an editor, Add Host, a second TUI).
+    let now = std::fs::metadata(&real).ok();
+    if before.as_ref().map(|m| (m.len(), m.mtime(), m.mtime_nsec())) != now.as_ref().map(|m| (m.len(), m.mtime(), m.mtime_nsec())) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(AppError::Config(format!("{} changed while it was being saved: nothing was written, try again", real.display())));
+    }
+    std::fs::rename(&tmp, &real).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        AppError::Config(format!("replacing {}: {e}", real.display()))
+    })?;
+    if let Some(dir) = real.parent().and_then(|d| std::fs::File::open(d).ok()) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 /// `NotifyConfig` validated, with the defaults filled in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NotifySettings {
@@ -307,6 +484,165 @@ mod tests {
         assert!(bad(NotifyConfig { report_time: Some("25:00".into()), ..base.clone() }).contains("report_time"));
         assert!(bad(NotifyConfig { mail_command: Some("  ".into()), ..base.clone() }).contains("mail_command"));
         assert!(bad(NotifyConfig { mail_from: Some("a\r\nb".into()), ..base }).contains("mail_from"));
+    }
+
+    fn cfg(to: &str) -> NotifyConfig {
+        NotifyConfig { mail_to: Some(to.into()), ..NotifyConfig::default() }
+    }
+
+    #[test]
+    fn the_rendered_section_has_only_the_set_keys_and_escapes_strings() {
+        assert_eq!(render_notify_section(&NotifyConfig::default()), "[notify]\n");
+        let c = NotifyConfig { mail_to: Some("a@x.org".into()), mail_command: Some("msmtp -a \"x\" -t \\ y".into()), check_interval_minutes: Some(10), report_time: Some("off".into()), remind_hours: Some(0), mail_from: None };
+        let text = render_notify_section(&c);
+        assert!(text.starts_with("[notify]\n") && text.ends_with('\n'));
+        assert_eq!(toml::from_str::<Config>(&text).unwrap().notify, c, "{text}");
+        assert!(!text.contains("mail_from"));
+    }
+
+    #[test]
+    fn an_existing_section_is_replaced_and_everything_else_is_kept_byte_for_byte() {
+        let before = "# my hosts\n[[hosts]]\nname = \"a\"   # the first\nssh_target = \"u@a\"\n\n[notify]   # alerts\nmail_to = \"old@x.org\"\ncheck_interval_minutes = 9\n\n[ui]\ntheme = \"mono\"\n";
+        let after = set_notify_section(before, &render_notify_section(&cfg("new@x.org"))).unwrap();
+        assert_eq!(after, "# my hosts\n[[hosts]]\nname = \"a\"   # the first\nssh_target = \"u@a\"\n\n[notify]   # alerts\nmail_to = \"new@x.org\"\n\n[ui]\ntheme = \"mono\"\n");
+    }
+
+    #[test]
+    fn a_section_at_the_end_or_without_a_final_newline_is_replaced_too() {
+        let end = "[ui]\ntheme = \"mono\"\n\n[notify]\nmail_to = \"old@x.org\"\n";
+        assert_eq!(set_notify_section(end, &render_notify_section(&cfg("n@x.org"))).unwrap(), "[ui]\ntheme = \"mono\"\n\n[notify]\nmail_to = \"n@x.org\"\n");
+        let bare = "[ui]\ntheme = \"mono\"\n\n[notify]\nmail_to = \"old@x.org\"";
+        assert_eq!(set_notify_section(bare, &render_notify_section(&cfg("n@x.org"))).unwrap(), "[ui]\ntheme = \"mono\"\n\n[notify]\nmail_to = \"n@x.org\"\n");
+    }
+
+    #[test]
+    fn a_missing_section_is_appended_after_a_blank_line_and_an_empty_file_gets_just_the_section() {
+        let before = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n";
+        assert_eq!(set_notify_section(before, &render_notify_section(&cfg("n@x.org"))).unwrap(), "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[notify]\nmail_to = \"n@x.org\"\n");
+        assert_eq!(set_notify_section("", &render_notify_section(&cfg("n@x.org"))).unwrap(), "[notify]\nmail_to = \"n@x.org\"\n");
+        assert_eq!(set_notify_section("[ui]\ntheme = \"mono\"", &render_notify_section(&cfg("n@x.org"))).unwrap(), "[ui]\ntheme = \"mono\"\n\n[notify]\nmail_to = \"n@x.org\"\n");
+    }
+
+    #[test]
+    fn crlf_files_stay_crlf() {
+        let before = "[ui]\r\ntheme = \"mono\"\r\n\r\n[notify]\r\nmail_to = \"old@x.org\"\r\n";
+        let after = set_notify_section(before, &render_notify_section(&cfg("n@x.org"))).unwrap();
+        assert_eq!(after, "[ui]\r\ntheme = \"mono\"\r\n\r\n[notify]\r\nmail_to = \"n@x.org\"\r\n");
+    }
+
+    #[test]
+    fn dotted_keys_inline_tables_subtables_and_duplicate_headers_are_refused() {
+        let section = render_notify_section(&cfg("n@x.org"));
+        for bad in ["notify.mail_to = \"a@x.org\"\n", "notify = { mail_to = \"a@x.org\" }\n", "[notify.extra]\nx = 1\n", "[notify]\nmail_to = \"a@x.org\"\n\n[ui]\n\n[notify]\n"] {
+            assert!(set_notify_section(bad, &section).unwrap_err().contains("by hand"), "{bad:?}");
+        }
+        // A key that merely starts with the word is not a notify key.
+        assert!(set_notify_section("[daemon]\nnotify_command = \"true\"\n", &section).is_ok());
+    }
+
+    #[test]
+    fn a_result_that_does_not_parse_or_does_not_say_what_was_asked_is_refused() {
+        assert!(set_notify_section("[ui\ntheme = 1\n", &render_notify_section(&cfg("n@x.org"))).unwrap_err().contains("parse"));
+        assert!(set_notify_section("", "[notify]\nmail_to = \n").is_err());
+    }
+
+    #[test]
+    fn saving_keeps_a_backup_the_permissions_and_every_other_byte() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let old = "# keep me\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[notify]\nmail_to = \"old@x.org\"\n";
+        std::fs::write(&path, old).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        save_notify_section(&path, &render_notify_section(&cfg("new@x.org"))).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(), old);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# keep me\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[notify]\nmail_to = \"new@x.org\"\n");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("config.toml.tmp")).collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn a_refused_save_leaves_the_original_and_writes_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "notify.mail_to = \"x@y.org\"\n").unwrap();
+        assert!(save_notify_section(&path, &render_notify_section(&cfg("n@x.org"))).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "notify.mail_to = \"x@y.org\"\n");
+        assert!(!dir.path().join("config.toml.bak").exists());
+    }
+
+    #[test]
+    fn comments_blank_lines_and_other_keys_inside_and_around_the_section_survive_a_save() {
+        let before = "[notify]  # alerts\n# mail_from = \"x@y\"\nmail_to = \"o@x.org\"\nmail_too = \"typo@x.org\"\ncheck_interval_minutes = 9\n\n# ---- UI settings below ----\n# theme options: mono, ...\n[ui]\ntheme = \"mono\"\n";
+        let after = set_notify_section(before, &render_notify_section(&cfg("n@x.org"))).unwrap();
+        assert_eq!(after, "[notify]  # alerts\nmail_to = \"n@x.org\"\n# mail_from = \"x@y\"\nmail_too = \"typo@x.org\"\n\n# ---- UI settings below ----\n# theme options: mono, ...\n[ui]\ntheme = \"mono\"\n");
+        // Saving blank fields removes the keys this screen owns and leaves the rest.
+        let off = set_notify_section(before, "[notify]\n").unwrap();
+        assert!(!off.contains("mail_to =") && !off.contains("check_interval") && off.contains("mail_too") && off.contains("# mail_from") && off.contains("# ---- UI"), "{off}");
+    }
+
+    #[test]
+    fn text_inside_a_multi_line_string_or_an_unknown_table_is_never_changed() {
+        let section = render_notify_section(&cfg("n@x.org"));
+        // A header-looking line inside a string of an unknown table: the splice would eat lines, so it is refused.
+        let tricky = "[extra]\ntext = \'\'\'\n[notify]\nkeep me\n[end]\'\'\'\n";
+        assert!(set_notify_section(tricky, &section).is_err());
+        assert_eq!(set_notify_section(tricky, "[notify]\n").unwrap(), tricky, "with nothing to write the text is returned untouched");
+        let in_known = "[daemon]\nnotify_command = \"\"\"\n[notify]\n[x] \"\"\"\n";
+        assert!(set_notify_section(in_known, &section).is_err());
+    }
+
+    #[test]
+    fn a_key_line_inside_a_string_is_not_removed_even_when_nothing_is_asked_for() {
+        // Dropping our own key lines would eat this one: the whole-file comparison catches it where the notify
+        // settings alone (which come out as the asked-for defaults) cannot.
+        let text = "[extra]\ntext = \'\'\'\n[notify]\nmail_to = \"inside\"\n[end]\'\'\'\n";
+        assert!(set_notify_section(text, "[notify]\n").is_err());
+    }
+
+    #[test]
+    fn a_multi_line_value_for_one_of_our_keys_is_refused() {
+        assert!(set_notify_section("[notify]\nmail_command = \"\"\"\nx\n\"\"\"\n", &render_notify_section(&cfg("n@x.org"))).is_err());
+    }
+
+    #[test]
+    fn a_symlinked_config_stays_a_symlink_and_the_target_is_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.toml");
+        let link = dir.path().join("config.toml");
+        std::fs::write(&real, "# mine\n[ui]\ntheme = \"mono\"\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        save_notify_section(&link, &render_notify_section(&cfg("n@x.org"))).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
+        assert!(std::fs::read_to_string(&real).unwrap().contains("mail_to = \"n@x.org\""));
+        assert!(std::fs::read_to_string(&real).unwrap().starts_with("# mine"));
+    }
+
+    #[test]
+    fn a_file_that_reads_as_empty_but_is_not_is_refused() {
+        // Simulated through the pure check used by the save: an empty read of a non-empty file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n").unwrap();
+        assert!(save_notify_section(&path, &render_notify_section(&cfg("n@x.org"))).is_ok());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("[[hosts]]"), "the hosts survive: {saved}");
+    }
+
+    #[test]
+    fn a_missing_file_is_created_and_a_failing_write_leaves_the_original_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub").join("config.toml");
+        save_notify_section(&path, &render_notify_section(&cfg("n@x.org"))).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[notify]\nmail_to = \"n@x.org\"\n");
+        assert!(!dir.path().join("sub").join("config.toml.bak").exists(), "nothing to back up the first time");
+        // A directory where the temporary file must go: the write fails, the original stays.
+        std::fs::create_dir(dir.path().join("sub").join(format!("config.toml.tmp.{}", std::process::id()))).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let err = save_notify_section(&path, &render_notify_section(&cfg("other@x.org"))).unwrap_err().to_string();
+        assert!(err.contains("config.toml.tmp"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]

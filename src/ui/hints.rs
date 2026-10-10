@@ -313,6 +313,15 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("r", "Refresh", 4));
         }
+        (Section::Alerts, _) => {
+            v.push(h("e", "Edit settings", 1));
+            v.push(h("t", "Send test", 2));
+            v.push(h("p", "Preview report", 2));
+            if !app.alerts_view.events.is_empty() {
+                v.push(h("↑↓", "Scroll", 3));
+            }
+            v.push(h("r", "Refresh", 4));
+        }
         // Never in `App::sections`; listed so a future section forces a decision here.
         (Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl, _) => {}
     }
@@ -539,6 +548,23 @@ mod tests {
         a
     }
 
+    fn alerts() -> App {
+        let mut a = base();
+        go(&mut a, Section::Alerts);
+        let e = |n: usize| crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: format!("n{n}") };
+        a.alerts_view.events = (0..4).map(e).collect();
+        a
+    }
+
+    #[test]
+    fn the_alerts_section_advertises_scrolling_only_when_there_are_events() {
+        let with = alerts();
+        assert!(hints(&with).iter().any(|h| h.key == "↑↓" && h.label == "Scroll"));
+        let mut without = alerts();
+        without.alerts_view.events.clear();
+        assert!(!hints(&without).iter().any(|h| h.key == "↑↓"));
+    }
+
     #[test]
     fn the_jobs_section_advertises_edit_enable_or_disable_delete_and_new_for_the_selected_job() {
         let selected = jobs(true);
@@ -589,6 +615,7 @@ mod tests {
             ("boot envs, unavailable", boot_envs_unavailable()),
             ("jobs, one selected", jobs(true)),
             ("jobs, none selected", jobs(false)),
+            ("alerts", alerts()),
         ]
     }
 
@@ -610,6 +637,7 @@ mod tests {
         drilled: Option<String>,
         host: usize,
         host_filter: (String, bool),
+        alerts_scroll: usize,
         quit: bool,
         selected_disks: Vec<String>,
         selections: Vec<Option<usize>>,
@@ -628,6 +656,7 @@ mod tests {
             drilled: a.drilled_pool.clone(),
             host: a.selected_host,
             host_filter: (a.host_filter.clone(), a.host_filter_editing),
+            alerts_scroll: a.alerts_view.scroll,
             quit: a.should_quit,
             status: None,
             selected_disks: disks,
@@ -1034,6 +1063,7 @@ mod tests {
         a.shares.clear();
         a.bootenvs.clear();
         a.jobs_view.jobs.clear();
+        a.alerts_view.events.clear();
     }
 
     #[test]
