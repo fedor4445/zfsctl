@@ -108,7 +108,7 @@ Make one dataset for each thing you will treat differently (home directories, me
 
 ## Destroy a dataset
 
-- `d` destroys the selected dataset. You **type its full name** to confirm. ZFS refuses if it still has snapshots or child datasets, and zfsctl shows you ZFS's message.
+- `d` destroys the selected dataset. You **type its full name** to confirm. zfsctl itself refuses a pool's root dataset (use `d` on the Pools list to destroy a pool), and ZFS refuses if it still has snapshots or child datasets, and zfsctl shows you ZFS's message.
 - `D` destroys the dataset **and everything under it**: its child datasets and all their snapshots. You type the name, and the question says how many datasets and snapshots will go. It is a `zfs destroy -r`, never `-R`, so clones elsewhere are not removed.
 
 > **Safety:** `D` refuses a pool's root dataset, because that would wipe the whole pool, and it refuses anything that holds the running system or the boot environments (use the Boot Envs section for those). Everything else it will do after you type the name, so read the counts it shows.

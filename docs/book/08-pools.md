@@ -207,7 +207,7 @@ With a pool selected, `J` opens the scrub job form, already filled in with the h
 
 ## Try it
 
-On the practice pool from chapter 2 (made of files; if you have not made one, do that first): go to Pools, select it, press `s` and `y` then `Enter`, and watch the Scrub line in the panel finish. Press `Enter` to see the vdev tree, then `Esc`. Finally destroy it with `d`, typing the name. If you made it from the shell, zfsctl saw it within ten seconds, or press `r`.
+On the practice pool from chapter 2 (made of files; if you have not made one, do that first): go to Pools, select it, press `s` and `y` then `Enter`, and watch the Scrub line in the panel finish. Press `Enter` to see the vdev tree, then `Esc`. Leave the pool in place: chapters 9 and 10 use it, and chapter 10 ends by showing how to destroy it. If you made it from the shell, zfsctl saw it within ten seconds, or press `r`.
 
 ## Where next
 

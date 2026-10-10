@@ -36,7 +36,7 @@ sudo zfsctl
 
 You land on the Hosts section with one host in the list, `local`: the hub itself. Use `Tab` to move between sections and `q` to quit; press `?` at any time for the Help screen. The next chapters explain every screen.
 
-> **Safety:** looking never changes anything. The screen only changes your data when you submit a form and answer a confirmation.
+> **Safety:** looking never changes anything. The screen only changes your data when you submit a form or answer a confirmation, and the dangerous changes always ask twice.
 
 ## The configuration file
 

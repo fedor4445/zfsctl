@@ -37,10 +37,10 @@ The Hosts section is where zfsctl opens. Every host in your configuration is pro
 | **Used** | the fullest pool on the host (yellow from 80%, red from 90%) |
 | **Pools** | how many pools |
 | **Scrub** | what is happening or the oldest last scrub: `running 34%`, `paused`, `never`, or the date |
-| **Jobs** | failed over total scheduled jobs of that host (`1/4`); `-` if it has none |
+| **Jobs** | failed over total enabled jobs of that host (`1/4`; red when any failed); `-` if it has none |
 | **Rtt** | the round trip of the last probe |
 
-Name, Address and State always show. As the terminal gets narrower, columns drop from the right in this order: Rtt, Jobs, Scrub, Pools, Tag, Used, Type. At 110 columns you see the first screen of this chapter's other captures.
+Name and State always show, and Address on all but a very narrow terminal. As the terminal gets narrower, columns drop from the right in this order: Rtt, Jobs, Scrub, Pools, Tag, Used, Type. At 110 columns you see the first screen of this chapter's other captures.
 
 ## What State says
 
@@ -55,7 +55,7 @@ The colour is the worst level that applies; the text is the first reason at that
 | yellow | `scrub found errors on <pool>` | the last scrub or resilver finished with errors |
 | yellow | `job failed` | an enabled scheduled job of this host failed on its latest run |
 | yellow | `cannot inspect: …` | the host answers but zfsctl cannot read it (sudo refused, no `zpool`) |
-| yellow | `no answer for 45s` | a probe has been running far longer than a healthy one |
+| yellow | `no answer for 45s` (the number keeps growing) | a probe has been running far longer than a healthy one |
 | red | `<pool> DEGRADED` (or `FAULTED`, `UNAVAIL`…) | a pool is not ONLINE |
 | red | `<pool> <n>% full` | a pool is 90% full or more |
 | red | `unreachable` | ssh could not connect |

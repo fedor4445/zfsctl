@@ -83,7 +83,7 @@ ok        tee        /usr/bin/tee /usr/local/etc/smb4.conf
 11 ok, 0 missing, 0 too broad
 ```
 
-For each entry it reports `ok`, `MISSING` (sudo would refuse it) or `TOO BROAD` (sudo allows more than it should: for example a plain `cat` instead of `cat` pinned to `smb4.conf`). It exits 0 only when everything is `ok`, 1 when anything is not, and 2 if the host cannot be reached. If the account also has a sudo rule that asks for a password (a `%wheel` rule, say), it says so in a note, because such a rule can make an entry look fine when it is not: use an account whose only sudo rules are the zfsctl ones.
+For each entry it reports `ok`, `MISSING` (sudo would refuse it) or `TOO BROAD` (sudo allows more than it should: for example a plain `cat` instead of `cat` pinned to `smb4.conf`). It exits 0 only when everything is `ok` and there is no note, 1 when anything is not (or there is a note), and 2 if the host cannot be reached. If the account also has a sudo rule that asks for a password (a `%wheel` rule, say), it says so in a note, because such a rule can make an entry look fine when it is not: use an account whose only sudo rules are the zfsctl ones.
 
 ## What the entry allows, and why
 
@@ -116,7 +116,7 @@ More messages and fixes are in [Troubleshooting](19-troubleshooting.md).
 
 ## Try it
 
-On the hub, add one test host: create the account, authorise the key, and run `zfsctl print-sudoers host` and `zfsctl check-host host` until it says `ok` for every line. Then press `n` in the Hosts section and add it. It should appear in the list with a green `●` and `ok`.
+On the hub, add one test host: create the account and authorise the key, then press `n` in the Hosts section and add it (this only needs ssh to work). Now run `zfsctl print-sudoers host` and `zfsctl check-host host` (they look the host up in `config.toml`, so it must be added first) until it says `ok` for every line. The host should show in the list with a green `●` and `ok`.
 
 ## Where next
 

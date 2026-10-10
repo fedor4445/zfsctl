@@ -68,7 +68,7 @@ zpool status             # which disks are in which pool
 
 ## Users, root and sudo
 
-FreeBSD has a `root` account and the `wheel` group (the people allowed to become root). Installing `sudo` (`pkg install sudo`) works as on Linux, and the base system also offers `doas`. zfsctl itself must be started by root on the hub, and on every other host it uses an ordinary user that may run only a short list of commands through `sudo` (chapter 5).
+FreeBSD has a `root` account and the `wheel` group (the people allowed to become root). Installing `sudo` (`pkg install sudo`) works as on Linux, and `doas` is available as a package (`security/doas`). zfsctl itself must be started by root on the hub, and on every other host it uses an ordinary user that may run only a short list of commands through `sudo` (chapter 5).
 
 ## A few more things you will meet
 

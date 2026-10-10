@@ -178,10 +178,12 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel
 
 It copies the newest snapshot with a given prefix (typically the ones a snapshot job takes) from a dataset on one host to a dataset on another, **incrementally** after the first full copy, through the same ssh and sudo path the TUI uses, so nothing new is needed in sudoers. The destination can instead be a *file*: a directory on the hub that receives the stream as files.
 
-- **Nothing is destroyed on the source.** The destination is received unmounted, and is only rolled back to its last snapshot if you set **Force** to `y`; without it, a destination that has been written to fails the run with ZFS's own message.
-- **Interrupted transfers resume.** After a network drop, a cancel or a restart, the next run continues where it stopped.
+- **Nothing is destroyed on the source.** The destination is received unmounted, and is only touched if you set **Force** to `y`; without it, a destination that has been written to fails the run with ZFS's own message.
+- **Interrupted transfers resume** (to another host). After a network drop, a cancel or a restart, the next run continues where it stopped. A transfer to files cannot resume; it starts again.
 - **Progress and cancel.** A running replication shows `sent 12.3 GiB of 40.0 GiB (30%) 85.0 MiB/s eta 5m 00s` in the panel; `c` cancels it within a second or two. A cancelled run is not a failure and sends no alert.
 - Two enabled jobs cannot write to the same destination, and `Space` refuses to enable one that would clash.
+
+> **Safety:** **Force** adds `zfs receive -F`: it rolls the destination back to the last snapshot both sides share, **destroying destination snapshots and changes newer than that**. Leave it at `n` unless you know the destination has stray changes you want to discard.
 
 > **Safety:** replication is not a backup of mistakes: a deleted file is deleted on the copy at the next run. Keep several snapshots on the destination (a snapshot job there) if you want to go back.
 

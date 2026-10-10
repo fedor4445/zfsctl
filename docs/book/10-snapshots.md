@@ -123,7 +123,7 @@ A snapshot **job** (chapter 14) names its snapshots `<prefix>-<timestamp>`, for 
 
 ## Try it
 
-On the practice pool: take a snapshot `first` of `bookdemo/home` with `s`. Change a file from the shell. In Snapshots, select `bookdemo/home@first`, read the panel, and then roll back with `b`, typing the name. Check that the file is back as it was.
+On the practice pool: take a snapshot `second` of `bookdemo/home` with `s`. Change a file from the shell. In Snapshots, select `bookdemo/home@second`, read the panel, and then roll back with `b`, typing the name. Check that the file is back as it was. When you have finished with the practice pool, destroy it from Pools with `d`, typing its name.
 
 ## Where next
 

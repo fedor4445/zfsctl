@@ -73,7 +73,7 @@ Do not write to the destination dataset: a receive fails if the destination chan
 
 ## Add a machine to the lab
 
-Chapter 5: create the account, `zfsctl print-sudoers`, `zfsctl check-host`, then `n` in Hosts.
+Chapter 5: create the account and authorise the key, add the host with `n` in Hosts, then `zfsctl print-sudoers HOST` and `zfsctl check-host HOST`.
 
 ## Try it
 

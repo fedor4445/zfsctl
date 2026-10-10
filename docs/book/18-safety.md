@@ -7,7 +7,7 @@
 
 ## What zfsctl does for you
 
-- **Two keys for anything that changes data.** A question is answered with `y` or `n` and then `Enter`; `Enter` alone does nothing, and a held key cannot answer twice.
+- **Two keys for anything destructive or hard to undo** (destroy, rollback, new pool, new vdev, replace disk, revoke, shrinking a volume, pool features). Smaller changes, such as setting a property, saving a share or creating a snapshot, apply when you submit the form. A question is answered with `y` or `n` and then `Enter`; `Enter` alone does nothing, and a held key cannot answer twice.
 - **Typed names for the worst actions.** Destroying a pool, a dataset, a snapshot or a boot environment, and rolling back, make you type the name.
 - **The exact command is shown** before a form that can destroy something runs.
 - **Refusals instead of broad actions.** Recursive destroy refuses a pool's root; nothing destroys the running boot environment; a backup job never creates a repository; a replication never touches the source.

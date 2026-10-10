@@ -46,7 +46,7 @@ A *boot environment* is a bootable copy of the operating system, kept as a ZFS c
 | **Name** | the boot environment |
 | **Active** | `Now` is what you are running, `Reboot` is what the next boot uses, `Now+Reboot` both, and `Temp` is used for the next boot only |
 | **Space** | the space it holds |
-| **Mountpoint** | where it is mounted right now, if it is |
+| **Mountpoint** | where it is mounted right now, if it is (dropped first on a narrow terminal, then Created) |
 | **Created** | when it was made (dropped on a narrow terminal) |
 
 If the host has no `bectl`, or is not laid out for boot environments (its root is not on ZFS), the section title says `[unavailable: ...]` with the reason, and recovers by itself once the problem is fixed.
@@ -59,7 +59,7 @@ The hint bar shows only the keys that make sense for the selected row.
 |---|---|
 | `n` | create a new one: a name, and optionally which to clone (`F2` picks one; blank clones the running one) |
 | `a` | make it the boot environment for **every** future boot (asks first) |
-| `t` / `T` | use it for the **next boot only** / clear that (asks first) |
+| `t` / `T` | use it for the **next boot only** (asks first) / clear that (at once) |
 | `R` | rename |
 | `m` / `u` | mount / unmount; the mount path shows in the Mountpoint column |
 | `d` | destroy (you type its name) |

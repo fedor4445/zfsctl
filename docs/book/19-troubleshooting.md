@@ -20,11 +20,11 @@ Read the State column ([chapter 7](07-hosts.md) lists every text). The usual one
 
 ## "a password is required"
 
-The feature runs a program that the host's sudoers entry does not allow. Run `zfsctl check-host <name>`; it names the missing line. Replace the entry with the output of `zfsctl print-sudoers <user>`.
+The feature runs a program that the host's sudoers entry does not allow. Run `zfsctl check-host <name>`; it names the missing line. Replace the entry with the output of `zfsctl print-sudoers <name>`.
 
 ## The daemon
 
-The Jobs title says `daemon not running`: start it with `service zfsctl start`, and check `sysrc zfsctl_enable`. The log is `/var/log/zfsctl.log`; it is stamped in the hub's local time.
+The Jobs title says `daemon NOT running: jobs will not fire`: start it with `service zfsctl start`, and check `sysrc zfsctl_enable`. The log is `/var/log/zfsctl.log`; it is stamped in the hub's local time.
 
 ## A job did not run
 
@@ -47,7 +47,7 @@ The panel shows the tool's own message. Common ones:
 1. Run `zfsctl notify-test` as root on the hub. It prints one line per channel.
 2. `mail: failed: exited with status 78` or similar: the mail command itself failed; run the same command by hand and read its error. Check `~/.msmtprc` of the user the daemon runs as (root).
 3. `mail: ok` but nothing arrives: look in spam; check the sender address (`Mail from`) is accepted by your provider.
-4. Nothing configured: the Alerts screen says `Monitor: off`.
+4. Nothing configured: the Alerts screen says `Monitor off — set an email address to turn alerts on`.
 
 ## NFS or SMB does not work
 

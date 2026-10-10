@@ -138,7 +138,7 @@ It is part of the program, so it is always right for the version you are running
 
 ## Confirmations
 
-Anything that changes your data asks first, and asks in a way that a slip cannot answer. A yes/no question looks like this:
+The actions that destroy or overwrite data ask first, and ask in a way that a slip cannot answer. (Ordinary edits, such as setting a property like `quota` or `readonly`, creating a dataset or a snapshot, or saving a share, apply when you submit the form: the form is your confirmation.) A yes/no question looks like this:
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — scratch ('r' refresh┐
@@ -169,9 +169,9 @@ y Yes  n/Esc No
 
 Press `y` to choose yes or `n` (or `Esc`) to choose no, and then `Enter` to apply your choice. `Enter` on its own does nothing, and a held-down key cannot answer twice. The hint bar says `y Yes  n/Esc No` while the question is open.
 
-Some actions go further and ask you to **type a name**: destroying a pool or dataset, destroying or rolling back to a snapshot, destroying a boot environment. You type the exact name and then `Enter`; anything else cancels. If you say no to a confirmation that came from a form, you return to the form with what you typed.
+Some actions go further and ask you to **type a name**: destroying a pool or dataset, destroying or rolling back to a snapshot, destroying a boot environment. You type the exact name and then `Enter`; a wrong name keeps the prompt open and only `Esc` cancels. If you say no to a confirmation that came from a form, you return to the form with what you typed.
 
-> **Safety:** nothing in zfsctl deletes or overwrites anything until you have pressed two keys (or typed a name) on a question that says what it will do. If you are not sure, `Esc`.
+> **Safety:** destroying, rolling back, creating a pool, adding a vdev, replacing a disk, revoking permissions, shrinking a volume and enabling a pool feature all need two keys (or a typed name) on a question that says what it will do. Smaller changes do not ask, so read a form before you press `Enter` on its last field. If you are not sure, `Esc`.
 
 ## Forms
 
@@ -189,7 +189,7 @@ Choose a theme in `config.toml`: `ansi` (the default: it uses only your terminal
 
 ## Refreshing
 
-The lists in Pools, Datasets, Snapshots, Disks and Shares refresh themselves every ten seconds while you look at them (change it with `auto_refresh_secs` in `config.toml`; `0` turns it off). Your selection follows the item you had selected, by name, so a refresh never moves your cursor onto a different row. Press `r` to refresh now.
+The lists in Pools, Datasets, Snapshots, Disks, Shares and Boot Envs refresh themselves every ten seconds while you look at them (change it with `auto_refresh_secs` in `config.toml`; `0` turns it off). Your selection follows the item you had selected, by name, so a refresh never moves your cursor onto a different row. Press `r` to refresh now.
 
 ## Try it
 

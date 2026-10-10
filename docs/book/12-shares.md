@@ -105,19 +105,28 @@ FreeBSD's ZFS has no working `sharesmb` property (`zfs set sharesmb=on` just pri
 │Pools                 ││scratch                  1066393 19189760 Filesys││                                 │
 │Datasets              ││scratch/data             1052508 19189760 Filesys││                                 │
 │Snapshots             ││tpool                    4196505 56283897 Filesys││                                 │
-│Disks                 ││zroot                    1132562 32899670 Filesys││                                 │
-│Shares               ┌SMB share: 'scratch/data'───────────────────────────────────────┐                     │
-│Boot Envs            │Shares /scratch/data as \\<host>\<name>. The Valid user must    │                     │
+│Disks                 ││zroot                    1132700 32898289 Filesys││                                 │
+│Shares                ││zroot/ROOT               5673840 32898289 Filesys││                                 │
+│Boot Envs             ││zroot/ROOT/default       5673742 32898289 Filesys││                                 │
+│Jobs                  ││zroot/home               5784166 32898289 Filesys││                                 │
+│Alerts                ││zroot/home/alice         147456  32898289 Filesys││                                 │
+│                     ┌SMB share: 'scratch/data'───────────────────────────────────────┐                     │
+│                     │Shares /scratch/data as \\<host>\<name>. The Valid user must    │                     │
 │                     │for every share they use. Blank user + guest n: any Samba user  │                     │
 │                     │blank user).                                                    │                     │
 │                     │                                                                │─────────────────────┘
 │                     │> Share name: data                                              │─────────────────────┐
 │                     │  Valid user (blank = any Samba user):                          │%  100M of 119M      │
+│                     │  Password (blank on edit = unchanged):                         │0M   Logical 100M    │
 │                     │  Read-only (y/n): n                                            │0M   Snaps 200K      │
 │                     │  Guest access (y/n): n                                         │   Refres 0B         │
 │                     │                                                                │ 1.00x   Rec 128K    │
 │                     │                                                                │  Ref -              │
 │                     └────────────────────────────────────────────────────────────────┘LINE  errs 0         │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
@@ -128,8 +137,8 @@ Enter Next  Tab Next field  Shift+Tab Prev field  Esc Cancel
 
 - **Share name**: what clients see (`\\host\data`).
 - **Valid user**: the one Unix account allowed in; it must already exist on the host. Leave it blank for "any Samba user".
-- **Samba password**: asked for when you create the share (and left blank on edit to keep the old one). Samba keeps its own passwords, separate from the Unix ones.
-- **Read-only**, and **Guest access** (`n` by default).
+- **Password**: required whenever a Valid user is set or changed (on edit, blank keeps the existing one if the user is unchanged); ignored for a share with no user. Samba keeps its own passwords, separate from the Unix ones.
+- **Read-only**, and **Guest access** (`n` by default). Guest access cannot be combined with a Valid user.
 
 What zfsctl does: it keeps all its shares in one marked block inside `/usr/local/etc/smb4.conf`:
 

@@ -52,7 +52,7 @@ The Disks section lists every disk the host has, and which pool each belongs to:
 - **Name** is the system's name for the disk (`ada1`; chapter 3 explains FreeBSD's naming).
 - **Size** is its capacity.
 - **Type** shows `SSD` or `HDD` and, for a hard disk, its speed in rpm, when the system can tell (a virtual disk, as on this test host, shows nothing).
-- **Status** says `available (not in a pool)` or which pool and vdev the disk is in (`in tpool (raidz2-0)`); a system disk shows its partition.
+- **Status** says `available` or which pool and vdev the disk is in (`in tpool (raidz2-0)`); a system disk shows its partition.
 
 ## Know which disk is which
 
