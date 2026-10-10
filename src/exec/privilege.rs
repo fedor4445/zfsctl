@@ -76,6 +76,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "swapinfo", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "iostat", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "showmount", features: &[Feature::Shares], kind: Kind::Unprivileged },
+    Entry { name: "true", features: &[], kind: Kind::Unprivileged },
     Entry { name: "sh", features: &[], kind: Kind::Unprivileged },
     Entry { name: "sudo", features: &[], kind: Kind::Unprivileged },
 ];
@@ -228,4 +229,73 @@ mod tests {
             assert!(ENTRIES[i + 1..].iter().all(|b| b.name != a.name), "{} appears twice", a.name);
         }
     }
+    /// The first string literal after `(` of a run-style call, skipping `run_checked`'s leading runner argument.
+    fn commands_in(src: &str) -> Vec<String> {
+        let code = src.split("#[cfg(test)]").next().unwrap_or("");
+        let mut found = Vec::new();
+        for (marker, skip_runner) in [("run_checked(", true), (".run(", false), (".run_unprivileged(", false), (".run_with_stdin(", false), (".command(", false)] {
+            for (at, _) in code.match_indices(marker) {
+                let mut rest = &code[at + marker.len()..];
+                if skip_runner {
+                    match rest.find(',') {
+                        Some(comma) => rest = &rest[comma + 1..],
+                        None => continue,
+                    }
+                }
+                let rest = rest.trim_start();
+                if let Some(literal) = rest.strip_prefix('"') {
+                    if let Some(end) = literal.find('"') {
+                        let name = &literal[..end];
+                        if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-')) {
+                            found.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn every_command_the_code_runs_is_registered() {
+        let mut files = Vec::new();
+        rust_files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut seen = std::collections::BTreeSet::new();
+        for file in &files {
+            for name in commands_in(&std::fs::read_to_string(file).unwrap()) {
+                assert!(is_registered(&name), "{} runs '{name}', which is not in exec::privilege::ENTRIES", file.display());
+                seen.insert(name);
+            }
+        }
+        // If the scan stops finding the known commands, it has silently stopped guarding anything.
+        for known in ["zpool", "zfs", "getfacl", "setfacl", "geom", "bectl", "service", "smbpasswd", "smbstatus", "cat", "tee", "restic", "getent", "sysctl"] {
+            assert!(seen.contains(known), "the scan no longer finds '{known}': {seen:?}");
+        }
+    }
+
+    #[test]
+    fn the_readme_names_every_privileged_command() {
+        let readme = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+        let start = readme.find("### Remote host setup").expect("the README has a Remote host setup section");
+        let section = &readme[start..];
+        let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+        for entry in ENTRIES {
+            if matches!(entry.kind, Kind::Privileged { .. }) {
+                assert!(section.contains(&format!("`{}`", entry.name)) || section.contains(&format!(" {} ", entry.name)) || section.contains(&format!("/{}", entry.name)), "the README's sudoers section does not mention {}", entry.name);
+            }
+        }
+        assert!(section.contains("print-sudoers") && section.contains("check-host"), "the README must point to the generated entry");
+    }
+
 }

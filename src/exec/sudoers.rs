@@ -3,6 +3,7 @@
 
 use super::privilege::{self, Entry, Feature, Kind};
 use super::CommandRunner;
+use std::fmt::Write as _;
 
 /// Why a run stopped. `Unreachable` (ssh exit 255) maps to exit code 2 so a script can tell "the host is
 /// down" from "the host is misconfigured".
@@ -99,18 +100,18 @@ pub fn sudoers_items(resolved: &[Resolved]) -> Vec<String> {
 
 pub fn render(host: &str, user: &str, features: &[Feature], resolved: &[Resolved], generated: &str) -> String {
     let mut text = format!("# zfsctl sudoers entry for host {host}, generated {generated}\n");
-    text.push_str(&format!("# features: {}\n", features.iter().map(|f| f.name()).collect::<Vec<_>>().join(", ")));
+    let _ = writeln!(text, "# features: {}", features.iter().map(|f| f.name()).collect::<Vec<_>>().join(", "));
     let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "restic")).collect();
     if !powerful.is_empty() {
         let (verb, pronoun) = if powerful.len() == 1 { ("is", "it") } else { ("are", "them") };
-        text.push_str(&format!("# {} {verb} as powerful as root: grant {pronoun} only to hosts you trust zfsctl with.\n", powerful.join(", ")));
+        let _ = writeln!(text, "# {} {verb} as powerful as root: grant {pronoun} only to hosts you trust zfsctl with.", powerful.join(", "));
     }
     text.push_str("# Install as /usr/local/etc/sudoers.d/zfsctl (owner root, mode 0440) after checking it:\n#   visudo -c -f /usr/local/etc/sudoers.d/zfsctl\n");
     let unprivileged: Vec<&str> = privilege::unprivileged_for(features).iter().map(|e| e.name).collect();
     if !unprivileged.is_empty() {
-        text.push_str(&format!("# These run without sudo (needed only if the ssh key is locked to a forced command): {}\n", unprivileged.join(", ")));
+        let _ = writeln!(text, "# These run without sudo (needed only if the ssh key is locked to a forced command): {}", unprivileged.join(", "));
     }
-    text.push_str(&format!("{user} ALL=(root) NOPASSWD: \\\n    {}\n", sudoers_items(resolved).join(", \\\n    ")));
+    let _ = writeln!(text, "{user} ALL=(root) NOPASSWD: \\\n    {}", sudoers_items(resolved).join(", \\\n    "));
     text
 }
 
@@ -176,10 +177,10 @@ impl Report {
                 Status::Missing => "MISSING",
                 Status::TooBroad => "TOO BROAD",
             };
-            text.push_str(&format!("{label:<10}{:<11}{}\n", line.name, line.detail));
+            let _ = writeln!(text, "{label:<10}{:<11}{}", line.name, line.detail);
         }
         let count = |s: Status| self.lines.iter().filter(|l| l.status == s).count();
-        text.push_str(&format!("{} ok, {} missing, {} too broad\n", count(Status::Ok), count(Status::Missing), count(Status::TooBroad)));
+        let _ = writeln!(text, "{} ok, {} missing, {} too broad", count(Status::Ok), count(Status::Missing), count(Status::TooBroad));
         text
     }
 }
@@ -226,7 +227,10 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Result as AppResult;
     use crate::exec::privilege::{privileged_for, select};
+    use crate::exec::CommandOutput;
+    use std::sync::Mutex;
 
     fn resolution_for(host: &str, lines: &str, features: &[Feature]) -> Result<Vec<Resolved>, Failure> {
         parse_resolution(host, lines, &privileged_for(features))
@@ -326,9 +330,6 @@ mod tests {
         assert!(text.contains("/usr/local/bin/restic"), "{text}");
         assert!(!text.contains("smbpasswd") && !text.contains("tee"), "{text}");
     }
-    use crate::error::Result as AppResult;
-    use crate::exec::{CommandOutput, CommandRunner};
-    use std::sync::Mutex;
 
     /// Answers every call through `answer(cmd, args)` and records the call.
     struct Scripted {
@@ -367,7 +368,10 @@ mod tests {
         Scripted::new(move |cmd, args| {
             assert_eq!(cmd, "sh");
             assert_eq!(&args[..3], ["-c", RESOLVE_SCRIPT, "sh"]);
-            let lines: String = args[3..].iter().map(|n| format!("{n}={}\n", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p))).collect();
+            let lines = args[3..].iter().fold(String::new(), |mut acc, n| {
+                let _ = writeln!(acc, "{n}={}", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p));
+                acc
+            });
             out(&lines, 0)
         })
     }
@@ -442,13 +446,16 @@ mod tests {
     fn sudo_host(allowed: &'static [&'static str], paths: &'static [(&'static str, &'static str)]) -> Scripted {
         Scripted::new(move |cmd, args| match cmd {
             "sh" => {
-                let lines: String = args[3..].iter().map(|n| format!("{n}={}\n", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p))).collect();
+                let lines = args[3..].iter().fold(String::new(), |mut acc, n| {
+                let _ = writeln!(acc, "{n}={}", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p));
+                acc
+            });
                 out(&lines, 0)
             }
             "sudo" => {
                 assert_eq!(&args[..2], ["-n", "-l"]);
                 let asked = args[2..].join(" ");
-                out(&asked, if allowed.contains(&asked.as_str()) { 0 } else { 1 })
+                out(&asked, i32::from(!allowed.contains(&asked.as_str())))
             }
             other => panic!("unexpected {other}"),
         })
@@ -516,7 +523,10 @@ mod tests {
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let runner = Scripted::new(move |cmd, args| {
             if cmd == "sh" {
-                let lines: String = args[3..].iter().map(|n| format!("{n}=/sbin/{n}\n")).collect();
+                let lines = args[3..].iter().fold(String::new(), |mut acc, n| {
+                    let _ = writeln!(acc, "{n}=/sbin/{n}");
+                    acc
+                });
                 return out(&lines, 0);
             }
             if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 { out("", 0) } else { CommandOutput { stdout: String::new(), stderr: "gone".to_string(), status: 255 } }

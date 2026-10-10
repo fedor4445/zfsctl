@@ -2277,11 +2277,10 @@ impl App {
     /// caller before this runs, matching every other slow mutation in
     /// this app (the outcome is reported later via `status_message`,
     /// not by keeping the form open across the async gap). Uses
-    /// `zfs::run_checked` (not a bare `SshRunner::run`) specifically
-    /// because `SshRunner::run` alone does not check the remote
-    /// command's exit status -- an unreachable host or a rejected key
-    /// still returns `Ok` from the raw call, just with a non-zero
-    /// `CommandOutput::status`.
+    /// `probe_reachable`, which checks the exit status (a raw `SshRunner`
+    /// call returns `Ok` even for an unreachable host or a rejected
+    /// key, just with a non-zero `CommandOutput::status`) and runs
+    /// without sudo.
     pub fn begin_add_host(&mut self, name: String, target: String) {
         self.status_message = Some(format!("Connecting to '{target}'..."));
         let tx = self.tx.clone();
@@ -2289,7 +2288,7 @@ impl App {
         let target_for_thread = target;
         std::thread::spawn(move || {
             let runner = crate::exec::ssh::SshRunner::new(target_for_thread.clone());
-            let result = crate::zfs::run_checked(&runner, "true", &[], &format!("ssh {target_for_thread}")).map(|_| ());
+            let result = probe_reachable(&runner, &target_for_thread);
             let _ = tx.send(WorkerMsg::HostProbe(name_for_thread, target_for_thread, result));
         });
     }
@@ -3830,6 +3829,18 @@ Jobs
 
 Press any key to close."
         .to_string()
+}
+
+/// The Add Host reachability check: plain `true` over ssh, deliberately WITHOUT sudo. The documented sudoers
+/// entry is path-pinned and has no `true`, so `sudo -n true` would reject every correctly set-up host. A
+/// non-zero exit (rejected key, unreachable host) is an error carrying ssh's own message.
+fn probe_reachable(runner: &dyn CommandRunner, target: &str) -> Result<()> {
+    let out = runner.run_unprivileged("true", &[])?;
+    if out.success() {
+        Ok(())
+    } else {
+        Err(crate::error::AppError::CommandFailed { cmd: format!("ssh {target}"), status: out.status, stderr: out.stderr })
+    }
 }
 
 #[cfg(test)]
@@ -10674,6 +10685,21 @@ mod tests {
         let (app, out) = submit_backup_form(values);
         assert!(matches!(out.map(|a| a.call), Some(MutationCall::SaveJob { .. })));
         assert!(app.modal.is_none());
+    }
+
+
+    #[test]
+    fn the_add_host_probe_runs_true_without_sudo() {
+        let runner = crate::exec::test_support::FakeRunner::new("");
+        probe_reachable(&runner, "fbsd@h").expect("a reachable host passes");
+        assert_eq!(*runner.unprivileged_calls.lock().unwrap(), vec![("true".to_string(), Vec::<String>::new())], "sudo -n true is refused by the documented sudoers entry");
+    }
+
+    #[test]
+    fn the_add_host_probe_reports_a_rejected_connection_with_its_message() {
+        let runner = crate::exec::test_support::FakeRunner::failing("Permission denied (publickey).", 255);
+        let err = probe_reachable(&runner, "fbsd@h").unwrap_err().to_string();
+        assert!(err.contains("ssh fbsd@h") && err.contains("Permission denied"), "{err}");
     }
 
 }
