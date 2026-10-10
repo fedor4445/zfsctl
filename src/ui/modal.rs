@@ -74,7 +74,7 @@ impl MutationCall {
     pub fn done_note(&self) -> Option<String> {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
-            MutationCall::SendTestMessage { .. } => Some("Test message sent: the mail command accepted it".to_string()),
+            MutationCall::SendTestMessage { .. } => Some("Test message sent: the mail command accepted it (run from this terminal; the daemon runs it with root's home)".to_string()),
             _ => None,
         }
     }
@@ -728,6 +728,9 @@ mod tone_tests {
         assert!(run(&ok, Some("true")).is_ok());
         let bad = crate::config::NotifyConfig { mail_to: Some("a@x.org".into()), mail_command: Some("exit 78".into()), ..Default::default() }.resolve().unwrap();
         assert!(run(&bad, None).unwrap_err().to_string().contains("mail: failed: exited with status 78"));
-        assert_eq!(MutationCall::SendTestMessage { settings: Box::new(ok), hook: None }.tone(), Tone::Neutral);
+        let call = MutationCall::SendTestMessage { settings: Box::new(ok), hook: None };
+        assert_eq!(call.tone(), Tone::Neutral);
+        let note = call.done_note().unwrap();
+        assert!(note.contains("accepted it") && note.contains("this terminal") && note.contains("daemon"), "a passing test must not claim more than it proves: {note}");
     }
 }

@@ -27,10 +27,10 @@ enum Command {
     PrintSudoers { host: String, with: Vec<String>, without: Vec<String> },
     CheckHost { host: String, with: Vec<String>, without: Vec<String> },
     NotifyTest,
-    Report,
+    Report { state_dir: PathBuf },
 }
 
-const USAGE: &str = "usage: zfsctl [daemon [--state-dir DIR] | print-sudoers HOST [--with FEATURE] [--without FEATURE] | check-host HOST [--with FEATURE] [--without FEATURE] | notify-test | report]";
+const USAGE: &str = "usage: zfsctl [daemon [--state-dir DIR] | print-sudoers HOST [--with FEATURE] [--without FEATURE] | check-host HOST [--with FEATURE] [--without FEATURE] | notify-test | report [--state-dir DIR]]";
 
 /// `HOST [--with F]... [--without F]...` for the two admin commands.
 fn parse_host_flags(rest: &[String]) -> Option<(String, Vec<String>, Vec<String>)> {
@@ -60,7 +60,8 @@ fn parse_args(args: &[String]) -> error::Result<Command> {
         [cmd, rest @ ..] if cmd == "print-sudoers" => parse_host_flags(rest).map(|(host, with, without)| Command::PrintSudoers { host, with, without }).ok_or_else(usage),
         [cmd, rest @ ..] if cmd == "check-host" => parse_host_flags(rest).map(|(host, with, without)| Command::CheckHost { host, with, without }).ok_or_else(usage),
         [cmd] if cmd == "notify-test" => Ok(Command::NotifyTest),
-        [cmd] if cmd == "report" => Ok(Command::Report),
+        [cmd] if cmd == "report" => Ok(Command::Report { state_dir: PathBuf::from(daemon::engine::DEFAULT_STATE_DIR) }),
+        [cmd, flag, dir] if cmd == "report" && flag == "--state-dir" => Ok(Command::Report { state_dir: PathBuf::from(dir) }),
         _ => Err(usage()),
     }
 }
@@ -85,9 +86,12 @@ fn run() -> error::Result<()> {
         }
         return Ok(());
     }
-    if matches!(command, Command::NotifyTest | Command::Report) {
+    if matches!(command, Command::NotifyTest | Command::Report { .. }) {
         let config = config::Config::load(&config_path)?;
-        let code = if command == Command::NotifyTest { notify_cli::notify_test_command(&config)? } else { notify_cli::report_command(&config)? };
+        let code = match &command {
+            Command::Report { state_dir } => notify_cli::report_command(&config, state_dir)?,
+            _ => notify_cli::notify_test_command(&config)?,
+        };
         if code != 0 {
             std::process::exit(code);
         }
@@ -181,7 +185,9 @@ mod tests {
     #[test]
     fn notify_test_and_report_take_no_arguments() {
         assert_eq!(parse_args(&["notify-test".into()]).unwrap(), Command::NotifyTest);
-        assert_eq!(parse_args(&["report".into()]).unwrap(), Command::Report);
+        assert_eq!(parse_args(&["report".into()]).unwrap(), Command::Report { state_dir: PathBuf::from(daemon::engine::DEFAULT_STATE_DIR) });
+        assert_eq!(parse_args(&["report".into(), "--state-dir".into(), "/tmp/zit".into()]).unwrap(), Command::Report { state_dir: PathBuf::from("/tmp/zit") });
+        assert!(parse_args(&["report".into(), "--state-dir".into()]).is_err());
         assert!(parse_args(&["report".into(), "extra".into()]).is_err());
         assert!(parse_args(&["notify-test".into(), "x".into()]).is_err());
     }

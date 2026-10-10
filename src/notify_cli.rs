@@ -80,9 +80,9 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
     format!("Subject: {}\n\n{}", msg.subject, msg.body)
 }
 
-pub fn report_command(config: &Config) -> Result<i32> {
+pub fn report_command(config: &Config, state_dir: &Path) -> Result<i32> {
     config.notify.resolve().map_err(crate::error::AppError::Config)?;
-    let text = report_text_with(config, Path::new(crate::daemon::engine::DEFAULT_STATE_DIR), Utc::now(), &|hosts| probe_all(hosts, &|_| true, PROBE_DEADLINE, &crate::daemon::monitor::Busy::default()));
+    let text = report_text_with(config, state_dir, Utc::now(), &|hosts| probe_all(hosts, &|_| true, PROBE_DEADLINE, &crate::daemon::monitor::Busy::default()));
     print!("{text}");
     Ok(0)
 }

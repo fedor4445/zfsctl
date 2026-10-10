@@ -250,6 +250,12 @@ pub fn set_notify_section(text: &str, section: &str) -> std::result::Result<Stri
     if headers.len() > 1 {
         return Err(BY_HAND.to_string());
     }
+    // A `notify` table written some other way (`[ notify ]`, `["notify"]`, a quoted key, behind a byte-order mark)
+    // that the line scan did not see as the header: appending a second one would be refused later with a confusing
+    // "duplicate key", so say what is going on.
+    if headers.is_empty() && text.parse::<toml::Table>().is_ok_and(|t| t.contains_key("notify")) {
+        return Err(BY_HAND.to_string());
+    }
     let new_keys = fix(&section.split_inclusive('\n').skip(1).collect::<String>());
     let result = if let Some(&start) = headers.first() {
         let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(i, _)| i);
@@ -785,6 +791,15 @@ mod tests {
         // settings alone (which come out as the asked-for defaults) cannot.
         let text = "[extra]\ntext = \'\'\'\n[notify]\nmail_to = \"inside\"\n[end]\'\'\'\n";
         assert!(set_notify_section(text, "[notify]\n").is_err());
+    }
+
+    #[test]
+    fn a_notify_table_in_an_unusual_spelling_is_refused_with_the_by_hand_message() {
+        let section = render_notify_section(&cfg("n@x.org"));
+        for text in ["[ notify ]\nmail_to = \"a@x.org\"\n", "[\"notify\"]\nmail_to = \"a@x.org\"\n", "\"notify\" = { mail_to = \"a@x.org\" }\n", "\u{feff}[notify]\nmail_to = \"a@x.org\"\n"] {
+            let err = set_notify_section(text, &section).unwrap_err();
+            assert!(err.contains("by hand"), "{text:?}: {err}");
+        }
     }
 
     #[test]

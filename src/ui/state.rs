@@ -851,9 +851,13 @@ impl App {
 
     /// Reloads the Alerts screen's data from `config.toml` and the state directory; the scroll position stays.
     pub fn refresh_alerts(&mut self) {
-        let scroll = self.alerts_view.scroll;
+        let (scroll, old_len) = (self.alerts_view.scroll, self.alerts_view.events.len());
         self.alerts_view = crate::ui::alerts::load(&self.config_path, &self.state_dir);
-        self.alerts_view.scroll = scroll.min(self.alerts_view.events.len().saturating_sub(1));
+        let new_len = self.alerts_view.events.len();
+        // New events are added at the front (newest first): when the operator has scrolled down, move with them so the
+        // line being read stays where it is.
+        let moved = if scroll > 0 { scroll + new_len.saturating_sub(old_len) } else { 0 };
+        self.alerts_view.scroll = moved.min(new_len.saturating_sub(1));
     }
 
     /// Reloads the Alerts data every 5 seconds while that section is on screen (so a new event or a changed
@@ -8214,6 +8218,27 @@ mod tests {
         assert_eq!(app.alerts_view.scroll, 3);
         app.refresh_alerts();
         assert_eq!(app.alerts_view.scroll, 3, "a reload keeps the scroll position");
+    }
+
+    #[test]
+    fn new_events_do_not_move_the_line_the_operator_is_reading() {
+        let (mut app, dir) = alerts_app("");
+        let log = crate::daemon::health_text::EventLog::new(dir.path().join("health-events.jsonl"));
+        let add = |text: &str| log.append(&crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: text.into() }).unwrap();
+        for i in 0..6 {
+            add(&format!("old{i}"));
+        }
+        app.refresh_alerts();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Down);
+        let reading = app.alerts_view.events[app.alerts_view.scroll].text.clone();
+        add("new1");
+        add("new2");
+        app.refresh_alerts();
+        assert_eq!(app.alerts_view.events[app.alerts_view.scroll].text, reading, "the same event stays at the top of the view");
+        let mut at_top = alerts_app("").0;
+        at_top.refresh_alerts();
+        assert_eq!(at_top.alerts_view.scroll, 0);
     }
 
     #[test]
