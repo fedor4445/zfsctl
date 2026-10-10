@@ -111,6 +111,8 @@ fn flatten_permissions_snapshot(snapshot: &crate::zfs::permission::PermissionsSn
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
+    /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
+    AlertsPreview(String),
     Pools(usize, Result<Vec<Pool>>),
     Datasets(usize, Result<Vec<Dataset>>),
     Snapshots(usize, Result<Vec<Snapshot>>),
@@ -217,6 +219,9 @@ pub struct App {
     last_alerts_refresh: Option<Instant>,
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
+    pub alerts_preview_busy: bool,
+    /// How many previews were started (a test seam: a second `p` while one runs must not start another).
+    pub alerts_previews_started: u32,
     /// The address shown for each host (index-aligned with `hosts`); see `address_of`.
     pub host_addresses: Vec<String>,
     /// The tag of each host (index-aligned with `hosts`; empty = none).
@@ -391,6 +396,8 @@ impl App {
             alerts_view: crate::ui::alerts::AlertsView::default(),
             last_alerts_refresh: None,
             done_note: None,
+            alerts_preview_busy: false,
+            alerts_previews_started: 0,
             nfs_available: None,
             samba_available: None,
             shares_loaded: false,
@@ -751,6 +758,56 @@ impl App {
             self.last_jobs_refresh = Some(now);
             self.refresh_jobs();
         }
+    }
+
+    /// `t`: asks (two keys) before sending a real test message through the saved channels.
+    fn ask_to_send_test(&mut self) {
+        let Some(settings) = self.alerts_view.settings.clone() else {
+            let problem = self.alerts_view.problem.clone().unwrap_or_default();
+            self.set_error(format!("{problem}: fix config.toml before testing"));
+            return;
+        };
+        let hook = self.alerts_view.hook.clone();
+        if !settings.has_mail() && hook.is_none() {
+            self.status_message = Some("Nothing to test: set an email address (e) or a notify_command in config.toml".to_string());
+            return;
+        }
+        let mut prompt = String::from("Send a test message?\n");
+        if settings.has_mail() {
+            {
+                use std::fmt::Write as _;
+                let _ = write!(prompt, "  To: {}\n  Command: {}\n", settings.mail_to.join(", "), settings.mail_command);
+            }
+        }
+        match (&hook, settings.has_mail()) {
+            (Some(_), true) => prompt.push_str("  Also through the notify hook\n"),
+            (Some(_), false) => prompt.push_str("  Through the notify hook\n"),
+            (None, _) => {}
+        }
+        prompt.push_str("This sends a real message. (y/n)");
+        let action = PendingAction { host: self.selected_host, section: Section::Alerts, call: MutationCall::SendTestMessage { settings: Box::new(settings), hook } };
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+    }
+
+    /// `p`: builds the report as it would be sent now on a worker thread (probing the hosts can take a while) and
+    /// shows it in a pop-up when ready. Nothing is sent or recorded.
+    fn start_alerts_preview(&mut self) {
+        if self.alerts_preview_busy {
+            return;
+        }
+        self.alerts_preview_busy = true;
+        self.alerts_previews_started += 1;
+        self.status_message = Some("Preparing the report preview (probing the hosts)…".to_string());
+        let (path, state_dir, tx) = (self.config_path.clone(), self.state_dir.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let text = match crate::config::Config::load(&path) {
+                Ok(config) => crate::notify_cli::report_text_with(&config, &state_dir, chrono::Utc::now(), &|hosts| {
+                    crate::daemon::monitor::probe_all(hosts, &|_| true, crate::daemon::monitor::PROBE_DEADLINE, &crate::daemon::monitor::Busy::default())
+                }),
+                Err(e) => format!("config.toml could not be read: {e}"),
+            };
+            let _ = tx.send(WorkerMsg::AlertsPreview(text));
+        });
     }
 
     /// The edit form for the alert settings, pre-filled from the file; `None` while `config.toml` cannot be read.
@@ -1639,6 +1696,8 @@ impl App {
                     self.set_error(format!("{problem}: fix config.toml before editing here"));
                 }
             }
+            KeyCode::Char('t') if self.current_section() == Section::Alerts && self.modal.is_none() && self.picker.is_none() => self.ask_to_send_test(),
+            KeyCode::Char('p') if self.current_section() == Section::Alerts && self.modal.is_none() && self.picker.is_none() => self.start_alerts_preview(),
             KeyCode::Down if self.current_section() == Section::Alerts => {
                 let last = self.alerts_view.events.len().saturating_sub(1);
                 self.alerts_view.scroll = (self.alerts_view.scroll + 1).min(last);
@@ -2863,6 +2922,11 @@ impl App {
                             self.set_error(format!("Could not add host '{name}': {e}"));
                         }
                     }
+                }
+                WorkerMsg::AlertsPreview(text) => {
+                    self.alerts_preview_busy = false;
+                    self.status_message = None;
+                    self.modal = Some(Modal::Info { title: "Report preview (nothing sent)".to_string(), body: text });
                 }
                 WorkerMsg::MutationDone(host, section, result) => {
                     if host != self.selected_host {
@@ -8246,6 +8310,82 @@ mod tests {
         let other = PendingAction { host: 0, section: Section::Jobs, call: MutationCall::DeleteJob { state_dir: dir.path().to_path_buf(), id: "none".into() } };
         app.dispatch_mutation(other, runner);
         assert!(app.done_note.is_none());
+    }
+
+    #[test]
+    fn t_with_nothing_configured_says_so_and_asks_nothing() {
+        let (mut app, _dir) = alerts_app("");
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.modal.is_none());
+        assert!(app.status_message.clone().unwrap_or_default().contains("set an email address"), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn t_asks_first_naming_the_recipient_and_the_command_and_sends_only_after_y_then_enter() {
+        let (mut app, _dir) = alerts_app("[notify]\nmail_to = \"me@x.org\"\nmail_command = \"msmtp -a default -t\"\n");
+        app.handle_key(KeyCode::Char('t'));
+        let Some(Modal::Confirm { prompt, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("me@x.org") && prompt.contains("msmtp -a default -t") && prompt.contains("real message"), "{prompt}");
+        assert!(matches!(action.call, MutationCall::SendTestMessage { .. }));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter alone does nothing");
+        app.handle_modal_key(KeyCode::Char('y'));
+        assert!(app.handle_modal_key(KeyCode::Enter).is_some());
+    }
+
+    #[test]
+    fn t_declined_sends_nothing() {
+        let (mut app, _dir) = alerts_app("[notify]\nmail_to = \"me@x.org\"\n");
+        app.handle_key(KeyCode::Char('t'));
+        app.handle_modal_key(KeyCode::Char('n'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn t_names_the_hook_when_only_a_hook_is_set() {
+        let (mut app, _dir) = alerts_app("[daemon]\nnotify_command = \"curl -s x\"\n");
+        app.handle_key(KeyCode::Char('t'));
+        let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("notify hook") && !prompt.contains("To:"), "{prompt}");
+    }
+
+    #[test]
+    fn t_with_an_invalid_saved_section_refuses_with_the_reason() {
+        let (mut app, _dir) = alerts_app("[notify]\nmail_to = \"nope\"\n");
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.modal.is_none() && app.status_message.clone().unwrap_or_default().contains("mail_to"), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn p_runs_the_preview_in_the_background_and_shows_it_in_a_popup_and_not_twice_at_once() {
+        let (mut app, _dir) = alerts_app("");
+        app.handle_key(KeyCode::Char('p'));
+        assert!(app.alerts_preview_busy);
+        assert!(app.status_message.clone().unwrap_or_default().contains("Preparing"));
+        let note = app.status_message.clone();
+        app.handle_key(KeyCode::Char('p'));
+        assert_eq!(app.status_message, note, "a second press while it runs does nothing");
+        assert_eq!(app.alerts_previews_started, 1, "and starts no second probe");
+        // The real worker finishes on its own; wait for its result.
+        let start = Instant::now();
+        while app.modal.is_none() && start.elapsed() < Duration::from_secs(90) {
+            app.drain_worker_messages();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!app.alerts_preview_busy);
+        let Some(Modal::Info { title, body }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(title.contains("nothing sent") && body.contains("Subject: [zfsctl] daily report"), "{title}\n{body}");
+    }
+
+    #[test]
+    fn a_preview_result_is_shown_even_when_it_arrives_after_leaving_the_screen() {
+        let (mut app, _dir) = alerts_app("");
+        app.alerts_preview_busy = true;
+        app.selected_section = 0;
+        app.tx.send(WorkerMsg::AlertsPreview("Subject: x\n\nbody".to_string())).unwrap();
+        app.drain_worker_messages();
+        assert!(!app.alerts_preview_busy);
+        assert!(matches!(&app.modal, Some(Modal::Info { body, .. }) if body.contains("Subject: x")));
     }
 
     #[test]
