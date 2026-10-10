@@ -12,6 +12,8 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default, skip_serializing_if = "DaemonConfig::is_default")]
     pub daemon: DaemonConfig,
+    #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
+    pub notify: NotifyConfig,
 }
 
 /// Settings for `zfsctl daemon`.
@@ -27,6 +29,100 @@ pub struct DaemonConfig {
 impl DaemonConfig {
     fn is_default(&self) -> bool {
         self.notify_command.is_none()
+    }
+}
+
+pub const DEFAULT_MAIL_COMMAND: &str = "msmtp -t";
+
+/// Health alerts and the daily report (`[notify]`). Unset keys take the documented defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct NotifyConfig {
+    /// One address or several, comma separated. Unset means no email.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mail_to: Option<String>,
+    /// Run through `sh -c` with the whole message (headers included) on stdin. Default `msmtp -t`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mail_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mail_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub check_interval_minutes: Option<u64>,
+    /// `HH:MM` on the hub's clock, or `off`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub report_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub remind_hours: Option<u64>,
+}
+
+impl NotifyConfig {
+    fn is_default(&self) -> bool {
+        *self == NotifyConfig::default()
+    }
+
+    /// Validates the section and fills in the defaults.
+    pub fn resolve(&self) -> std::result::Result<NotifySettings, String> {
+        let valid_address = |a: &str| {
+            let mut parts = a.split('@');
+            matches!((parts.next(), parts.next(), parts.next()), (Some(l), Some(d), None) if !l.is_empty() && !d.is_empty())
+                && !a.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, ',' | '<' | '>' | '"'))
+        };
+        let mail_to: Vec<String> = match self.mail_to.as_deref() {
+            None => Vec::new(),
+            Some(list) => {
+                let parts: Vec<String> = list.split(',').map(|p| p.trim().to_string()).collect();
+                if let Some(bad) = parts.iter().find(|p| !valid_address(p)) {
+                    return Err(format!("notify.mail_to: '{bad}' is not a plain address (user@host, no spaces or control characters)"));
+                }
+                parts
+            }
+        };
+        let mail_command = match self.mail_command.as_deref() {
+            None => DEFAULT_MAIL_COMMAND.to_string(),
+            Some(c) if c.trim().is_empty() => return Err("notify.mail_command is empty".to_string()),
+            Some(c) => c.to_string(),
+        };
+        if let Some(from) = self.mail_from.as_deref() {
+            if from.trim().is_empty() || from.chars().any(char::is_control) {
+                return Err("notify.mail_from must be one line".to_string());
+            }
+        }
+        let minutes = self.check_interval_minutes.unwrap_or(5);
+        if minutes < 1 {
+            return Err("notify.check_interval_minutes must be at least 1".to_string());
+        }
+        let report_time = match self.report_time.as_deref() {
+            None => chrono::NaiveTime::from_hms_opt(7, 0, 0),
+            Some("off") => None,
+            Some(t) => Some(chrono::NaiveTime::parse_from_str(t, "%H:%M").map_err(|_| format!("notify.report_time '{t}' is not HH:MM (or off)"))?),
+        };
+        let remind = match self.remind_hours.unwrap_or(6) {
+            0 => None,
+            h => Some(std::time::Duration::from_secs(h * 3600)),
+        };
+        Ok(NotifySettings { mail_to, mail_command, mail_from: self.mail_from.clone(), check_interval: std::time::Duration::from_secs(minutes * 60), report_time, remind })
+    }
+}
+
+/// `NotifyConfig` validated, with the defaults filled in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotifySettings {
+    pub mail_to: Vec<String>,
+    pub mail_command: String,
+    pub mail_from: Option<String>,
+    pub check_interval: std::time::Duration,
+    pub report_time: Option<chrono::NaiveTime>,
+    pub remind: Option<std::time::Duration>,
+}
+
+impl Default for NotifySettings {
+    fn default() -> Self {
+        NotifyConfig::default().resolve().unwrap_or_else(|_| unreachable!("the defaults always validate"))
+    }
+}
+
+impl NotifySettings {
+    pub fn has_mail(&self) -> bool {
+        !self.mail_to.is_empty()
     }
 }
 
@@ -160,6 +256,53 @@ mod tests {
         let c: Config = toml::from_str(with).unwrap();
         assert_eq!(c.hosts[0].tag.as_deref(), Some("backup"));
         assert!(toml::to_string(&c).unwrap().contains("tag = \"backup\""));
+    }
+
+    #[test]
+    fn a_config_without_notify_loads_saves_unchanged_and_resolves_to_the_defaults() {
+        let config: Config = toml::from_str("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n").unwrap();
+        assert_eq!(config.notify, NotifyConfig::default());
+        assert!(!toml::to_string_pretty(&config).unwrap().contains("notify"));
+        let s = config.notify.resolve().unwrap();
+        assert!(s.mail_to.is_empty() && !s.has_mail());
+        assert_eq!(s.mail_command, "msmtp -t");
+        assert_eq!(s.check_interval, std::time::Duration::from_secs(300));
+        assert_eq!(s.report_time, Some(chrono::NaiveTime::from_hms_opt(7, 0, 0).unwrap()));
+        assert_eq!(s.remind, Some(std::time::Duration::from_secs(6 * 3600)));
+        assert_eq!(s.mail_from, None);
+    }
+
+    #[test]
+    fn every_notify_key_parses_and_round_trips() {
+        let text = "[notify]\nmail_to = \"a@x.org, b@y.org\"\nmail_command = \"msmtp -a default -t\"\nmail_from = \"zfsctl@hub\"\ncheck_interval_minutes = 10\nreport_time = \"06:30\"\nremind_hours = 0\n";
+        let config: Config = toml::from_str(text).unwrap();
+        let s = config.notify.resolve().unwrap();
+        assert_eq!(s.mail_to, ["a@x.org", "b@y.org"]);
+        assert_eq!((s.mail_command.as_str(), s.mail_from.as_deref()), ("msmtp -a default -t", Some("zfsctl@hub")));
+        assert_eq!(s.check_interval, std::time::Duration::from_secs(600));
+        assert_eq!(s.report_time, Some(chrono::NaiveTime::from_hms_opt(6, 30, 0).unwrap()));
+        assert_eq!(s.remind, None, "0 hours means never");
+        assert_eq!(toml::from_str::<Config>(&toml::to_string_pretty(&config).unwrap()).unwrap(), config);
+    }
+
+    #[test]
+    fn report_time_off_disables_the_report() {
+        let c = NotifyConfig { report_time: Some("off".into()), ..NotifyConfig::default() };
+        assert_eq!(c.resolve().unwrap().report_time, None);
+    }
+
+    #[test]
+    fn bad_notify_values_are_refused_with_the_reason() {
+        let bad = |c: NotifyConfig| c.resolve().unwrap_err();
+        let base = NotifyConfig::default();
+        for to in ["nobody", "a@", "@x.org", "a b@x.org", "a@x.org\nBcc: z@z.org", "a@x@y", "<a@x.org>", "a@x.org,,b@y.org"] {
+            assert!(bad(NotifyConfig { mail_to: Some(to.into()), ..base.clone() }).contains("mail_to"), "{to:?}");
+        }
+        assert!(bad(NotifyConfig { check_interval_minutes: Some(0), ..base.clone() }).contains("check_interval_minutes"));
+        assert!(bad(NotifyConfig { report_time: Some("7am".into()), ..base.clone() }).contains("report_time"));
+        assert!(bad(NotifyConfig { report_time: Some("25:00".into()), ..base.clone() }).contains("report_time"));
+        assert!(bad(NotifyConfig { mail_command: Some("  ".into()), ..base.clone() }).contains("mail_command"));
+        assert!(bad(NotifyConfig { mail_from: Some("a\r\nb".into()), ..base }).contains("mail_from"));
     }
 
     #[test]
