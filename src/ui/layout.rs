@@ -867,6 +867,10 @@ fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
     let width = usize::from(area.width.saturating_sub(2));
     let height = usize::from(area.height.saturating_sub(2));
     let v = &app.alerts_view;
+    if !v.loaded {
+        f.render_widget(Paragraph::new("Loading…").style(theme.dim()).block(block), area);
+        return;
+    }
     let mut lines: Vec<Line> = vec![Line::styled("Settings (config.toml)".to_string(), theme.dim())];
     for (label, value, is_default) in v.setting_rows() {
         let text = format!("{label:<14} {value}");
@@ -2560,6 +2564,13 @@ mod tests {
         for want in ["Alerts", "Email to", "me@x.org", "Mail command", "msmtp -t", "(default)", "Hook command", "curl -s x", "edit in config.toml", "Monitor on", "Last report sent 2026-10-10", "fbsd16", "alert", "tank DEGRADED"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    #[test]
+    fn before_the_first_load_the_alerts_screen_says_so_instead_of_showing_empty_settings() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Alerts).unwrap();
+        assert!(render(&mut app, 100, 30).join("\n").contains("Loading"));
     }
 
     #[test]
