@@ -6,6 +6,7 @@ mod error;
 mod exec;
 mod hosts;
 mod jobs;
+mod notify_cli;
 mod ui;
 mod zfs;
 
@@ -25,9 +26,11 @@ enum Command {
     Daemon { state_dir: PathBuf },
     PrintSudoers { host: String, with: Vec<String>, without: Vec<String> },
     CheckHost { host: String, with: Vec<String>, without: Vec<String> },
+    NotifyTest,
+    Report,
 }
 
-const USAGE: &str = "usage: zfsctl [daemon [--state-dir DIR] | print-sudoers HOST [--with FEATURE] [--without FEATURE] | check-host HOST [--with FEATURE] [--without FEATURE]]";
+const USAGE: &str = "usage: zfsctl [daemon [--state-dir DIR] | print-sudoers HOST [--with FEATURE] [--without FEATURE] | check-host HOST [--with FEATURE] [--without FEATURE] | notify-test | report]";
 
 /// `HOST [--with F]... [--without F]...` for the two admin commands.
 fn parse_host_flags(rest: &[String]) -> Option<(String, Vec<String>, Vec<String>)> {
@@ -56,6 +59,8 @@ fn parse_args(args: &[String]) -> error::Result<Command> {
         [cmd, flag, dir] if cmd == "daemon" && flag == "--state-dir" => Ok(Command::Daemon { state_dir: PathBuf::from(dir) }),
         [cmd, rest @ ..] if cmd == "print-sudoers" => parse_host_flags(rest).map(|(host, with, without)| Command::PrintSudoers { host, with, without }).ok_or_else(usage),
         [cmd, rest @ ..] if cmd == "check-host" => parse_host_flags(rest).map(|(host, with, without)| Command::CheckHost { host, with, without }).ok_or_else(usage),
+        [cmd] if cmd == "notify-test" => Ok(Command::NotifyTest),
+        [cmd] if cmd == "report" => Ok(Command::Report),
         _ => Err(usage()),
     }
 }
@@ -75,6 +80,14 @@ fn run() -> error::Result<()> {
     if matches!(command, Command::PrintSudoers { .. } | Command::CheckHost { .. }) {
         let config = config::Config::load(&config_path)?;
         let code = admin(&command, &config)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+    if matches!(command, Command::NotifyTest | Command::Report) {
+        let config = config::Config::load(&config_path)?;
+        let code = if command == Command::NotifyTest { notify_cli::notify_test_command(&config)? } else { notify_cli::report_command(&config)? };
         if code != 0 {
             std::process::exit(code);
         }
@@ -165,6 +178,14 @@ mod tests {
             assert!(matches!(result, Err(error::AppError::Config(_))));
         }
     }
+    #[test]
+    fn notify_test_and_report_take_no_arguments() {
+        assert_eq!(parse_args(&["notify-test".into()]).unwrap(), Command::NotifyTest);
+        assert_eq!(parse_args(&["report".into()]).unwrap(), Command::Report);
+        assert!(parse_args(&["report".into(), "extra".into()]).is_err());
+        assert!(parse_args(&["notify-test".into(), "x".into()]).is_err());
+    }
+
     #[test]
     fn print_sudoers_and_check_host_take_a_host_and_repeatable_flags() {
         assert_eq!(
