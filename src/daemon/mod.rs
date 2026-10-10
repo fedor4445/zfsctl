@@ -6,6 +6,7 @@ pub mod health;
 pub mod health_text;
 pub mod heartbeat;
 pub mod history;
+pub mod monitor;
 pub mod notify;
 pub mod scheduler;
 pub mod cancel;
