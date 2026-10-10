@@ -70,6 +70,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
             let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
             let mut app = App::new(host_names);
             app.theme = resolved.theme;
+            app.config_path = config_path.to_path_buf();
             app.status_message = resolved.note;
             app.set_host_addresses(inventory.hosts.iter().map(|h| state::address_of(h.ssh_target.as_deref())).collect());
             app.set_host_tags(inventory.hosts.iter().map(|h| h.tag.clone().unwrap_or_default()).collect());
@@ -203,6 +204,7 @@ fn event_loop(
     loop {
         let refreshes = app.drain_worker_messages();
         app.refresh_jobs_if_stale(Instant::now());
+        app.refresh_alerts_if_stale(Instant::now());
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
@@ -231,6 +233,7 @@ fn event_loop(
                     Section::Shares => app.refresh_shares(host.runner.clone()),
                     Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
                     Section::Jobs => app.refresh_jobs(),
+                    Section::Alerts => app.refresh_alerts(),
                     Section::Vdevs => {
                         if let Some(pool) = app.drilled_pool.clone() {
                             app.refresh_vdevs(host.runner.clone(), pool);
@@ -321,6 +324,7 @@ fn event_loop(
                                     Section::Shares => app.refresh_shares(host.runner.clone()),
                                     Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
                                     Section::Jobs => app.refresh_jobs(),
+                                    Section::Alerts => app.refresh_alerts(),
                                     Section::Hosts
                                     | Section::Vdevs
                                     | Section::PoolProperties

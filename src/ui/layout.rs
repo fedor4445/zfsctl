@@ -163,6 +163,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Shares => "Shares",
                 Section::BootEnvs => "Boot Envs",
                 Section::Jobs => "Jobs",
+                Section::Alerts => "Alerts",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
@@ -280,6 +281,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Shares => draw_shares(f, app, area),
         Section::BootEnvs => draw_bootenvs(f, app, area),
         Section::Jobs => draw_jobs(f, app, area),
+        Section::Alerts => draw_alerts(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl => {
             unreachable!("never in App::sections")
@@ -850,6 +852,50 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
+}
+
+/// The Alerts section: the saved `[notify]` settings, the monitor's status, the recent health events.
+fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
+    use crate::ui::alerts::{event_line, EVENTS_SHOWN};
+    use crate::ui::jobs::DaemonState;
+    let theme = app.theme.clone();
+    let daemon = match app.jobs_view.daemon(chrono::Utc::now()) {
+        DaemonState::Running { pid } => Span::raw(format!("daemon running (pid {pid})")),
+        DaemonState::NotRunning => Span::styled("daemon NOT running: no alerts will be sent".to_string(), theme.err),
+    };
+    let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(Line::from(vec![Span::raw("Alerts — "), daemon]));
+    let width = usize::from(area.width.saturating_sub(2));
+    let height = usize::from(area.height.saturating_sub(2));
+    let v = &app.alerts_view;
+    let mut lines: Vec<Line> = vec![Line::styled("Settings (config.toml)".to_string(), theme.dim())];
+    for (label, value, is_default) in v.setting_rows() {
+        let text = format!("{label:<14} {value}");
+        if is_default && label != "Hook command" {
+            lines.push(Line::from(vec![Span::raw(truncate_with_ellipsis(&text, width.saturating_sub(12))), Span::styled("   (default)".to_string(), theme.dim())]));
+        } else {
+            lines.push(Line::raw(truncate_with_ellipsis(&text, width)));
+        }
+    }
+    lines.push(Line::raw(String::new()));
+    if let Some(problem) = &v.problem {
+        lines.push(Line::styled(truncate_with_ellipsis(problem, width), theme.err));
+    }
+    lines.push(Line::raw(truncate_with_ellipsis(&v.monitor_text(), width)));
+    lines.push(Line::raw(match &v.last_report {
+        Some(date) => format!("Last report sent {date}"),
+        None => "Last report: never".to_string(),
+    }));
+    lines.push(Line::raw(String::new()));
+    lines.push(Line::styled("Recent events".to_string(), theme.dim()));
+    if v.events.is_empty() {
+        lines.push(Line::styled("  (none yet)".to_string(), theme.dim()));
+    } else {
+        let room = height.saturating_sub(lines.len()).min(EVENTS_SHOWN);
+        for e in v.events.iter().skip(v.scroll).take(room) {
+            lines.push(Line::raw(truncate_with_ellipsis(&event_line(e), width)));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2491,6 +2537,53 @@ mod tests {
         for want in ["Name", "Address", "State", "172.16.10.60"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    fn alerts_render_app(config: &str) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), config).unwrap();
+        let mut app = App::new(vec!["local".to_string()]);
+        app.config_path = dir.path().join("config.toml");
+        app.state_dir = dir.path().to_path_buf();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Alerts).unwrap();
+        app.refresh_alerts();
+        (app, dir)
+    }
+
+    #[test]
+    fn the_alerts_screen_shows_settings_status_and_events() {
+        let (mut app, dir) = alerts_render_app("[daemon]\nnotify_command = \"curl -s x\"\n\n[notify]\nmail_to = \"me@x.org\"\n");
+        std::fs::write(dir.path().join("notify.json"), "{\"last_report\":\"2026-10-10\"}").unwrap();
+        crate::daemon::health_text::EventLog::new(dir.path().join("health-events.jsonl")).append(&crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "fbsd16".into(), kind: "alert".into(), text: "tank DEGRADED".into() }).unwrap();
+        app.refresh_alerts();
+        let text = render(&mut app, 140, 40).join("\n");
+        for want in ["Alerts", "Email to", "me@x.org", "Mail command", "msmtp -t", "(default)", "Hook command", "curl -s x", "edit in config.toml", "Monitor on", "Last report sent 2026-10-10", "fbsd16", "alert", "tank DEGRADED"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn nothing_configured_says_the_monitor_is_off_and_how_to_turn_it_on() {
+        let (mut app, _dir) = alerts_render_app("");
+        let text = render(&mut app, 140, 40).join("\n");
+        assert!(text.contains("Monitor off") && text.contains("(not set)") && text.contains("Last report: never") && text.contains("(none yet)"), "{text}");
+    }
+
+    #[test]
+    fn an_unreadable_config_is_reported_on_the_screen() {
+        let (mut app, _dir) = alerts_render_app("[notify\nbroken");
+        let text = render(&mut app, 140, 40).join("\n");
+        assert!(text.contains("could not be read"), "{text}");
+    }
+
+    #[test]
+    fn a_narrow_terminal_cuts_long_values_with_an_ellipsis_and_never_panics() {
+        let (mut app, _dir) = alerts_render_app("[notify]\nmail_to = \"a@x.org\"\nmail_command = \"msmtp -a default -t --some --very --long --set --of --options\"\n");
+        for (w, h) in [(60, 20), (80, 24), (30, 10)] {
+            let text = render(&mut app, w, h).join("\n");
+            assert!(!text.is_empty());
+        }
+        assert!(render(&mut app, 80, 24).join("\n").contains('…'));
     }
 
     #[test]

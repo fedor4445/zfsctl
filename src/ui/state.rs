@@ -30,6 +30,7 @@ pub enum Section {
     Shares,
     BootEnvs,
     Jobs,
+    Alerts,
     Vdevs,
     PoolProperties,
     DatasetProperties,
@@ -210,6 +211,10 @@ pub struct App {
     /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
     pub state_dir: std::path::PathBuf,
     last_jobs_refresh: Option<Instant>,
+    /// `config.toml`, read and (for the alert settings) written by the Alerts screen.
+    pub config_path: std::path::PathBuf,
+    pub alerts_view: crate::ui::alerts::AlertsView,
+    last_alerts_refresh: Option<Instant>,
     /// The address shown for each host (index-aligned with `hosts`); see `address_of`.
     pub host_addresses: Vec<String>,
     /// The tag of each host (index-aligned with `hosts`; empty = none).
@@ -352,7 +357,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let hosts_for_addr = hosts.clone();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs],
+            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Alerts],
             selected_section: 0,
             hosts,
             selected_host: 0,
@@ -380,6 +385,9 @@ impl App {
             jobs_table: TableState::default(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
             last_jobs_refresh: None,
+            config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
+            alerts_view: crate::ui::alerts::AlertsView::default(),
+            last_alerts_refresh: None,
             nfs_available: None,
             samba_available: None,
             shares_loaded: false,
@@ -597,6 +605,7 @@ impl App {
             Section::Shares => self.refresh_shares(runner),
             Section::BootEnvs => self.refresh_bootenvs(runner),
             Section::Jobs => self.refresh_jobs(),
+            Section::Alerts => self.refresh_alerts(),
             _ => {}
         }
     }
@@ -738,6 +747,25 @@ impl App {
         if self.last_jobs_refresh.is_none_or(|t| now.duration_since(t) >= every) {
             self.last_jobs_refresh = Some(now);
             self.refresh_jobs();
+        }
+    }
+
+    /// Reloads the Alerts screen's data from `config.toml` and the state directory; the scroll position stays.
+    pub fn refresh_alerts(&mut self) {
+        let scroll = self.alerts_view.scroll;
+        self.alerts_view = crate::ui::alerts::load(&self.config_path, &self.state_dir);
+        self.alerts_view.scroll = scroll.min(self.alerts_view.events.len().saturating_sub(1));
+    }
+
+    /// Reloads the Alerts data every 5 seconds while that section is on screen (so a new event or a changed
+    /// file shows up), and never otherwise.
+    pub fn refresh_alerts_if_stale(&mut self, now: Instant) {
+        if self.current_section() != Section::Alerts {
+            return;
+        }
+        if self.last_alerts_refresh.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
+            self.last_alerts_refresh = Some(now);
+            self.refresh_alerts();
         }
     }
 
@@ -1576,6 +1604,13 @@ impl App {
                     let call = MutationCall::DeleteJob { state_dir: self.state_dir.clone(), id: job.id.clone() };
                     self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
                 }
+            }
+            KeyCode::Down if self.current_section() == Section::Alerts => {
+                let last = self.alerts_view.events.len().saturating_sub(1);
+                self.alerts_view.scroll = (self.alerts_view.scroll + 1).min(last);
+            }
+            KeyCode::Up if self.current_section() == Section::Alerts => {
+                self.alerts_view.scroll = self.alerts_view.scroll.saturating_sub(1);
             }
             KeyCode::Down if self.current_section() == Section::Jobs => {
                 move_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len(), true);
@@ -4487,7 +4522,7 @@ mod tests {
         app.handle_key(KeyCode::BackTab);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Jobs);
+        assert_eq!(app.current_section(), Section::Alerts);
     }
 
     #[test]
@@ -5748,7 +5783,7 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         assert_eq!(app.current_section(), Section::Hosts);
         app.handle_key(KeyCode::BackTab);
-        assert_eq!(app.current_section(), Section::Jobs, "must wrap backward from the first section to the last");
+        assert_eq!(app.current_section(), Section::Alerts, "must wrap backward from the first section to the last");
     }
 
     #[test]
@@ -7964,6 +7999,61 @@ mod tests {
         assert_eq!(app.selected_host, 3);
     }
 
+    fn alerts_app(config: &str) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), config).unwrap();
+        let mut app = App::new(vec!["local".to_string()]);
+        app.config_path = dir.path().join("config.toml");
+        app.state_dir = dir.path().to_path_buf();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Alerts).unwrap();
+        app.refresh_alerts();
+        (app, dir)
+    }
+
+    #[test]
+    fn alerts_is_the_last_sidebar_section_after_jobs() {
+        let app = App::new(vec!["local".to_string()]);
+        assert_eq!(app.sections.last(), Some(&Section::Alerts));
+        assert_eq!(app.sections[app.sections.len() - 2], Section::Jobs);
+    }
+
+    #[test]
+    fn up_and_down_scroll_the_alert_events_within_bounds() {
+        let (mut app, dir) = alerts_app("");
+        let log = crate::daemon::health_text::EventLog::new(dir.path().join("health-events.jsonl"));
+        for i in 0..5 {
+            log.append(&crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: format!("n{i}") }).unwrap();
+        }
+        app.refresh_alerts();
+        assert_eq!(app.alerts_view.events.len(), 5);
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.alerts_view.scroll, 0, "not above the first");
+        for _ in 0..9 {
+            app.handle_key(KeyCode::Down);
+        }
+        assert_eq!(app.alerts_view.scroll, 4, "not past the last");
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.alerts_view.scroll, 3);
+        app.refresh_alerts();
+        assert_eq!(app.alerts_view.scroll, 3, "a reload keeps the scroll position");
+    }
+
+    #[test]
+    fn the_alerts_data_is_reloaded_every_five_seconds_only_while_the_section_is_open() {
+        let (mut app, dir) = alerts_app("");
+        let t0 = Instant::now();
+        app.last_alerts_refresh = Some(t0);
+        std::fs::write(dir.path().join("config.toml"), "[notify]\nmail_to = \"a@x.org\"\n").unwrap();
+        app.refresh_alerts_if_stale(t0 + Duration::from_secs(2));
+        assert!(!app.alerts_view.monitor_on(), "too soon");
+        app.refresh_alerts_if_stale(t0 + Duration::from_secs(6));
+        assert!(app.alerts_view.monitor_on());
+        app.selected_section = 0;
+        std::fs::write(dir.path().join("config.toml"), "").unwrap();
+        app.refresh_alerts_if_stale(t0 + Duration::from_secs(60));
+        assert!(app.alerts_view.monitor_on(), "another section is open: no reload");
+    }
+
     #[test]
     fn help_documents_the_hosts_filter_key() {
         let text = help_text();
@@ -8697,10 +8787,12 @@ mod tests {
     #[test]
     fn jobs_is_the_last_section_and_tab_cycles_into_and_out_of_it() {
         let mut app = App::new(vec!["local".to_string()]);
-        assert_eq!(app.sections.last(), Some(&Section::Jobs));
+        assert_eq!(app.sections.last(), Some(&Section::Alerts));
         app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.current_section(), Section::Jobs);
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.current_section(), Section::Alerts);
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.current_section(), Section::Hosts, "wraps to the first section");
     }
@@ -9821,7 +9913,7 @@ mod tests {
         let at = |s| app.sections.iter().position(|x| *x == s).unwrap();
         assert_eq!(at(Section::BootEnvs), at(Section::Shares) + 1);
         assert_eq!(at(Section::Jobs), at(Section::BootEnvs) + 1);
-        assert_eq!(app.sections.last(), Some(&Section::Jobs));
+        assert_eq!(app.sections.last(), Some(&Section::Alerts));
     }
 
     #[test]
