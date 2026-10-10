@@ -10,6 +10,8 @@ use std::time::Instant;
 pub enum ScanSummary {
     Never,
     Running { percent: Option<u8> },
+    /// `zpool scrub -p`: neither running nor finished.
+    Paused,
     /// The last scrub or resilver; `when` is as `zpool status` prints it (no time zone, so no age).
     Finished { when: String, errors: u64 },
     Canceled,
@@ -30,6 +32,8 @@ pub struct PoolProbe {
 pub enum HostProbe {
     /// The SSH client could not reach the host (exit status 255).
     Disconnected,
+    /// The host answered at the network level but ssh refused the login (key not accepted, host key unknown or changed).
+    LoginRefused { reason: &'static str },
     /// The host answered but cannot be inspected (sudo refused, no `zpool`, unparsable output).
     Unavailable { reason: String },
     Reached { rtt_ms: u64, pools: Vec<PoolProbe> },
@@ -97,6 +101,9 @@ fn scan_summary(block: &str) -> ScanSummary {
         None => ScanSummary::Never,
         Some(ScanStatus::InProgress { percent_done, .. }) => ScanSummary::Running { percent: percent_done.map(|p| p.clamp(0.0, 100.0) as u8) },
         Some(ScanStatus::Completed { summary, errors }) => {
+            if summary.starts_with("scrub paused") || summary.starts_with("resilver paused") {
+                return ScanSummary::Paused;
+            }
             if summary.contains("canceled") {
                 return ScanSummary::Canceled;
             }
@@ -163,6 +170,13 @@ pub fn probe_host(runner: &dyn CommandRunner) -> HostProbe {
     };
     let rtt_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     if listed.status == 255 {
+        let said = listed.stderr.to_lowercase();
+        if said.contains("permission denied") {
+            return HostProbe::LoginRefused { reason: "ssh login refused" };
+        }
+        if said.contains("host key verification failed") || said.contains("remote host identification has changed") {
+            return HostProbe::LoginRefused { reason: "host key not accepted" };
+        }
         return HostProbe::Disconnected;
     }
     if !listed.success() {
@@ -199,6 +213,7 @@ pub fn assess(probe: Option<&HostProbe>, job_failed: bool) -> Assessment {
     let Some(probe) = probe else { return say(Level::Probing, "probing") };
     let (pools, rtt_known) = match probe {
         HostProbe::Disconnected => return say(Level::Disconnected, "unreachable"),
+        HostProbe::LoginRefused { reason } => return say(Level::Disconnected, reason),
         HostProbe::Unavailable { reason } => return say(Level::Warning, &format!("cannot inspect: {reason}")),
         HostProbe::Reached { pools, rtt_ms } => (pools, *rtt_ms),
     };
@@ -326,6 +341,25 @@ mod tests {
         let runner = answers(out("", "ssh: connect to host 10.0.0.9 port 22: Connection timed out", 255), out(STATUS, "", 0));
         assert_eq!(probe_host(&runner), HostProbe::Disconnected);
         assert_eq!(runner.calls.lock().unwrap().len(), 1, "one timeout, not two");
+    }
+
+    #[test]
+    fn an_ssh_login_failure_is_told_apart_from_an_unreachable_host() {
+        for (stderr, want) in [
+            ("fbsd@10.0.0.9: Permission denied (publickey,password).", "ssh login refused"),
+            ("Host key verification failed.", "host key not accepted"),
+            ("@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\n", "host key not accepted"),
+        ] {
+            let runner = answers(out("", stderr, 255), out(STATUS, "", 0));
+            assert_eq!(probe_host(&runner), HostProbe::LoginRefused { reason: want }, "{stderr}");
+            assert_eq!(assess(Some(&probe_host(&runner)), false), Assessment { level: Level::Disconnected, reason: want.to_string() });
+        }
+    }
+
+    #[test]
+    fn a_paused_scrub_is_paused_not_finished() {
+        let status = "  pool: a\n state: ONLINE\n  scan: scrub paused since Thu Oct  8 19:00:00 2026\n\tscrub started on Thu Oct  8 18:00:00 2026\n\t1G scanned, 50.00% done\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\ta     ONLINE  0  0  0\n";
+        assert_eq!(parse_status_all(status)[0].scan, ScanSummary::Paused);
     }
 
     #[test]

@@ -288,6 +288,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
+    use ratatui::widgets::TableState;
     use crate::zfs::host_health::{HostProbe, Level};
     let theme = app.theme.clone();
     // Name and State always show; Address then Rtt only while they fit (Rtt is the first to go).
@@ -349,7 +350,9 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(rows, widths)
         .header(Row::new(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title("Hosts"));
-    f.render_widget(table, table_area);
+    // The offset follows the selection, so the selected host stays on screen however many hosts there are.
+    let mut state = TableState::default().with_selected(Some(app.selected_host));
+    f.render_stateful_widget(table, table_area, &mut state);
 }
 
 /// Name column width the Pools table protects before it spends space on
@@ -2263,6 +2266,18 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn the_hosts_table_scrolls_to_keep_the_selected_host_visible() {
+        let names: Vec<String> = (0..40).map(|i| format!("host{i:02}")).collect();
+        let mut app = App::new(names);
+        app.selected_host = 39;
+        let text = render(&mut app, 120, 24).join("\n");
+        assert!(text.contains("host39"), "the selected host must be on screen:\n{text}");
+        assert!(!text.contains("host01"), "the top rows scrolled away:\n{text}");
+        app.selected_host = 0;
+        assert!(render(&mut app, 120, 24).join("\n").contains("host00"));
     }
 
     #[test]
