@@ -89,11 +89,21 @@ pub fn is_registered(name: &str) -> bool {
     lookup(name).is_some()
 }
 
+/// Whether `name` is registered for the way it is about to run: through `sudo` (`privileged`) or without.
+/// A command registered only as unprivileged would run under `sudo` with no sudoers entry, and the other way
+/// round it would go out without sudo although the entry says it needs it.
+pub fn is_registered_as(name: &str, privileged: bool) -> bool {
+    lookup(name).is_some_and(|e| matches!(e.kind, Kind::Privileged { .. }) == privileged)
+}
+
 /// What `SshRunner` calls before it sends anything: a command nobody registered would have no sudoers
 /// entry generated for it, so it is refused here instead of failing later on a real host.
-pub fn require_registered(name: &str) -> Result<()> {
-    if is_registered(name) {
+pub fn require_registered(name: &str, privileged: bool) -> Result<()> {
+    if is_registered_as(name, privileged) {
         Ok(())
+    } else if is_registered(name) {
+        let (is, run) = if privileged { ("unprivileged", "through sudo") } else { ("privileged", "without sudo") };
+        Err(AppError::Config(format!("{name} is registered as {is} but is being run {run} (fix the call or its exec::privilege::ENTRIES kind)")))
     } else {
         Err(AppError::Config(format!("{name} is not a registered remote command (add it to exec::privilege::ENTRIES)")))
     }
@@ -218,9 +228,18 @@ mod tests {
 
     #[test]
     fn require_registered_accepts_known_commands_and_refuses_others() {
-        assert!(require_registered("zfs").is_ok());
-        let err = require_registered("rm").unwrap_err().to_string();
+        assert!(require_registered("zfs", true).is_ok());
+        assert!(require_registered("uname", false).is_ok());
+        let err = require_registered("rm", true).unwrap_err().to_string();
         assert!(err.contains("rm is not a registered remote command"), "{err}");
+    }
+
+    #[test]
+    fn a_command_must_be_registered_for_the_way_it_runs() {
+        let err = require_registered("uname", true).unwrap_err().to_string();
+        assert!(err.contains("registered as unprivileged") && err.contains("through sudo"), "{err}");
+        let err = require_registered("zfs", false).unwrap_err().to_string();
+        assert!(err.contains("registered as privileged") && err.contains("without sudo"), "{err}");
     }
 
     #[test]

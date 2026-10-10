@@ -171,23 +171,19 @@ pub mod test_support {
     impl CommandRunner for FakeRunner {
         fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
             assert!(
-                crate::exec::privilege::is_registered(cmd),
-                "{cmd} is not a registered remote command: add it to exec::privilege::ENTRIES, or use a registered command in this test"
+                crate::exec::privilege::is_registered_as(cmd, true),
+                "{cmd} is not registered as a privileged remote command (run through sudo): fix exec::privilege::ENTRIES, or run it with run_unprivileged"
             );
-            self.calls
-                .lock()
-                .unwrap()
-                .push((cmd.to_string(), args.iter().map(std::string::ToString::to_string).collect()));
-            let first_arg = args.first().copied().unwrap_or("");
-            if let Some(routed) = self.routes.get(&(cmd.to_string(), first_arg.to_string())) {
-                return Ok(routed.clone());
-            }
-            Ok(self.response.clone())
+            self.respond(cmd, args)
         }
 
         fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            assert!(
+                crate::exec::privilege::is_registered_as(cmd, false),
+                "{cmd} is not registered as an unprivileged remote command (run without sudo): fix exec::privilege::ENTRIES, or run it with run"
+            );
             self.unprivileged_calls.lock().unwrap().push((cmd.to_string(), args.iter().map(std::string::ToString::to_string).collect()));
-            self.run(cmd, args)
+            self.respond(cmd, args)
         }
 
         fn run_with_stdin(&self, cmd: &str, args: &[&str], stdin: &str) -> Result<CommandOutput> {
@@ -199,6 +195,20 @@ pub mod test_support {
                 out.stdout = stdin.to_string();
             }
             Ok(out)
+        }
+    }
+
+    impl FakeRunner {
+        fn respond(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((cmd.to_string(), args.iter().map(std::string::ToString::to_string).collect()));
+            let first_arg = args.first().copied().unwrap_or("");
+            if let Some(routed) = self.routes.get(&(cmd.to_string(), first_arg.to_string())) {
+                return Ok(routed.clone());
+            }
+            Ok(self.response.clone())
         }
     }
 }
@@ -282,13 +292,26 @@ mod guard_tests {
     use super::CommandRunner;
 
     #[test]
-    #[should_panic(expected = "not a registered remote command")]
+    #[should_panic(expected = "not registered as a privileged remote command")]
     fn the_fake_runner_panics_on_a_command_nobody_registered() {
         let _ = FakeRunner::new("").run("not-a-registered-command", &[]);
     }
 
     #[test]
-    fn the_fake_runner_accepts_registered_commands() {
+    #[should_panic(expected = "not registered as a privileged remote command")]
+    fn the_fake_runner_panics_on_an_unprivileged_command_run_through_sudo() {
+        let _ = FakeRunner::new("").run("uname", &["-sr"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered as an unprivileged remote command")]
+    fn the_fake_runner_panics_on_a_privileged_command_run_without_sudo() {
+        let _ = FakeRunner::new("").run_unprivileged("zfs", &["list"]);
+    }
+
+    #[test]
+    fn the_fake_runner_accepts_commands_registered_for_the_way_they_run() {
         assert!(FakeRunner::new("x").run("zpool", &["list"]).is_ok());
+        assert!(FakeRunner::new("x").run_unprivileged("uname", &["-sr"]).is_ok());
     }
 }
