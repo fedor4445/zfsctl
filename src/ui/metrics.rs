@@ -10,6 +10,7 @@ use crate::zfs::host::HostSummary;
 use crate::zfs::host_health::ScanSummary;
 use crate::zfs::snapshot_detail::SnapshotDetail;
 use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolFacts, PoolIo, TargetSample};
+use crate::zfs::pool_info::PoolContents;
 use crate::zfs::pool::PoolHealth;
 use crate::zfs::share::Share;
 use crate::zfs::share_detail::ShareLive;
@@ -31,6 +32,9 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(10);
 /// The panel is dropped on terminals whose body is shorter than this, so
 /// the lists above it keep a usable height.
 pub const MIN_BODY_HEIGHT: u16 = 14;
+/// How often a pool's dataset and snapshot counts are refreshed: counting snapshots can take seconds on a pool
+/// with many of them, so it runs far less often than the I/O sample.
+pub const CONTENTS_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct MetricsView {
@@ -42,6 +46,10 @@ pub struct MetricsView {
     snapshot: Option<SnapshotDetail>,
     disk: Option<DiskLive>,
     share: Option<ShareLive>,
+    /// The pool's dataset and snapshot counts (a pool target only) and when they were last asked for.
+    contents: Option<PoolContents>,
+    contents_failed: bool,
+    contents_at: Option<Instant>,
     error: Option<String>,
     in_flight: bool,
     last_finished: Option<Instant>,
@@ -65,6 +73,9 @@ impl MetricsView {
         self.snapshot = None;
         self.disk = None;
         self.share = None;
+        self.contents = None;
+        self.contents_failed = false;
+        self.contents_at = None;
         self.error = None;
         self.last_finished = None;
         self.target = wanted;
@@ -78,6 +89,11 @@ impl MetricsView {
     pub fn due(&self, now: Instant) -> bool {
         let interval = if matches!(self.target, Some(MetricsTarget::Snapshot(_))) { SNAPSHOT_INTERVAL } else { SAMPLE_INTERVAL };
         self.target.is_some() && !self.in_flight && self.last_finished.is_none_or(|t| now.duration_since(t) >= interval)
+    }
+
+    /// Whether the sample about to start should also count the pool's datasets and snapshots.
+    pub fn want_contents(&self, now: Instant) -> bool {
+        matches!(self.target, Some(MetricsTarget::Pool(_))) && self.contents_at.is_none_or(|t| now.duration_since(t) >= CONTENTS_INTERVAL)
     }
 
     pub fn begin(&mut self) {
@@ -107,6 +123,18 @@ impl MetricsView {
                 self.snapshot = sample.snapshot;
                 self.disk = sample.disk;
                 self.share = sample.share;
+                match sample.contents {
+                    Some(Ok(c)) => {
+                        self.contents = Some(c);
+                        self.contents_failed = false;
+                        self.contents_at = Some(now);
+                    }
+                    Some(Err(_)) => {
+                        self.contents_failed = true;
+                        self.contents_at = Some(now);
+                    }
+                    None => {}
+                }
                 self.error = None;
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -157,6 +185,43 @@ fn pool_lines(health: Option<&PoolHealth>, facts: &PoolFacts, theme: &Theme) -> 
     let style = if e.total() > 0 { theme.err } else { Style::default() };
     lines.push(Line::from(Span::styled(format!("Errors  R{} W{} C{}", e.read, e.write, e.cksum), style)));
     lines
+}
+
+/// `2 mirror, 1 raidz1` / `6 data, 2 log`.
+fn breakdown<K: std::fmt::Display>(parts: &[(K, usize)]) -> String {
+    parts.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", ")
+}
+
+/// The Pools panel's second column: what the pool is made of (always known) and holds (counted slowly, so it
+/// shows `…` until the first count arrives and `-` when counting failed).
+fn pool_info_lines(facts: &PoolFacts, contents: Option<&PoolContents>, failed: bool) -> Vec<Line<'static>> {
+    let counted = |text: &dyn Fn(&PoolContents) -> String| match (contents, failed) {
+        (Some(c), _) => text(c),
+        (None, true) => "-".to_string(),
+        (None, false) => "…".to_string(),
+    };
+    let (vdevs, disks) = match &facts.layout {
+        Some(l) if l.vdevs > 0 || l.disks > 0 => (format!("{}  ({})", l.vdevs, breakdown(&l.kinds)), format!("{}  ({})", l.disks, breakdown(&l.classes))),
+        _ => ("-".to_string(), "-".to_string()),
+    };
+    let datasets = counted(&|c| match c.volumes {
+        0 => format!("{} filesystems", c.filesystems),
+        v => format!("{} filesystems, {v} volumes", c.filesystems),
+    });
+    let snapshots = counted(&|c| c.snapshots.to_string());
+    let compression = counted(&|c| match (&c.compression, c.compress_ratio) {
+        (Some(m), Some(r)) => format!("{m} {r:.2}x"),
+        (Some(m), None) => m.clone(),
+        _ => "-".to_string(),
+    });
+    let trim = counted(&|c| c.autotrim.map_or("-", |t| if t { "on" } else { "off" }).to_string());
+    vec![
+        Line::from(format!("Vdevs      {vdevs}")),
+        Line::from(format!("Disks      {disks}")),
+        Line::from(format!("Datasets   {datasets}")),
+        Line::from(format!("Snapshots  {snapshots}")),
+        Line::from(format!("Compress   {compression}   Trim {trim}")),
+    ]
 }
 
 fn disk_lines(info: Option<&DiskInfo>, live: &DiskLive, theme: &Theme) -> Vec<Line<'static>> {
@@ -585,7 +650,7 @@ fn draw_body(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, ar
         return;
     }
     if let (Some(live), Some(last)) = (&view.disk, view.io_history.back()) {
-        draw_graphs_and_text(f, view, last, disk_lines(disk, live, theme), theme, area);
+        draw_graphs_and_text(f, view, last, disk_lines(disk, live, theme), Vec::new(), theme, area);
         return;
     }
     if let (Some(host), Some(last)) = (&view.host, view.io_history.back()) {
@@ -598,14 +663,21 @@ fn draw_body(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, ar
         return;
     };
     if let Some(live) = &view.share {
-        draw_graphs_and_text(f, view, last, share_lines(ctx.share, live, view.space.as_ref(), health, facts, theme), theme, area);
+        draw_graphs_and_text(f, view, last, share_lines(ctx.share, live, view.space.as_ref(), health, facts, theme), Vec::new(), theme, area);
         return;
     }
     let mut lines = match &view.space {
         Some(space) => dataset_lines(space),
         None => Vec::new(),
     };
-    let pool = pool_lines(health, facts, theme);
+    let mut pool = pool_lines(health, facts, theme);
+    if matches!(view.target, Some(MetricsTarget::Pool(_))) {
+        let (scrub, bad) = scan_text(facts.scrub.as_ref());
+        pool.push(Line::from(Span::styled(format!("Scrub    {scrub}"), if bad { theme.err } else { Style::default() })));
+        let right = pool_info_lines(facts, view.contents.as_ref(), view.contents_failed);
+        draw_graphs_and_text(f, view, last, pool, right, theme, area);
+        return;
+    }
     if lines.is_empty() {
         lines = pool;
     } else {
@@ -614,19 +686,40 @@ fn draw_body(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, ar
         let health_text = health.map_or("?".to_string(), |h| format!("{h:?}").to_uppercase());
         lines.push(Line::from(format!("Pool    {health_text}  errs {}", e.total())));
     }
-    draw_graphs_and_text(f, view, last, lines, theme, area);
+    draw_graphs_and_text(f, view, last, lines, Vec::new(), theme, area);
 }
 
-fn draw_graphs_and_text(f: &mut Frame, view: &MetricsView, last: &PoolIo, lines: Vec<Line<'static>>, theme: &Theme, area: Rect) {
+/// The two graphs and the text beside them, with a gutter between each. `right` is an optional second text
+/// column; when the text area is too narrow for two columns the two are stacked in one.
+fn draw_graphs_and_text(f: &mut Frame, view: &MetricsView, last: &PoolIo, mut lines: Vec<Line<'static>>, right: Vec<Line<'static>>, theme: &Theme, area: Rect) {
     let [read, write, text] = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(30), Constraint::Percentage(40)])
+        .constraints([Constraint::Percentage(28), Constraint::Percentage(28), Constraint::Min(30)])
+        .spacing(3)
         .areas(area);
     let reads: Vec<u64> = view.io_history.iter().map(|s| s.read_bps).collect();
     let writes: Vec<u64> = view.io_history.iter().map(|s| s.write_bps).collect();
     draw_rate(f, read, "Read ", &reads, last.read_ops, last.read_latency_ns, theme.info);
     draw_rate(f, write, "Write", &writes, last.write_ops, last.write_latency_ns, theme.warn);
-    f.render_widget(Paragraph::new(lines), text);
+    if right.is_empty() {
+        f.render_widget(Paragraph::new(clip_lines(&lines, text.width)), text);
+    } else if text.width >= 64 {
+        let [a, b] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).spacing(2).areas(text);
+        f.render_widget(Paragraph::new(clip_lines(&lines, a.width)), a);
+        f.render_widget(Paragraph::new(clip_lines(&right, b.width)), b);
+    } else {
+        // One column: health and space first, then what the pool is made of and holds, then the rest.
+        let rest = lines.split_off(2.min(lines.len()));
+        lines.extend(right);
+        lines.extend(rest);
+        let room = usize::from(text.height);
+        if lines.len() > room && room > 0 {
+            let hidden = lines.len() - (room - 1);
+            lines.truncate(room - 1);
+            lines.push(Line::raw(format!("+{hidden} more lines: enlarge the terminal")));
+        }
+        f.render_widget(Paragraph::new(clip_lines(&lines, text.width)), text);
+    }
 }
 
 #[cfg(test)]
@@ -675,7 +768,7 @@ mod tests {
     #[allow(clippy::unnecessary_wraps)] // handed straight to `apply`, which takes a Result
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
-        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None, disk: None, share: None })
+        Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None, disk: None, share: None, contents: None })
     }
 
     #[test]
@@ -744,6 +837,54 @@ mod tests {
         assert!(clip_line(&line, 0).width() <= 1, "a zero-width column never panics");
     }
 
+    fn pool_sample(contents: Option<std::result::Result<PoolContents, String>>) -> Result<TargetSample> {
+        Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None, disk: None, share: None, contents })
+    }
+
+    #[test]
+    fn the_slow_counts_are_asked_for_on_a_pool_target_at_most_every_thirty_seconds() {
+        let now = Instant::now();
+        let mut v = MetricsView::default();
+        assert!(!v.want_contents(now), "no target");
+        v.retarget(Some(MetricsTarget::Dataset("tank/a".into())));
+        assert!(!v.want_contents(now), "only a pool target shows them");
+        v.retarget(Some(pool("tank")));
+        assert!(v.want_contents(now), "the first sample of a pool asks");
+        v.begin();
+        v.apply(&pool("tank"), pool_sample(Some(Ok(PoolContents { snapshots: 7, ..PoolContents::default() }))), now);
+        assert!(!v.want_contents(now + Duration::from_secs(29)));
+        assert!(v.want_contents(now + CONTENTS_INTERVAL));
+        assert_eq!(v.contents.as_ref().map(|c| c.snapshots), Some(7));
+    }
+
+    #[test]
+    fn a_sample_without_counts_keeps_the_last_ones_and_a_failed_listing_is_remembered() {
+        let now = Instant::now();
+        let mut v = MetricsView::default();
+        v.retarget(Some(pool("tank")));
+        v.begin();
+        v.apply(&pool("tank"), pool_sample(Some(Ok(PoolContents { snapshots: 7, ..PoolContents::default() }))), now);
+        v.begin();
+        v.apply(&pool("tank"), pool_sample(None), now + Duration::from_secs(1));
+        assert_eq!(v.contents.as_ref().map(|c| c.snapshots), Some(7), "kept between the slow refreshes");
+        v.begin();
+        v.apply(&pool("tank"), pool_sample(Some(Err("boom".into()))), now + Duration::from_secs(40));
+        assert!(v.contents_failed);
+        assert!(v.want_contents(now + Duration::from_secs(40) + CONTENTS_INTERVAL), "a failure is retried at the same pace");
+    }
+
+    #[test]
+    fn the_counts_belong_to_the_pool_they_were_read_from() {
+        let now = Instant::now();
+        let mut v = MetricsView::default();
+        v.retarget(Some(pool("tank")));
+        v.begin();
+        v.apply(&pool("tank"), pool_sample(Some(Ok(PoolContents::default()))), now);
+        v.retarget(Some(pool("other")));
+        assert!(v.contents.is_none() && !v.contents_failed);
+        assert!(v.want_contents(now), "a different pool asks again at once");
+    }
+
     #[test]
     fn nothing_is_due_without_a_target_or_while_a_sample_is_running() {
         let now = Instant::now();
@@ -785,7 +926,7 @@ mod tests {
         let target = MetricsTarget::Snapshot("tank@a".into());
         let mut v = MetricsView::default();
         v.retarget(Some(target.clone()));
-        let sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(SnapshotDetail::default()), disk: None, share: None };
+        let sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(SnapshotDetail::default()), disk: None, share: None, contents: None };
         v.apply(&target, Ok(sample), now);
         assert!(v.io_history.is_empty() && v.snapshot.is_some());
         assert!(!v.due(now + SAMPLE_INTERVAL), "snapshots refresh every 10s, not every second");

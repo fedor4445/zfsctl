@@ -133,7 +133,7 @@ fn count_token(token: &str) -> u64 {
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=100
-fn scan_summary(block: &str) -> ScanSummary {
+pub(crate) fn scan_summary(block: &str) -> ScanSummary {
     match parse_pool_scan_status(block) {
         None => ScanSummary::Never,
         Some(ScanStatus::InProgress { percent_done, .. }) => ScanSummary::Running { percent: percent_done.map(|p| p.clamp(0.0, 100.0) as u8) },

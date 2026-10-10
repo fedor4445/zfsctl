@@ -572,11 +572,12 @@ impl App {
             return;
         }
         let Some(target) = self.metrics.target().cloned() else { return };
+        let with_contents = self.metrics.want_contents(now);
         self.metrics.begin();
         let host = self.selected_host;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = crate::zfs::metrics::sample_target(runner.as_ref(), &target);
+            let result = crate::zfs::metrics::sample_target(runner.as_ref(), &target, with_contents);
             let _ = tx.send(WorkerMsg::Metrics(host, target, Box::new(result)));
         });
     }

@@ -1532,7 +1532,7 @@ mod tests {
         let io = PoolIo { read_bps: 88_080_384, read_ops: 840, ..PoolIo::default() };
         app.metrics.apply(
             &MetricsTarget::Pool("tank".to_string()),
-            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None, disk: None, share: None }),
+            Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None, disk: None, share: None, contents: None }),
             std::time::Instant::now(),
         );
         let rows = render(&mut app, 100, 30);
@@ -1544,6 +1544,63 @@ mod tests {
         assert!(text.contains("ONLINE"), "{text}");
         assert!(rows[..panel].iter().any(|r| r.contains("Pools —")), "the lists stay above the panel");
         assert!(rows[panel].starts_with('│'), "the sidebar keeps its full height beside the panel: {:?}", rows[panel]);
+    }
+
+    fn pools_app_with_info(contents: Option<Result<crate::zfs::pool_info::PoolContents, String>>) -> App {
+        use crate::zfs::host_health::ScanSummary;
+        use crate::zfs::metrics::{MetricsTarget, PoolFacts, PoolIo, PoolSample, TargetSample};
+        use crate::zfs::pool_info::PoolLayout;
+        let mut app = app_in_pools(vec![pool("tank", 10, 100, PoolHealth::Online)]);
+        let target = MetricsTarget::Pool("tank".to_string());
+        app.metrics.retarget(Some(target.clone()));
+        let layout = PoolLayout { vdevs: 4, kinds: vec![("mirror".into(), 2), ("raidz1".into(), 1), ("disk".into(), 1)], disks: 10, classes: vec![("data", 6), ("log", 2), ("cache", 1), ("spare", 1)] };
+        let facts = PoolFacts { size: 1000, allocated: 100, layout: Some(layout), scrub: Some(ScanSummary::Finished { when: "Thu Oct  8 19:48:07 2026".into(), errors: 0 }), ..PoolFacts::default() };
+        app.metrics.apply(&target, Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts }, space: None, host: None, snapshot: None, disk: None, share: None, contents }), std::time::Instant::now());
+        app
+    }
+
+    #[test]
+    fn the_pool_panel_shows_what_the_pool_is_made_of_and_holds() {
+        use crate::zfs::pool_info::PoolContents;
+        let contents = PoolContents { filesystems: 12, volumes: 3, snapshots: 482, compression: Some("lz4".into()), compress_ratio: Some(1.43), autotrim: Some(false) };
+        let mut app = pools_app_with_info(Some(Ok(contents.clone())));
+        let text = render(&mut app, 170, 40).join("\n");
+        for want in ["Vdevs", "4  (2 mirror, 1 raidz1, 1 disk)", "Disks", "10  (6 data, 2 log, 1 cache, 1 spare)", "Datasets", "12 filesystems, 3 volumes", "Snapshots", "482", "Scrub", "Oct  8 19:48:07 2026", "lz4 1.43x", "Trim off"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        // On a narrow terminal the text is one column, cut but never missing the four counts the panel exists for.
+        let mut narrow = pools_app_with_info(Some(Ok(contents)));
+        let text = render(&mut narrow, 100, 30).join("\n");
+        for want in ["Health", "Vdevs", "Disks", "Datasets", "Snapshots  482"] {
+            assert!(text.contains(want), "narrow: missing {want:?} in\n{text}");
+        }
+        // Too short for every line: the counts outrank the lesser pool lines, and the cut is announced.
+        let mut short = pools_app_with_info(Some(Ok(crate::zfs::pool_info::PoolContents { snapshots: 482, ..Default::default() })));
+        let text = render(&mut short, 100, 24).join("\n");
+        assert!(text.contains("Snapshots  482") && text.contains("more lines"), "{text}");
+        assert!(!text.contains("Scrub    "), "{text}");
+    }
+
+    #[test]
+    fn the_counts_show_an_ellipsis_while_pending_and_a_dash_when_the_listing_failed() {
+        let mut pending = pools_app_with_info(None);
+        let text = render(&mut pending, 170, 40).join("\n");
+        assert!(text.contains("Datasets   …") && text.contains("Snapshots  …"), "{text}");
+        assert!(text.contains("Vdevs") && text.contains("10  (6 data"), "the layout does not wait for the counts:\n{text}");
+        let mut failed = pools_app_with_info(Some(Err("boom".into())));
+        let text = render(&mut failed, 170, 40).join("\n");
+        assert!(text.contains("Datasets   -") && text.contains("Snapshots  -"), "{text}");
+    }
+
+    #[test]
+    fn other_targets_do_not_get_the_pool_info() {
+        use crate::zfs::metrics::{MetricsTarget, PoolFacts, PoolIo, PoolSample, TargetSample};
+        let mut app = pools_app_with_info(None);
+        let target = MetricsTarget::Dataset("tank/a".to_string());
+        app.metrics.retarget(Some(target.clone()));
+        app.metrics.apply(&target, Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts { size: 1000, allocated: 100, ..PoolFacts::default() } }, space: None, host: None, snapshot: None, disk: None, share: None, contents: None }), std::time::Instant::now());
+        let text = render(&mut app, 170, 40).join("\n");
+        assert!(!text.contains("Trim ") && !text.contains("Vdevs      "), "{text}");
     }
 
     #[test]
@@ -1564,7 +1621,7 @@ mod tests {
         };
         app.metrics.apply(
             &MetricsTarget::Host,
-            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host), snapshot: None, disk: None, share: None }),
+            Ok(TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(host), snapshot: None, disk: None, share: None, contents: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1598,7 +1655,7 @@ mod tests {
         };
         app.metrics.apply(
             &target,
-            Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(detail), disk: None, share: None }),
+            Ok(TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: Some(detail), disk: None, share: None, contents: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1630,7 +1687,7 @@ mod tests {
         let live = DiskLive { state: Some("DEGRADED".to_string()), errors: Some(ErrorCounts { read: 1, write: 0, cksum: 2 }), busy_percent: Some(12.0), queue: Some(2) };
         app.metrics.apply(
             &target,
-            Ok(TargetSample { pool: PoolSample { io, ..PoolSample::default() }, space: None, host: None, snapshot: None, disk: Some(live), share: None }),
+            Ok(TargetSample { pool: PoolSample { io, ..PoolSample::default() }, space: None, host: None, snapshot: None, disk: Some(live), share: None, contents: None }),
             std::time::Instant::now(),
         );
         let text = render(&mut app, 120, 30).join("\n");
@@ -1659,6 +1716,7 @@ mod tests {
                 snapshot: None,
                 disk: None,
                 share: Some(ShareLive { mountpoint: Some("/tank/a".to_string()), clients }),
+                contents: None,
             })
         };
         // NFS row
@@ -2515,7 +2573,7 @@ mod tests {
         let mut app = App::new(vec!["local".to_string()]);
         let target = MetricsTarget::Host;
         app.metrics.retarget(Some(target.clone()));
-        app.metrics.apply(&target, Ok(crate::zfs::metrics::TargetSample { pool: crate::zfs::metrics::PoolSample::default(), space: None, host: Some(crate::ui::metrics::tests_support::rich_host()), snapshot: None, disk: None, share: None }), std::time::Instant::now());
+        app.metrics.apply(&target, Ok(crate::zfs::metrics::TargetSample { pool: crate::zfs::metrics::PoolSample::default(), space: None, host: Some(crate::ui::metrics::tests_support::rich_host()), snapshot: None, disk: None, share: None, contents: None }), std::time::Instant::now());
         app
     }
 
@@ -2540,7 +2598,7 @@ mod tests {
         let target = MetricsTarget::Host;
         let mut host = crate::ui::metrics::tests_support::rich_host();
         host.cpu.as_mut().unwrap().model = "Intel Xeon E312xx (Sandy Bridge, IBRS update) with a long tail".to_string();
-        app.metrics.apply(&target, Ok(crate::zfs::metrics::TargetSample { pool: crate::zfs::metrics::PoolSample::default(), space: None, host: Some(host), snapshot: None, disk: None, share: None }), std::time::Instant::now());
+        app.metrics.apply(&target, Ok(crate::zfs::metrics::TargetSample { pool: crate::zfs::metrics::PoolSample::default(), space: None, host: Some(host), snapshot: None, disk: None, share: None, contents: None }), std::time::Instant::now());
         let rows = render(&mut app, 170, 48);
         let model_row = rows.iter().find(|r| r.contains("Intel Xeon E312xx")).expect("the model line is shown");
         assert!(model_row.contains('…'), "{model_row}");

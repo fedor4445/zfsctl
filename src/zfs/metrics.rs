@@ -46,6 +46,10 @@ pub struct PoolFacts {
     pub fragmentation: Option<u8>,
     pub dedup_ratio: f64,
     pub errors: ErrorCounts,
+    /// The vdevs and disks, from the same `zpool status` as the error counts.
+    pub layout: Option<super::pool_info::PoolLayout>,
+    /// The last scrub or resilver, from the same `zpool status`.
+    pub scrub: Option<super::host_health::ScanSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -100,6 +104,8 @@ fn parse_list_facts(output: &str) -> Result<PoolFacts> {
         fragmentation: frag.trim_end_matches('%').parse().ok(),
         dedup_ratio: dedup.trim_end_matches('x').parse().unwrap_or(1.0),
         errors: ErrorCounts::default(),
+        layout: None,
+        scrub: None,
     })
 }
 
@@ -140,6 +146,8 @@ pub fn sample_pool(runner: &dyn CommandRunner, pool: &str) -> Result<PoolSample>
     let status_out = run_checked(runner, "zpool", &["status", "-p", pool], &format!("zpool status {pool}"))?;
     let mut facts = parse_list_facts(&list_out.stdout)?;
     facts.errors = parse_error_totals(&status_out.stdout, pool);
+    facts.layout = Some(super::pool_info::parse_pool_layout(&status_out.stdout));
+    facts.scrub = Some(super::host_health::scan_summary(&status_out.stdout));
     Ok(PoolSample { io: parse_iostat(&io_out.stdout, pool)?, facts })
 }
 
@@ -242,12 +250,15 @@ pub struct TargetSample {
     pub disk: Option<super::disk_detail::DiskLive>,
     /// Present only for a share target (alongside `space`).
     pub share: Option<super::share_detail::ShareLive>,
+    /// Present only when a pool target asked for it (it is slower than the rest): the datasets and snapshots
+    /// counted, or why that failed.
+    pub contents: Option<std::result::Result<super::pool_info::PoolContents, String>>,
 }
 
 /// One full panel refresh. Blocks for about a second; run it off the UI thread.
-pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Result<TargetSample> {
+pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget, with_contents: bool) -> Result<TargetSample> {
     let Some(pool_name) = target.pool() else {
-        let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None, disk: None, share: None };
+        let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None, disk: None, share: None, contents: None };
         if let MetricsTarget::Snapshot(name) = target {
             sample.snapshot = Some(super::snapshot_detail::sample_snapshot(runner, name)?);
         } else if let MetricsTarget::Disk { name, pool } = target {
@@ -270,7 +281,11 @@ pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget) -> Resu
         MetricsTarget::Share { dataset, smb_name } => Some(super::share_detail::sample_share(runner, dataset, smb_name.as_deref())),
         _ => None,
     };
-    Ok(TargetSample { pool, space, host: None, snapshot: None, disk: None, share })
+    let contents = match target {
+        MetricsTarget::Pool(p) if with_contents => Some(super::pool_info::fetch_pool_contents(runner, p).map_err(|e| e.to_string())),
+        _ => None,
+    };
+    Ok(TargetSample { pool, space, host: None, snapshot: None, disk: None, share, contents })
 }
 
 #[cfg(test)]
@@ -292,10 +307,49 @@ mod tests {
             .route("zpool", "iostat", IOSTAT_BUSY)
             .route("zpool", "list", "tank\t3000\t1000\t2000\t12\t1.00\n")
             .route("zpool", "status", "config:\n\ttank ONLINE 0 0 0\n");
-        assert!(sample_target(&runner, &MetricsTarget::Pool("tank".into())).unwrap().space.is_none());
-        let s = sample_target(&runner, &MetricsTarget::Dataset("tank/data".into())).unwrap();
+        assert!(sample_target(&runner, &MetricsTarget::Pool("tank".into()), false).unwrap().space.is_none());
+        let s = sample_target(&runner, &MetricsTarget::Dataset("tank/data".into()), false).unwrap();
         assert_eq!(s.space.unwrap().used, 105_234_432);
         assert_eq!(s.pool.io.read_ops, 840);
+    }
+
+    #[test]
+    fn a_pool_sample_carries_the_layout_and_scrub_from_the_status_it_already_fetches() {
+        let runner = FakeRunner::new("")
+            .route("zpool", "iostat", IOSTAT_IDLE)
+            .route("zpool", "list", "scratch\t3000\t1000\t2000\t12\t1.00\n")
+            .route("zpool", "status", STATUS);
+        let s = sample_pool(&runner, "scratch").unwrap();
+        let layout = s.facts.layout.unwrap();
+        assert_eq!((layout.vdevs, layout.disks), (1, 1));
+        assert!(matches!(s.facts.scrub, Some(super::super::host_health::ScanSummary::Finished { .. })), "{:?}", s.facts.scrub);
+        assert_eq!(runner.calls.lock().unwrap().len(), 3, "no extra command for them");
+    }
+
+    #[test]
+    fn contents_are_fetched_only_when_asked_and_only_for_a_pool_target() {
+        let runner = FakeRunner::new(SPACE)
+            .route("zpool", "iostat", IOSTAT_BUSY)
+            .route("zpool", "list", "tank\t3000\t1000\t2000\t12\t1.00\n")
+            .route("zpool", "status", "config:\n\ttank ONLINE 0 0 0\n")
+            .route("zfs", "list", "filesystem\nsnapshot\nsnapshot\n");
+        let pool = MetricsTarget::Pool("tank".into());
+        assert!(sample_target(&runner, &pool, false).unwrap().contents.is_none());
+        let with = sample_target(&runner, &pool, true).unwrap().contents.unwrap().unwrap();
+        assert_eq!((with.filesystems, with.snapshots), (1, 2));
+        assert!(sample_target(&runner, &MetricsTarget::Dataset("tank/data".into()), true).unwrap().contents.is_none());
+    }
+
+    #[test]
+    fn a_failing_contents_listing_does_not_fail_the_sample() {
+        let runner = FakeRunner::new("")
+            .route("zpool", "iostat", IOSTAT_BUSY)
+            .route("zpool", "list", "tank\t3000\t1000\t2000\t12\t1.00\n")
+            .route("zpool", "status", "config:\n\ttank ONLINE 0 0 0\n")
+            .route_failure("zfs", "list", "cannot open", 1);
+        let s = sample_target(&runner, &MetricsTarget::Pool("tank".into()), true).unwrap();
+        assert!(s.contents.unwrap().is_err());
+        assert_eq!(s.pool.io.read_ops, 840, "the I/O sample is unaffected");
     }
 
     // Captured from FreeBSD 15.1 (OpenZFS 2.4), `zpool iostat -Hpyl scratch 1 1`
