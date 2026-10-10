@@ -116,6 +116,9 @@ pub fn alert_message(row: &HostRow, alert: &Alert, now: DateTime<Utc>, hub: &str
         AlertKind::Recovery => (bad_for.clone().map_or_else(|| format!("[zfsctl] {host}: recovered"), |d| format!("[zfsctl] {host}: recovered after {d}")), "health-recovered"),
     };
     let mut body = format!("Host:     {} ({})\nHub:      {hub}\nTime:     {}\nState:    {}: {}\n", row.name, row.address, utc(now), severity_word(alert.severity), alert.reason);
+    if let Some(rtt) = row.rtt_ms {
+        let _ = writeln!(body, "Rtt:      {rtt}ms");
+    }
     if let Some(d) = &bad_for {
         let _ = writeln!(body, "Bad for:  {d}");
     }

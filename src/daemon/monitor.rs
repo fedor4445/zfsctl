@@ -20,7 +20,7 @@ pub const CONFIRM: u32 = 2;
 /// Sends tried for one message (the first and the retries) before it is dropped.
 pub const MAX_ATTEMPTS: u32 = 6;
 /// How long a host may take to answer a probe.
-pub const PROBE_DEADLINE: Duration = Duration::from_secs(60);
+pub const PROBE_DEADLINE: Duration = Duration::from_mins(1);
 
 pub struct HostInfo {
     pub name: String,
@@ -149,13 +149,13 @@ impl Monitor {
     /// One monitoring tick, after the probes: updates the alert state, sends (and retries) what is due, and sends the
     /// daily report when it is time.
     #[allow(clippy::too_many_arguments)]
-    pub fn observe(&mut self, now: DateTime<Utc>, local: NaiveDateTime, hosts: &[HostInfo], probed: Vec<Probed>, jobs: &[Job], runs: &[Run], sink: &mut dyn Sink) {
-        for p in &probed {
+    pub fn observe(&mut self, now: DateTime<Utc>, local: NaiveDateTime, hosts: &[HostInfo], probed: &[Probed], jobs: &[Job], runs: &[Run], sink: &mut dyn Sink) {
+        for p in probed {
             if let Some(HostProbe::Reached { kind: Some(k), .. }) = &p.probe {
                 self.kinds.insert(p.name.clone(), k.clone());
             }
         }
-        let rows = build_rows(hosts, &probed, &self.kinds, jobs, runs);
+        let rows = build_rows(hosts, probed, &self.kinds, jobs, runs);
         let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
         self.tracker.forget_except(&names);
         for row in &rows {
@@ -275,14 +275,14 @@ mod tests {
         let hosts = [host("a")];
         let mut sink = FakeSink::new();
         for i in 0..2 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         }
         assert_eq!(sink.sent.len(), 1);
         assert_eq!(sink.sent[0].subject, "[zfsctl] a: unreachable");
-        m.observe(t(10), local(10), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+        m.observe(t(10), local(10), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         assert_eq!(sink.sent.len(), 1, "no repeat");
         for i in 3..5 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![probed_ok("a")], &[], &[], &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         }
         assert_eq!(sink.sent.len(), 2);
         assert!(sink.sent[1].subject.starts_with("[zfsctl] a: recovered after"), "{}", sink.sent[1].subject);
@@ -294,7 +294,7 @@ mod tests {
         let hosts = [host("a")];
         let mut sink = FakeSink::new();
         for i in 0..2 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![Probed { name: "a".into(), probe: None }], &[], &[], &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[Probed { name: "a".into(), probe: None }], &[], &[], &mut sink);
         }
         assert!(sink.sent[0].subject.contains("no answer"), "{}", sink.sent[0].subject);
         assert_eq!(sink.sent[0].level, "warning");
@@ -308,7 +308,7 @@ mod tests {
         let runs = vec![run("backup-a", Some(RunResult::Failed), "restic exited 3", t(-10))];
         let mut sink = FakeSink::new();
         for i in 0..2 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![probed_ok("a")], &jobs, &runs, &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &jobs, &runs, &mut sink);
         }
         assert_eq!(sink.sent.len(), 1);
         assert_eq!(sink.sent[0].level, "warning");
@@ -320,12 +320,12 @@ mod tests {
         let hosts = [host("a")];
         let mut sink = FakeSink::failing();
         for i in 0..2 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         }
         let first = sink.sent.len();
         assert_eq!(first, 1);
         for i in 2..20 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         }
         assert_eq!(sink.sent.len() - first, 5, "six attempts in all: one at first, five retries, then dropped");
         assert!(sink.sent.iter().all(|s| s.subject == "[zfsctl] a: unreachable"));
@@ -337,12 +337,12 @@ mod tests {
         let hosts = [host("a")];
         let mut sink = FakeSink::failing();
         for i in 0..2 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         }
         sink.ok = true;
-        m.observe(t(10), local(10), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+        m.observe(t(10), local(10), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         let n = sink.sent.len();
-        m.observe(t(15), local(15), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+        m.observe(t(15), local(15), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         assert_eq!(sink.sent.len(), n);
     }
 
@@ -369,12 +369,12 @@ mod tests {
         let hosts = [host("a")];
         let mut sink = FakeSink::new();
         let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.path().to_path_buf(), t(0));
-        m.observe(t(0), at_local(7, 1), &hosts, vec![probed_ok("a")], &[], &[], &mut sink);
+        m.observe(t(0), at_local(7, 1), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         assert_eq!(reports(&sink), 1);
-        m.observe(t(5), at_local(7, 6), &hosts, vec![probed_ok("a")], &[], &[], &mut sink);
+        m.observe(t(5), at_local(7, 6), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         assert_eq!(reports(&sink), 1, "not twice");
         let mut again = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.path().to_path_buf(), t(60));
-        again.observe(t(60), at_local(8, 0), &hosts, vec![probed_ok("a")], &[], &[], &mut sink);
+        again.observe(t(60), at_local(8, 0), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         assert_eq!(reports(&sink), 1, "a restarted monitor reads notify.json");
     }
 
@@ -384,10 +384,10 @@ mod tests {
         let hosts = [host("a")];
         let mut sink = FakeSink::failing();
         let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.path().to_path_buf(), t(0));
-        m.observe(t(0), at_local(7, 1), &hosts, vec![probed_ok("a")], &[], &[], &mut sink);
+        m.observe(t(0), at_local(7, 1), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         assert!(!dir.path().join("notify.json").exists());
         sink.ok = true;
-        m.observe(t(5), at_local(7, 6), &hosts, vec![probed_ok("a")], &[], &[], &mut sink);
+        m.observe(t(5), at_local(7, 6), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         assert!(dir.path().join("notify.json").exists());
         assert_eq!(reports(&sink), 2);
     }
@@ -399,7 +399,7 @@ mod tests {
         let mut sink = FakeSink::failing();
         let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.path().to_path_buf(), t(0));
         for i in 0..10 {
-            m.observe(t(i * 5), at_local(7, u32::try_from(i).unwrap()), &hosts, vec![probed_ok("a")], &[], &[], &mut sink);
+            m.observe(t(i * 5), at_local(7, u32::try_from(i).unwrap()), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         }
         assert_eq!(reports(&sink), 6, "six attempts, then it stops asking for today");
         assert!(!dir.path().join("notify.json").exists());
@@ -412,7 +412,7 @@ mod tests {
         let mut sink = FakeSink::new();
         let mut m = Monitor::new(settings_with_report("off"), "hub".into(), dir.path().to_path_buf(), t(0));
         for i in 0..2 {
-            m.observe(t(i * 5), local(i * 5), &hosts, vec![probed_bad("a")], &[], &[], &mut sink);
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         }
         let events = EventLog::new(dir.path().join("health-events.jsonl")).read();
         assert!(events.iter().any(|e| e.kind == "daemon-started"), "{events:?}");
@@ -424,8 +424,8 @@ mod tests {
         let mut m = monitor();
         let hosts = [host("a")];
         assert!(m.needs_kind("a"));
-        let probed = vec![Probed { name: "a".into(), probe: Some(HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Metal) }) }];
-        m.observe(t(0), local(0), &hosts, probed, &[], &[], &mut FakeSink::new());
+        let probed = [Probed { name: "a".into(), probe: Some(HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Metal) }) }];
+        m.observe(t(0), local(0), &hosts, &probed, &[], &[], &mut FakeSink::new());
         assert!(!m.needs_kind("a"));
     }
 
