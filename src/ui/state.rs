@@ -165,6 +165,8 @@ pub struct HostProbeState {
     pub finished_at: Option<Instant>,
     /// When the probe now running started, so one that never answers can be flagged.
     pub started_at: Option<Instant>,
+    /// The detected host type, kept once seen: it cannot change while the host is up, so it is asked for once.
+    pub kind: Option<crate::zfs::host_health::HostKind>,
 }
 
 /// The address shown for a host: the host part of its `ssh_target` as configured (no lookup), `local` for the hub.
@@ -633,9 +635,10 @@ impl App {
         let state = self.host_probes.entry(name.clone()).or_default();
         state.in_flight = true;
         state.started_at = Some(Instant::now());
+        let detect_kind = state.kind.is_none();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref());
+            let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref(), detect_kind);
             let _ = tx.send(WorkerMsg::HostHealth(name, probe));
         });
     }
@@ -2680,6 +2683,9 @@ impl App {
                     if self.hosts.contains(&name) {
                         let state = self.host_probes.entry(name).or_default();
                         state.in_flight = false;
+                        if let crate::zfs::host_health::HostProbe::Reached { kind: Some(k), .. } = &probe {
+                            state.kind = Some(k.clone());
+                        }
                         state.last = Some(probe);
                         state.finished_at = Some(Instant::now());
                     }
@@ -7737,6 +7743,28 @@ mod tests {
     }
 
     #[test]
+    fn the_type_is_cached_once_seen_and_a_failed_probe_does_not_erase_it() {
+        use crate::zfs::host_health::{HostKind, HostProbe};
+        let mut app = App::new(vec!["local".into(), "a".into()]);
+        let reached = |kind| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind };
+        app.tx.send(WorkerMsg::HostHealth("a".into(), reached(Some(HostKind::Vm("bhyve".into()))))).unwrap();
+        app.drain_worker_messages();
+        app.tx.send(WorkerMsg::HostHealth("a".into(), reached(None))).unwrap();
+        app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Disconnected)).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.host_probes["a"].kind, Some(HostKind::Vm("bhyve".into())));
+    }
+
+    #[test]
+    fn an_unknown_type_is_cached_so_it_is_not_asked_again() {
+        use crate::zfs::host_health::{HostKind, HostProbe};
+        let mut app = App::new(vec!["local".into(), "a".into()]);
+        app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Unknown) })).unwrap();
+        app.drain_worker_messages();
+        assert!(app.host_probes["a"].kind.is_some());
+    }
+
+    #[test]
     fn host_probe_failure_clears_the_in_flight_marker_so_the_name_can_be_retried() {
         let mut app = App::new(vec!["local".to_string()]);
         app.handle_key(KeyCode::Char('n'));
@@ -10459,7 +10487,7 @@ mod tests {
         let mut app = probes_app();
         app.state_dir = dir.path().to_path_buf();
         app.refresh_jobs();
-        let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![] };
+        let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
         for name in ["local", "fbsd16", "fbsd16t1"] {
             app.tx.send(WorkerMsg::HostHealth(name.to_string(), healthy())).unwrap();
         }
@@ -10475,13 +10503,13 @@ mod tests {
     #[test]
     fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result() {
         let mut app = probes_app();
-        let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![] };
+        let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
         let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
-        app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago) });
+        app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None });
         let a = app.host_assessment(1);
         assert_eq!(a.level, crate::zfs::host_health::Level::Warning);
         assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
-        app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()) });
+        app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None });
         assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
     }
 

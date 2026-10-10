@@ -29,6 +29,42 @@ pub struct PoolProbe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostKind {
+    Metal,
+    /// The hypervisor name as `kern.vm_guest` reports it (kept for later; the table shows only `vm`).
+    Vm(String),
+    Jail,
+    Unknown,
+}
+
+impl HostKind {
+    pub fn word(&self) -> &'static str {
+        match self {
+            HostKind::Metal => "metal",
+            HostKind::Vm(_) => "vm",
+            HostKind::Jail => "jail",
+            HostKind::Unknown => "-",
+        }
+    }
+}
+
+/// Reads `sysctl -n kern.vm_guest security.jail.jailed`: line 1 the guest kind, line 2 whether this is a jail.
+pub fn host_kind_from_sysctl(out: &str) -> HostKind {
+    let mut lines = out.lines().map(str::trim);
+    let (Some(guest), Some(jailed)) = (lines.next(), lines.next()) else { return HostKind::Unknown };
+    if !matches!(jailed, "0" | "1") || guest.is_empty() || guest.contains(char::is_whitespace) {
+        return HostKind::Unknown;
+    }
+    if jailed == "1" {
+        HostKind::Jail
+    } else if guest == "none" {
+        HostKind::Metal
+    } else {
+        HostKind::Vm(guest.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostProbe {
     /// The SSH client could not reach the host (exit status 255).
     Disconnected,
@@ -36,7 +72,8 @@ pub enum HostProbe {
     LoginRefused { reason: &'static str },
     /// The host answered but cannot be inspected (sudo refused, no `zpool`, unparsable output).
     Unavailable { reason: String },
-    Reached { rtt_ms: u64, pools: Vec<PoolProbe> },
+    /// `kind` is `Some` only on a probe that was asked to detect the type (the first successful one).
+    Reached { rtt_ms: u64, pools: Vec<PoolProbe>, kind: Option<HostKind> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,8 +190,8 @@ pub fn parse_status_all(output: &str) -> Vec<StatusFacts> {
 }
 
 /// `probe_host`, but a panic inside it becomes `Unavailable` instead of a worker thread that never reports back.
-pub fn probe_host_guarded(runner: &dyn CommandRunner) -> HostProbe {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_host(runner))).unwrap_or_else(|_| HostProbe::Unavailable { reason: "the probe crashed".to_string() })
+pub fn probe_host_guarded(runner: &dyn CommandRunner, detect_kind: bool) -> HostProbe {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_host(runner, detect_kind))).unwrap_or_else(|_| HostProbe::Unavailable { reason: "the probe crashed".to_string() })
 }
 
 fn first_line(text: &str) -> String {
@@ -162,7 +199,7 @@ fn first_line(text: &str) -> String {
 }
 
 /// One probe: `zpool list` first (its duration is the round trip); an SSH-level failure ends it there.
-pub fn probe_host(runner: &dyn CommandRunner) -> HostProbe {
+pub fn probe_host(runner: &dyn CommandRunner, detect_kind: bool) -> HostProbe {
     let started = Instant::now();
     let listed = match runner.run("zpool", LIST_ARGS) {
         Ok(out) => out,
@@ -196,7 +233,8 @@ pub fn probe_host(runner: &dyn CommandRunner) -> HostProbe {
             PoolProbe { name: pool.name, health: pool.health, capacity_percent: capacity, frag_percent: frag, errors: status.and_then(|s| s.errors), scan: status.map(|s| s.scan.clone()) }
         })
         .collect();
-    HostProbe::Reached { rtt_ms, pools }
+    let kind = detect_kind.then(|| runner.run_unprivileged("sysctl", &["-n", "kern.vm_guest", "security.jail.jailed"]).ok().filter(crate::exec::CommandOutput::success).map_or(HostKind::Unknown, |o| host_kind_from_sysctl(&o.stdout)));
+    HostProbe::Reached { rtt_ms, pools, kind }
 }
 
 fn health_text(health: &PoolHealth) -> String {
@@ -215,7 +253,7 @@ pub fn assess(probe: Option<&HostProbe>, job_failed: bool) -> Assessment {
         HostProbe::Disconnected => return say(Level::Disconnected, "unreachable"),
         HostProbe::LoginRefused { reason } => return say(Level::Disconnected, reason),
         HostProbe::Unavailable { reason } => return say(Level::Warning, &format!("cannot inspect: {reason}")),
-        HostProbe::Reached { pools, rtt_ms } => (pools, *rtt_ms),
+        HostProbe::Reached { pools, rtt_ms, .. } => (pools, *rtt_ms),
     };
     let _ = rtt_known;
     if let Some(p) = pools.iter().find(|p| p.health != PoolHealth::Online) {
@@ -256,7 +294,7 @@ mod tests {
     }
 
     fn reached(pools: Vec<PoolProbe>) -> HostProbe {
-        HostProbe::Reached { rtt_ms: 5, pools }
+        HostProbe::Reached { rtt_ms: 5, pools, kind: None }
     }
 
     #[test]
@@ -298,6 +336,8 @@ mod tests {
         list: CommandOutput,
         status: CommandOutput,
         calls: Mutex<Vec<String>>,
+        sysctl: CommandOutput,
+        unprivileged: Mutex<Vec<(String, Vec<String>)>>,
     }
 
     fn out(stdout: &str, stderr: &str, status: i32) -> CommandOutput {
@@ -317,18 +357,22 @@ mod tests {
             self.run(cmd, args)
         }
         fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
-            self.run(cmd, args)
+            self.unprivileged.lock().unwrap().push((cmd.to_string(), args.iter().map(ToString::to_string).collect()));
+            match cmd {
+                "sysctl" => Ok(self.sysctl.clone()),
+                _ => self.run(cmd, args),
+            }
         }
     }
 
     fn answers(list: CommandOutput, status: CommandOutput) -> Answers {
-        Answers { list, status, calls: Mutex::new(vec![]) }
+        Answers { list, status, calls: Mutex::new(vec![]), sysctl: out("bhyve\n0\n", "", 0), unprivileged: Mutex::new(vec![]) }
     }
 
     #[test]
     fn a_reachable_host_gives_pools_with_their_status_joined_by_name() {
         let runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
-        let HostProbe::Reached { pools, .. } = probe_host(&runner) else { panic!() };
+        let HostProbe::Reached { pools, .. } = probe_host(&runner, false) else { panic!() };
         assert_eq!(pools.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["scratch", "tpool", "zroot"]);
         assert_eq!(pools[0].capacity_percent, 42);
         assert_eq!(pools[0].frag_percent, Some(39));
@@ -337,9 +381,41 @@ mod tests {
     }
 
     #[test]
+    fn the_sysctl_answer_is_read_as_metal_vm_jail_or_unknown() {
+        assert_eq!(host_kind_from_sysctl("none\n0\n"), HostKind::Metal);
+        assert_eq!(host_kind_from_sysctl("bhyve\n0\n"), HostKind::Vm("bhyve".into()));
+        assert_eq!(host_kind_from_sysctl("kvm\n1\n"), HostKind::Jail, "a jail wins over the guest value");
+        assert_eq!(host_kind_from_sysctl(""), HostKind::Unknown);
+        assert_eq!(host_kind_from_sysctl("sysctl: unknown oid\n"), HostKind::Unknown);
+        assert_eq!(HostKind::Metal.word(), "metal");
+        assert_eq!(HostKind::Vm("xen".into()).word(), "vm");
+        assert_eq!(HostKind::Unknown.word(), "-");
+    }
+
+    #[test]
+    fn detection_runs_one_unprivileged_sysctl_only_when_asked() {
+        let runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
+        let HostProbe::Reached { kind, .. } = probe_host(&runner, true) else { panic!() };
+        assert_eq!(kind, Some(HostKind::Vm("bhyve".into())));
+        let unpriv = runner.unprivileged.lock().unwrap().clone();
+        assert_eq!(unpriv, vec![("sysctl".to_string(), vec!["-n".to_string(), "kern.vm_guest".to_string(), "security.jail.jailed".to_string()])]);
+        let HostProbe::Reached { kind, .. } = probe_host(&runner, false) else { panic!() };
+        assert_eq!(kind, None);
+        assert_eq!(runner.unprivileged.lock().unwrap().len(), 1, "not asked, not run");
+    }
+
+    #[test]
+    fn a_failed_sysctl_is_an_unknown_type_not_a_failed_probe() {
+        let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
+        runner.sysctl = out("", "sysctl: unknown oid 'kern.vm_guest'", 1);
+        let HostProbe::Reached { kind, .. } = probe_host(&runner, true) else { panic!("the probe must still succeed") };
+        assert_eq!(kind, Some(HostKind::Unknown));
+    }
+
+    #[test]
     fn an_ssh_level_failure_is_disconnected_and_skips_the_second_command() {
         let runner = answers(out("", "ssh: connect to host 10.0.0.9 port 22: Connection timed out", 255), out(STATUS, "", 0));
-        assert_eq!(probe_host(&runner), HostProbe::Disconnected);
+        assert_eq!(probe_host(&runner, false), HostProbe::Disconnected);
         assert_eq!(runner.calls.lock().unwrap().len(), 1, "one timeout, not two");
     }
 
@@ -351,8 +427,8 @@ mod tests {
             ("@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\n", "host key not accepted"),
         ] {
             let runner = answers(out("", stderr, 255), out(STATUS, "", 0));
-            assert_eq!(probe_host(&runner), HostProbe::LoginRefused { reason: want }, "{stderr}");
-            assert_eq!(assess(Some(&probe_host(&runner)), false), Assessment { level: Level::Disconnected, reason: want.to_string() });
+            assert_eq!(probe_host(&runner, false), HostProbe::LoginRefused { reason: want }, "{stderr}");
+            assert_eq!(assess(Some(&probe_host(&runner, false)), false), Assessment { level: Level::Disconnected, reason: want.to_string() });
         }
     }
 
@@ -365,11 +441,11 @@ mod tests {
     #[test]
     fn any_other_failure_is_unavailable_with_the_reason() {
         let sudo = answers(out("", "sudo: a password is required\n", 1), out("", "", 0));
-        assert_eq!(probe_host(&sudo), HostProbe::Unavailable { reason: "sudo: a password is required".to_string() });
+        assert_eq!(probe_host(&sudo, false), HostProbe::Unavailable { reason: "sudo: a password is required".to_string() });
         let none = answers(out("", "", 127), out("", "", 0));
-        assert!(matches!(probe_host(&none), HostProbe::Unavailable { reason } if reason.contains("127")));
+        assert!(matches!(probe_host(&none, false), HostProbe::Unavailable { reason } if reason.contains("127")));
         let garbled = answers(out("tank\t1\n", "", 0), out("", "", 0));
-        assert!(matches!(probe_host(&garbled), HostProbe::Unavailable { .. }));
+        assert!(matches!(probe_host(&garbled, false), HostProbe::Unavailable { .. }));
     }
 
     #[test]
@@ -386,13 +462,13 @@ mod tests {
                 self.run(c, a)
             }
         }
-        assert!(matches!(probe_host(&Broken), HostProbe::Unavailable { reason } if reason.contains("zpool")));
+        assert!(matches!(probe_host(&Broken, false), HostProbe::Unavailable { reason } if reason.contains("zpool")));
     }
 
     #[test]
     fn when_zpool_status_fails_the_pools_still_count_but_errors_and_scans_are_unknown() {
         let runner = answers(out(LIST, "", 0), out("", "boom", 1));
-        let HostProbe::Reached { pools, .. } = probe_host(&runner) else { panic!() };
+        let HostProbe::Reached { pools, .. } = probe_host(&runner, false) else { panic!() };
         assert_eq!(pools.len(), 3);
         assert!(pools.iter().all(|p| p.errors.is_none() && p.scan.is_none()));
     }
@@ -497,6 +573,6 @@ mod tests {
                 self.run(c, a)
             }
         }
-        assert!(matches!(probe_host_guarded(&Boom), HostProbe::Unavailable { reason } if reason.contains("crashed")));
+        assert!(matches!(probe_host_guarded(&Boom, false), HostProbe::Unavailable { reason } if reason.contains("crashed")));
     }
 }
