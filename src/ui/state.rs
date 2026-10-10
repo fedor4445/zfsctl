@@ -656,6 +656,13 @@ impl App {
         crate::zfs::host_health::assess(self.host_probes.get(name).and_then(|s| s.last.as_ref()), job_failed)
     }
 
+    /// `(failed, total)` over the enabled jobs of host `name`; failed means the latest run failed.
+    pub fn host_jobs_counts(&self, name: &str) -> (usize, usize) {
+        let mine = || self.jobs_view.jobs.iter().filter(|j| j.enabled && j.host == name);
+        let failed = mine().filter(|j| self.jobs_view.last_run(&j.id).is_some_and(|r| r.result == Some(crate::daemon::history::RunResult::Failed))).count();
+        (failed, mine().count())
+    }
+
     pub fn refresh_jobs(&mut self) {
         let selected = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).map(|j| j.id.clone());
         self.jobs_view = crate::ui::jobs::load(&self.state_dir, &self.hosts, Some(&self.jobs_view));
@@ -7740,6 +7747,24 @@ mod tests {
         assert_eq!(app.hosts, before, "a failed probe must not add anything to the host list");
         assert!(app.pending_new_hosts.is_empty());
         assert!(app.status_message.as_ref().unwrap().contains("Could not resolve hostname"));
+    }
+
+    #[test]
+    fn host_jobs_counts_total_enabled_jobs_and_failed_latest_runs_per_host() {
+        let mut a = crate::jobs::Job::test_backup("j1", "tank/x", "p", "/r", "/pw");
+        a.host = "fbsd16".into();
+        let mut b = crate::jobs::Job::test_backup("j2", "tank/y", "p", "/r", "/pw");
+        b.host = "fbsd16".into();
+        let mut c = crate::jobs::Job::test_backup("j3", "tank/z", "p", "/r", "/pw");
+        c.host = "fbsd16".into();
+        c.enabled = false;
+        let (mut app, dir) = app_with_jobs(&[a, b, c]);
+        app.hosts = vec!["local".into(), "fbsd16".into()];
+        let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
+        h.append(&crate::daemon::history::Event { job_id: "j1".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Finished, at: chrono::Utc::now(), scheduled_for: None, result: Some(crate::daemon::history::RunResult::Failed), message: String::new(), catch_up: false, summary: None }).unwrap();
+        app.refresh_jobs();
+        assert_eq!(app.host_jobs_counts("fbsd16"), (1, 2), "the disabled job counts nowhere");
+        assert_eq!(app.host_jobs_counts("local"), (0, 0));
     }
 
     #[test]

@@ -237,6 +237,65 @@ pub fn probe_host(runner: &dyn CommandRunner, detect_kind: bool) -> HostProbe {
     HostProbe::Reached { rtt_ms, pools, kind }
 }
 
+/// The Used cell: the fullest pool's capacity, with the level the State column uses for it.
+pub fn used_cell(pools: &[PoolProbe]) -> (String, Level) {
+    let Some(max) = pools.iter().map(|p| p.capacity_percent).max() else { return ("-".to_string(), Level::Ok) };
+    let level = if max >= 90 {
+        Level::Critical
+    } else if max >= 80 {
+        Level::Warning
+    } else {
+        Level::Ok
+    };
+    (format!("{max}%"), level)
+}
+
+pub fn pools_cell(pools: &[PoolProbe]) -> String {
+    pools.len().to_string()
+}
+
+/// The Scrub cell: what is happening now (running, then paused), else `never` if any pool never scanned, else
+/// the oldest last scan (`Sep 26 2026`), `canceled` if that is all there is.
+pub fn scan_cell(pools: &[PoolProbe]) -> String {
+    let scans: Vec<&ScanSummary> = pools.iter().filter_map(|p| p.scan.as_ref()).collect();
+    if scans.is_empty() {
+        return "-".to_string();
+    }
+    if let Some(running) = scans.iter().find_map(|s| match s {
+        ScanSummary::Running { percent } => Some(*percent),
+        _ => None,
+    }) {
+        return running.map_or_else(|| "running".to_string(), |p| format!("running {p}%"));
+    }
+    if scans.iter().any(|s| matches!(s, ScanSummary::Paused)) {
+        return "paused".to_string();
+    }
+    if scans.iter().any(|s| matches!(s, ScanSummary::Never)) {
+        return "never".to_string();
+    }
+    let whens: Vec<&str> = scans
+        .iter()
+        .filter_map(|s| match s {
+            ScanSummary::Finished { when, .. } => Some(when.as_str()),
+            _ => None,
+        })
+        .collect();
+    if whens.is_empty() {
+        return "canceled".to_string();
+    }
+    let parse = |w: &str| chrono::NaiveDateTime::parse_from_str(&w.split_whitespace().collect::<Vec<_>>().join(" "), "%a %b %d %H:%M:%S %Y").ok();
+    let dated: Vec<chrono::NaiveDateTime> = whens.iter().filter_map(|w| parse(w)).collect();
+    if dated.len() != whens.len() {
+        return whens[0].to_string();
+    }
+    dated.iter().min().map_or_else(|| whens[0].to_string(), |d| d.format("%b %-d %Y").to_string())
+}
+
+/// The Jobs cell: `failed/total` of a host's enabled jobs, and whether any failed.
+pub fn jobs_cell(failed: usize, total: usize) -> (String, bool) {
+    if total == 0 { ("-".to_string(), false) } else { (format!("{failed}/{total}"), failed > 0) }
+}
+
 fn health_text(health: &PoolHealth) -> String {
     match health {
         PoolHealth::Other(s) => s.clone(),
@@ -378,6 +437,47 @@ mod tests {
         assert_eq!(pools[0].frag_percent, Some(39));
         assert_eq!(pools[0].errors, Some(0));
         assert_eq!(pools[2].scan, Some(ScanSummary::Never));
+    }
+
+    fn pp(name: &str, cap: u8, scan: Option<ScanSummary>) -> PoolProbe {
+        PoolProbe { name: name.to_string(), health: PoolHealth::Online, capacity_percent: cap, frag_percent: None, errors: Some(0), scan }
+    }
+
+    #[test]
+    fn used_is_the_fullest_pool_with_the_state_thresholds() {
+        let p = |c| vec![pp("a", 10, None), pp("b", c, None)];
+        assert_eq!(used_cell(&p(79)), ("79%".to_string(), Level::Ok));
+        assert_eq!(used_cell(&p(80)), ("80%".to_string(), Level::Warning));
+        assert_eq!(used_cell(&p(89)), ("89%".to_string(), Level::Warning));
+        assert_eq!(used_cell(&p(90)), ("90%".to_string(), Level::Critical));
+        assert_eq!(used_cell(&[]), ("-".to_string(), Level::Ok));
+    }
+
+    #[test]
+    fn pools_counts_the_pools() {
+        assert_eq!(pools_cell(&[pp("a", 1, None), pp("b", 1, None)]), "2");
+        assert_eq!(pools_cell(&[]), "0");
+    }
+
+    #[test]
+    fn scrub_prefers_running_then_paused_then_never_then_the_oldest_date() {
+        let fin = |w: &str| Some(ScanSummary::Finished { when: w.to_string(), errors: 0 });
+        let run = Some(ScanSummary::Running { percent: Some(34) });
+        assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, run)]), "running 34%");
+        assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, Some(ScanSummary::Paused))]), "paused");
+        assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, Some(ScanSummary::Never))]), "never");
+        assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, fin("Sat Sep 26 13:15:14 2026"))]), "Sep 26 2026");
+        assert_eq!(scan_cell(&[pp("a", 1, None)]), "-");
+        assert_eq!(scan_cell(&[]), "-");
+        assert_eq!(scan_cell(&[pp("a", 1, fin("garbled"))]), "garbled");
+        assert_eq!(scan_cell(&[pp("a", 1, Some(ScanSummary::Canceled))]), "canceled");
+    }
+
+    #[test]
+    fn jobs_cell_is_failed_over_total() {
+        assert_eq!(jobs_cell(0, 0), ("-".to_string(), false));
+        assert_eq!(jobs_cell(0, 4), ("0/4".to_string(), false));
+        assert_eq!(jobs_cell(1, 4), ("1/4".to_string(), true));
     }
 
     #[test]
