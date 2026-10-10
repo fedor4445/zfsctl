@@ -1,4 +1,5 @@
 pub mod local;
+pub mod privilege;
 pub mod ssh;
 
 use crate::error::{AppError, Result};
