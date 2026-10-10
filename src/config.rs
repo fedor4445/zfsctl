@@ -164,11 +164,11 @@ pub fn set_notify_section(text: &str, section: &str) -> std::result::Result<Stri
     let result = match headers.first() {
         Some(&start) => {
             let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(i, _)| i);
-            let mut out: String = lines[..start].concat();
+            let mut out: String = lines.iter().take(start).copied().collect();
             out.push_str(&new_section);
             if end < lines.len() {
                 out.push_str(&fix("\n"));
-                out.push_str(&lines[end..].concat());
+                out.push_str(&lines.iter().skip(end).copied().collect::<String>());
             }
             out
         }
