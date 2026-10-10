@@ -482,14 +482,64 @@ fn dataset_lines(s: &DatasetSpace) -> Vec<Line<'static>> {
     ]
 }
 
+/// The samples a graph `width` cells wide shows: the newest two per cell. The peak is taken over the same window,
+/// so an old spike that has scrolled off no longer sets the scale.
+fn visible_tail(data: &[u64], width: u16) -> &[u64] {
+    data.get(data.len().saturating_sub(usize::from(width) * 2)..).unwrap_or_default()
+}
+
+/// The biggest sample, 0 for none: the scale of a graph.
+fn peak_of(data: &[u64]) -> u64 {
+    data.iter().copied().max().unwrap_or(0)
+}
+
+/// A braille area graph: one text row per `height`, one cell per `width`, each cell two samples wide (the left
+/// and right dot column) and four dots tall, so 4x the vertical and 2x the horizontal detail of block bars. The
+/// newest `2 * width` samples are drawn from the left, each as a column filled up from the bottom to its share
+/// of `peak`. A non-zero sample always shows at least one dot; a zero one shows none. Cells with no dots are
+/// plain spaces.
+fn braille_rows(data: &[u64], width: u16, height: u16, peak: u64) -> Vec<String> {
+    // Bit of each dot in a braille cell, indexed [column][row from the top].
+    const BIT: [[u32; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+    let cells = usize::from(width);
+    let dots = u128::from(height) * 4;
+    let tail = visible_tail(data, width);
+    let filled: Vec<u128> = tail
+        .iter()
+        .map(|&v| if v == 0 || peak == 0 { 0 } else { ((u128::from(v.min(peak)) * dots + u128::from(peak) / 2) / u128::from(peak)).clamp(1, dots) })
+        .collect();
+    (0..usize::from(height))
+        .map(|row| {
+            (0..cells)
+                .map(|cell| {
+                    let mut mask = 0;
+                    for (col, bits) in BIT.iter().enumerate() {
+                        let Some(&h) = filled.get(cell * 2 + col) else { continue };
+                        for (dot, bit) in bits.iter().enumerate() {
+                            // Dot `dot` of this row counts from the bottom of the whole graph.
+                            let from_bottom = u128::try_from((usize::from(height) - 1 - row) * 4 + (3 - dot)).unwrap_or(0);
+                            if from_bottom < h {
+                                mask |= bit;
+                            }
+                        }
+                    }
+                    if mask == 0 { ' ' } else { char::from_u32(0x2800 + mask).unwrap_or(' ') }
+                })
+                .collect()
+        })
+        .collect()
+}
+
 fn draw_rate(f: &mut Frame, area: Rect, label: &str, history: &[u64], ops: u64, lat: Option<u64>, style: Style) {
     let [head, spark] = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(2), Constraint::Min(0)]).areas(area);
     let now = history.last().copied().unwrap_or(0);
-    let text = vec![Line::from(format!("{label} {}", per_sec(now))), Line::from(format!("{ops} ops  lat {}", latency(lat)))];
-    f.render_widget(Paragraph::new(text), head);
-    let width = usize::from(spark.width);
-    let tail = history.get(history.len().saturating_sub(width)..).unwrap_or_default();
-    f.render_widget(Sparkline::default().data(tail).style(style), spark);
+    let width = spark.width;
+    let tail = visible_tail(history, width);
+    let peak = peak_of(tail);
+    let text = vec![Line::from(format!("{label} {}  peak {}", per_sec(now), per_sec(peak))), Line::from(format!("{ops} ops  lat {}", latency(lat)))];
+    f.render_widget(Paragraph::new(clip_lines(&text, head.width)), head);
+    let rows: Vec<Line<'static>> = braille_rows(tail, width, spark.height, peak).into_iter().map(Line::from).collect();
+    f.render_widget(Paragraph::new(rows).style(style), spark);
 }
 
 /// What the panel needs from the rest of the app besides its own state.
@@ -626,6 +676,49 @@ mod tests {
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
         Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None, disk: None, share: None })
+    }
+
+    #[test]
+    fn a_braille_graph_packs_two_samples_per_cell_and_four_levels_per_row() {
+        // One cell = two samples (left/right dot column) x four dot rows.
+        assert_eq!(braille_rows(&[0, 100], 1, 1, 100), ["⢸"], "only the right column, full height");
+        assert_eq!(braille_rows(&[100, 0], 1, 1, 100), ["⡇"], "only the left column, full height");
+        assert_eq!(braille_rows(&[50, 50], 1, 1, 100), ["⣤"], "half height in both columns");
+        assert_eq!(braille_rows(&[1, 0], 1, 1, 1000), ["⡀"], "a tiny non-zero value still shows one dot");
+        assert_eq!(braille_rows(&[0, 0], 1, 1, 100), [" "], "nothing, nothing drawn");
+        assert_eq!(braille_rows(&[5, 5], 1, 1, 0), [" "], "a zero peak never divides by zero");
+    }
+
+    #[test]
+    fn a_braille_graph_fills_rows_from_the_bottom_and_clamps_to_the_peak() {
+        let rows = braille_rows(&[100, 200], 1, 2, 100);
+        assert_eq!(rows, ["⣿", "⣿"], "a value above the peak is clamped, not drawn outside");
+        let half = braille_rows(&[50, 50], 1, 2, 100);
+        assert_eq!(half, [" ", "⣿"], "50% of two rows fills the bottom row");
+        assert_eq!(braille_rows(&[10; 6], 2, 3, 10).len(), 3);
+        assert!(braille_rows(&[10; 6], 2, 3, 10).iter().all(|r| r.chars().count() == 2));
+        assert!(braille_rows(&[], 4, 2, 10).iter().all(|r| r.trim().is_empty()), "no history yet: an empty graph");
+    }
+
+    #[test]
+    fn the_graph_shows_the_newest_samples_when_there_are_more_than_fit() {
+        // Width 1 cell holds the last two samples only.
+        assert_eq!(braille_rows(&[100, 100, 0, 100], 1, 1, 100), ["⢸"]);
+    }
+
+    #[test]
+    fn the_visible_window_is_the_newest_two_samples_per_cell_and_sets_the_peak() {
+        let data = [900, 1, 2, 3, 4];
+        assert_eq!(visible_tail(&data, 2), [1, 2, 3, 4], "the old spike has scrolled off");
+        assert_eq!(peak_of(visible_tail(&data, 2)), 4);
+        assert_eq!(visible_tail(&data, 0), Vec::<u64>::new());
+        assert_eq!(visible_tail(&[7], 5), [7]);
+    }
+
+    #[test]
+    fn the_rate_header_names_the_peak_of_what_is_drawn() {
+        assert_eq!(peak_of(&[3, 9, 2]), 9);
+        assert_eq!(peak_of(&[]), 0);
     }
 
     #[test]
