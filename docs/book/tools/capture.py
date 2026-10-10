@@ -32,10 +32,10 @@ def expand(keys):
 
 
 def clean(lines):
-    """Trailing spaces off; emails replaced; lines that mention a password dropped."""
+    """Trailing spaces off; emails replaced; lines that mention a password dropped (except the backup form's password-file label, which holds only a path)."""
     out = []
     for line in lines:
-        if "password" in line.lower():
+        if "password" in line.lower() and "password file (absolute" not in line.lower():
             continue
         out.append(EMAIL.sub("you@example.com", line.rstrip()))
     while out and not out[-1]:

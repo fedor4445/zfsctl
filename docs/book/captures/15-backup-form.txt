@@ -1,0 +1,36 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                 ┌New backup job──────────────────────────────────────────────────┐                     │
+│Alerts               │Backs up the newest <prefix>-<timestamp> snapshot (it never     │                     │
+│                     │takes snapshots) through a temporary read-only clone. The       │                     │
+│                     │repository must already exist (restic init).                    │                     │
+│                     │                                                                │                     │
+│                     │> Host (where restic runs): local                               │                     │
+│                     │  Dataset:                                                      │                     │
+│                     │  Prefix (snapshots to back up): auto                           │                     │
+│                     │  Repository (restic -r; no credentials in it):                 │                     │
+│                     │  Password file (absolute path on the host):                    │─────────────────────┘
+│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │─────────────────────┐
+│                     │  Schedule: 30 3 * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Sun 2026-10-11 03:30, Mon 2026-10-12 03:30, Tue 2026-10-13│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel
