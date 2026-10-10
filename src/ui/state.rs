@@ -220,6 +220,10 @@ pub struct App {
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
     pub alerts_preview_busy: bool,
+    /// A test message is being sent (it can take up to 30 s per channel): `t` waits for it.
+    pub alerts_test_busy: bool,
+    /// A finished preview that arrived while another modal was open, shown on the next `p`.
+    alerts_preview_ready: Option<String>,
     /// How many previews were started (a test seam: a second `p` while one runs must not start another).
     pub alerts_previews_started: u32,
     /// The address shown for each host (index-aligned with `hosts`); see `address_of`.
@@ -397,6 +401,8 @@ impl App {
             last_alerts_refresh: None,
             done_note: None,
             alerts_preview_busy: false,
+            alerts_test_busy: false,
+            alerts_preview_ready: None,
             alerts_previews_started: 0,
             nfs_available: None,
             samba_available: None,
@@ -762,6 +768,10 @@ impl App {
 
     /// `t`: asks (two keys) before sending a real test message through the saved channels.
     fn ask_to_send_test(&mut self) {
+        if self.alerts_test_busy {
+            self.status_message = Some("A test message is already being sent".to_string());
+            return;
+        }
         let Some(settings) = self.alerts_view.settings.clone() else {
             let problem = self.alerts_view.problem.clone().unwrap_or_default();
             self.set_error(format!("{problem}: fix config.toml before testing"));
@@ -792,6 +802,10 @@ impl App {
     /// `p`: builds the report as it would be sent now on a worker thread (probing the hosts can take a while) and
     /// shows it in a pop-up when ready. Nothing is sent or recorded.
     fn start_alerts_preview(&mut self) {
+        if let Some(text) = self.alerts_preview_ready.take() {
+            self.modal = Some(Modal::Info { title: "Report preview (nothing sent)".to_string(), body: text });
+            return;
+        }
         if self.alerts_preview_busy {
             return;
         }
@@ -800,12 +814,14 @@ impl App {
         self.status_message = Some("Preparing the report preview (probing the hosts)…".to_string());
         let (path, state_dir, tx) = (self.config_path.clone(), self.state_dir.clone(), self.tx.clone());
         std::thread::spawn(move || {
-            let text = match crate::config::Config::load(&path) {
+            // A crash in the worker must still answer, or `p` would stay busy for the rest of the session.
+            let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match crate::config::Config::load(&path) {
                 Ok(config) => crate::notify_cli::report_text_with(&config, &state_dir, chrono::Utc::now(), &|hosts| {
                     crate::daemon::monitor::probe_all(hosts, &|_| true, crate::daemon::monitor::PROBE_DEADLINE, &crate::daemon::monitor::Busy::default())
                 }),
                 Err(e) => format!("config.toml could not be read: {e}"),
-            };
+            }))
+            .unwrap_or_else(|_| "The report preview crashed; nothing was sent.".to_string());
             let _ = tx.send(WorkerMsg::AlertsPreview(text));
         });
     }
@@ -2307,7 +2323,13 @@ impl App {
     /// clears it on submit) — this only executes the mutation itself.
     pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
         let PendingAction { host, section, call } = action;
-        self.done_note = call.done_note();
+        if let Some(note) = call.done_note() {
+            self.done_note = Some(note);
+        }
+        if matches!(call, MutationCall::SendTestMessage { .. }) {
+            self.alerts_test_busy = true;
+            self.status_message = Some("Sending the test message…".to_string());
+        }
         if section == Section::BootEnvs {
             self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
         }
@@ -2925,11 +2947,21 @@ impl App {
                 }
                 WorkerMsg::AlertsPreview(text) => {
                     self.alerts_preview_busy = false;
-                    self.status_message = None;
-                    self.modal = Some(Modal::Info { title: "Report preview (nothing sent)".to_string(), body: text });
+                    if self.modal.is_some() || self.picker.is_some() {
+                        // Never replace something the operator is typing: keep it for the next `p`.
+                        self.alerts_preview_ready = Some(text);
+                        self.status_message = Some("The report preview is ready: press p on the Alerts screen".to_string());
+                    } else {
+                        self.status_message = None;
+                        self.modal = Some(Modal::Info { title: "Report preview (nothing sent)".to_string(), body: text });
+                    }
                 }
                 WorkerMsg::MutationDone(host, section, result) => {
-                    if host != self.selected_host {
+                    if section == Section::Alerts {
+                        self.alerts_test_busy = false;
+                    }
+                    // The Alerts calls are local to the hub: their result matters whichever host is selected now.
+                    if host != self.selected_host && section != Section::Alerts {
                         continue;
                     }
                     if section == Section::BootEnvs {
@@ -2938,7 +2970,7 @@ impl App {
                             self.bootenv_pin = None;
                         }
                     }
-                    let note = self.done_note.take();
+                    let note = if section == Section::Alerts { self.done_note.take() } else { None };
                     match result {
                         Ok(()) => {
                             self.status_message = note;
@@ -3358,12 +3390,6 @@ fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
     }
 }
 
-/// Builds the `PendingAction` for a submitted form, mapping its fields
-/// positionally per `FormKind`'s documented field order. Returns `None`
-/// if a required field is empty — the caller keeps the form modal open
-/// in that case rather than losing the user's input.
-/// The text of form field `index`; a missing field reads as empty, which every caller
-/// already treats as "not filled in" (forms are built with a fixed field count per kind).
 /// Turns the Alerts form into the save and the text of its confirmation, or says what is wrong. The values are
 /// checked by `NotifyConfig::resolve`, exactly as the daemon will check them.
 fn build_notify_action(fields: &[FormField], config_path: &std::path::Path) -> std::result::Result<(PendingAction, String), String> {
@@ -3383,11 +3409,14 @@ fn build_notify_action(fields: &[FormField], config_path: &std::path::Path) -> s
     let to = if settings.has_mail() { format!("Email to {}", settings.mail_to.join(", ")) } else { "Email off".to_string() };
     let report = settings.report_time.map_or("no daily report".to_string(), |t| format!("report at {}", t.format("%H:%M")));
     let remind = settings.remind.map_or("never remind".to_string(), |d| format!("remind every {} hours", d.as_secs() / 3600));
-    let prompt = format!("Save alert settings?\n  {to}\n  Check every {} min, {report}, {remind}\nThe daemon applies them within seconds. (y/n)", settings.check_interval.as_secs() / 60);
+    let command = if settings.has_mail() { format!("\n  Mail command (runs as root on the hub): {}", settings.mail_command) } else { String::new() };
+    let prompt = format!("Save alert settings?\n  {to}{command}\n  Check every {} min, {report}, {remind}\nThe daemon applies them within seconds. (y/n)", settings.check_interval.as_secs() / 60);
     let section = crate::config::render_notify_section(&cfg);
     Ok((PendingAction { host: 0, section: Section::Alerts, call: MutationCall::SaveNotify { config_path: config_path.to_path_buf(), section } }, prompt))
 }
 
+/// The text of form field `index`; a missing field reads as empty, which every caller
+/// already treats as "not filled in" (forms are built with a fixed field count per kind).
 fn field_value(fields: &[FormField], index: usize) -> &str {
     fields.get(index).map_or("", |f| f.value.as_str())
 }
@@ -3495,6 +3524,10 @@ fn job_save_prompt(old: Option<&crate::jobs::Job>, new: &crate::jobs::Job, snaps
     }
 }
 
+/// Builds the `PendingAction` for a submitted form, mapping its fields
+/// positionally per `FormKind`'s documented field order. Returns `None`
+/// if a required field is empty — the caller keeps the form modal open
+/// in that case rather than losing the user's input.
 fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<PendingAction> {
     match kind {
         FormKind::CreatePool { host } => {
@@ -8307,7 +8340,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatching_a_save_remembers_its_note_and_other_calls_clear_it() {
+    fn dispatching_a_save_remembers_its_note_and_other_calls_leave_it_alone() {
         let (mut app, dir) = alerts_app("");
         let runner: Arc<dyn CommandRunner> = Arc::new(crate::exec::test_support::FakeRunner::new(""));
         let save = PendingAction { host: 0, section: Section::Alerts, call: MutationCall::SaveNotify { config_path: dir.path().join("config.toml"), section: "[notify]\nmail_to = \"a@x.org\"\n".into() } };
@@ -8315,7 +8348,7 @@ mod tests {
         assert!(app.done_note.as_deref().is_some_and(|n| n.contains("saved")));
         let other = PendingAction { host: 0, section: Section::Jobs, call: MutationCall::DeleteJob { state_dir: dir.path().to_path_buf(), id: "none".into() } };
         app.dispatch_mutation(other, runner);
-        assert!(app.done_note.is_none());
+        assert!(app.done_note.is_some(), "another call neither clears nor takes the Alerts note");
     }
 
     #[test]
@@ -8392,6 +8425,75 @@ mod tests {
         app.drain_worker_messages();
         assert!(!app.alerts_preview_busy);
         assert!(matches!(&app.modal, Some(Modal::Info { body, .. }) if body.contains("Subject: x")));
+    }
+
+    #[test]
+    fn only_an_alerts_result_takes_the_alerts_note_and_one_for_another_section_leaves_it() {
+        let (mut app, _dir) = alerts_app("");
+        app.done_note = Some("Test message sent: the mail command accepted it".to_string());
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Jobs, Ok(()))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.status_message.as_deref() != Some("Test message sent: the mail command accepted it"), "a Jobs result must not announce a test message");
+        assert!(app.done_note.is_some());
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Alerts, Ok(()))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.status_message.as_deref(), Some("Test message sent: the mail command accepted it"));
+    }
+
+    #[test]
+    fn an_alerts_result_is_shown_even_when_another_host_is_selected_now() {
+        let (mut app, _dir) = alerts_app("");
+        app.hosts.push("other".to_string());
+        app.selected_host = 1;
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Alerts, Err(crate::error::AppError::Config("mail: failed: exited with status 78".into())))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.status_message.clone().unwrap_or_default().contains("status 78"), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn while_a_test_message_is_being_sent_the_screen_says_so_and_t_does_not_send_a_second() {
+        let (mut app, dir) = alerts_app("[notify]\nmail_to = \"me@x.org\"\nmail_command = \"true\"\n");
+        let runner: Arc<dyn CommandRunner> = Arc::new(crate::exec::test_support::FakeRunner::new(""));
+        let settings = app.alerts_view.settings.clone().unwrap();
+        app.dispatch_mutation(PendingAction { host: 0, section: Section::Alerts, call: MutationCall::SendTestMessage { settings: Box::new(settings), hook: None } }, runner);
+        assert!(app.alerts_test_busy);
+        assert!(app.status_message.clone().unwrap_or_default().contains("Sending"), "{:?}", app.status_message);
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.modal.is_none(), "no second confirmation while one is in flight");
+        assert!(app.status_message.clone().unwrap_or_default().contains("already"), "{:?}", app.status_message);
+        let start = Instant::now();
+        while app.alerts_test_busy && start.elapsed() < Duration::from_secs(20) {
+            app.drain_worker_messages();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!app.alerts_test_busy, "cleared when the result arrives");
+        let _ = dir;
+    }
+
+    #[test]
+    fn a_preview_that_arrives_while_a_form_is_open_is_parked_and_the_form_is_left_alone() {
+        let (mut app, _dir) = alerts_app("");
+        app.handle_key(KeyCode::Char('e'));
+        app.alerts_preview_busy = true;
+        app.tx.send(WorkerMsg::AlertsPreview("Subject: x\n\nbody".to_string())).unwrap();
+        app.drain_worker_messages();
+        assert!(matches!(app.modal, Some(Modal::Form { .. })), "the operator's form is untouched");
+        assert!(app.status_message.clone().unwrap_or_default().contains("preview is ready"), "{:?}", app.status_message);
+        assert!(!app.alerts_preview_busy);
+        app.handle_modal_key(KeyCode::Esc);
+        app.handle_key(KeyCode::Char('p'));
+        assert!(matches!(&app.modal, Some(Modal::Info { body, .. }) if body.contains("Subject: x")), "p shows the parked preview");
+        assert_eq!(app.alerts_previews_started, 0, "without probing again");
+    }
+
+    #[test]
+    fn the_save_confirmation_shows_the_mail_command_that_will_run_as_root() {
+        let (mut app, _dir) = alerts_app("");
+        app.handle_key(KeyCode::Char('e'));
+        fill(&mut app, ["me@x.org", "msmtp -a work -t", "", "", "", ""]);
+        submit_alerts_form(&mut app);
+        let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("msmtp -a work -t"), "{prompt}");
     }
 
     #[test]
