@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares               ┌New snapshot job────────────────────────────────────────────────┐                     │
+│Boot Envs            │Only snapshots named <prefix>-<timestamp> made by this job are  │                     │
+│Jobs                 │ever pruned.                                                    │                     │
+│Alerts               │                                                                │                     │
+│                     │> Host: local                                                   │                     │
+│                     │  Dataset:                                                      │                     │
+│                     │  Recursive (y/n): n                                            │                     │
+│                     │  Prefix: auto                                                  │                     │
+│                     │  Keep (newest N): 24                                           │─────────────────────┘
+│                     │  Schedule: 0 * * * *                                           │─────────────────────┐
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │Hourly                                                          │                     │
+│                     │Next: Sat 2026-10-10 18:00, Sat 2026-10-10 19:00, Sat 2026-10-10│                     │
+│                     │20:00                                                           │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel

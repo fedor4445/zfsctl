@@ -1,0 +1,36 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────────────────────────┐
+│Hosts                 ││Job                    Host     Target         Schedule             Next run        Last                │
+│Pools                 ││scrub-local-tpool      local    tpool          Weekly, Sunday 03:00 Sun 10-11 03:00 never               │
+│Datasets              ││                                                                                                        │
+│Snapshots             ││                                                                                                        │
+│Disks                 ││                                                                                                        │
+│Shares                ││                                                                                                        │
+│Boot Envs             ││                                                                                                        │
+│Jobs                  ││                                                                                                        │
+│Alerts                ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      │└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Job — scrub-local-tpool─────────────────────────────────────────────────────────────────────────────────┐
+│                      ││Last runs                                                Weekly, Sunday 03:00  (0 3 * * 0)              │
+│                      ││No runs yet                                              Next: Sun 2026-10-11 03:00, Sun 2026-10-18     │
+│                      ││                                                         03:00, Sun 2026-10-25 03:00                    │
+│                      ││                                                         enabled  catch up yes                          │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Edit  Space Disable  d Delete  n New scrub job  N New snapshot job  R New replication job  ? Help  q Quit

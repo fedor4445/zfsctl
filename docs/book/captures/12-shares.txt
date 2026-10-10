@@ -1,0 +1,34 @@
+┌zfsctl────────────────┐┌Shares — local ('r' refresh, Enter edit, 'd' remove)────────────────────────────────────────────────────┐
+│Hosts                 ││Dataset                  Protocol Details                                                               │
+│Pools                 ││scratch/data             NFS      -network 172.16.10.0/24                                               │
+│Datasets              ││tpool                    NFS      -network 172.16.10.0/24;-network 172.16.20.0/24                       │
+│Snapshots             ││zroot/home/carol         NFS      -network 172.16.10.0/24;-network 172.16.20.0/24                       │
+│Disks                 ││                                                                                                        │
+│Shares                ││                                                                                                        │
+│Boot Envs             ││                                                                                                        │
+│Jobs                  ││                                                                                                        │
+│Alerts                ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      │└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Metrics — NFS share scratch/data────────────────────────────────────────────────────────────────────────┐
+│                      ││Read  0B/s  peak 0B/s           Write 0B/s  peak 0B/s           Share    NFS                            │
+│                      ││0 ops  lat -                    0 ops  lat -                    Access   172.16.10.0/24  rw             │
+│                      ││                                                                Mounted  /scratch/data                  │
+│                      ││                                                                Clients  none connected                 │
+│                      ││                                                                Space    85%  100M of 119M              │
+│                      ││                                                                Quota    -   on 1.00x                   │
+│                      ││                                                                Pool     ONLINE  errs 0                 │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Edit  d Remove  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
