@@ -169,6 +169,10 @@ pub mod test_support {
 
     impl CommandRunner for FakeRunner {
         fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            assert!(
+                crate::exec::privilege::is_registered(cmd),
+                "{cmd} is not a registered remote command: add it to exec::privilege::ENTRIES, or use a registered command in this test"
+            );
             self.calls
                 .lock()
                 .unwrap()
@@ -268,5 +272,22 @@ mod tests {
     #[test]
     fn a_runner_without_command_support_refuses_instead_of_guessing() {
         assert!(FakeRunner::new("").command("zfs", &[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::test_support::FakeRunner;
+    use super::CommandRunner;
+
+    #[test]
+    #[should_panic(expected = "not a registered remote command")]
+    fn the_fake_runner_panics_on_a_command_nobody_registered() {
+        let _ = FakeRunner::new("").run("not-a-registered-command", &[]);
+    }
+
+    #[test]
+    fn the_fake_runner_accepts_registered_commands() {
+        assert!(FakeRunner::new("x").run("zpool", &["list"]).is_ok());
     }
 }
