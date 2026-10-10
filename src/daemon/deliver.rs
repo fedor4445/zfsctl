@@ -44,7 +44,7 @@ pub fn default_from() -> String {
 pub fn compose_mail(from: &str, to: &[String], subject: &str, body: &str, now: DateTime<Utc>) -> String {
     let to: Vec<String> = to.iter().map(|a| ascii_line(a)).collect();
     format!(
-        "From: {}\r\nTo: {}\r\nSubject: {}\r\nDate: {}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{body}",
+        "From: {}\nTo: {}\nSubject: {}\nDate: {}\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: 8bit\n\n{body}",
         ascii_line(from),
         to.join(", "),
         ascii_line(subject),
@@ -103,8 +103,9 @@ mod tests {
     #[test]
     fn a_composed_mail_has_every_header_then_a_blank_line_then_the_body_verbatim() {
         let text = compose_mail("zfsctl@hub", &["a@x.org".into(), "b@y.org".into()], "[zfsctl] fbsd16: tank DEGRADED", "line one\nline two\n", at());
-        let (head, body) = text.split_once("\r\n\r\n").unwrap();
-        let lines: Vec<&str> = head.split("\r\n").collect();
+        let (head, body) = text.split_once("\n\n").unwrap();
+        assert!(!text.contains('\r'), "local submission expects bare LF line endings");
+        let lines: Vec<&str> = head.split('\n').collect();
         assert_eq!(lines[0], "From: zfsctl@hub");
         assert_eq!(lines[1], "To: a@x.org, b@y.org");
         assert_eq!(lines[2], "Subject: [zfsctl] fbsd16: tank DEGRADED");
@@ -118,7 +119,7 @@ mod tests {
         assert_eq!(ascii_line("a\r\nBcc: z@z.org\tb"), "a  Bcc: z@z.org b");
         assert_eq!(ascii_line("héllo ✓"), "h?llo ?");
         let text = compose_mail("evil\r\nBcc: z@z.org", &["a@x.org".into()], "x\r\nBcc: z@z.org", "body", at());
-        let head = text.split_once("\r\n\r\n").unwrap().0;
+        let head = text.split_once("\n\n").unwrap().0;
         assert!(!head.lines().any(|l| l.starts_with("Bcc:")), "{head}");
         assert_eq!(head.lines().filter(|l| l.starts_with("Subject:")).count(), 1);
     }

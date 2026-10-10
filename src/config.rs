@@ -87,8 +87,8 @@ impl NotifyConfig {
             }
         }
         let minutes = self.check_interval_minutes.unwrap_or(5);
-        if minutes < 1 {
-            return Err("notify.check_interval_minutes must be at least 1".to_string());
+        if !(1..=1440).contains(&minutes) {
+            return Err("notify.check_interval_minutes must be between 1 and 1440".to_string());
         }
         let report_time = match self.report_time.as_deref() {
             None => chrono::NaiveTime::from_hms_opt(7, 0, 0),
@@ -97,6 +97,7 @@ impl NotifyConfig {
         };
         let remind = match self.remind_hours.unwrap_or(6) {
             0 => None,
+            h if h > 8760 => return Err("notify.remind_hours must be at most 8760 (a year); 0 means never".to_string()),
             h => Some(std::time::Duration::from_secs(h * 3600)),
         };
         Ok(NotifySettings { mail_to, mail_command, mail_from: self.mail_from.clone(), check_interval: std::time::Duration::from_secs(minutes * 60), report_time, remind })
@@ -299,6 +300,9 @@ mod tests {
             assert!(bad(NotifyConfig { mail_to: Some(to.into()), ..base.clone() }).contains("mail_to"), "{to:?}");
         }
         assert!(bad(NotifyConfig { check_interval_minutes: Some(0), ..base.clone() }).contains("check_interval_minutes"));
+        assert!(bad(NotifyConfig { check_interval_minutes: Some(1441), ..base.clone() }).contains("check_interval_minutes"));
+        assert!(bad(NotifyConfig { check_interval_minutes: Some(u64::MAX), ..base.clone() }).contains("check_interval_minutes"), "a huge value must not overflow");
+        assert!(bad(NotifyConfig { remind_hours: Some(u64::MAX), ..base.clone() }).contains("remind_hours"));
         assert!(bad(NotifyConfig { report_time: Some("7am".into()), ..base.clone() }).contains("report_time"));
         assert!(bad(NotifyConfig { report_time: Some("25:00".into()), ..base.clone() }).contains("report_time"));
         assert!(bad(NotifyConfig { mail_command: Some("  ".into()), ..base.clone() }).contains("mail_command"));

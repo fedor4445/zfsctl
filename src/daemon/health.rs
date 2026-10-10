@@ -49,8 +49,13 @@ struct Alerted {
 
 #[derive(Debug, Default, Clone)]
 struct HostState {
+    /// Consecutive probes at the same severity: what an escalation needs.
     streak_of: Option<Severity>,
     streak: u32,
+    /// Consecutive bad probes of any severity, and the mildest of them: what the first alert needs, so a host that
+    /// flips between warning and critical is not silent.
+    bad_streak: u32,
+    bad_min: Option<Severity>,
     alerted: Option<Alerted>,
 }
 
@@ -74,6 +79,11 @@ impl Tracker {
         self.hosts.get(host).and_then(|s| s.alerted.as_ref()).map(|a| a.since)
     }
 
+    /// Changes the reminder interval; every host's alert state is kept.
+    pub fn set_remind(&mut self, remind: Option<Duration>) {
+        self.remind = remind;
+    }
+
     pub fn forget_except(&mut self, hosts: &[String]) {
         self.hosts.retain(|name, _| hosts.contains(name));
     }
@@ -89,6 +99,13 @@ impl Tracker {
             state.streak_of = Some(sev);
             state.streak = 1;
         }
+        if sev == Severity::Ok {
+            state.bad_streak = 0;
+            state.bad_min = None;
+        } else {
+            state.bad_streak += 1;
+            state.bad_min = Some(state.bad_min.map_or(sev, |m| m.min(sev)));
+        }
         let confirmed = state.streak >= confirm;
         let alert = |kind, severity, bad_for| Alert { host: host.to_string(), kind, severity, reason: reason.to_string(), bad_for };
         if sev == Severity::Ok {
@@ -100,9 +117,10 @@ impl Tracker {
             return None;
         }
         match state.alerted.as_mut() {
-            None if confirmed => {
-                state.alerted = Some(Alerted { severity: sev, since: now, last_sent: now });
-                Some(alert(AlertKind::Alert, sev, None))
+            None if state.bad_streak >= confirm => {
+                let first = state.bad_min.unwrap_or(sev);
+                state.alerted = Some(Alerted { severity: first, since: now, last_sent: now });
+                Some(alert(AlertKind::Alert, first, None))
             }
             None => None,
             Some(a) if sev > a.severity && confirmed => {
@@ -146,6 +164,40 @@ mod tests {
         assert!(tr.observe("a", Level::Critical, "tank DEGRADED", t(10)).is_none(), "the streak restarted");
         let alert = tr.observe("a", Level::Critical, "tank DEGRADED", t(15)).unwrap();
         assert_eq!((alert.kind, alert.severity, alert.reason.as_str()), (AlertKind::Alert, Severity::Critical, "tank DEGRADED"));
+    }
+
+    #[test]
+    fn a_host_that_flips_between_warning_and_critical_still_alerts_at_the_milder_level() {
+        let mut tr = tracker();
+        assert!(tr.observe("a", Level::Warning, "tank 85% full", t(0)).is_none());
+        let a = tr.observe("a", Level::Disconnected, "unreachable", t(5)).unwrap();
+        assert_eq!((a.kind, a.severity, a.reason.as_str()), (AlertKind::Alert, Severity::Warning, "unreachable"));
+        let mut flaky = tracker();
+        let mut alerts = 0;
+        for (i, level) in [Level::Warning, Level::Critical, Level::Warning, Level::Critical, Level::Warning, Level::Critical].into_iter().enumerate() {
+            alerts += usize::from(flaky.observe("b", level, "x", t(i64::try_from(i).unwrap() * 5)).is_some());
+        }
+        assert_eq!(alerts, 1, "one alert for the whole flapping spell, not none and not six");
+    }
+
+    #[test]
+    fn after_a_mild_alert_two_critical_probes_in_a_row_escalate() {
+        let mut tr = tracker();
+        tr.observe("a", Level::Warning, "w", t(0));
+        tr.observe("a", Level::Critical, "c", t(5));
+        let e = tr.observe("a", Level::Critical, "c", t(10)).unwrap();
+        assert_eq!((e.kind, e.severity), (AlertKind::Escalation, Severity::Critical));
+    }
+
+    #[test]
+    fn the_reminder_interval_can_change_without_losing_the_alert() {
+        let mut tr = tracker();
+        tr.observe("a", Level::Critical, "x", t(0));
+        tr.observe("a", Level::Critical, "x", t(5));
+        tr.set_remind(Some(Duration::from_secs(3600)));
+        assert!(tr.observe("a", Level::Critical, "x", t(10)).is_none());
+        assert_eq!(tr.observe("a", Level::Critical, "x", t(5 + 61)).unwrap().kind, AlertKind::Reminder);
+        assert_eq!(tr.bad_since("a"), Some(t(5)));
     }
 
     #[test]

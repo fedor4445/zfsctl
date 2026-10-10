@@ -77,7 +77,10 @@ struct Shared {
 struct Loaded {
     hosts: Vec<(String, Arc<dyn CommandRunner>)>,
     notify_command: Option<String>,
-    notify: crate::config::NotifySettings,
+    /// `None` when `[notify]` is invalid: the hosts and the hook still apply, and the caller keeps its previous
+    /// settings (or none, at startup) and logs `notify_problem`.
+    notify: Option<crate::config::NotifySettings>,
+    notify_problem: Option<String>,
     info: Vec<(String, String, String)>,
 }
 
@@ -87,8 +90,11 @@ fn load_hosts(config_path: &Path) -> Result<Loaded> {
     let inventory = HostInventory::from_config(&config);
     let hosts = inventory.hosts.iter().map(|h| (h.name.clone(), Arc::clone(&h.runner))).collect();
     let info = inventory.hosts.iter().map(|h| (h.name.clone(), crate::ui::state::address_of(h.ssh_target.as_deref()), h.tag.clone().unwrap_or_default())).collect();
-    let notify = config.notify.resolve().map_err(AppError::Config)?;
-    Ok(Loaded { hosts, notify_command: config.daemon.notify_command, notify, info })
+    let (notify, notify_problem) = match config.notify.resolve() {
+        Ok(settings) => (Some(settings), None),
+        Err(problem) => (None, Some(problem)),
+    };
+    Ok(Loaded { hosts, notify_command: config.daemon.notify_command, notify, notify_problem, info })
 }
 
 /// Progress and cancel files can only belong to a transfer of a previous daemon: remove them.
@@ -123,7 +129,9 @@ impl Shared {
         let names = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
         *self.hosts.write().unwrap_or_else(PoisonError::into_inner) = loaded.hosts;
         *self.notify_command.write().unwrap_or_else(PoisonError::into_inner) = loaded.notify_command;
-        *self.settings.write().unwrap_or_else(PoisonError::into_inner) = loaded.notify;
+        if let Some(settings) = loaded.notify {
+            *self.settings.write().unwrap_or_else(PoisonError::into_inner) = settings;
+        }
         *self.host_info.write().unwrap_or_else(PoisonError::into_inner) = loaded.info;
         names
     }
@@ -299,6 +307,7 @@ impl monitor::Sink for DaemonSink<'_> {
 fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) {
     let mut monitor: Option<monitor::Monitor> = None;
     let mut next = std::time::Instant::now();
+    let busy = monitor::Busy::default();
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_secs(1));
         if std::time::Instant::now() < next {
@@ -311,7 +320,12 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
             next = std::time::Instant::now() + Duration::from_secs(30);
             continue;
         }
-        if monitor.as_ref().is_none_or(|m| *m.settings() != settings) {
+        if let Some(m) = monitor.as_mut().filter(|m| *m.settings() != settings) {
+            // New settings for the running monitor: its alert state and retry queue carry over.
+            log("health monitor settings changed");
+            m.set_settings(settings.clone());
+        }
+        if monitor.is_none() {
             let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
             log(&format!("health monitor started (every {} min, report at {})", settings.check_interval.as_secs() / 60, settings.report_time.map_or("off".to_string(), |t| t.format("%H:%M").to_string())));
             monitor = Some(monitor::Monitor::new(settings.clone(), hub, state_dir.to_path_buf(), Utc::now()));
@@ -326,11 +340,17 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
                 monitor::HostInfo { name, address, tag, runner }
             })
             .collect();
-        let probed = monitor::probe_all(&hosts, &|n| m.needs_kind(n), monitor::PROBE_DEADLINE);
+        let probed = monitor::probe_all(&hosts, &|n| m.needs_kind(n), monitor::PROBE_DEADLINE, &busy);
         let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
         let runs = history::runs(&shared.history.read());
-        m.observe(Utc::now(), chrono::Local::now().naive_local(), &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
-        next = std::time::Instant::now() + settings.check_interval;
+        let local = chrono::Local::now().naive_local();
+        m.observe(Utc::now(), local, &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
+        // Wake for the daily report too, so it is not lost when the probe interval straddles the report time.
+        let wake = match m.report_wait(chrono::Local::now().naive_local()) {
+            Some(wait) if !wait.is_zero() => settings.check_interval.min(wait + Duration::from_secs(1)),
+            _ => settings.check_interval,
+        };
+        next = std::time::Instant::now() + wake;
     }
 }
 
@@ -356,6 +376,10 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         clear_partial_files(&jobs);
     }
     let loaded = load_hosts(config_path)?;
+    if let Some(problem) = &loaded.notify_problem {
+        // Never a reason to stay down: the jobs matter more than the notifications.
+        log(&format!("config.toml [notify] problem, health notifications are off until it is fixed: {problem}"));
+    }
     let names: Vec<String> = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
     let shared = Arc::new(Shared {
         history: History::new(paths.history()),
@@ -364,7 +388,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         clock: Arc::new(SystemClock),
         poll: POLL,
         notify_command: RwLock::new(loaded.notify_command),
-        settings: RwLock::new(loaded.notify),
+        settings: RwLock::new(loaded.notify.clone().unwrap_or_default()),
         host_info: RwLock::new(loaded.info),
         stop: Arc::clone(stop),
         progress_dir: paths.progress_dir(),
@@ -403,6 +427,9 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
             config_mtime = current;
             match load_hosts(config_path) {
                 Ok(loaded) => {
+                    if let Some(problem) = &loaded.notify_problem {
+                        log(&format!("config.toml [notify] problem, keeping the previous notify settings: {problem}"));
+                    }
                     let names = shared.apply(loaded);
                     log(&format!("config.toml reloaded: hosts {}", names.join(", ")));
                     engine.set_hosts(names);
@@ -507,16 +534,23 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[[hosts]]\nname = \"fbsd16\"\nssh_target = \"fbsd@172.16.10.60\"\ntag = \"vm\"\n\n[notify]\nmail_to = \"me@x.org\"\n").unwrap();
         let l = load_hosts(&path).unwrap();
-        assert_eq!(l.notify.mail_to, ["me@x.org"]);
+        assert_eq!(l.notify.unwrap().mail_to, ["me@x.org"]);
         assert_eq!(l.info, [("local".to_string(), "local".to_string(), String::new()), ("fbsd16".to_string(), "172.16.10.60".to_string(), "vm".to_string())]);
     }
 
     #[test]
-    fn a_bad_notify_section_is_an_error_load_hosts_reports_so_the_caller_keeps_the_old_settings() {
+    fn a_bad_notify_section_never_blocks_the_hosts_and_never_replaces_good_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[notify]\nmail_to = \"not an address\"\n").unwrap();
-        assert!(load_hosts(&path).err().unwrap().to_string().contains("mail_to"));
+        std::fs::write(&path, "[[hosts]]\nname = \"later\"\nssh_target = \"u@later\"\n\n[notify]\nmail_to = \"not an address\"\n").unwrap();
+        let l = load_hosts(&path).expect("a bad [notify] is not a load failure");
+        assert!(l.notify.is_none() && l.notify_problem.as_deref().unwrap().contains("mail_to"));
+        assert_eq!(l.hosts.len(), 2, "the host in the same edit still loads");
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        *shared.settings.write().unwrap() = crate::config::NotifyConfig { mail_to: Some("me@x.org".into()), ..Default::default() }.resolve().unwrap();
+        shared.apply(l);
+        assert_eq!(shared.settings.read().unwrap().mail_to, ["me@x.org"], "the previous settings are kept");
+        assert!(shared.runner("later").is_some());
     }
 
     #[test]
@@ -636,7 +670,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = shared(&dir, FakeRunner::new(""), None);
         assert!(shared.runner("later").is_none());
-        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()), notify: crate::config::NotifySettings::default(), info: Vec::new() };
+        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()), notify: Some(crate::config::NotifySettings::default()), notify_problem: None, info: Vec::new() };
         let names = shared.apply(loaded);
         assert_eq!(names, vec!["local", "later"]);
         assert!(shared.runner("later").is_some());

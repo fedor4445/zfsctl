@@ -10,9 +10,9 @@ use crate::exec::CommandRunner;
 use crate::jobs::Job;
 use crate::zfs::host_health::{assess, probe_host_guarded, HostKind, HostProbe, Level};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Probes that must agree before an alert is sent.
@@ -35,22 +35,32 @@ pub struct Probed {
     pub probe: Option<HostProbe>,
 }
 
+/// The hosts whose probe is still running. A probe that blocks (a pool stuck in I/O) is never given a second
+/// thread, ssh and `zpool` process while the first is alive, so a hung host costs one of each, not one per tick.
+pub type Busy = Arc<Mutex<HashSet<String>>>;
+
 /// Probes every host at once and waits until `deadline` for the answers. A host that has not answered by then
-/// comes back as `None`; its thread is left to finish by itself (as the TUI's probe is). `detect` says whether to
-/// read a host's type (done once per host).
-pub fn probe_all(hosts: &[HostInfo], detect: &dyn Fn(&str) -> bool, deadline: Duration) -> Vec<Probed> {
+/// comes back as `None`; its thread is left to finish by itself (as the TUI's probe is) and the host is skipped
+/// (also as `None`) until it has. `detect` says whether to read a host's type (done once per host).
+pub fn probe_all(hosts: &[HostInfo], detect: &dyn Fn(&str) -> bool, deadline: Duration, busy: &Busy) -> Vec<Probed> {
     let (tx, rx) = std::sync::mpsc::channel();
+    let mut asked = 0;
     for host in hosts {
-        let (tx, runner, name, kind) = (tx.clone(), Arc::clone(&host.runner), host.name.clone(), detect(&host.name));
+        if !busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(host.name.clone()) {
+            continue;
+        }
+        asked += 1;
+        let (tx, runner, name, kind, busy) = (tx.clone(), Arc::clone(&host.runner), host.name.clone(), detect(&host.name), Arc::clone(busy));
         std::thread::spawn(move || {
             let probe = probe_host_guarded(runner.as_ref(), kind);
+            busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&name);
             let _ = tx.send((name, probe));
         });
     }
     drop(tx);
     let started = Instant::now();
     let mut answers: HashMap<String, HostProbe> = HashMap::new();
-    while answers.len() < hosts.len() {
+    while answers.len() < asked {
         let Some(left) = deadline.checked_sub(started.elapsed()) else { break };
         match rx.recv_timeout(left) {
             Ok((name, probe)) => {
@@ -125,6 +135,23 @@ impl Monitor {
 
     pub fn settings(&self) -> &NotifySettings {
         &self.settings
+    }
+
+    /// Applies new settings without losing anything: the alert state, the retry queue and the report window all
+    /// stay (only the reminder interval of the tracker changes).
+    pub fn set_settings(&mut self, settings: NotifySettings) {
+        self.tracker.set_remind(settings.remind);
+        self.settings = settings;
+    }
+
+    /// How long until the daily report is due, so the caller can wake for it: `None` when there is no report or it
+    /// was sent today, zero when it is due now, else the time left today.
+    pub fn report_wait(&self, local: NaiveDateTime) -> Option<Duration> {
+        let at = self.settings.report_time?;
+        if self.last_report == Some(local.date()) {
+            return None;
+        }
+        Some((at - local.time()).to_std().unwrap_or_default())
     }
 
     /// Whether `host`'s type has not been read yet.
@@ -430,6 +457,79 @@ mod tests {
     }
 
     #[test]
+    fn a_host_whose_probe_is_still_running_is_not_probed_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Slow(Arc<AtomicUsize>);
+        impl CommandRunner for Slow {
+            fn run(&self, _: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
+                if args.first() == Some(&"list") {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(900));
+                Ok(CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+            }
+            fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<CommandOutput> {
+                self.run(c, a)
+            }
+            fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<CommandOutput> {
+                self.run(c, a)
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hosts = vec![HostInfo { name: "slow".into(), address: "x".into(), tag: String::new(), runner: Arc::new(Slow(Arc::clone(&calls))) }];
+        let busy = Busy::default();
+        for _ in 0..5 {
+            let probed = probe_all(&hosts, &|_| false, Duration::from_millis(100), &busy);
+            assert!(probed[0].probe.is_none());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one probe, not five stacked up");
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(busy.lock().unwrap().is_empty(), "the host is free again once its probe returned");
+        probe_all(&hosts, &|_| false, Duration::from_millis(100), &busy);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn changing_the_settings_keeps_the_alert_state_the_retry_queue_and_does_not_log_a_new_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = [host("a")];
+        let mut sink = FakeSink::failing();
+        let mut m = Monitor::new(settings_with_report("off"), "hub".into(), dir.path().to_path_buf(), t(0));
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        }
+        let mut fixed = settings_with_report("off");
+        fixed.remind = Some(Duration::from_secs(3600));
+        m.set_settings(fixed);
+        sink.ok = true;
+        m.observe(t(10), local(10), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        assert_eq!(sink.sent.last().unwrap().subject, "[zfsctl] a: unreachable", "the queued alert was retried after the change");
+        let n = sink.sent.len();
+        m.observe(t(15), local(15), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        assert_eq!(sink.sent.len(), n, "and the host is not alerted as if it were new");
+        for i in 4..6 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert!(sink.sent.last().unwrap().subject.contains("recovered"), "the recovery still comes");
+        let starts = EventLog::new(dir.path().join("health-events.jsonl")).read().iter().filter(|e| e.kind == "daemon-started").count();
+        assert_eq!(starts, 1);
+    }
+
+    #[test]
+    fn report_wait_says_how_long_until_the_report_is_due() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.path().to_path_buf(), t(0));
+        assert_eq!(m.report_wait(at_local(6, 0)), Some(Duration::from_secs(3600)));
+        assert_eq!(m.report_wait(at_local(7, 0)), Some(Duration::ZERO), "due now");
+        assert_eq!(m.report_wait(at_local(15, 0)), Some(Duration::ZERO), "overdue: sent as soon as a tick runs");
+        m.mark_report_sent(at_local(7, 1).date(), false);
+        assert_eq!(m.report_wait(at_local(8, 0)), None, "sent today");
+        let next_day = at_local(0, 5) + chrono::Duration::days(1);
+        assert_eq!(m.report_wait(next_day), Some(Duration::from_secs(6 * 3600 + 55 * 60)), "after midnight the wait is for the next 07:00");
+        assert_eq!(monitor().report_wait(at_local(6, 0)), None, "no report configured");
+    }
+
+    #[test]
     fn probe_all_collects_every_host_and_a_hung_one_comes_back_as_no_answer() {
         struct Hung;
         impl CommandRunner for Hung {
@@ -446,7 +546,7 @@ mod tests {
         }
         let hosts = vec![HostInfo { name: "slow".into(), address: "x".into(), tag: String::new(), runner: Arc::new(Hung) }, host("fast")];
         let t0 = Instant::now();
-        let probed = probe_all(&hosts, &|_| false, Duration::from_millis(500));
+        let probed = probe_all(&hosts, &|_| false, Duration::from_millis(500), &Busy::default());
         assert!(t0.elapsed() < Duration::from_secs(2));
         assert_eq!(probed.len(), 2);
         assert!(probed.iter().find(|p| p.name == "slow").unwrap().probe.is_none());
