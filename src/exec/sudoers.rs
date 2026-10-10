@@ -143,6 +143,86 @@ pub fn print_sudoers(runner: &dyn CommandRunner, host: &str, ssh_target: &str, f
     Ok(render(host, user, features, &resolved, generated))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Ok,
+    Missing,
+    TooBroad,
+}
+
+#[derive(Debug)]
+pub struct Line {
+    pub name: &'static str,
+    /// The path and, for a pinned entry, its arguments: what sudoers has to allow.
+    pub detail: String,
+    pub status: Status,
+}
+
+#[derive(Debug)]
+pub struct Report {
+    pub lines: Vec<Line>,
+}
+
+impl Report {
+    pub fn exit_code(&self) -> i32 {
+        i32::from(self.lines.iter().any(|l| l.status != Status::Ok))
+    }
+
+    pub fn render(&self) -> String {
+        let mut text = String::new();
+        for line in &self.lines {
+            let label = match line.status {
+                Status::Ok => "ok",
+                Status::Missing => "MISSING",
+                Status::TooBroad => "TOO BROAD",
+            };
+            text.push_str(&format!("{label:<10}{:<11}{}\n", line.name, line.detail));
+        }
+        let count = |s: Status| self.lines.iter().filter(|l| l.status == s).count();
+        text.push_str(&format!("{} ok, {} missing, {} too broad\n", count(Status::Ok), count(Status::Missing), count(Status::TooBroad)));
+        text
+    }
+}
+
+/// Whether the host's sudo would run `path args` without a password (`sudo -n -l <command>` exits 0).
+fn sudo_allows(runner: &dyn CommandRunner, host: &str, path: &str, args: &[&str]) -> Result<bool, Failure> {
+    let mut full = vec!["-n", "-l", path];
+    full.extend_from_slice(args);
+    let out = runner.run_unprivileged("sudo", &full).map_err(|e| unreachable(host, e))?;
+    if out.status == 255 {
+        return Err(unreachable(host, out.stderr.trim()));
+    }
+    Ok(out.success())
+}
+
+pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) -> Result<Report, Failure> {
+    let entries = privilege::privileged_for(features);
+    if entries.is_empty() {
+        return Err(problem("the selected features need no privileged commands, so there is nothing to check"));
+    }
+    let resolved = resolve(runner, host, &entries)?;
+    let mut lines = Vec::new();
+    for r in &resolved {
+        let forms: Vec<(&[&str], &str)> = match &r.entry.kind {
+            Kind::Privileged { pinned, probe } if !pinned.is_empty() => pinned.iter().map(|args| (*args, *probe)).collect(),
+            _ => vec![(&[][..], "")],
+        };
+        for (args, probe) in forms {
+            // A pinned entry must refuse a different argument too, or the pin is not doing its job.
+            let status = if !sudo_allows(runner, host, &r.path, args)? {
+                Status::Missing
+            } else if !probe.is_empty() && sudo_allows(runner, host, &r.path, &[probe])? {
+                Status::TooBroad
+            } else {
+                Status::Ok
+            };
+            let detail = if args.is_empty() { r.path.clone() } else { format!("{} {}", r.path, args.join(" ")) };
+            lines.push(Line { name: r.entry.name, detail, status });
+        }
+    }
+    Ok(Report { lines })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +436,110 @@ mod tests {
         let err = print_sudoers(&runner, "h", "fbsd@h", &[], "d").unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(runner.count(), 0);
+    }
+
+    /// A host whose sudoers allows exactly `allowed` command lines (path plus arguments, space-joined).
+    fn sudo_host(allowed: &'static [&'static str], paths: &'static [(&'static str, &'static str)]) -> Scripted {
+        Scripted::new(move |cmd, args| match cmd {
+            "sh" => {
+                let lines: String = args[3..].iter().map(|n| format!("{n}={}\n", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p))).collect();
+                out(&lines, 0)
+            }
+            "sudo" => {
+                assert_eq!(&args[..2], ["-n", "-l"]);
+                let asked = args[2..].join(" ");
+                out(&asked, if allowed.contains(&asked.as_str()) { 0 } else { 1 })
+            }
+            other => panic!("unexpected {other}"),
+        })
+    }
+
+    const EXACT: &[&str] = &[
+        "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/geom", "/sbin/bectl", "/usr/sbin/service",
+        "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/usr/bin/tee /usr/local/etc/smb4.conf",
+    ];
+
+    fn statuses(report: &Report) -> Vec<(&'static str, Status)> {
+        report.lines.iter().map(|l| (l.name, l.status)).collect()
+    }
+
+    #[test]
+    fn a_host_with_exactly_the_right_entries_is_all_ok() {
+        let runner = sudo_host(EXACT, ALL_PATHS);
+        let report = check_host(&runner, "fbsd16", &select(&[], &[]).unwrap()).unwrap();
+        assert_eq!(report.lines.len(), 11);
+        assert!(report.lines.iter().all(|l| l.status == Status::Ok), "{}", report.render());
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_missing_entry_is_reported_by_name_and_fails_the_run() {
+        const WITHOUT_GEOM: &[&str] = &[
+            "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/bectl", "/usr/sbin/service",
+            "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/usr/bin/tee /usr/local/etc/smb4.conf",
+        ];
+        let report = check_host(&sudo_host(WITHOUT_GEOM, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        assert!(statuses(&report).contains(&("geom", Status::Missing)), "{}", report.render());
+        assert_eq!(report.exit_code(), 1);
+        assert!(report.render().contains("MISSING") && report.render().contains("1 missing"), "{}", report.render());
+    }
+
+    #[test]
+    fn a_plain_cat_entry_is_too_broad() {
+        const BROAD_CAT: &[&str] = &[
+            "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/geom", "/sbin/bectl", "/usr/sbin/service",
+            "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/bin/cat /etc/master.passwd", "/usr/bin/tee /usr/local/etc/smb4.conf",
+        ];
+        let report = check_host(&sudo_host(BROAD_CAT, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        assert!(statuses(&report).contains(&("cat", Status::TooBroad)), "{}", report.render());
+        assert_eq!(report.exit_code(), 1);
+        assert!(report.render().contains("TOO BROAD"), "{}", report.render());
+    }
+
+    #[test]
+    fn restic_is_checked_only_when_selected() {
+        let runner = sudo_host(&["/usr/local/bin/restic"], ALL_PATHS);
+        let report = check_host(&runner, "h", &select(&["restic".to_string()], &["core", "acl", "disks", "bootenvs", "shares", "samba"].map(String::from)).unwrap()).unwrap();
+        assert_eq!(statuses(&report), [("restic", Status::Ok)]);
+    }
+
+    #[test]
+    fn an_unreachable_host_is_exit_2_after_a_single_ssh_call() {
+        let runner = Scripted::new(|_, _| CommandOutput { stdout: String::new(), stderr: "ssh: Could not resolve hostname".to_string(), status: 255 });
+        let err = check_host(&runner, "h", &select(&[], &[]).unwrap()).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(runner.count(), 1, "one timeout, not one per entry");
+    }
+
+    #[test]
+    fn ssh_dropping_mid_run_is_exit_2_and_stops_asking() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let runner = Scripted::new(move |cmd, args| {
+            if cmd == "sh" {
+                let lines: String = args[3..].iter().map(|n| format!("{n}=/sbin/{n}\n")).collect();
+                return out(&lines, 0);
+            }
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 { out("", 0) } else { CommandOutput { stdout: String::new(), stderr: "gone".to_string(), status: 255 } }
+        });
+        let err = check_host(&runner, "h", &[Feature::Core]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(runner.count(), 3, "lookup, one answered check, the one that failed");
+    }
+
+    #[test]
+    fn a_missing_binary_on_the_host_is_a_problem_before_any_sudo_check() {
+        let runner = sudo_host(EXACT, &[("zpool", "/sbin/zpool")]);
+        let err = check_host(&runner, "h", &[Feature::Core]).unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(runner.count(), 1);
+    }
+
+    #[test]
+    fn the_report_lists_one_line_per_entry_with_its_pinned_arguments() {
+        let report = check_host(&sudo_host(EXACT, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        let text = report.render();
+        assert!(text.contains("ok") && text.contains("/bin/cat /usr/local/etc/smb4.conf"), "{text}");
+        assert!(text.trim_end().ends_with("11 ok, 0 missing, 0 too broad"), "{text}");
     }
 
 }
