@@ -303,6 +303,16 @@ impl monitor::Sink for DaemonSink<'_> {
     }
 }
 
+/// Runs one unit of background work; a panic is logged and the caller carries on at its next turn instead of the
+/// thread dying silently. Returns whether it completed.
+fn guarded(label: &str, work: impl FnOnce()) -> bool {
+    let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_ok();
+    if !completed {
+        log(&format!("{label} crashed; carrying on at the next turn"));
+    }
+    completed
+}
+
 /// Probes the hosts every `check_interval` and hands the results to the `Monitor`, until `stop`.
 fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) {
     let mut monitor: Option<monitor::Monitor> = None;
@@ -331,20 +341,22 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
             monitor = Some(monitor::Monitor::new(settings.clone(), hub, state_dir.to_path_buf(), Utc::now()));
         }
         let Some(m) = monitor.as_mut() else { continue };
-        let info = shared.host_info.read().unwrap_or_else(PoisonError::into_inner).clone();
-        let runners = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
-        let hosts: Vec<monitor::HostInfo> = runners
-            .into_iter()
-            .map(|(name, runner)| {
-                let (address, tag) = info.iter().find(|(n, _, _)| *n == name).map_or((String::new(), String::new()), |(_, a, t)| (a.clone(), t.clone()));
-                monitor::HostInfo { name, address, tag, runner }
-            })
-            .collect();
-        let probed = monitor::probe_all(&hosts, &|n| m.needs_kind(n), monitor::PROBE_DEADLINE, &busy);
-        let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
-        let runs = history::runs(&shared.history.read());
-        let local = chrono::Local::now().naive_local();
-        m.observe(Utc::now(), local, &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
+        guarded("the health monitor tick", || {
+            let info = shared.host_info.read().unwrap_or_else(PoisonError::into_inner).clone();
+            let runners = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
+            let hosts: Vec<monitor::HostInfo> = runners
+                .into_iter()
+                .map(|(name, runner)| {
+                    let (address, tag) = info.iter().find(|(n, _, _)| *n == name).map_or((String::new(), String::new()), |(_, a, t)| (a.clone(), t.clone()));
+                    monitor::HostInfo { name, address, tag, runner }
+                })
+                .collect();
+            let probed = monitor::probe_all(&hosts, &|n| m.needs_kind(n), monitor::PROBE_DEADLINE, &busy);
+            let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
+            let runs = history::runs(&shared.history.read());
+            let local = chrono::Local::now().naive_local();
+            m.observe(Utc::now(), local, &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
+        });
         // Wake for the daily report too, so it is not lost when the probe interval straddles the report time.
         let wake = match m.report_wait(chrono::Local::now().naive_local()) {
             Some(wait) if !wait.is_zero() => settings.check_interval.min(wait + Duration::from_secs(1)),
@@ -559,6 +571,14 @@ mod tests {
         assert!(monitor_enabled(&crate::config::NotifySettings::default(), Some("true")));
         let mail = crate::config::NotifyConfig { mail_to: Some("me@x.org".into()), ..Default::default() }.resolve().unwrap();
         assert!(monitor_enabled(&mail, None));
+    }
+
+    #[test]
+    fn a_panic_in_background_work_is_caught_and_reported_not_fatal() {
+        assert!(guarded("fine", || {}));
+        assert!(!guarded("boom", || panic!("on purpose")));
+        let mut counter = 0;
+        assert!(guarded("again", || counter += 1) && counter == 1, "work after a caught panic runs normally");
     }
 
     #[test]

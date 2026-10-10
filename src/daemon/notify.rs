@@ -79,7 +79,9 @@ pub fn run_command(command: &str, env: &[(&str, &str)], stdin: &str, timeout: Du
 
 /// Runs `command` with the job notice in its environment (and nothing on stdin).
 pub fn run(command: &str, notice: &Notice, timeout: Duration) -> Result<(), NotifyError> {
-    let env = [("ZFSCTL_JOB", notice.job.as_str()), ("ZFSCTL_HOST", notice.host.as_str()), ("ZFSCTL_KIND", notice.kind.as_str()), ("ZFSCTL_RESULT", notice.result.as_str()), ("ZFSCTL_MESSAGE", notice.message.as_str())];
+    use super::deliver::env_value;
+    let (job, host, kind, result, message) = (env_value(&notice.job), env_value(&notice.host), env_value(&notice.kind), env_value(&notice.result), env_value(&notice.message));
+    let env = [("ZFSCTL_JOB", job.as_str()), ("ZFSCTL_HOST", host.as_str()), ("ZFSCTL_KIND", kind.as_str()), ("ZFSCTL_RESULT", result.as_str()), ("ZFSCTL_MESSAGE", message.as_str())];
     run_command(command, &env, "", timeout)
 }
 
@@ -150,6 +152,17 @@ mod tests {
         let started = Instant::now();
         run_command("sleep 20 & exit 0", &[], &big, Duration::from_secs(10)).unwrap();
         assert!(started.elapsed() < Duration::from_secs(5), "returned after {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_job_message_with_a_nul_byte_or_a_huge_size_still_runs_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let n = notice("bad\0byte");
+        run(&format!("printf '%s' \"$ZFSCTL_MESSAGE\" > {}", out.display()), &n, TIMEOUT).unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "badbyte");
+        let huge = notice(&"m".repeat(3_000_000));
+        run("true", &huge, TIMEOUT).unwrap();
     }
 
     #[test]

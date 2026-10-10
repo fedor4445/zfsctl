@@ -84,6 +84,11 @@ impl Tracker {
         self.remind = remind;
     }
 
+    /// Forgets `host` entirely: its alert never reached the operator, so the next bad probes alert afresh.
+    pub fn forget_host(&mut self, host: &str) {
+        self.hosts.remove(host);
+    }
+
     pub fn forget_except(&mut self, hosts: &[String]) {
         self.hosts.retain(|name, _| hosts.contains(name));
     }
@@ -264,6 +269,17 @@ mod tests {
         assert!(tr.observe("a", Level::Critical, "x", t(15)).is_none());
         assert!(tr.observe("a", Level::Critical, "x", t(20)).is_none(), "still the same alert");
         assert_eq!(tr.bad_since("a"), Some(t(5)));
+    }
+
+    #[test]
+    fn a_forgotten_host_alerts_afresh_after_two_more_bad_probes() {
+        let mut tr = tracker();
+        tr.observe("a", Level::Critical, "x", t(0));
+        assert!(tr.observe("a", Level::Critical, "x", t(5)).is_some());
+        tr.forget_host("a");
+        assert!(tr.bad_since("a").is_none());
+        assert!(tr.observe("a", Level::Critical, "x", t(10)).is_none());
+        assert!(tr.observe("a", Level::Critical, "x", t(15)).is_some(), "the operator never got the first one");
     }
 
     #[test]

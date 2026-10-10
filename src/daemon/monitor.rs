@@ -97,6 +97,14 @@ pub fn build_rows(hosts: &[HostInfo], probed: &[Probed], kinds: &HashMap<String,
         .collect()
 }
 
+/// Writes `text` to `path` through a temporary file and a rename, so a crash leaves the old file or the new one,
+/// never half of one (a torn `notify.json` would be read as "no report sent yet" and the report sent twice).
+fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
 /// Where a delivery goes; `true` means at least one channel took the message.
 pub trait Sink {
     fn send(&mut self, msg: &Message) -> bool;
@@ -169,7 +177,7 @@ impl Monitor {
         self.last_report = Some(date);
         self.report_attempts = 0;
         if persist {
-            let _ = std::fs::write(self.state_dir.join("notify.json"), format!("{{\"last_report\":\"{}\"}}\n", date.format("%Y-%m-%d")));
+            let _ = write_atomic(&self.state_dir.join("notify.json"), &format!("{{\"last_report\":\"{}\"}}\n", date.format("%Y-%m-%d")));
         }
     }
 
@@ -204,6 +212,10 @@ impl Monitor {
             item.attempts += 1;
             if item.attempts < MAX_ATTEMPTS {
                 self.pending.push(item);
+            } else if item.msg.kind == "health-alert" {
+                // Given up on an alert nobody received: forget the host so the next bad probes alert it again,
+                // instead of a later "recovered" for something the operator never heard about.
+                self.tracker.forget_host(&item.msg.host);
             }
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
@@ -351,11 +363,66 @@ mod tests {
         }
         let first = sink.sent.len();
         assert_eq!(first, 1);
-        for i in 2..20 {
+        for i in 2..7 {
             m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
         }
         assert_eq!(sink.sent.len() - first, 5, "six attempts in all: one at first, five retries, then dropped");
         assert!(sink.sent.iter().all(|s| s.subject == "[zfsctl] a: unreachable"));
+    }
+
+    #[test]
+    fn an_alert_that_was_given_up_on_is_raised_again_instead_of_leaving_a_phantom_open_alert() {
+        let mut m = monitor();
+        let hosts = [host("a")];
+        let mut sink = FakeSink::failing();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        }
+        for i in 2..7 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        }
+        let dropped_at = sink.sent.len();
+        assert_eq!(dropped_at, 6, "six attempts, then dropped");
+        sink.ok = true;
+        m.observe(t(40), local(40), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        assert_eq!(sink.sent.len(), dropped_at, "one bad probe after forgetting is not enough");
+        m.observe(t(45), local(45), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        assert_eq!(sink.sent.len(), dropped_at + 1);
+        assert_eq!(sink.sent.last().unwrap().subject, "[zfsctl] a: unreachable", "the same alert, sent anew");
+    }
+
+    #[test]
+    fn a_dropped_recovery_or_reminder_does_not_reopen_anything() {
+        let mut m = monitor();
+        let hosts = [host("a")];
+        let mut ok = FakeSink::new();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &[], &[], &mut ok);
+        }
+        let mut failing = FakeSink::failing();
+        for i in 2..4 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut failing);
+        }
+        for i in 4..12 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut failing);
+        }
+        let n = failing.sent.len();
+        failing.ok = true;
+        m.observe(t(70), local(70), &hosts, &[probed_ok("a")], &[], &[], &mut failing);
+        assert_eq!(failing.sent.len(), n, "the recovery was given up on and nothing is re-sent for a healthy host");
+    }
+
+    #[test]
+    fn notify_json_is_written_through_a_rename_and_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.path().to_path_buf(), t(0));
+        m.observe(t(0), at_local(7, 1), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        assert_eq!(std::fs::read_to_string(dir.path().join("notify.json")).unwrap(), "{\"last_report\":\"2026-10-11\"}\n");
+        assert!(!dir.path().join("notify.json.tmp").exists() && !dir.path().join("notify.json.json.tmp").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".tmp")).collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

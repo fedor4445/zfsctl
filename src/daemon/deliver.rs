@@ -44,23 +44,61 @@ pub fn default_from() -> String {
 pub fn compose_mail(from: &str, to: &[String], subject: &str, body: &str, now: DateTime<Utc>) -> String {
     let to: Vec<String> = to.iter().map(|a| ascii_line(a)).collect();
     format!(
-        "From: {}\nTo: {}\nSubject: {}\nDate: {}\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: 8bit\n\n{body}",
+        "From: {}\nTo: {}\nSubject: {}\nDate: {}\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: 8bit\n\n{}",
         ascii_line(from),
         to.join(", "),
-        ascii_line(subject),
+        cap_subject(subject),
         now.to_rfc2822(),
+        cap_body_lines(body),
     )
 }
 
-fn env_body(body: &str) -> &str {
-    if body.len() <= ENV_BODY_MAX {
-        return body;
+/// A value fit for the environment: no NUL bytes (they make spawning fail, so the hook would never run) and at most
+/// `ENV_BODY_MAX` bytes, cut at a character boundary (a huge environment fails the exec with E2BIG).
+pub fn env_value(text: &str) -> String {
+    let clean: String = text.chars().filter(|c| *c != '\0').collect();
+    if clean.len() <= ENV_BODY_MAX {
+        return clean;
     }
     let mut end = ENV_BODY_MAX;
-    while !body.is_char_boundary(end) {
+    while !clean.is_char_boundary(end) {
         end -= 1;
     }
-    &body[..end]
+    clean[..end].to_string()
+}
+
+/// Subjects longer than this are cut (mail servers reject lines over 998 characters, and nobody reads more).
+const SUBJECT_MAX: usize = 200;
+/// Body lines longer than this are broken, well inside the 998-character line limit of mail.
+const BODY_LINE_MAX: usize = 900;
+
+fn cap_subject(subject: &str) -> String {
+    let line = ascii_line(subject);
+    if line.chars().count() <= SUBJECT_MAX {
+        return line;
+    }
+    let mut cut: String = line.chars().take(SUBJECT_MAX - 3).collect();
+    cut.push_str("...");
+    cut
+}
+
+/// The body with every line of more than `BODY_LINE_MAX` characters broken into pieces, so no line breaks the mail
+/// standard's limit (a failed-run message can be very long).
+fn cap_body_lines(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    for (i, line) in body.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let chars: Vec<char> = line.chars().collect();
+        for (j, chunk) in chars.chunks(BODY_LINE_MAX).enumerate() {
+            if j > 0 {
+                out.push('\n');
+            }
+            out.extend(chunk);
+        }
+    }
+    out
 }
 
 /// Sends `msg` on every configured channel (one `Delivery` each; none when nothing is configured). One channel
@@ -73,8 +111,11 @@ pub fn send(settings: &NotifySettings, hook: Option<&str>, msg: &Message, now: D
         out.push(Delivery { channel: Channel::Mail, result: run_command(&settings.mail_command, &[], &text, timeout) });
     }
     if let Some(command) = hook {
-        let env = [("ZFSCTL_KIND", msg.kind.as_str()), ("ZFSCTL_HOST", msg.host.as_str()), ("ZFSCTL_RESULT", msg.level.as_str()), ("ZFSCTL_MESSAGE", msg.subject.as_str()), ("ZFSCTL_BODY", env_body(&msg.body))];
-        out.push(Delivery { channel: Channel::Hook, result: run_command(command, &env, &msg.body, timeout) });
+        let (kind, host, level, subject, body) = (env_value(&msg.kind), env_value(&msg.host), env_value(&msg.level), env_value(&msg.subject), env_value(&msg.body));
+        let env = [("ZFSCTL_KIND", kind.as_str()), ("ZFSCTL_HOST", host.as_str()), ("ZFSCTL_RESULT", level.as_str()), ("ZFSCTL_MESSAGE", subject.as_str()), ("ZFSCTL_BODY", body.as_str())];
+        // Stdin carries the whole text (without NUL bytes, which no text tool wants either).
+        let stdin: String = msg.body.chars().filter(|c| *c != '\0').collect();
+        out.push(Delivery { channel: Channel::Hook, result: run_command(command, &env, &stdin, timeout) });
     }
     out
 }
@@ -173,11 +214,44 @@ mod tests {
     }
 
     #[test]
-    fn a_huge_body_is_cut_for_the_environment_at_a_character_boundary_but_not_on_stdin() {
+    fn a_huge_value_is_cut_for_the_environment_at_a_character_boundary_and_nul_bytes_are_dropped() {
         let body = "é".repeat(40_000);
-        let cut = env_body(&body);
+        let cut = env_value(&body);
         assert!(cut.len() <= ENV_BODY_MAX && cut.chars().all(|c| c == 'é'));
-        assert_eq!(env_body("short"), "short");
+        assert_eq!(env_value("short"), "short");
+        assert_eq!(env_value("a\0b\0"), "ab");
+    }
+
+    #[test]
+    fn a_message_with_a_nul_byte_still_reaches_the_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("hook");
+        let hook = format!("printf '%s|%s|' \"$ZFSCTL_MESSAGE\" \"$ZFSCTL_BODY\" > {0}; cat >> {0}", out.display());
+        let m = Message { kind: "k".into(), host: "h".into(), level: "ok".into(), subject: "sub\0ject".into(), body: "bo\0dy".into() };
+        let r = send(&NotifySettings::default(), Some(&hook), &m, at(), Duration::from_secs(10));
+        assert!(delivered(&r), "{r:?}");
+        assert_eq!(std::fs::read_to_string(out).unwrap(), "subject|body|body");
+    }
+
+    #[test]
+    fn a_huge_message_does_not_stop_the_hook_from_starting() {
+        let m = Message { kind: "k".into(), host: "h".into(), level: "ok".into(), subject: "s".repeat(500_000), body: "b".repeat(2_000_000) };
+        let r = send(&NotifySettings::default(), Some("true"), &m, at(), Duration::from_secs(10));
+        assert!(delivered(&r), "the environment is capped, so the exec cannot fail with E2BIG: {r:?}");
+    }
+
+    #[test]
+    fn a_long_subject_and_long_body_lines_are_cut_so_no_mail_line_passes_the_limit() {
+        let subject = "x".repeat(5000);
+        let body = format!("short\n{}\nend\n", "y".repeat(3000));
+        let text = compose_mail("zfsctl@hub", &["a@x.org".into()], &subject, &body, at());
+        assert!(text.split('\n').all(|l| l.chars().count() <= 998), "no line may pass 998 characters");
+        let (head, rest) = text.split_once("\n\n").unwrap();
+        let subject_line = head.lines().find(|l| l.starts_with("Subject: ")).unwrap();
+        assert!(subject_line.chars().count() <= "Subject: ".len() + SUBJECT_MAX && subject_line.ends_with("..."), "{subject_line}");
+        assert!(rest.starts_with("short\n") && rest.ends_with("\nend\n"));
+        assert_eq!(rest.replace('\n', "").len(), "shortend".len() + 3000, "every character of the body is still there");
+        assert_eq!(cap_body_lines("a\nb\n"), "a\nb\n", "short text is returned untouched");
     }
 
     #[test]
