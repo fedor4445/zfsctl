@@ -277,6 +277,9 @@ pub struct App {
     /// See `pool_properties_for`.
     pub dataset_properties_for: Option<String>,
     pub modal: Option<Modal>,
+    /// The form a confirmation came from, tagged with the confirmation's prompt: declining the confirmation puts
+    /// the form back (values and all) instead of discarding it. Only used if the tag still matches the prompt.
+    pub confirm_restore: Option<(String, Modal)>,
     /// A picker popup layered on top of `modal` (which stays open and
     /// untouched underneath) -- separate state, not a `Modal` variant,
     /// so the form being edited and the picker helping edit one of its
@@ -390,6 +393,7 @@ impl App {
             acl_entries_for: None,
             dataset_properties_for: None,
             modal: None,
+            confirm_restore: None,
             picker: None,
             status_message: None,
             theme: crate::ui::theme::Theme::ansi(),
@@ -745,16 +749,18 @@ impl App {
 
     /// A job save that newly arms something destructive (a forced receive, a retention that deletes snapshots or
     /// backups) is shown as a confirmation first; any other save goes straight through.
-    fn confirm_job_save(&mut self, kind: &FormKind, action: PendingAction) -> Option<PendingAction> {
+    fn confirm_job_save(&mut self, form: Modal, action: PendingAction) -> Option<PendingAction> {
         let MutationCall::SaveJob { job, .. } = &action.call else { return Some(action) };
-        let old = match kind {
-            FormKind::SnapshotJob { existing, .. } | FormKind::ReplicateJob { existing, .. } | FormKind::BackupJob { existing, .. } => existing.as_deref(),
+        let old = match &form {
+            Modal::Form { kind: FormKind::SnapshotJob { existing, .. } | FormKind::ReplicateJob { existing, .. } | FormKind::BackupJob { existing, .. }, .. } => existing.as_deref(),
             _ => None,
         };
         // The snapshot list is only known for the host on screen.
         let known = (self.snapshots_loaded && job.host == self.active_host_name()).then_some(self.snapshots.as_slice());
         match job_save_prompt(old, job, known) {
             Some(prompt) => {
+                // Declining returns to the form, not to nothing.
+                self.confirm_restore = Some((prompt.clone(), form));
                 self.modal = Some(Modal::Confirm { choice: None, prompt, action });
                 None
             }
@@ -1693,8 +1699,19 @@ impl App {
             // Two steps for both outcomes: `y` / `n` / Esc only select, Enter applies the selection.
             // Enter with nothing selected, and every other key, change nothing.
             Modal::Confirm { prompt, action, choice } => match (key, choice) {
-                (KeyCode::Enter, Some(true)) => Some(action),
-                (KeyCode::Enter, Some(false)) => None,
+                (KeyCode::Enter, Some(true)) => {
+                    self.confirm_restore = None;
+                    Some(action)
+                }
+                (KeyCode::Enter, Some(false)) => {
+                    // A confirmation that came from a form hands the form back, values intact.
+                    if let Some((tag, form)) = self.confirm_restore.take() {
+                        if tag == prompt {
+                            self.modal = Some(form);
+                        }
+                    }
+                    None
+                }
                 (KeyCode::Char('y' | 'Y'), _) => {
                     self.modal = Some(Modal::Confirm { prompt, action, choice: Some(true) });
                     None
@@ -1783,7 +1800,7 @@ impl App {
                         match build_snapshot_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
                                 action.host = self.selected_host;
-                                self.confirm_job_save(&kind, action)
+                                self.confirm_job_save(Modal::Form { title, fields, focused, description, kind }, action)
                             }
                             Err(msg) => {
                                 self.set_error(msg);
@@ -1795,7 +1812,7 @@ impl App {
                         match build_backup_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
                                 action.host = self.selected_host;
-                                self.confirm_job_save(&kind, action)
+                                self.confirm_job_save(Modal::Form { title, fields, focused, description, kind }, action)
                             }
                             Err(msg) => {
                                 self.set_error(msg);
@@ -1807,7 +1824,7 @@ impl App {
                         match build_replicate_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
                                 action.host = self.selected_host;
-                                self.confirm_job_save(&kind, action)
+                                self.confirm_job_save(Modal::Form { title, fields, focused, description, kind }, action)
                             }
                             Err(msg) => {
                                 self.set_error(msg);
@@ -1841,6 +1858,7 @@ impl App {
                     } else if let Some(action) = build_pending_action(&kind, &fields) {
                         // What cannot be taken back is shown as the exact command and needs y then Enter.
                         if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
+                            self.confirm_restore = Some((prompt.clone(), Modal::Form { title, fields, focused, description, kind }));
                             self.modal = Some(Modal::Confirm { choice: None, prompt, action });
                             None
                         } else {
@@ -10425,9 +10443,9 @@ mod tests {
         let prompt = submit_to_confirm(&mut app);
         assert!(prompt.contains("zpool replace tank da1 da2"), "{prompt}");
         assert_eq!(app.handle_modal_key(KeyCode::Char('n')), None);
-        assert!(app.modal.is_some(), "n only selects");
+        assert!(matches!(app.modal, Some(Modal::Confirm { .. })), "n only selects");
         assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
-        assert!(app.modal.is_none());
+        assert_eq!(open_form_values(&app), Some((vec!["da2".to_string()], 0)), "declining returns to the form with what was typed");
     }
 
     #[test]
@@ -10674,8 +10692,69 @@ mod tests {
     fn declining_the_job_save_confirm_saves_nothing() {
         let (mut app, _) = submit_backup_form(BACKUP_GOOD);
         assert_eq!(app.handle_modal_key(KeyCode::Char('n')), None);
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "declined: nothing runs");
+        let (values, focused) = open_form_values(&app).expect("declining returns to the form");
+        assert_eq!(values, BACKUP_GOOD.map(String::from).to_vec());
+        assert_eq!(focused, 7, "on the last field, so Enter asks again and Esc discards");
+    }
+
+    #[test]
+    fn esc_selects_no_and_enter_then_returns_to_the_form() {
+        let (mut app, _) = submit_backup_form(BACKUP_GOOD);
+        assert_eq!(app.handle_modal_key(KeyCode::Esc), None);
+        assert!(matches!(app.modal, Some(Modal::Confirm { .. })), "Esc only selects");
         assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
-        assert!(app.modal.is_none(), "declined: the form is gone, nothing runs");
+        assert!(open_form_values(&app).is_some());
+    }
+
+    #[test]
+    fn the_returned_form_asks_again_on_enter_and_is_discarded_by_esc() {
+        let (mut app, _) = submit_backup_form(BACKUP_GOOD);
+        app.handle_modal_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(matches!(app.modal, Some(Modal::Confirm { .. })), "Enter on the last field asks again");
+        app.handle_modal_key(KeyCode::Char('n'));
+        app.handle_modal_key(KeyCode::Enter);
+        assert_eq!(app.handle_modal_key(KeyCode::Esc), None);
+        assert!(app.modal.is_none(), "Esc on the form discards it");
+        assert!(app.confirm_restore.is_none());
+    }
+
+    #[test]
+    fn accepting_the_confirm_still_saves_and_leaves_nothing_to_restore() {
+        let (mut app, _) = submit_backup_form(BACKUP_GOOD);
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter saves");
+        assert!(matches!(action.call, MutationCall::SaveJob { .. }));
+        assert!(app.modal.is_none() && app.confirm_restore.is_none());
+    }
+
+    #[test]
+    fn a_leftover_form_is_never_restored_for_a_different_confirm() {
+        let (mut app, _) = submit_backup_form(BACKUP_GOOD);
+        let form = app.confirm_restore.take().expect("the submit kept the form").1;
+        app.confirm_restore = Some(("a prompt from some earlier confirm".to_string(), form));
+        app.handle_modal_key(KeyCode::Char('n'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none(), "the tag did not match this confirm");
+    }
+
+    #[test]
+    fn declining_a_confirm_that_did_not_come_from_a_form_just_closes_it() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let action = PendingAction { host: 0, section: Section::Jobs, call: MutationCall::DeleteJob { state_dir: std::path::PathBuf::from("/x"), id: "j".to_string() } };
+        app.modal = Some(Modal::Confirm { choice: Some(false), prompt: "Delete?".to_string(), action });
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none());
+    }
+
+    /// The values and focused index of the open form, if one is open.
+    fn open_form_values(app: &App) -> Option<(Vec<String>, usize)> {
+        match &app.modal {
+            Some(Modal::Form { fields, focused, .. }) => Some((fields.iter().map(|f| f.value.clone()).collect(), *focused)),
+            _ => None,
+        }
     }
 
     #[test]
