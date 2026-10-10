@@ -2,6 +2,8 @@
 
 A terminal UI for managing ZFS storage on FreeBSD.
 
+**New to ZFS, FreeBSD or zfsctl? Read [The zfsctl Book](docs/book/README.md)**: a friendly guide with real screens, aimed at people coming from Windows and Linux as well as at ZFS users. This README is the reference for the details.
+
 ## Requirements
 
 - FreeBSD (uses `zpool`/`zfs`; no Linux/illumos support)
