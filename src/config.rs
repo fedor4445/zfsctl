@@ -136,6 +136,81 @@ pub fn render_notify_section(c: &NotifyConfig) -> String {
     out
 }
 
+/// A `[[hosts]]` block for `host`, one `key = "value"` line per set key, ending in a newline.
+pub fn render_host_block(host: &HostConfig) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("[[hosts]]\n");
+    let _ = writeln!(out, "name = {}", toml_string(&host.name));
+    if let Some(target) = &host.ssh_target {
+        let _ = writeln!(out, "ssh_target = {}", toml_string(target));
+    }
+    if let Some(tag) = &host.tag {
+        let _ = writeln!(out, "tag = {}", toml_string(tag));
+    }
+    out
+}
+
+/// Adds a `[[hosts]]` block for `host` right after the last existing host block (so the hosts stay together),
+/// or at the end of the file when there is none, keeping every other byte: the comments that follow the last host
+/// belong to what comes next and stay below the new block. Refuses `hosts` written as an inline array or dotted keys,
+/// and anything that would change the file beyond adding the one host.
+pub fn add_host_block(text: &str, host: &HostConfig) -> std::result::Result<String, String> {
+    const BY_HAND: &str = "config.toml writes hosts in a form this screen cannot edit safely: edit it by hand";
+    let crlf = text.contains("\r\n");
+    let fix = |s: &str| if crlf { s.replace('\n', "\r\n") } else { s.to_string() };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let is_header = |l: &str| l.trim_start().starts_with('[');
+    let is_hosts_header = |l: &str| {
+        let t = l.trim();
+        t == "[[hosts]]" || t.strip_prefix("[[hosts]]").is_some_and(|rest| rest.trim_start().starts_with('#'))
+    };
+    for l in &lines {
+        let t = l.trim_start();
+        let key_is_hosts = t.starts_with("hosts.") || t.strip_prefix("hosts").is_some_and(|r| r.trim_start().starts_with('='));
+        if key_is_hosts || t.starts_with("[hosts.") || (t.starts_with("[hosts]") && !t.starts_with("[[")) {
+            return Err(BY_HAND.to_string());
+        }
+    }
+    let block = fix(&render_host_block(host));
+    let result = if let Some(last) = lines.iter().rposition(|l| is_hosts_header(l)) {
+        let end = lines.iter().enumerate().skip(last + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(i, _)| i);
+        // After the last line of real content: trailing blank and comment lines belong to what follows.
+        let insert_at = (last..end).rev().find(|&i| lines.get(i).is_some_and(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))).map_or(last + 1, |i| i + 1);
+        let mut out: String = lines.iter().take(insert_at).copied().collect();
+        if !out.ends_with('\n') {
+            out.push_str(&fix("\n"));
+        }
+        out.push_str(&fix("\n"));
+        out.push_str(&block);
+        out.push_str(&lines.iter().skip(insert_at).copied().collect::<String>());
+        out
+    } else {
+        let mut out = text.to_string();
+        if !out.is_empty() {
+            if !out.ends_with('\n') {
+                out.push_str(&fix("\n"));
+            }
+            out.push_str(&fix("\n"));
+        }
+        out.push_str(&block);
+        out
+    };
+    let parse = |t: &str| -> std::result::Result<(toml::Table, Vec<HostConfig>), String> {
+        let mut table: toml::Table = t.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
+        table.remove("hosts");
+        let hosts = toml::from_str::<Config>(t).map_err(|e| format!("config.toml does not parse: {e}"))?.hosts;
+        Ok((table, hosts))
+    };
+    let (old_rest, old_hosts) = parse(text)?;
+    let (new_rest, new_hosts) = parse(&result)?;
+    let mut want = old_hosts;
+    want.push(host.clone());
+    if old_rest != new_rest || new_hosts != want {
+        return Err(BY_HAND.to_string());
+    }
+    Ok(result)
+}
+
 const NOTIFY_KEYS: [&str; 6] = ["mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours"];
 
 /// A line that sets one of the keys this screen owns (`mail_to = ...`).
@@ -227,6 +302,18 @@ pub fn set_notify_section(text: &str, section: &str) -> std::result::Result<Stri
 /// private temporary file next to it (same permissions and owner, flushed to disk) and is renamed over it. A
 /// symlinked `config.toml` is followed, so the link stays a link. Any failure leaves the original untouched.
 pub fn save_notify_section(path: &Path, section: &str) -> Result<()> {
+    rewrite_config(path, &|text| set_notify_section(text, section))
+}
+
+/// Adds one host to `config.toml` with the same safe write as the `[notify]` save (backup, private temporary file,
+/// original owner and mode, change guard): nothing but the new `[[hosts]]` block is written.
+pub fn append_host_to_file(path: &Path, host: &HostConfig) -> Result<()> {
+    rewrite_config(path, &|text| add_host_block(text, host))
+}
+
+/// The safe rewrite both saves share: `edit` turns the old text into the new text (or refuses), and the file is
+/// replaced only if every step succeeds; any failure leaves the original untouched.
+fn rewrite_config(path: &Path, edit: &dyn Fn(&str) -> std::result::Result<String, String>) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -240,7 +327,7 @@ pub fn save_notify_section(path: &Path, section: &str) -> Result<()> {
     if before.as_ref().is_some_and(|m| m.len() > 0) && old.as_deref().is_some_and(str::is_empty) {
         return Err(AppError::Config(format!("{} reads as empty although it is not: it is being rewritten; try again", real.display())));
     }
-    let new = set_notify_section(old.as_deref().unwrap_or(""), section).map_err(AppError::Config)?;
+    let new = edit(old.as_deref().unwrap_or("")).map_err(AppError::Config)?;
     if let Some(parent) = real.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| AppError::Config(format!("creating {}: {e}", parent.display())))?;
     }
@@ -364,6 +451,9 @@ impl Config {
             .map_err(|e| AppError::Config(format!("parsing {}: {e}", path.display())))
     }
 
+    /// Serialises the whole config (comments and order are lost): only for tests; the program writes `config.toml`
+    /// through `append_host_to_file` and `save_notify_section`, which keep everything else.
+    #[cfg(test)]
     pub fn save(&self, path: &Path) -> Result<()> {
         let text = toml::to_string_pretty(self)
             .map_err(|e| AppError::Config(format!("serializing config: {e}")))?;
@@ -484,6 +574,102 @@ mod tests {
         assert!(bad(NotifyConfig { report_time: Some("25:00".into()), ..base.clone() }).contains("report_time"));
         assert!(bad(NotifyConfig { mail_command: Some("  ".into()), ..base.clone() }).contains("mail_command"));
         assert!(bad(NotifyConfig { mail_from: Some("a\r\nb".into()), ..base }).contains("mail_from"));
+    }
+
+    fn host(name: &str, target: &str, tag: Option<&str>) -> HostConfig {
+        HostConfig { name: name.into(), ssh_target: Some(target.into()), tag: tag.map(str::to_string) }
+    }
+
+    #[test]
+    fn a_host_block_has_its_keys_and_escapes_strings() {
+        assert_eq!(render_host_block(&host("a", "u@a", None)), "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n");
+        let with_tag = render_host_block(&host("a\"b", "u@a", Some("back up")));
+        let parsed: Config = toml::from_str(&with_tag).unwrap();
+        assert_eq!(parsed.hosts, vec![host("a\"b", "u@a", Some("back up"))], "{with_tag}");
+    }
+
+    #[test]
+    fn a_new_host_lands_after_the_last_host_block_and_everything_else_stays() {
+        let before = "# my hosts\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"   # first\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\n\n# UI below\n[ui]\ntheme = \"mono\"\n";
+        let after = add_host_block(before, &host("new", "u@new", Some("lab"))).unwrap();
+        assert_eq!(after, "# my hosts\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"   # first\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\n\n[[hosts]]\nname = \"new\"\nssh_target = \"u@new\"\ntag = \"lab\"\n\n# UI below\n[ui]\ntheme = \"mono\"\n");
+    }
+
+    #[test]
+    fn with_no_hosts_yet_the_block_goes_at_the_end_after_a_blank_line() {
+        let before = "# only settings\n[ui]\ntheme = \"mono\"\n";
+        assert_eq!(add_host_block(before, &host("a", "u@a", None)).unwrap(), "# only settings\n[ui]\ntheme = \"mono\"\n\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n");
+        assert_eq!(add_host_block("", &host("a", "u@a", None)).unwrap(), "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n");
+        assert_eq!(add_host_block("[ui]\ntheme = \"mono\"", &host("a", "u@a", None)).unwrap(), "[ui]\ntheme = \"mono\"\n\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n");
+    }
+
+    #[test]
+    fn the_last_host_block_at_the_end_of_the_file_with_or_without_a_final_newline() {
+        let end = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n";
+        assert_eq!(add_host_block(end, &host("b", "u@b", None)).unwrap(), "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\n");
+        let bare = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"";
+        assert_eq!(add_host_block(bare, &host("b", "u@b", None)).unwrap(), "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\n");
+    }
+
+    #[test]
+    fn comments_after_the_last_host_belong_to_whatever_follows_it() {
+        let before = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n# the notify section:\n# mail_to is the address\n[notify]\nmail_to = \"x@y.org\"\n";
+        let after = add_host_block(before, &host("b", "u@b", None)).unwrap();
+        assert_eq!(after, "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\n# the notify section:\n# mail_to is the address\n[notify]\nmail_to = \"x@y.org\"\n");
+    }
+
+    #[test]
+    fn crlf_files_stay_crlf_when_a_host_is_added() {
+        let before = "[[hosts]]\r\nname = \"a\"\r\nssh_target = \"u@a\"\r\n\r\n[ui]\r\ntheme = \"mono\"\r\n";
+        let after = add_host_block(before, &host("b", "u@b", None)).unwrap();
+        assert_eq!(after, "[[hosts]]\r\nname = \"a\"\r\nssh_target = \"u@a\"\r\n\r\n[[hosts]]\r\nname = \"b\"\r\nssh_target = \"u@b\"\r\n\r\n[ui]\r\ntheme = \"mono\"\r\n");
+    }
+
+    #[test]
+    fn hosts_written_as_an_inline_array_or_dotted_keys_are_refused() {
+        for bad in ["hosts = [{ name = \"a\", ssh_target = \"u@a\" }]\n", "hosts.x = 1\n", "[hosts.sub]\nx = 1\n"] {
+            assert!(add_host_block(bad, &host("b", "u@b", None)).unwrap_err().contains("by hand"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_host_header_inside_a_multi_line_string_is_never_mistaken_for_a_host() {
+        let text = "[extra]\ntext = \'\'\'\n[[hosts]]\nname = \"inside\"\nssh_target = \"x\"\n\'\'\'\n[ui]\ntheme = \"mono\"\n";
+        let after = add_host_block(text, &host("b", "u@b", None)).expect("the block can still go in safely");
+        let parsed: toml::Table = after.parse().unwrap();
+        let old: toml::Table = text.parse().unwrap();
+        assert_eq!(parsed["extra"], old["extra"], "the string is untouched");
+        assert_eq!(toml::from_str::<Config>(&after).unwrap().hosts, vec![host("b", "u@b", None)]);
+    }
+
+    #[test]
+    fn a_header_looking_line_inside_a_hosts_own_multi_line_value_is_refused_not_split() {
+        // The line-based scan would insert the new block inside this tag's string.
+        let text = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \'\'\'\nline\n[x]\n\'\'\'\n";
+        assert!(add_host_block(text, &host("b", "u@b", None)).is_err());
+    }
+
+    #[test]
+    fn the_result_always_holds_the_old_hosts_plus_the_new_one() {
+        let before = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"x\"\n";
+        let after = add_host_block(before, &host("b", "u@b", None)).unwrap();
+        let hosts = toml::from_str::<Config>(&after).unwrap().hosts;
+        assert_eq!(hosts, vec![host("a", "u@a", Some("x")), host("b", "u@b", None)]);
+    }
+
+    #[test]
+    fn adding_a_host_to_the_file_keeps_comments_a_backup_and_the_other_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let old = "# keep me\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[notify]   # alerts\nmail_to = \"x@y.org\"\n";
+        std::fs::write(&path, old).unwrap();
+        append_host_to_file(&path, &host("b", "u@b", None)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(), old);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# keep me\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\n\n[notify]   # alerts\nmail_to = \"x@y.org\"\n");
+        // A refused edit leaves the file untouched.
+        std::fs::write(&path, "hosts = []\n").unwrap();
+        assert!(append_host_to_file(&path, &host("c", "u@c", None)).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hosts = []\n");
     }
 
     fn cfg(to: &str) -> NotifyConfig {
