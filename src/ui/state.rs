@@ -215,6 +215,8 @@ pub struct App {
     pub config_path: std::path::PathBuf,
     pub alerts_view: crate::ui::alerts::AlertsView,
     last_alerts_refresh: Option<Instant>,
+    /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
+    pub done_note: Option<String>,
     /// The address shown for each host (index-aligned with `hosts`); see `address_of`.
     pub host_addresses: Vec<String>,
     /// The tag of each host (index-aligned with `hosts`; empty = none).
@@ -388,6 +390,7 @@ impl App {
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
             last_alerts_refresh: None,
+            done_note: None,
             nfs_available: None,
             samba_available: None,
             shares_loaded: false,
@@ -748,6 +751,29 @@ impl App {
             self.last_jobs_refresh = Some(now);
             self.refresh_jobs();
         }
+    }
+
+    /// The edit form for the alert settings, pre-filled from the file; `None` while `config.toml` cannot be read.
+    pub fn alerts_form(&self) -> Option<Modal> {
+        if self.alerts_view.problem.as_deref().is_some_and(|p| p.starts_with("config.toml could not be read")) {
+            return None;
+        }
+        let c = &self.alerts_view.saved;
+        let field = |label: &str, value: String| FormField { label: label.to_string(), value };
+        Some(Modal::Form {
+            title: "Alert settings".to_string(),
+            fields: vec![
+                field("Email to", c.mail_to.clone().unwrap_or_default()),
+                field("Mail command", c.mail_command.clone().unwrap_or_default()),
+                field("Mail from", c.mail_from.clone().unwrap_or_default()),
+                field("Check every (minutes)", c.check_interval_minutes.map(|n| n.to_string()).unwrap_or_default()),
+                field("Daily report at (HH:MM or off)", c.report_time.clone().unwrap_or_default()),
+                field("Remind every (hours, 0 = never)", c.remind_hours.map(|n| n.to_string()).unwrap_or_default()),
+            ],
+            focused: 0,
+            description: Some("Blank means the default. Clear Email to to turn email off.".to_string()),
+            kind: FormKind::NotifySettings,
+        })
     }
 
     /// Reloads the Alerts screen's data from `config.toml` and the state directory; the scroll position stays.
@@ -1605,6 +1631,14 @@ impl App {
                     self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
                 }
             }
+            KeyCode::Char('e') if self.current_section() == Section::Alerts && self.modal.is_none() && self.picker.is_none() => {
+                if let Some(form) = self.alerts_form() {
+                    self.modal = Some(form);
+                } else {
+                    let problem = self.alerts_view.problem.clone().unwrap_or_default();
+                    self.set_error(format!("{problem}: fix config.toml before editing here"));
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Alerts => {
                 let last = self.alerts_view.events.len().saturating_sub(1);
                 self.alerts_view.scroll = (self.alerts_view.scroll + 1).min(last);
@@ -1896,6 +1930,21 @@ impl App {
                         focused += 1;
                         self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                         None
+                    } else if matches!(kind, FormKind::NotifySettings) {
+                        match build_notify_action(&fields, &self.config_path) {
+                            Ok((mut action, prompt)) => {
+                                action.host = self.selected_host;
+                                // Declining returns to the form, not to nothing.
+                                self.confirm_restore = Some((prompt.clone(), Modal::Form { title, fields, focused, description, kind }));
+                                self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+                                None
+                            }
+                            Err(msg) => {
+                                self.set_error(msg);
+                                self.modal = Some(Modal::Form { title, fields, focused: 0, description, kind });
+                                None
+                            }
+                        }
                     } else if matches!(kind, FormKind::AddHost) {
                         let name = field_value(&fields, 0).trim().to_string();
                         let target = field_value(&fields, 1).trim().to_string();
@@ -2199,6 +2248,7 @@ impl App {
     /// clears it on submit) — this only executes the mutation itself.
     pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
         let PendingAction { host, section, call } = action;
+        self.done_note = call.done_note();
         if section == Section::BootEnvs {
             self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
         }
@@ -2824,9 +2874,10 @@ impl App {
                             self.bootenv_pin = None;
                         }
                     }
+                    let note = self.done_note.take();
                     match result {
                         Ok(()) => {
-                            self.status_message = None;
+                            self.status_message = note;
                             refreshes_needed.push(section);
                             if section == Section::Vdevs {
                                 // A disk going offline/online/being replaced
@@ -3249,6 +3300,30 @@ fn share_edit_modal(share: &crate::zfs::share::Share, host: usize) -> Modal {
 /// in that case rather than losing the user's input.
 /// The text of form field `index`; a missing field reads as empty, which every caller
 /// already treats as "not filled in" (forms are built with a fixed field count per kind).
+/// Turns the Alerts form into the save and the text of its confirmation, or says what is wrong. The values are
+/// checked by `NotifyConfig::resolve`, exactly as the daemon will check them.
+fn build_notify_action(fields: &[FormField], config_path: &std::path::Path) -> std::result::Result<(PendingAction, String), String> {
+    let text = |i: usize| Some(field_value(fields, i).trim().to_string()).filter(|v| !v.is_empty());
+    let number = |i: usize, what: &str| -> std::result::Result<Option<u64>, String> {
+        text(i).map(|v| v.parse::<u64>().map_err(|_| format!("{what} must be a whole number"))).transpose()
+    };
+    let cfg = crate::config::NotifyConfig {
+        mail_to: text(0),
+        mail_command: text(1),
+        mail_from: text(2),
+        check_interval_minutes: number(3, "Check every (minutes)")?,
+        report_time: text(4),
+        remind_hours: number(5, "Remind every (hours)")?,
+    };
+    let settings = cfg.resolve()?;
+    let to = if settings.has_mail() { format!("Email to {}", settings.mail_to.join(", ")) } else { "Email off".to_string() };
+    let report = settings.report_time.map_or("no daily report".to_string(), |t| format!("report at {}", t.format("%H:%M")));
+    let remind = settings.remind.map_or("never remind".to_string(), |d| format!("remind every {} hours", d.as_secs() / 3600));
+    let prompt = format!("Save alert settings?\n  {to}\n  Check every {} min, {report}, {remind}\nThe daemon applies them within seconds. (y/n)", settings.check_interval.as_secs() / 60);
+    let section = crate::config::render_notify_section(&cfg);
+    Ok((PendingAction { host: 0, section: Section::Alerts, call: MutationCall::SaveNotify { config_path: config_path.to_path_buf(), section } }, prompt))
+}
+
 fn field_value(fields: &[FormField], index: usize) -> &str {
     fields.get(index).map_or("", |f| f.value.as_str())
 }
@@ -3544,7 +3619,7 @@ fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Option<Pending
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::NotifySettings | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
     }
 }
 
@@ -8052,6 +8127,125 @@ mod tests {
         std::fs::write(dir.path().join("config.toml"), "").unwrap();
         app.refresh_alerts_if_stale(t0 + Duration::from_secs(60));
         assert!(app.alerts_view.monitor_on(), "another section is open: no reload");
+    }
+
+    fn open_alerts_form(app: &mut App) -> Vec<String> {
+        app.handle_key(KeyCode::Char('e'));
+        form_values(app)
+    }
+
+    fn fill(app: &mut App, values: [&str; 6]) {
+        if let Some(Modal::Form { fields, .. }) = &mut app.modal {
+            for (f, v) in fields.iter_mut().zip(values) {
+                f.value = v.to_string();
+            }
+        }
+    }
+
+    fn submit_alerts_form(app: &mut App) -> Option<PendingAction> {
+        let mut last = None;
+        for _ in 0..6 {
+            last = app.handle_modal_key(KeyCode::Enter);
+        }
+        last
+    }
+
+    #[test]
+    fn e_opens_the_form_prefilled_with_the_saved_values_and_blank_for_unset() {
+        let (mut app, _dir) = alerts_app("[notify]\nmail_to = \"me@x.org\"\ncheck_interval_minutes = 10\nreport_time = \"off\"\nremind_hours = 0\n");
+        assert_eq!(open_alerts_form(&mut app), ["me@x.org", "", "", "10", "off", "0"]);
+    }
+
+    #[test]
+    fn e_is_refused_while_config_toml_cannot_be_read() {
+        let (mut app, _dir) = alerts_app("[notify\nbroken");
+        app.handle_key(KeyCode::Char('e'));
+        assert!(app.modal.is_none());
+        assert!(app.status_message.clone().unwrap_or_default().contains("could not be read"), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn a_bad_value_is_refused_with_the_daemons_message_and_the_form_stays_open() {
+        for (values, want) in [
+            (["not an address", "", "", "", "", ""], "mail_to"),
+            (["a@x.org", "", "", "abc", "", ""], "whole number"),
+            (["a@x.org", "", "", "0", "", ""], "check_interval_minutes"),
+            (["a@x.org", "", "", "", "7am", ""], "report_time"),
+            (["a@x.org", "", "", "", "", "-1"], "whole number"),
+            (["a@x.org", "", "", "", "", "99999"], "remind_hours"),
+        ] {
+            let (mut app, _dir) = alerts_app("");
+            open_alerts_form(&mut app);
+            fill(&mut app, values);
+            assert!(submit_alerts_form(&mut app).is_none());
+            assert!(matches!(app.modal, Some(Modal::Form { .. })), "{values:?}: the form stays open");
+            assert!(app.status_message.clone().unwrap_or_default().contains(want), "{values:?}: {:?}", app.status_message);
+        }
+    }
+
+    #[test]
+    fn a_good_form_asks_for_the_two_key_confirmation_and_saves_only_the_notify_section() {
+        let (mut app, dir) = alerts_app("# keep\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n");
+        open_alerts_form(&mut app);
+        fill(&mut app, ["me@x.org", "", "", "10", "", ""]);
+        assert!(submit_alerts_form(&mut app).is_none(), "no save before the confirmation");
+        let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("me@x.org") && prompt.contains("10 min") && prompt.contains("07:00"), "{prompt}");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter alone does nothing");
+        app.handle_modal_key(KeyCode::Char('y'));
+        let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter applies");
+        let MutationCall::SaveNotify { config_path, section } = &action.call else { panic!("{:?}", action.call) };
+        assert_eq!(section, "[notify]\nmail_to = \"me@x.org\"\ncheck_interval_minutes = 10\n");
+        crate::config::save_notify_section(config_path, section).unwrap();
+        let saved = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(saved.starts_with("# keep\n[[hosts]]") && saved.contains("mail_to = \"me@x.org\""), "{saved}");
+    }
+
+    #[test]
+    fn declining_the_save_returns_the_form_with_what_was_typed_and_writes_nothing() {
+        let (mut app, dir) = alerts_app("");
+        open_alerts_form(&mut app);
+        fill(&mut app, ["me@x.org", "", "", "10", "", ""]);
+        submit_alerts_form(&mut app);
+        app.handle_modal_key(KeyCode::Char('n'));
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert_eq!(form_values(&app)[0], "me@x.org");
+        assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), "");
+    }
+
+    #[test]
+    fn clearing_the_address_is_allowed_and_says_email_off_in_the_prompt() {
+        let (mut app, _dir) = alerts_app("[notify]\nmail_to = \"me@x.org\"\n");
+        open_alerts_form(&mut app);
+        fill(&mut app, ["", "", "", "", "", ""]);
+        submit_alerts_form(&mut app);
+        let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("Email off") && prompt.contains("remind every 6 hours"), "{prompt}");
+    }
+
+    #[test]
+    fn a_saved_note_replaces_the_blank_status_after_a_successful_save_and_is_dropped_on_failure() {
+        let (mut app, _dir) = alerts_app("");
+        app.done_note = Some("Alert settings saved; the daemon applies them within seconds".to_string());
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Alerts, Ok(()))).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.status_message.as_deref(), Some("Alert settings saved; the daemon applies them within seconds"));
+        app.done_note = Some("x".into());
+        app.tx.send(WorkerMsg::MutationDone(0, Section::Alerts, Err(crate::error::AppError::Config("boom".into())))).unwrap();
+        app.drain_worker_messages();
+        assert!(app.done_note.is_none());
+    }
+
+    #[test]
+    fn dispatching_a_save_remembers_its_note_and_other_calls_clear_it() {
+        let (mut app, dir) = alerts_app("");
+        let runner: Arc<dyn CommandRunner> = Arc::new(crate::exec::test_support::FakeRunner::new(""));
+        let save = PendingAction { host: 0, section: Section::Alerts, call: MutationCall::SaveNotify { config_path: dir.path().join("config.toml"), section: "[notify]\nmail_to = \"a@x.org\"\n".into() } };
+        app.dispatch_mutation(save, Arc::clone(&runner));
+        assert!(app.done_note.as_deref().is_some_and(|n| n.contains("saved")));
+        let other = PendingAction { host: 0, section: Section::Jobs, call: MutationCall::DeleteJob { state_dir: dir.path().to_path_buf(), id: "none".into() } };
+        app.dispatch_mutation(other, runner);
+        assert!(app.done_note.is_none());
     }
 
     #[test]

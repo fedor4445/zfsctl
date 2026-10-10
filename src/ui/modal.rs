@@ -42,6 +42,9 @@ pub enum MutationCall {
     SaveJob { state_dir: std::path::PathBuf, job: Box<crate::jobs::Job> },
     DeleteJob { state_dir: std::path::PathBuf, id: String },
     SetJobEnabled { state_dir: std::path::PathBuf, id: String, enabled: bool },
+    /// Replaces the `[notify]` section of `config.toml`, nothing else in the file. A local file edit: the
+    /// runner is not used.
+    SaveNotify { config_path: std::path::PathBuf, section: String },
 }
 
 /// A password held only until it is piped to `smbpasswd`. `Debug` never
@@ -62,6 +65,16 @@ pub enum Tone {
     Neutral,
     Warn,
     Danger,
+}
+
+impl MutationCall {
+    /// What to say after the call succeeded, instead of the blank status every call leaves.
+    pub fn done_note(&self) -> Option<String> {
+        match self {
+            MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
+            _ => None,
+        }
+    }
 }
 
 impl MutationCall {
@@ -93,6 +106,7 @@ impl MutationCall {
             | MutationCall::AddAclEntry { .. }
             | MutationCall::SetPoolProperty { .. }
             | MutationCall::SaveJob { .. }
+            | MutationCall::SaveNotify { .. }
             | MutationCall::SetJobEnabled { .. }
             | MutationCall::SetSmbShare { .. }
             | MutationCall::ActivateBootEnv { temporary: true, .. }
@@ -140,6 +154,7 @@ impl MutationCall {
             MutationCall::SaveJob { .. } => "SAVE JOB",
             MutationCall::DeleteJob { .. } => "DELETE JOB",
             MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
+            MutationCall::SaveNotify { .. } => "SAVE ALERT SETTINGS",
         }
     }
 }
@@ -195,6 +210,7 @@ impl MutationCall {
             MutationCall::SaveJob { state_dir, job } => crate::jobs::upsert(&state_dir.join("jobs.toml"), job.as_ref().clone()),
             MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
+            MutationCall::SaveNotify { config_path, section } => crate::config::save_notify_section(config_path, section),
         }
     }
 }
@@ -223,6 +239,9 @@ pub struct FormField {
 /// match the order the modal's `fields` were constructed in.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormKind {
+    /// Fields: `[email to, mail command, mail from, check every (minutes), daily report at (HH:MM or off), remind
+    /// every (hours)]`; a blank field is unset (the default).
+    NotifySettings,
     /// Fields: `[host, pool, schedule, catch_up]`. `hosts` are the configured host names (for the
     /// host picker and for validation); `existing` is the job being edited, if any; `taken_ids`
     /// are the job ids already in use, so a new job can be named without a collision.
@@ -679,5 +698,17 @@ mod tone_tests {
     #[test]
     fn creating_a_pool_overwrites_disks_so_it_is_a_warning() {
         assert_eq!(MutationCall::CreatePool { name: "p".into(), vdev_spec: vec!["da0".into()] }.tone(), Tone::Warn);
+    }
+
+    #[test]
+    fn save_notify_writes_the_section_through_the_config_helpers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        MutationCall::SaveNotify { config_path: path.clone(), section: "[notify]\nmail_to = \"a@x.org\"\n".into() }.run(&crate::exec::test_support::FakeRunner::new("")).unwrap();
+        assert!(std::fs::read_to_string(path).unwrap().contains("a@x.org"));
+        let call = MutationCall::SaveNotify { config_path: "x".into(), section: String::new() };
+        assert_eq!(call.tone(), Tone::Neutral);
+        assert!(call.done_note().unwrap().contains("saved"));
+        assert!(MutationCall::DeleteJob { state_dir: "x".into(), id: "j".into() }.done_note().is_none());
     }
 }

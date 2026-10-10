@@ -314,6 +314,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("r", "Refresh", 4));
         }
         (Section::Alerts, _) => {
+            v.push(h("e", "Edit settings", 1));
             if !app.alerts_view.events.is_empty() {
                 v.push(h("↑↓", "Scroll", 3));
             }
