@@ -2,11 +2,15 @@
 
 pub mod cron;
 pub mod engine;
+pub mod health;
+pub mod health_text;
 pub mod heartbeat;
 pub mod history;
+pub mod monitor;
 pub mod notify;
 pub mod scheduler;
 pub mod cancel;
+pub mod deliver;
 pub mod progress;
 pub mod replicate;
 pub mod replicate_file;
@@ -56,6 +60,10 @@ struct Shared {
     clock: Arc<dyn Clock + Send + Sync>,
     poll: Duration,
     notify_command: RwLock<Option<String>>,
+    /// The `[notify]` section: email, the monitor's interval, the daily report.
+    settings: RwLock<crate::config::NotifySettings>,
+    /// Name, address and tag of each host, for the monitor's messages.
+    host_info: RwLock<Vec<(String, String, String)>>,
     stop: Arc<AtomicBool>,
     /// Where running transfers write their progress files.
     progress_dir: PathBuf,
@@ -69,6 +77,11 @@ struct Shared {
 struct Loaded {
     hosts: Vec<(String, Arc<dyn CommandRunner>)>,
     notify_command: Option<String>,
+    /// `None` when `[notify]` is invalid: the hosts and the hook still apply, and the caller keeps its previous
+    /// settings (or none, at startup) and logs `notify_problem`.
+    notify: Option<crate::config::NotifySettings>,
+    notify_problem: Option<String>,
+    info: Vec<(String, String, String)>,
 }
 
 /// Reads the hosts (always including `local`) and the notify command from `config.toml`.
@@ -76,7 +89,12 @@ fn load_hosts(config_path: &Path) -> Result<Loaded> {
     let config = Config::load(config_path)?;
     let inventory = HostInventory::from_config(&config);
     let hosts = inventory.hosts.iter().map(|h| (h.name.clone(), Arc::clone(&h.runner))).collect();
-    Ok(Loaded { hosts, notify_command: config.daemon.notify_command })
+    let info = inventory.hosts.iter().map(|h| (h.name.clone(), crate::ui::state::address_of(h.ssh_target.as_deref()), h.tag.clone().unwrap_or_default())).collect();
+    let (notify, notify_problem) = match config.notify.resolve() {
+        Ok(settings) => (Some(settings), None),
+        Err(problem) => (None, Some(problem)),
+    };
+    Ok(Loaded { hosts, notify_command: config.daemon.notify_command, notify, notify_problem, info })
 }
 
 /// Progress and cancel files can only belong to a transfer of a previous daemon: remove them.
@@ -111,19 +129,41 @@ impl Shared {
         let names = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
         *self.hosts.write().unwrap_or_else(PoisonError::into_inner) = loaded.hosts;
         *self.notify_command.write().unwrap_or_else(PoisonError::into_inner) = loaded.notify_command;
+        if let Some(settings) = loaded.notify {
+            *self.settings.write().unwrap_or_else(PoisonError::into_inner) = settings;
+        }
+        *self.host_info.write().unwrap_or_else(PoisonError::into_inner) = loaded.info;
         names
     }
 
-    /// Runs the notify command for a failed run; a failing hook is only logged.
+    /// Tells the operator about a failed run: the notify hook, and email when it is configured. A failing
+    /// channel is only logged and never disturbs the run or the other channel.
     fn notify(&self, job: &crate::jobs::Job, outcome: &Outcome) {
         if outcome.result != RunResult::Failed {
             return;
         }
-        let Some(command) = self.notify_command.read().unwrap_or_else(PoisonError::into_inner).clone() else { return };
-        let notice = notify::Notice { job: job.id.clone(), host: job.host.clone(), kind: job.kind.clone(), result: "failed".to_string(), message: outcome.message.clone() };
-        match notify::run(&command, &notice, notify::TIMEOUT) {
-            Ok(()) => log(&format!("notified about {}", job.id)),
-            Err(e) => log(&format!("notify command for {} {e}", job.id)),
+        if let Some(command) = self.notify_command.read().unwrap_or_else(PoisonError::into_inner).clone() {
+            let notice = notify::Notice { job: job.id.clone(), host: job.host.clone(), kind: job.kind.clone(), result: "failed".to_string(), message: outcome.message.clone() };
+            match notify::run(&command, &notice, notify::TIMEOUT) {
+                Ok(()) => log(&format!("notified about {}", job.id)),
+                Err(e) => log(&format!("notify command for {} {e}", job.id)),
+            }
+        }
+        let settings = self.settings.read().unwrap_or_else(PoisonError::into_inner).clone();
+        if settings.has_mail() {
+            let msg = deliver::Message {
+                kind: job.kind.clone(),
+                host: job.host.clone(),
+                level: "failed".to_string(),
+                subject: format!("[zfsctl] job {} failed on {}", deliver::ascii_line(&job.id), deliver::ascii_line(&job.host)),
+                body: format!("Job {} ({}) on {} failed.\n\n{}\n", job.id, job.kind, job.host, outcome.message),
+            };
+            for d in deliver::send(&settings, None, &msg, Utc::now(), deliver::TIMEOUT) {
+                match d.result {
+                    Ok(()) => log(&format!("mailed about {}", job.id)),
+                    Err(e) => log(&format!("mail for {} {e}", job.id)),
+                }
+            }
         }
     }
 
@@ -241,6 +281,79 @@ impl Shared {
     }
 }
 
+/// The monitor runs only when something can receive its messages.
+fn monitor_enabled(settings: &crate::config::NotifySettings, hook: Option<&str>) -> bool {
+    settings.has_mail() || hook.is_some()
+}
+
+/// Delivers the monitor's messages through the configured channels, logging each failure (never the text).
+struct DaemonSink<'a>(&'a Shared);
+
+impl monitor::Sink for DaemonSink<'_> {
+    fn send(&mut self, msg: &deliver::Message) -> bool {
+        let settings = self.0.settings.read().unwrap_or_else(PoisonError::into_inner).clone();
+        let hook = self.0.notify_command.read().unwrap_or_else(PoisonError::into_inner).clone();
+        let results = deliver::send(&settings, hook.as_deref(), msg, Utc::now(), deliver::TIMEOUT);
+        for d in &results {
+            if let Err(e) = &d.result {
+                log(&format!("{:?} delivery of '{}' {e}", d.channel, msg.subject));
+            }
+        }
+        deliver::delivered(&results)
+    }
+}
+
+/// Probes the hosts every `check_interval` and hands the results to the `Monitor`, until `stop`.
+fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) {
+    let mut monitor: Option<monitor::Monitor> = None;
+    let mut next = std::time::Instant::now();
+    let busy = monitor::Busy::default();
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_secs(1));
+        if std::time::Instant::now() < next {
+            continue;
+        }
+        let settings = shared.settings.read().unwrap_or_else(PoisonError::into_inner).clone();
+        let hook = shared.notify_command.read().unwrap_or_else(PoisonError::into_inner).clone();
+        if !monitor_enabled(&settings, hook.as_deref()) {
+            monitor = None;
+            next = std::time::Instant::now() + Duration::from_secs(30);
+            continue;
+        }
+        if let Some(m) = monitor.as_mut().filter(|m| *m.settings() != settings) {
+            // New settings for the running monitor: its alert state and retry queue carry over.
+            log("health monitor settings changed");
+            m.set_settings(settings.clone());
+        }
+        if monitor.is_none() {
+            let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
+            log(&format!("health monitor started (every {} min, report at {})", settings.check_interval.as_secs() / 60, settings.report_time.map_or("off".to_string(), |t| t.format("%H:%M").to_string())));
+            monitor = Some(monitor::Monitor::new(settings.clone(), hub, state_dir.to_path_buf(), Utc::now()));
+        }
+        let Some(m) = monitor.as_mut() else { continue };
+        let info = shared.host_info.read().unwrap_or_else(PoisonError::into_inner).clone();
+        let runners = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
+        let hosts: Vec<monitor::HostInfo> = runners
+            .into_iter()
+            .map(|(name, runner)| {
+                let (address, tag) = info.iter().find(|(n, _, _)| *n == name).map_or((String::new(), String::new()), |(_, a, t)| (a.clone(), t.clone()));
+                monitor::HostInfo { name, address, tag, runner }
+            })
+            .collect();
+        let probed = monitor::probe_all(&hosts, &|n| m.needs_kind(n), monitor::PROBE_DEADLINE, &busy);
+        let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
+        let runs = history::runs(&shared.history.read());
+        let local = chrono::Local::now().naive_local();
+        m.observe(Utc::now(), local, &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
+        // Wake for the daily report too, so it is not lost when the probe interval straddles the report time.
+        let wake = match m.report_wait(chrono::Local::now().naive_local()) {
+            Some(wait) if !wait.is_zero() => settings.check_interval.min(wait + Duration::from_secs(1)),
+            _ => settings.check_interval,
+        };
+        next = std::time::Instant::now() + wake;
+    }
+}
+
 fn dispatch(shared: &Arc<Shared>, work: Vec<Work>) {
     for item in work {
         let shared = Arc::clone(shared);
@@ -263,6 +376,10 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         clear_partial_files(&jobs);
     }
     let loaded = load_hosts(config_path)?;
+    if let Some(problem) = &loaded.notify_problem {
+        // Never a reason to stay down: the jobs matter more than the notifications.
+        log(&format!("config.toml [notify] problem, health notifications are off until it is fixed: {problem}"));
+    }
     let names: Vec<String> = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
     let shared = Arc::new(Shared {
         history: History::new(paths.history()),
@@ -271,12 +388,15 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         clock: Arc::new(SystemClock),
         poll: POLL,
         notify_command: RwLock::new(loaded.notify_command),
+        settings: RwLock::new(loaded.notify.clone().unwrap_or_default()),
+        host_info: RwLock::new(loaded.info),
         stop: Arc::clone(stop),
         progress_dir: paths.progress_dir(),
         replication_state: paths.replication_state(),
         cancels: Mutex::default(),
     });
     let cancel_dir = paths.cancel_dir();
+    let state_dir = paths.dir.clone();
     let mut config_mtime = modified(config_path);
     let mut engine = Engine::new(paths, chrono::Local, names, now);
     let started_at = now;
@@ -285,6 +405,12 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
     log(&format!("zfsctl daemon started (pid {})", std::process::id()));
     report(&engine);
     dispatch(&shared, work);
+    {
+        let (shared, state_dir, stop) = (Arc::clone(&shared), state_dir.clone(), Arc::clone(stop));
+        if let Err(e) = std::thread::Builder::new().name("health".to_string()).spawn(move || monitor_loop(&shared, &state_dir, &stop)) {
+            log(&format!("could not start the health monitor: {e}"));
+        }
+    }
 
     let mut last_problem: Option<String> = None;
     while !stop.load(Ordering::SeqCst) {
@@ -301,11 +427,14 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
             config_mtime = current;
             match load_hosts(config_path) {
                 Ok(loaded) => {
+                    if let Some(problem) = &loaded.notify_problem {
+                        log(&format!("config.toml [notify] problem, keeping the previous notify settings: {problem}"));
+                    }
                     let names = shared.apply(loaded);
                     log(&format!("config.toml reloaded: hosts {}", names.join(", ")));
                     engine.set_hosts(names);
                 }
-                Err(e) => log(&format!("config.toml problem, keeping the previous hosts and notify command: {e}")),
+                Err(e) => log(&format!("config.toml problem, keeping the previous hosts and notify settings: {e}")),
             }
         }
         shared.apply_cancel_requests(&cancel_dir);
@@ -363,11 +492,95 @@ mod tests {
             clock: Arc::new(FixedClock(Mutex::new(now))),
             poll: Duration::from_secs(30),
             notify_command: RwLock::new(notify),
+            settings: RwLock::new(crate::config::NotifySettings::default()),
+            host_info: RwLock::new(Vec::new()),
             stop: Arc::new(AtomicBool::new(false)),
             progress_dir: dir.path().join("progress"),
             replication_state: dir.path().join("replication.json"),
             cancels: Mutex::default(),
         }
+    }
+
+    fn shared_with_mail(dir: &tempfile::TempDir, runner: FakeRunner, mail_command: &str) -> Shared {
+        let shared = shared(dir, runner, None);
+        *shared.settings.write().unwrap() = crate::config::NotifyConfig { mail_to: Some("me@x.org".into()), mail_command: Some(mail_command.into()), ..Default::default() }.resolve().unwrap();
+        shared
+    }
+
+    #[test]
+    fn a_failed_job_is_also_mailed_with_the_job_and_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("mail");
+        let shared = shared_with_mail(&dir, FakeRunner::failing("cannot open 'tank': no such pool", 1), &format!("cat > {}", out.display()));
+        shared.execute(Work::Run(due()));
+        let got = std::fs::read_to_string(out).unwrap();
+        assert!(got.contains("Subject: [zfsctl] job scrub-tank failed on local") && got.contains("no such pool"), "{got}");
+    }
+
+    #[test]
+    fn a_failing_mail_command_does_not_disturb_the_recorded_run_or_the_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let hook_out = dir.path().join("hook");
+        let shared = shared_with_mail(&dir, FakeRunner::failing("no such pool", 1), "exit 7");
+        *shared.notify_command.write().unwrap() = Some(format!("printf '%s' \"$ZFSCTL_JOB\" > {}", hook_out.display()));
+        shared.execute(Work::Run(due()));
+        assert_eq!(history::runs(&shared.history.read())[0].result, Some(RunResult::Failed));
+        assert_eq!(std::fs::read_to_string(hook_out).unwrap(), "scrub-tank");
+    }
+
+    #[test]
+    fn load_hosts_reads_the_notify_section_and_the_host_addresses_and_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[hosts]]\nname = \"fbsd16\"\nssh_target = \"fbsd@172.16.10.60\"\ntag = \"vm\"\n\n[notify]\nmail_to = \"me@x.org\"\n").unwrap();
+        let l = load_hosts(&path).unwrap();
+        assert_eq!(l.notify.unwrap().mail_to, ["me@x.org"]);
+        assert_eq!(l.info, [("local".to_string(), "local".to_string(), String::new()), ("fbsd16".to_string(), "172.16.10.60".to_string(), "vm".to_string())]);
+    }
+
+    #[test]
+    fn a_bad_notify_section_never_blocks_the_hosts_and_never_replaces_good_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[hosts]]\nname = \"later\"\nssh_target = \"u@later\"\n\n[notify]\nmail_to = \"not an address\"\n").unwrap();
+        let l = load_hosts(&path).expect("a bad [notify] is not a load failure");
+        assert!(l.notify.is_none() && l.notify_problem.as_deref().unwrap().contains("mail_to"));
+        assert_eq!(l.hosts.len(), 2, "the host in the same edit still loads");
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        *shared.settings.write().unwrap() = crate::config::NotifyConfig { mail_to: Some("me@x.org".into()), ..Default::default() }.resolve().unwrap();
+        shared.apply(l);
+        assert_eq!(shared.settings.read().unwrap().mail_to, ["me@x.org"], "the previous settings are kept");
+        assert!(shared.runner("later").is_some());
+    }
+
+    #[test]
+    fn the_monitor_runs_only_when_a_channel_is_configured() {
+        assert!(!monitor_enabled(&crate::config::NotifySettings::default(), None));
+        assert!(monitor_enabled(&crate::config::NotifySettings::default(), Some("true")));
+        let mail = crate::config::NotifyConfig { mail_to: Some("me@x.org".into()), ..Default::default() }.resolve().unwrap();
+        assert!(monitor_enabled(&mail, None));
+    }
+
+    #[test]
+    fn the_monitor_loop_returns_at_once_when_stopped_and_does_nothing_without_a_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Arc::new(shared(&dir, FakeRunner::new(""), None));
+        let stop = Arc::new(AtomicBool::new(true));
+        let t = std::time::Instant::now();
+        monitor_loop(&shared, dir.path(), &stop);
+        assert!(t.elapsed() < Duration::from_secs(2));
+        assert!(!dir.path().join("health-events.jsonl").exists(), "no channel: no monitor, no event log");
+    }
+
+    #[test]
+    fn applying_a_new_config_replaces_the_notify_settings_and_host_info() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[notify]\nmail_to = \"me@x.org\"\ncheck_interval_minutes = 2\n").unwrap();
+        shared.apply(load_hosts(&path).unwrap());
+        assert_eq!(shared.settings.read().unwrap().check_interval, Duration::from_secs(120));
+        assert_eq!(shared.host_info.read().unwrap().len(), 1);
     }
 
     fn due() -> Due {
@@ -457,7 +670,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = shared(&dir, FakeRunner::new(""), None);
         assert!(shared.runner("later").is_none());
-        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()) };
+        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()), notify: Some(crate::config::NotifySettings::default()), notify_problem: None, info: Vec::new() };
         let names = shared.apply(loaded);
         assert_eq!(names, vec!["local", "later"]);
         assert!(shared.runner("later").is_some());

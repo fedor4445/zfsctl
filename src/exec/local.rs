@@ -44,11 +44,16 @@ fn with_account_home(command: &mut Command) {
     }
 }
 
+/// What every program zfsctl runs locally gets: the package directories on `PATH` and the account's real home.
+pub fn prepare_child(command: &mut Command) {
+    with_extra_path(command, PACKAGE_DIRS);
+    with_account_home(command);
+}
+
 fn local(cmd: &str, args: &[&str]) -> Command {
     let mut command = Command::new(cmd);
     command.args(args);
-    with_extra_path(&mut command, PACKAGE_DIRS);
-    with_account_home(&mut command);
+    prepare_child(&mut command);
     command
 }
 
