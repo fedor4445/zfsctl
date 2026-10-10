@@ -285,10 +285,11 @@ pub fn scan_cell(pools: &[PoolProbe]) -> String {
     }
     let parse = |w: &str| chrono::NaiveDateTime::parse_from_str(&w.split_whitespace().collect::<Vec<_>>().join(" "), "%a %b %d %H:%M:%S %Y").ok();
     let dated: Vec<chrono::NaiveDateTime> = whens.iter().filter_map(|w| parse(w)).collect();
+    let first = whens.first().copied().unwrap_or("-").to_string();
     if dated.len() != whens.len() {
-        return whens[0].to_string();
+        return first;
     }
-    dated.iter().min().map_or_else(|| whens[0].to_string(), |d| d.format("%b %-d %Y").to_string())
+    dated.iter().min().map_or(first, |d| d.format("%b %-d %Y").to_string())
 }
 
 /// The Jobs cell: `failed/total` of a host's enabled jobs, and whether any failed.

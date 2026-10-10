@@ -54,6 +54,8 @@ pub struct Theme {
     pub muted: Style,
     pub accent: Style,
     pub danger: Style,
+    /// A second accent, apart from the health colors (the jail host type).
+    pub alt: Style,
 }
 
 fn fg(c: Color) -> Style {
@@ -72,6 +74,7 @@ impl Theme {
             muted: fg(Color::DarkGray),
             accent: fg(Color::Cyan),
             danger: fg(Color::Red).add_modifier(Modifier::BOLD),
+            alt: fg(Color::Magenta),
         }
     }
 
@@ -87,6 +90,7 @@ impl Theme {
             muted: plain.add_modifier(Modifier::DIM),
             accent: plain.add_modifier(Modifier::BOLD),
             danger: plain.add_modifier(Modifier::BOLD),
+            alt: plain.add_modifier(Modifier::UNDERLINED),
         }
     }
 
@@ -116,6 +120,7 @@ impl Theme {
             muted: fg(muted),
             accent: fg(blue),
             danger: fg(red).add_modifier(Modifier::BOLD),
+            alt: fg(c((211, 54, 130), 125)),
         }
     }
 
