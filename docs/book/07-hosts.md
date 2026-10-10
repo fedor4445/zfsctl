@@ -2,12 +2,143 @@
 
 ## What you will learn
 
-- (This chapter is written in a later step of the book's plan.)
+- What each column of the Hosts table means and what its colours say.
+- What the bottom panel tells you about the selected host.
+- How to add a host, tag it, and filter a long list.
+
+## The list
+
+The Hosts section is where zfsctl opens. Every host in your configuration is probed in the background about every 30 seconds (an unreachable host costs a single 10-second timeout and never freezes the screen), so the table is a live health overview:
+
+```screen
+┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Hosts                 ││Name       Address            State                                            Type   Used  Pools Scrub         Jobs  Rtt   │
+│Pools                 ││● local    local              ok                                               vm     42%   3     Sep 5 2026    0/1   17ms  │
+│Datasets              ││● fbsd16   172.16.10.60       ok                                               vm     55%   1     never         -     210ms │
+│Snapshots             ││● fbsd16t1 172.16.10.61       ok                                               vm     72%   2     never         -     431ms │
+│Disks                 ││● fbsd16t2 172.16.10.62       ok                                               vm     72%   2     never         -     306ms │
+│Shares                ││                                                                                                                            │
+│Boot Envs             ││                                                                                                                            │
+│Jobs                  ││                                                                                                                            │
+│Alerts                ││                                                                                                                            │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+```
+
+(This capture is 150 columns wide so that every column fits; on a narrower terminal the columns on the right drop away, as described below.)
+
+| Column | Meaning |
+|---|---|
+| `●` and **Name** | the host's label. The dot and the name take the colour of the host's health |
+| **Address** | the host part of its `ssh_target` as you wrote it (no lookup); `local` for the hub |
+| **State** | the first reason at the worst level, or `ok` (see below) |
+| **Type** | `metal`, `vm` or `jail`, read once from the host with `sysctl kern.vm_guest` and `security.jail.jailed`; `-` when it cannot be read |
+| **Tag** | your own label from `config.toml` or the Add Host form; shown only if some host has one |
+| **Used** | the fullest pool on the host (yellow from 80%, red from 90%) |
+| **Pools** | how many pools |
+| **Scrub** | what is happening or the oldest last scrub: `running 34%`, `paused`, `never`, or the date |
+| **Jobs** | failed over total scheduled jobs of that host (`1/4`); `-` if it has none |
+| **Rtt** | the round trip of the last probe |
+
+Name, Address and State always show. As the terminal gets narrower, columns drop from the right in this order: Rtt, Jobs, Scrub, Pools, Tag, Used, Type. At 110 columns you see the first screen of this chapter's other captures.
+
+## What State says
+
+The colour is the worst level that applies; the text is the first reason at that level.
+
+| Colour | State text | What it means |
+|---|---|---|
+| green (normal) | `ok` | all pools online, below 80% full, no errors, no failed jobs |
+| dim | `probing` | the first probe has not finished |
+| yellow | `<pool> <n>% full` | a pool is 80% full or more |
+| yellow | `<pool> <n> errors` | read, write or checksum errors on the pool or on a device inside it, or permanent data errors |
+| yellow | `scrub found errors on <pool>` | the last scrub or resilver finished with errors |
+| yellow | `job failed` | an enabled scheduled job of this host failed on its latest run |
+| yellow | `cannot inspect: …` | the host answers but zfsctl cannot read it (sudo refused, no `zpool`) |
+| yellow | `no answer for 45s` | a probe has been running far longer than a healthy one |
+| red | `<pool> DEGRADED` (or `FAULTED`, `UNAVAIL`…) | a pool is not ONLINE |
+| red | `<pool> <n>% full` | a pool is 90% full or more |
+| red | `unreachable` | ssh could not connect |
+| red | `ssh login refused` | the host answered but refused your key |
+| red | `host key not accepted` | the host's key is new or has changed |
+
+> **Safety:** a pool above about 80% full is a warning for a reason: ZFS slows down and fragments badly as it fills. Act on yellow before it turns red.
+
+## The filter
+
+With a long list, press `/` and type part of a name, address, tag or type (`t1`, `172.16.10`, `backup`, `vm`): the list narrows as you type, and the title shows how many match.
+
+```screen
+┌zfsctl────────────────┐┌Hosts (filter: t1_ — 1/4)───────────────────────────────────────────────────────────┐
+│Hosts                 ││Name       Address            State                               Type   Used  Pools│
+│Pools                 ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Keep filter  Esc Clear
+```
+
+`Enter` keeps the filter and returns you to the list; `Esc` clears it. While you type, every key is text, so `q` does not quit. Arrow keys skip hidden hosts, and the selected host is always one you can see, so another section never acts on a host you cannot see. If nothing matches, `Enter` will not keep the filter.
+
+## The panel
+
+Select a host with `Up` and `Down` and the panel shows it. The first sample of a remote host takes a few seconds, so you may see `sampling…` first.
+
+```screen
+┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
+│Hosts                 ││Name       Address            State                               Type   Used  Pools│
+│Pools                 ││● local    local              ok                                  vm     42%   3    │
+│Datasets              ││● fbsd16   172.16.10.60       ok                                  vm     55%   1    │
+│Snapshots             ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
+│Disks                 ││● fbsd16t2 172.16.10.62       ok                                  vm     72%   2    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Alerts                ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Metrics — host fbsd16 (all pools)───────────────────────────────────────────────────┐
+│                      ││I/O     read 0B/s  write 591K/s            ZFS     2.4.99-1149-FreeBSD.g1f380a4f3   │
+│                      ││OS      FreeBSD 16.0-CURRENT               Pools   1 (all ONLINE)                   │
+│                      ││Up      4h 18m   rtt 214ms                 Space   55%  4.2G / 7.5G                 │
+│                      ││Load    0.46 0.26 0.19                     ARC     60.1M / 6.9G  hit 99.6%          │
+│                      ││CPU     4 cores  6%                        Status  all pools are healthy            │
+│                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
+│                      ││Memory  7.9G  free 6.5G  wired 957M                                                 │
+│                      ││Swap    0B / 2.0G                                                                   │
+│                      ││zroot         55% frag 22% ONLINE   scrub never                                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+```
+
+On the left is the system: operating system, uptime and round trip, load averages, CPU (cores, current use and the processor model), memory (physical, free, wired) and swap. On the right is ZFS: version, how many pools and whether all are healthy, total space used, the ARC (ZFS's memory cache: its size, its ceiling and its hit rate), and a status line from `zpool status -x`. Below are one row per pool with its fullness, fragmentation, health and last scrub.
+
+When the panel is wide enough (about 90 columns) it also shows two graphs, **Read** and **Write**, with the peak of what is drawn: they plot the whole host's disk activity over the most recent samples (roughly one every second or two). On a narrower terminal, as in the capture above, the panel keeps the figures and shows the rates as one line.
+
+## Adding a host
+
+Press `n`, fill in the **Name** (any label), the **SSH target** (`user@address`, the unprivileged account) and, if you like, a **Tag**, and press `Enter` on the last field. zfsctl first checks that it can reach the host (it runs a harmless `true` over ssh) and, if that works, adds it at once and saves it to `config.toml`: a new `[[hosts]]` block is added next to the others and nothing else in the file changes. If the check fails you see ssh's own message and can try again. Setting the host up on its side is [chapter 5](05-remote-hosts.md).
 
 ## Try it
 
-(To come.)
+Add the second machine of your lab with `n`, give it the tag `backup`, and check that it appears with `ok`. Then press `/`, type `backup` and see the list narrow to it; press `Esc` to clear.
 
 ## Where next
 
-- [The cover](README.md)
+- [Pools](08-pools.md): what the pool rows are made of.
+- [Alerts](16-alerts.md): getting told when a State turns yellow or red.
