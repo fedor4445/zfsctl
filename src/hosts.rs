@@ -62,9 +62,8 @@ impl HostInventory {
             ssh_target: Some(target.clone()),
             tag: tag.clone(),
         });
-        let mut config = Config::load(config_path)?;
-        config.hosts.push(HostConfig { name, ssh_target: Some(target), tag });
-        config.save(config_path)
+        // Only the new `[[hosts]]` block is written: the rest of config.toml (comments, order, other sections) stays.
+        crate::config::append_host_to_file(config_path, &HostConfig { name, ssh_target: Some(target), tag })
     }
 }
 
@@ -102,6 +101,29 @@ mod tests {
         let inv = HostInventory::from_config(&config);
         assert_eq!(inv.hosts[1].tag, None);
         assert_eq!(inv.hosts[2].tag.as_deref().map(|t| t.chars().count()), Some(40));
+    }
+
+    #[test]
+    fn a_host_added_through_the_inventory_keeps_the_comments_and_sections_of_config_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "# my lab\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"   # the first\n\n[ui]\ntheme = \"mono\"\n").unwrap();
+        let mut inventory = HostInventory::from_config(&Config::load(&config_path).unwrap());
+        inventory.apply_new_host(&config_path, "b".to_string(), "u@b".to_string(), Some("lab".to_string())).unwrap();
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "# my lab\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"   # the first\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\ntag = \"lab\"\n\n[ui]\ntheme = \"mono\"\n");
+        assert_eq!(inventory.hosts.len(), 3, "local, a, b");
+    }
+
+    #[test]
+    fn a_config_that_cannot_be_edited_safely_still_adds_the_host_to_the_live_inventory_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "hosts = []\n").unwrap();
+        let mut inventory = HostInventory::from_config(&Config::default());
+        let err = inventory.apply_new_host(&config_path, "b".to_string(), "u@b".to_string(), None).unwrap_err().to_string();
+        assert!(err.contains("by hand"), "{err}");
+        assert_eq!(inventory.hosts.len(), 2, "usable for this session either way");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "hosts = []\n");
     }
 
     #[test]
