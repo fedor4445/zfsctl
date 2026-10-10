@@ -1,0 +1,28 @@
+┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
+│Hosts                 ││Name       Address            State                               Type   Used  Pools│
+│Pools                 ││● local    local              ok                                  vm     42%   3    │
+│Datasets              ││● fbsd16   172.16.10.60       ok                                  vm     55%   1    │
+│Snapshots             ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
+│Disks                 ││● fbsd16t2 172.16.10.62       ok                                  vm     72%   2    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Alerts                ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Metrics — host local (all pools)────────────────────────────────────────────────────┐
+│                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
+│                      ││OS      FreeBSD 15.1-RELEASE-p4            Pools   3 (all ONLINE)                   │
+│                      ││Up      3d 11h   rtt 2ms                   Space   30%  18.7G / 62.2G               │
+│                      ││Load    0.60 0.40 0.38                     ARC     4.4G / 18.9G  hit 99.3%          │
+│                      ││CPU     36 cores  0%                       Status  all pools are healthy            │
+│                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
+│                      ││Memory  19.9G  free 9.5G  wired 6.7G                                                │
+│                      ││Swap    0B / 2.0G                                                                   │
+│                      ││scratch       42% frag 40% ONLINE   scrub Oct  8 19:48:07 2026                      │
+│                      ││tpool         41% frag  2% ONLINE   scrub Sep 26 13:15:14 2026                      │
+│                      ││zroot         24% frag 34% ONLINE   scrub Sep  5 20:18:51 2026                      │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
