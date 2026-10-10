@@ -162,11 +162,13 @@ pub struct Line {
 #[derive(Debug)]
 pub struct Report {
     pub lines: Vec<Line>,
+    /// Things that make the lines less trustworthy than they look; any note fails the run.
+    pub notes: Vec<String>,
 }
 
 impl Report {
     pub fn exit_code(&self) -> i32 {
-        i32::from(self.lines.iter().any(|l| l.status != Status::Ok))
+        i32::from(self.lines.iter().any(|l| l.status != Status::Ok) || !self.notes.is_empty())
     }
 
     pub fn render(&self) -> String {
@@ -181,19 +183,38 @@ impl Report {
         }
         let count = |s: Status| self.lines.iter().filter(|l| l.status == s).count();
         let _ = writeln!(text, "{} ok, {} missing, {} too broad", count(Status::Ok), count(Status::Missing), count(Status::TooBroad));
+        for note in &self.notes {
+            let _ = writeln!(text, "NOTE: {note}");
+        }
         text
     }
 }
 
-/// Whether the host's sudo would run `path args` without a password (`sudo -n -l <command>` exits 0).
-fn sudo_allows(runner: &dyn CommandRunner, host: &str, path: &str, args: &[&str]) -> Result<bool, Failure> {
-    let mut full = vec!["-n", "-l", path];
+struct Asked {
+    allowed: bool,
+    /// The path sudo says it would run (the first word of `sudo -l`'s answer), empty when refused.
+    printed: String,
+}
+
+/// `sudo -n -l <name> [args]`: whether the policy permits that command, and which binary sudo resolves the
+/// bare name to. zfsctl runs bare names (`sudo -n zfs ...`), so that is what is asked, not the path
+/// `command -v` found: sudo resolves through its own `secure_path`, which can differ.
+fn sudo_ask(runner: &dyn CommandRunner, host: &str, name: &str, args: &[&str]) -> Result<Asked, Failure> {
+    let mut full = vec!["-n", "-l", name];
     full.extend_from_slice(args);
     let out = runner.run_unprivileged("sudo", &full).map_err(|e| unreachable(host, e))?;
     if out.status == 255 {
         return Err(unreachable(host, out.stderr.trim()));
     }
-    Ok(out.success())
+    let printed = if out.success() { out.stdout.split_whitespace().next().unwrap_or("").to_string() } else { String::new() };
+    Ok(Asked { allowed: out.success(), printed })
+}
+
+/// How many of the account's sudo rules would ask for a password, counted from `sudo -ll`: an entry without
+/// `!authenticate`. `sudo -l <command>` says "allowed" for those too, so without this a `%wheel` rule could make
+/// a missing zfsctl entry look fine. Output with no `Sudoers entry:` blocks (an older sudo) gives 0: no verdict.
+pub fn password_rules(listing: &str) -> usize {
+    listing.split("Sudoers entry:").skip(1).filter(|block| !block.lines().any(|l| l.trim_start().starts_with("Options:") && l.contains("!authenticate"))).count()
 }
 
 pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) -> Result<Report, Failure> {
@@ -204,24 +225,46 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) 
     let resolved = resolve(runner, host, &entries)?;
     let mut lines = Vec::new();
     for r in &resolved {
-        let forms: Vec<(&[&str], &str)> = match &r.entry.kind {
-            Kind::Privileged { pinned, probe } if !pinned.is_empty() => pinned.iter().map(|args| (*args, *probe)).collect(),
-            _ => vec![(&[][..], "")],
+        // Each pinned form, with the extra arguments sudo must refuse after it: a different argument in its
+        // place, and one appended (a wildcard such as `smb4.conf*` refuses the first and allows the second).
+        let forms: Vec<(&[&str], Vec<Vec<&str>>)> = match &r.entry.kind {
+            Kind::Privileged { pinned, probe } if !pinned.is_empty() => {
+                pinned.iter().map(|args| (*args, vec![vec![*probe], args.iter().copied().chain([*probe]).collect()])).collect()
+            }
+            _ => vec![(&[][..], Vec::new())],
         };
-        for (args, probe) in forms {
-            // A pinned entry must refuse a different argument too, or the pin is not doing its job.
-            let status = if !sudo_allows(runner, host, &r.path, args)? {
+        for (args, probes) in forms {
+            let mut detail = if args.is_empty() { r.path.clone() } else { format!("{} {}", r.path, args.join(" ")) };
+            let asked = sudo_ask(runner, host, r.entry.name, args)?;
+            let status = if !asked.allowed {
                 Status::Missing
-            } else if !probe.is_empty() && sudo_allows(runner, host, &r.path, &[probe])? {
-                Status::TooBroad
+            } else if asked.printed != r.path {
+                detail = format!("{detail} (sudo would run {})", if asked.printed.is_empty() { "?" } else { &asked.printed });
+                Status::Missing
             } else {
-                Status::Ok
+                let mut status = Status::Ok;
+                for probe in &probes {
+                    if sudo_ask(runner, host, r.entry.name, probe)?.allowed {
+                        status = Status::TooBroad;
+                        break;
+                    }
+                }
+                status
             };
-            let detail = if args.is_empty() { r.path.clone() } else { format!("{} {}", r.path, args.join(" ")) };
             lines.push(Line { name: r.entry.name, detail, status });
         }
     }
-    Ok(Report { lines })
+    let mut notes = Vec::new();
+    // Last, so a host that drops mid-run fails on the checks first. A failure to list is no verdict.
+    if let Ok(out) = runner.run_unprivileged("sudo", &["-n", "-ll"]) {
+        if out.success() {
+            let n = password_rules(&out.stdout);
+            if n > 0 {
+                notes.push(format!("this account also has {n} sudo rule(s) that ask for a password (a %wheel rule, say). sudo may satisfy a command through one of those, so an ok above does not prove zfsctl will never be asked for a password, and TOO BROAD may be a false alarm. Use an account whose only sudo rules are the zfsctl ones."));
+            }
+        }
+    }
+    Ok(Report { lines, notes })
 }
 
 #[cfg(test)]
@@ -442,23 +485,35 @@ mod tests {
         assert_eq!(runner.count(), 0);
     }
 
-    /// A host whose sudoers allows exactly `allowed` command lines (path plus arguments, space-joined).
-    fn sudo_host(allowed: &'static [&'static str], paths: &'static [(&'static str, &'static str)]) -> Scripted {
+    /// A clean `sudo -ll`: every rule is NOPASSWD.
+    const CLEAN_LISTING: &str = "User fbsd may run the following commands on h:\n\nSudoers entry: /usr/local/etc/sudoers.d/zfsctl\n    RunAsUsers: root\n    Options: !authenticate\n    Commands:\n\t/sbin/zpool\n";
+
+    /// A host whose sudoers allows exactly `allowed` command lines (path plus arguments, space-joined). Like
+    /// the real sudo, `sudo -n -l <name> args` answers with the path it would run.
+    fn sudo_host_with(allowed: &'static [&'static str], paths: &'static [(&'static str, &'static str)], listing: &'static str) -> Scripted {
         Scripted::new(move |cmd, args| match cmd {
             "sh" => {
                 let lines = args[3..].iter().fold(String::new(), |mut acc, n| {
-                let _ = writeln!(acc, "{n}={}", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p));
-                acc
-            });
+                    let _ = writeln!(acc, "{n}={}", paths.iter().find(|(name, _)| name == n).map_or("", |(_, p)| *p));
+                    acc
+                });
                 out(&lines, 0)
             }
             "sudo" => {
+                if args == ["-n", "-ll"] {
+                    return out(listing, 0);
+                }
                 assert_eq!(&args[..2], ["-n", "-l"]);
-                let asked = args[2..].join(" ");
+                let path = paths.iter().find(|(n, _)| *n == args[2]).map_or(args[2], |(_, p)| *p);
+                let asked = std::iter::once(path).chain(args[3..].iter().copied()).collect::<Vec<_>>().join(" ");
                 out(&asked, i32::from(!allowed.contains(&asked.as_str())))
             }
             other => panic!("unexpected {other}"),
         })
+    }
+
+    fn sudo_host(allowed: &'static [&'static str], paths: &'static [(&'static str, &'static str)]) -> Scripted {
+        sudo_host_with(allowed, paths, CLEAN_LISTING)
     }
 
     const EXACT: &[&str] = &[
@@ -550,6 +605,63 @@ mod tests {
         let text = report.render();
         assert!(text.contains("ok") && text.contains("/bin/cat /usr/local/etc/smb4.conf"), "{text}");
         assert!(text.trim_end().ends_with("11 ok, 0 missing, 0 too broad"), "{text}");
+    }
+
+
+    const WHEEL_LISTING: &str = "User fbsd may run the following commands on h:\n\nSudoers entry: /usr/local/etc/sudoers.d/zfsctl\n    RunAsUsers: root\n    Options: !authenticate\n    Commands:\n\t/sbin/zpool\n\nSudoers entry: /usr/local/etc/sudoers\n    RunAsUsers: ALL\n    Commands:\n\tALL\n";
+
+    #[test]
+    fn rules_that_ask_for_a_password_are_counted_from_the_listing() {
+        assert_eq!(password_rules(CLEAN_LISTING), 0);
+        assert_eq!(password_rules(WHEEL_LISTING), 1);
+        assert_eq!(password_rules("no entries here"), 0, "a sudo that formats -ll differently gives no verdict, not a false alarm");
+        let mixed = "Sudoers entry: a\n    Options: !authenticate, setenv\n    Commands:\n\tx\n";
+        assert_eq!(password_rules(mixed), 0, "!authenticate among other options still means no password");
+    }
+
+    #[test]
+    fn a_password_rule_alongside_the_zfsctl_entry_makes_every_ok_unverified() {
+        let runner = sudo_host_with(EXACT, ALL_PATHS, WHEEL_LISTING);
+        let report = check_host(&runner, "h", &select(&[], &[]).unwrap()).unwrap();
+        assert!(report.lines.iter().all(|l| l.status == Status::Ok));
+        assert_eq!(report.notes.len(), 1, "{}", report.render());
+        assert!(report.render().contains("ask for a password"), "{}", report.render());
+        assert_eq!(report.exit_code(), 1, "ok lines that sudo may satisfy through another rule are not a clean bill");
+    }
+
+    #[test]
+    fn a_clean_host_has_no_notes() {
+        let report = check_host(&sudo_host(EXACT, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        assert!(report.notes.is_empty() && report.exit_code() == 0);
+    }
+
+    #[test]
+    fn an_entry_is_not_ok_when_sudo_would_run_a_different_binary_than_the_one_found() {
+        // `command -v zfs` finds /sbin/zfs, but sudo (secure_path) resolves the bare name to the OpenZFS port.
+        let runner = Scripted::new(|cmd, args| match cmd {
+            "sh" => out("zpool=/sbin/zpool\nzfs=/sbin/zfs\n", 0),
+            "sudo" if args == ["-n", "-ll"] => out(CLEAN_LISTING, 0),
+            "sudo" => match args[2] {
+                "zpool" => out("/sbin/zpool", 0),
+                "zfs" => out("/usr/local/sbin/zfs", 0),
+                other => panic!("zfsctl runs bare names, so only those may be asked: {other}"),
+            },
+            other => panic!("unexpected {other}"),
+        });
+        let report = check_host(&runner, "h", &[Feature::Core]).unwrap();
+        assert_eq!(statuses(&report), [("zpool", Status::Ok), ("zfs", Status::Missing)]);
+        assert!(report.lines[1].detail.contains("/sbin/zfs") && report.lines[1].detail.contains("/usr/local/sbin/zfs"), "{}", report.lines[1].detail);
+    }
+
+    #[test]
+    fn a_wildcard_pinned_entry_is_too_broad_even_though_a_single_wrong_argument_is_refused() {
+        // `cat /usr/local/etc/smb4.conf*` refuses `cat /etc/master.passwd` but allows an extra argument.
+        const WILDCARD: &[&str] = &[
+            "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/geom", "/sbin/bectl", "/usr/sbin/service",
+            "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/bin/cat /usr/local/etc/smb4.conf /etc/master.passwd", "/usr/bin/tee /usr/local/etc/smb4.conf",
+        ];
+        let report = check_host(&sudo_host(WILDCARD, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        assert!(statuses(&report).contains(&("cat", Status::TooBroad)), "{}", report.render());
     }
 
 }
