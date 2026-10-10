@@ -1,0 +1,16 @@
+┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌ACL — scratch/data ('r' refresh, 'n' add, 'd' rem┐
+│Hosts                 ││Name                           Used           Avail          Kind        ││#   Tar Permissions          Flags         Type  │
+│Pools                 ││scratch                        106639360      19189760       Filesystem  ││0   own read_data/write_data —             Allow │
+│Datasets              ││scratch/data                   105250816      19189760       Filesystem  ││1   gro read_data/execute/re —             Allow │
+│Snapshots             ││tpool                          4196505216     5628389760     Filesystem  ││2   eve read_data/execute/re —             Allow │
+│Disks                 ││zroot                          11325579264    32899719168    Filesystem  ││                                                 │
+│Shares                ││zroot/ROOT                     5673803776     32899719168    Filesystem  ││                                                 │
+│Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+│Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
+│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
+│                      ││                                                                           Data    100M   Snaps 200K                        │
+│                      ││                                                                           Kids    0B   Refres 0B                           │
+│                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  n Add entry  [ ] Tabs  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
