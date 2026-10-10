@@ -48,6 +48,10 @@ pub fn hints(app: &App) -> Vec<Hint> {
     if let Some(modal) = &app.modal {
         return modal_hints(modal);
     }
+    if app.host_filter_editing {
+        // Every key but these is text while a filter is typed.
+        return vec![h("Enter", "Keep filter", 1), h("Esc", "Clear", 1)];
+    }
     let mut v = context_hints(app);
     if !app.hosts.is_empty() {
         v.push(h("!", "Shell", 8));
@@ -132,6 +136,10 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("↑↓", "Host", 1));
             }
             v.push(h("n", "Add host", 2));
+            v.push(h("/", "Filter", 3));
+            if !app.host_filter.is_empty() {
+                v.push(h("Esc", "Clear filter", 3));
+            }
         }
         (Section::Pools, false) => {
             let selected = app.pools_table.selected().is_some();
@@ -601,6 +609,7 @@ mod tests {
         tab: DatasetDetailTab,
         drilled: Option<String>,
         host: usize,
+        host_filter: (String, bool),
         quit: bool,
         selected_disks: Vec<String>,
         selections: Vec<Option<usize>>,
@@ -618,6 +627,7 @@ mod tests {
             tab: a.dataset_detail_tab,
             drilled: a.drilled_pool.clone(),
             host: a.selected_host,
+            host_filter: (a.host_filter.clone(), a.host_filter_editing),
             quit: a.should_quit,
             status: None,
             selected_disks: disks,
@@ -828,6 +838,26 @@ mod tests {
         assert!(keys(&pools_middle()).contains(&"!"));
         let no_hosts = App::new(Vec::new());
         assert!(!hints(&no_hosts).iter().any(|h| h.key == "!"));
+    }
+
+    #[test]
+    fn the_hosts_hints_advertise_the_filter_and_a_set_filter_advertises_esc() {
+        let mut app = hosts();
+        assert!(keys(&app).contains(&"/"));
+        assert!(!keys(&app).contains(&"Esc"));
+        app.host_filter = "x".into();
+        assert!(hints(&app).iter().any(|h| h.key == "Esc" && h.label == "Clear filter"));
+    }
+
+    #[test]
+    fn while_a_filter_is_typed_the_hints_are_the_filter_keys_only() {
+        let mut app = hosts();
+        app.host_filter_editing = true;
+        let hs = hints(&app);
+        assert_eq!(hs.iter().map(|h| (h.key, h.label)).collect::<Vec<_>>().len() >= 2, true);
+        let ks = keys(&app);
+        assert!(ks.contains(&"Enter") && ks.contains(&"Esc"));
+        assert!(!ks.contains(&"↑↓") && !ks.contains(&"n") && !ks.contains(&"q"), "{ks:?}");
     }
 
     #[test]

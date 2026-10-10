@@ -38,7 +38,7 @@ impl HostInventory {
                 name: host_cfg.name.clone(),
                 runner,
                 ssh_target: host_cfg.ssh_target.clone(),
-                tag: host_cfg.tag.clone(),
+                tag: host_cfg.tag.as_deref().and_then(crate::config::clean_tag),
             });
         }
         HostInventory { hosts }
@@ -93,6 +93,15 @@ mod tests {
         let inventory = HostInventory::from_config(&config);
         let names: Vec<&str> = inventory.hosts.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, vec!["local", "backup", "offsite"]);
+    }
+
+    #[test]
+    fn a_hand_edited_tag_is_cleaned_like_one_from_the_form() {
+        let tagged = |t: &str| HostConfig { name: "a".into(), ssh_target: Some("u@a".into()), tag: Some(t.into()) };
+        let config = Config { hosts: vec![tagged("   "), tagged(&"x".repeat(200))], ..Config::default() };
+        let inv = HostInventory::from_config(&config);
+        assert_eq!(inv.hosts[1].tag, None);
+        assert_eq!(inv.hosts[2].tag.as_deref().map(|t| t.chars().count()), Some(40));
     }
 
     #[test]

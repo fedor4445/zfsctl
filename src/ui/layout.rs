@@ -318,7 +318,7 @@ pub fn fit_host_columns(inner: u16, name_w: u16, tag_w: u16) -> HostColumns {
     let addr = inner >= 16 + STATE_MIN + ADDR_W + 2;
     let mut rest = inner.saturating_sub(name_w + 1 + STATE_MIN + if addr { ADDR_W + 1 } else { 0 });
     let mut c = HostColumns { addr, type_: false, tag: false, used: false, pools: false, scrub: false, jobs: false, rtt: false };
-    let tag_cols = tag_w.min(14);
+    let tag_cols = tag_w.clamp(3, 14);
     let steps: [Step; 7] = [
         (TYPE_W, |c| c.type_ = true),
         (USED_W, |c| c.used = true),
@@ -2387,6 +2387,15 @@ mod tests {
         }
         assert!(!order(&fit_host_columns(30, 10, 8)).iter().any(|b| *b), "at 30 columns only the required ones remain");
         assert!(!order(&fit_host_columns(200, 10, 0))[4], "no tags configured: no Tag column");
+    }
+
+    #[test]
+    fn a_one_or_two_character_tag_is_fitted_as_wide_as_it_is_drawn() {
+        // The drawn Tag column is at least 3 wide (its header), so the fitting must count it that way.
+        for inner in 0..200 {
+            assert_eq!(fit_host_columns(inner, 8, 1), fit_host_columns(inner, 8, 3), "inner {inner}");
+            assert_eq!(fit_host_columns(inner, 8, 2), fit_host_columns(inner, 8, 3), "inner {inner}");
+        }
     }
 
     #[test]

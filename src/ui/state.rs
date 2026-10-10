@@ -220,6 +220,8 @@ pub struct App {
     /// it: `hosts` and `selected_host` stay global indices.
     pub host_filter: String,
     pub host_filter_editing: bool,
+    /// The host that was active when the filter input opened, put back if the input is cancelled.
+    host_filter_origin: Option<usize>,
     /// The latest health probe of each host, by host name.
     pub host_probes: HashMap<String, HostProbeState>,
     /// When probing started: host `i` is first probed `i` seconds after it.
@@ -371,6 +373,7 @@ impl App {
             new_host_tags: HashMap::new(),
             host_filter: String::new(),
             host_filter_editing: false,
+            host_filter_origin: None,
             host_addresses: hosts_for_addr.iter().map(|n| if n == "local" { "local".to_string() } else { "-".to_string() }).collect(),
             host_probes: HashMap::new(),
             probe_epoch: Instant::now(),
@@ -638,8 +641,15 @@ impl App {
             KeyCode::Esc => {
                 self.host_filter.clear();
                 self.host_filter_editing = false;
+                if let Some(origin) = self.host_filter_origin.take().filter(|o| *o != self.selected_host && *o < self.hosts.len()) {
+                    self.selected_host = origin;
+                    self.clear_host_data();
+                }
             }
-            KeyCode::Enter if self.host_filter.is_empty() || !self.visible_hosts().is_empty() => self.host_filter_editing = false,
+            KeyCode::Enter if self.host_filter.is_empty() || !self.visible_hosts().is_empty() => {
+                self.host_filter_editing = false;
+                self.host_filter_origin = None;
+            }
             _ => {}
         }
     }
@@ -1021,6 +1031,7 @@ impl App {
             }
             KeyCode::Char('/') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() && self.drilled_pool.is_none() => {
                 self.host_filter_editing = true;
+                self.host_filter_origin = Some(self.selected_host);
             }
             KeyCode::Char('n') if self.current_section() == Section::Hosts => {
                 self.host_filter.clear();
@@ -7935,6 +7946,21 @@ mod tests {
         app.handle_key(KeyCode::Enter);
         app.handle_key(KeyCode::Char('n'));
         assert!(app.host_filter.is_empty(), "opening Add Host clears the filter so the new host will be visible");
+    }
+
+    #[test]
+    fn esc_while_typing_a_filter_puts_the_selection_back_where_it_was() {
+        let mut app = filter_app();
+        app.selected_host = 0;
+        type_filter(&mut app, "nas");
+        assert_eq!(app.selected_host, 3, "the selection follows the filter while typing");
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.selected_host, 0, "cancelling restores the host that was active");
+        // A committed filter's Esc only clears the text: the user navigated on purpose.
+        type_filter(&mut app, "nas");
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.selected_host, 3);
     }
 
     #[test]

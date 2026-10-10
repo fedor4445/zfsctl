@@ -233,7 +233,16 @@ pub fn probe_host(runner: &dyn CommandRunner, detect_kind: bool) -> HostProbe {
             PoolProbe { name: pool.name, health: pool.health, capacity_percent: capacity, frag_percent: frag, errors: status.and_then(|s| s.errors), scan: status.map(|s| s.scan.clone()) }
         })
         .collect();
-    let kind = detect_kind.then(|| runner.run_unprivileged("sysctl", &["-n", "kern.vm_guest", "security.jail.jailed"]).ok().filter(crate::exec::CommandOutput::success).map_or(HostKind::Unknown, |o| host_kind_from_sysctl(&o.stdout)));
+    // An ssh-level failure (255) says nothing about the host's type: leave it undetected so the next probe asks again.
+    let kind = if detect_kind {
+        match runner.run_unprivileged("sysctl", &["-n", "kern.vm_guest", "security.jail.jailed"]) {
+            Ok(o) if o.status == 255 => None,
+            Ok(o) if o.success() => Some(host_kind_from_sysctl(&o.stdout)),
+            _ => Some(HostKind::Unknown),
+        }
+    } else {
+        None
+    };
     HostProbe::Reached { rtt_ms, pools, kind }
 }
 
@@ -503,6 +512,14 @@ mod tests {
         let HostProbe::Reached { kind, .. } = probe_host(&runner, false) else { panic!() };
         assert_eq!(kind, None);
         assert_eq!(runner.unprivileged.lock().unwrap().len(), 1, "not asked, not run");
+    }
+
+    #[test]
+    fn an_ssh_glitch_on_the_sysctl_leaves_the_type_undetected_so_it_is_asked_again() {
+        let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
+        runner.sysctl = out("", "ssh: connect to host 10.0.0.9 port 22: Connection reset", 255);
+        let HostProbe::Reached { kind, .. } = probe_host(&runner, true) else { panic!() };
+        assert_eq!(kind, None, "not Unknown: that would be cached for the whole session");
     }
 
     #[test]

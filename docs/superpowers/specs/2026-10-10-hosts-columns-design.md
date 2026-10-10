@@ -25,7 +25,7 @@ Non-goals (YAGNI): sorting or grouping, CPU/memory/load columns (sampled only fo
 | Tag | the configured tag, or empty | `config.toml` |
 | Used | the highest pool capacity on the host (`85%`), yellow from 80, red from 90 (the same thresholds as State), `-` with no probe | probe |
 | Pools | number of pools, `-` with no probe | probe |
-| Scrub | `running 34%` / `paused` if any pool is in that state (running first); else `never` if any pool never scrubbed; else the oldest last-scrub date (`Oct  8 2026`); `-` with no probe | probe |
+| Scrub | `running 34%` / `paused` if any pool is in that state (running first); else `never` if any pool never scrubbed; else the oldest last-scrub date (`Oct 8 2026`); `-` with no probe | probe |
 | Jobs | `failed/total` of the host's enabled jobs (`1/4`, failed part in the error colour when above 0), `-` when it has none | job list and history |
 | Rtt | as today | probe |
 
@@ -45,7 +45,7 @@ The Type word has its own colour, distinct from the health colours: `metal` in t
 
 ## Filter
 
-`/` on the Hosts table opens a one-line filter input in the table's bottom border. Typing narrows the list live: a host is shown when the text (case-insensitive) is a substring of its name, address, tag or type word. Enter keeps the filter and returns to navigating; Esc clears it. The table title shows `Hosts (filter: text — 3/12)` while a filter is set.
+`/` on the Hosts table opens a filter input shown in the table's title. Typing narrows the list live: a host is shown when the text (case-insensitive) is a substring of its name, address, tag or type word. Enter keeps the filter and returns to navigating; Esc clears it. The table title shows `Hosts (filter: text — 3/12)` while a filter is set.
 
 `hosts` and `selected_host` stay global indices (every section and the daemon address hosts by them), so the filter only chooses which rows are drawn: Up/Down move among visible hosts, and when the filter hides the selected host the selection moves to the first visible one. The selection therefore always names a visible host, so another section can never act on a host the user cannot see. A filter that matches nothing cannot be committed with Enter (the input stays open with a "no host matches" line; Esc clears it). Adding a host clears the filter.
 
