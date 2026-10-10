@@ -743,6 +743,25 @@ impl App {
         }
     }
 
+    /// A job save that newly arms something destructive (a forced receive, a retention that deletes snapshots or
+    /// backups) is shown as a confirmation first; any other save goes straight through.
+    fn confirm_job_save(&mut self, kind: &FormKind, action: PendingAction) -> Option<PendingAction> {
+        let MutationCall::SaveJob { job, .. } = &action.call else { return Some(action) };
+        let old = match kind {
+            FormKind::SnapshotJob { existing, .. } | FormKind::ReplicateJob { existing, .. } | FormKind::BackupJob { existing, .. } => existing.as_deref(),
+            _ => None,
+        };
+        // The snapshot list is only known for the host on screen.
+        let known = (self.snapshots_loaded && job.host == self.active_host_name()).then_some(self.snapshots.as_slice());
+        match job_save_prompt(old, job, known) {
+            Some(prompt) => {
+                self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+                None
+            }
+            None => Some(action),
+        }
+    }
+
     /// Clears data panes so a stale render from the previously-selected
     /// host is never left on screen looking current after switching hosts.
     fn clear_host_data(&mut self) {
@@ -1764,7 +1783,7 @@ impl App {
                         match build_snapshot_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
                                 action.host = self.selected_host;
-                                Some(action)
+                                self.confirm_job_save(&kind, action)
                             }
                             Err(msg) => {
                                 self.set_error(msg);
@@ -1776,7 +1795,7 @@ impl App {
                         match build_backup_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
                                 action.host = self.selected_host;
-                                Some(action)
+                                self.confirm_job_save(&kind, action)
                             }
                             Err(msg) => {
                                 self.set_error(msg);
@@ -1788,7 +1807,7 @@ impl App {
                         match build_replicate_job_action(&kind, &fields, &self.state_dir, chrono::Utc::now()) {
                             Ok(mut action) => {
                                 action.host = self.selected_host;
-                                Some(action)
+                                self.confirm_job_save(&kind, action)
                             }
                             Err(msg) => {
                                 self.set_error(msg);
@@ -3115,6 +3134,65 @@ fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> Option<Strin
             format!("zpool set {key}={value} {pool}"),
             "Enabling a pool feature cannot be undone and can make the pool unreadable by older systems. Set it?",
         ),
+        _ => None,
+    }
+}
+
+/// The confirmation for saving a job that, from its next run on, destroys data the previous version of the job
+/// (`old`, when editing) did not: a replication that now forces the receive, a snapshot job whose `keep` would
+/// destroy snapshots, a backup job whose retention would forget backups. `snapshots` is the list for the job's
+/// host when it is known; without it a snapshot job cannot say how many it would destroy.
+fn job_save_prompt(old: Option<&crate::jobs::Job>, new: &crate::jobs::Job, snapshots: Option<&[crate::zfs::snapshot::Snapshot]>) -> Option<String> {
+    use crate::jobs::{effective_prefix, KIND_BACKUP, KIND_REPLICATE, KIND_SNAPSHOT};
+    let dataset = new.dataset.as_deref().unwrap_or("?");
+    match new.kind.as_str() {
+        KIND_REPLICATE if new.force => {
+            let (dest_host, dest) = (new.dest_host.as_deref().unwrap_or("?"), new.dest_dataset.as_deref().unwrap_or("?"));
+            let changed = old.is_none_or(|o| !o.force || o.dest_host != new.dest_host || o.dest_dataset != new.dest_dataset);
+            changed.then(|| {
+                format!(
+                    "Replication {dataset} -> {dest_host}:{dest} with Force on.\nEvery run does `zfs receive -F` into {dest} on {dest_host}:\n  it rolls the destination back and destroys the snapshots and changes newer than the last common one.\n\nSave this job? (y/n)"
+                )
+            })
+        }
+        KIND_SNAPSHOT => {
+            let keep = new.keep?;
+            let prefix = effective_prefix(new);
+            let widened = old.is_none_or(|o| o.dataset != new.dataset || o.prefix != new.prefix || o.recursive != new.recursive);
+            if !widened && old.and_then(|o| o.keep).is_some_and(|k| k <= keep) {
+                return None;
+            }
+            let how_many = match snapshots {
+                None => "How many exist now is unknown here.".to_string(),
+                Some(list) => {
+                    let mut per_dataset: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+                    for snap in list {
+                        let in_scope = snap.dataset == dataset || (new.recursive && snap.dataset.starts_with(&format!("{dataset}/")));
+                        if in_scope && crate::daemon::snapshot::is_own(prefix, &snap.name) {
+                            *per_dataset.entry(snap.dataset.as_str()).or_default() += 1;
+                        }
+                    }
+                    // The run takes one more snapshot per dataset before it prunes.
+                    let doomed: usize = per_dataset.values().map(|c| (c + 1).saturating_sub(keep as usize)).sum();
+                    if doomed == 0 {
+                        return None;
+                    }
+                    format!("The next run would destroy {doomed} that exist now.")
+                }
+            };
+            Some(format!(
+                "Snapshot job for {dataset}, keep {keep}.\nEvery run destroys this job's own `{prefix}-<timestamp>` snapshots beyond the newest {keep}. {how_many}\n\nSave this job? (y/n)"
+            ))
+        }
+        KIND_BACKUP => {
+            let retention = new.retention.as_deref()?;
+            (old.is_none_or(|o| o.retention.as_deref() != Some(retention))).then(|| {
+                let repo = new.repository.as_deref().unwrap_or("?");
+                format!(
+                    "Backup job for {dataset}, keep {retention}.\nEvery successful run keeps only that much of this job's backups in {repo} (`restic forget --prune`); older backups are deleted for good.\n\nSave this job? (y/n)"
+                )
+            })
+        }
         _ => None,
     }
 }
@@ -10463,4 +10541,139 @@ mod tests {
         let prompt = submit_to_confirm(&mut app);
         assert!(prompt.contains("alice"), "{prompt}");
     }
+
+    // ---- job-save confirms ----
+
+    fn snap_job(keep: Option<u32>) -> crate::jobs::Job {
+        crate::jobs::Job {
+            id: "snap-local-tank-data".into(), host: "local".into(), kind: crate::jobs::KIND_SNAPSHOT.into(), pool: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true,
+            created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, force: false,
+            repository: None, password_file: None, retention: None,
+        }
+    }
+
+    fn repl_job(force: bool) -> crate::jobs::Job {
+        crate::jobs::Job { kind: crate::jobs::KIND_REPLICATE.into(), keep: None, dest_host: Some("fbsd16".into()), dest_dataset: Some("backup/data".into()), force, ..snap_job(None) }
+    }
+
+    fn backup_job(retention: Option<&str>) -> crate::jobs::Job {
+        crate::jobs::Job {
+            kind: crate::jobs::KIND_BACKUP.into(), keep: None, repository: Some("/mnt/usb/restic".into()), password_file: Some("/root/pw".into()), retention: retention.map(Into::into), ..snap_job(None)
+        }
+    }
+
+    fn snaps(dataset: &str, names: &[&str]) -> Vec<crate::zfs::snapshot::Snapshot> {
+        names.iter().map(|n| crate::zfs::snapshot::Snapshot { dataset: dataset.into(), name: (*n).into(), used: 0 }).collect()
+    }
+
+    #[test]
+    fn turning_force_on_for_a_replication_asks_and_names_the_destination() {
+        let prompt = job_save_prompt(Some(&repl_job(false)), &repl_job(true), None).expect("force newly on");
+        assert!(prompt.contains("zfs receive -F") && prompt.contains("fbsd16:backup/data") && prompt.ends_with("(y/n)"), "{prompt}");
+        assert!(job_save_prompt(None, &repl_job(true), None).is_some(), "a new forced job asks too");
+    }
+
+    #[test]
+    fn a_replication_save_that_does_not_arm_force_does_not_ask() {
+        assert_eq!(job_save_prompt(None, &repl_job(false), None), None);
+        assert_eq!(job_save_prompt(Some(&repl_job(true)), &repl_job(true), None), None, "force was already on and nothing changed");
+        assert_eq!(job_save_prompt(Some(&repl_job(true)), &repl_job(false), None), None, "turning force off is safe");
+        let mut moved = repl_job(true);
+        moved.dest_dataset = Some("other/data".into());
+        assert!(job_save_prompt(Some(&repl_job(true)), &moved, None).is_some(), "forcing into a different destination is new");
+    }
+
+    #[test]
+    fn a_snapshot_job_asks_when_keep_would_destroy_snapshots_and_says_how_many() {
+        let list = snaps("tank/data", &["hourly-20261009T010000Z", "hourly-20261009T020000Z", "hourly-20261009T030000Z", "hourly-20261009T040000Z"]);
+        let prompt = job_save_prompt(Some(&snap_job(Some(24))), &snap_job(Some(2)), Some(&list)).expect("4 exist, 1 more is taken, keep 2");
+        assert!(prompt.contains("would destroy 3") && prompt.contains("hourly-<timestamp>") && prompt.contains("keep 2"), "{prompt}");
+        assert!(job_save_prompt(None, &snap_job(Some(2)), Some(&list)).is_some(), "a new job on a dataset that has them asks too");
+    }
+
+    #[test]
+    fn a_snapshot_job_does_not_ask_when_nothing_would_be_destroyed_or_keep_is_not_lowered() {
+        let list = snaps("tank/data", &["hourly-20261009T010000Z", "manual-1", "daily-20261009T010000Z"]);
+        assert_eq!(job_save_prompt(None, &snap_job(Some(5)), Some(&list)), None, "within keep");
+        assert_eq!(job_save_prompt(None, &snap_job(Some(1)), Some(&snaps("tank/data", &[])) ), None, "a clean dataset");
+        assert_eq!(job_save_prompt(None, &snap_job(Some(1)), Some(&snaps("tank/other", &["hourly-20261009T010000Z", "hourly-20261009T020000Z"]))), None, "another dataset's snapshots");
+        let many = snaps("tank/data", &["hourly-20261009T010000Z", "hourly-20261009T020000Z", "hourly-20261009T030000Z"]);
+        assert_eq!(job_save_prompt(Some(&snap_job(Some(2))), &snap_job(Some(2)), Some(&many)), None, "unchanged keep");
+        assert_eq!(job_save_prompt(Some(&snap_job(Some(2))), &snap_job(Some(10)), Some(&many)), None, "raising keep");
+        assert_eq!(job_save_prompt(None, &snap_job(None), Some(&many)), None, "no keep: nothing is pruned");
+    }
+
+    #[test]
+    fn a_snapshot_job_asks_when_it_cannot_count_and_counts_a_recursive_tree() {
+        let prompt = job_save_prompt(None, &snap_job(Some(3)), None).expect("unknown count");
+        assert!(prompt.contains("unknown here"), "{prompt}");
+        let mut tree = snaps("tank/data", &["hourly-20261009T010000Z", "hourly-20261009T020000Z"]);
+        tree.extend(snaps("tank/data/sub", &["hourly-20261009T010000Z", "hourly-20261009T020000Z"]));
+        let mut recursive = snap_job(Some(1));
+        recursive.recursive = true;
+        assert!(job_save_prompt(None, &recursive, Some(&tree)).unwrap().contains("destroy 4"), "2 per dataset, +1 each, keep 1");
+        assert!(job_save_prompt(None, &snap_job(Some(1)), Some(&tree)).unwrap().contains("destroy 2"), "not recursive: only the dataset itself");
+        let mut widened = snap_job(Some(1));
+        widened.recursive = true;
+        assert!(job_save_prompt(Some(&snap_job(Some(1))), &widened, Some(&tree)).is_some(), "turning recursion on widens what is pruned");
+    }
+
+    #[test]
+    fn a_backup_job_asks_when_retention_is_set_or_changed_and_names_the_repository() {
+        let prompt = job_save_prompt(None, &backup_job(Some("7d 4w")), None).expect("new retention");
+        assert!(prompt.contains("keep 7d 4w") && prompt.contains("/mnt/usb/restic") && prompt.contains("restic forget --prune"), "{prompt}");
+        assert!(job_save_prompt(Some(&backup_job(None)), &backup_job(Some("3l")), None).is_some());
+        assert!(job_save_prompt(Some(&backup_job(Some("7d"))), &backup_job(Some("3d")), None).is_some());
+    }
+
+    #[test]
+    fn a_backup_job_does_not_ask_without_retention_or_when_it_is_unchanged() {
+        assert_eq!(job_save_prompt(None, &backup_job(None), None), None);
+        assert_eq!(job_save_prompt(Some(&backup_job(Some("7d"))), &backup_job(Some("7d")), None), None);
+        assert_eq!(job_save_prompt(Some(&backup_job(Some("7d"))), &backup_job(None), None), None, "removing retention is safe");
+    }
+
+    #[test]
+    fn a_scrub_job_never_asks() {
+        let scrub = crate::jobs::Job { kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), dataset: None, prefix: None, ..snap_job(None) };
+        assert_eq!(job_save_prompt(None, &scrub, None), None);
+    }
+
+
+    fn submit_backup_form(values: [&str; 8]) -> (App, Option<PendingAction>) {
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+        app.modal = Some(Modal::Form { title: "x".into(), fields: backup_fields(values), focused: 7, description: None, kind: backup_kind(None, vec![]) });
+        let out = app.handle_modal_key(KeyCode::Enter);
+        (app, out)
+    }
+
+    #[test]
+    fn saving_a_backup_form_with_retention_asks_first_and_saves_only_after_y_then_enter() {
+        let (mut app, out) = submit_backup_form(BACKUP_GOOD);
+        assert_eq!(out, None, "Enter must not save a retention that deletes backups");
+        let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("expected a confirmation, got {:?}", app.modal) };
+        assert!(prompt.contains("keep 7d 4w") && prompt.contains("/mnt/usb/restic"), "{prompt}");
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter alone does nothing");
+        assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
+        let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter saves");
+        assert!(matches!(action.call, MutationCall::SaveJob { .. }), "{:?}", action.call);
+    }
+
+    #[test]
+    fn declining_the_job_save_confirm_saves_nothing() {
+        let (mut app, _) = submit_backup_form(BACKUP_GOOD);
+        assert_eq!(app.handle_modal_key(KeyCode::Char('n')), None);
+        assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+        assert!(app.modal.is_none(), "declined: the form is gone, nothing runs");
+    }
+
+    #[test]
+    fn saving_a_backup_form_without_retention_saves_at_once() {
+        let mut values = BACKUP_GOOD;
+        values[5] = "";
+        let (app, out) = submit_backup_form(values);
+        assert!(matches!(out.map(|a| a.call), Some(MutationCall::SaveJob { .. })));
+        assert!(app.modal.is_none());
+    }
+
 }
