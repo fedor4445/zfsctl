@@ -109,3 +109,11 @@ Read-only: no new command on any host and no new sudoers entry (`zpool` list and
 - **Commands:** `notify-test` exit codes (none configured, one failing, all ok); `report` sends nothing.
 - **Daemon:** the monitor thread starts only with a channel configured, stops on the stop flag, picks up hosts added by a config reload, and a hung probe does not stall the tick.
 - **Live on the hub** (with the user's agreement to send mail): `zfsctl report` against fbsd16, t1, t2 and the hub; `notify-test` to the user's address through msmtp; a simulated problem (a throwaway host entry that cannot be reached) giving an alert after two probes and a recovery after it is removed; the report at a time set a few minutes ahead.
+
+## Live results (2026-10-10)
+
+- `zfsctl report` against the hub, fbsd16, t1 and t2: the table matched the Hosts screen; runs of a job deleted from `jobs.toml` showed as `?` (now `removed jobs`).
+- `zfsctl notify-test` through the hub's msmtp (`msmtp -a default -t`, Gmail account): `mail: ok`, twice; both mails arrived in the user's inbox (the first went to the sender's own address before the recipient was settled).
+- A foreground test daemon (throwaway state dir, `check_interval_minutes = 1`, a ghost host at an unreachable TEST-NET address): no mail after the first bad probe; the alert `[zfsctl] ghost: unreachable` after the second (about 80 s); after the ghost was pointed at a working VM, `[zfsctl] ghost: recovered after 2m` after two good probes; the daily report at its set time (`all 5 hosts ok`), exactly once; after a restart of the daemon no second report within the day (`notify.json` read back). The event log held the daemon starts, the alert and the recovery.
+- The hub's real config was restored byte for byte and every temporary file removed. The installed daemon was never touched.
+- Not tested live: a Telegram hook (only the hook environment is unit-tested), reminders after `remind_hours`, escalation from warning to critical, and a real hung host.
