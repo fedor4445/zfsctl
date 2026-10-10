@@ -4079,6 +4079,12 @@ fn about_text() -> String {
     )
 }
 
+/// The Help text, for the book's drift test.
+#[cfg(test)]
+pub(crate) fn help_text_for_book() -> String {
+    help_text()
+}
+
 fn help_text() -> String {
     "\
 Global

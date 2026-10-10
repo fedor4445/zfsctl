@@ -68,6 +68,12 @@ fn parse_args(args: &[String]) -> error::Result<Command> {
     }
 }
 
+/// `parse_args` for the book's drift test: does the program accept this command line?
+#[cfg(test)]
+fn parse_args_for_book(args: &[String]) -> std::result::Result<(), String> {
+    parse_args(args).map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn run() -> error::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = parse_args(&args)?;

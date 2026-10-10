@@ -92,7 +92,7 @@ If you would rather be told some other way, set a **hook** in `config.toml`; it 
 notify_command = "curl -s -d \"$ZFSCTL_MESSAGE\" ntfy.sh/my-zfs-alerts"
 ```
 
-The hook runs through `sh -c` with these environment variables: `ZFSCTL_KIND` (`health-alert`, `health-recovered`, `health-reminder`, `health-report`, or a job kind), `ZFSCTL_HOST`, `ZFSCTL_RESULT`, `ZFSCTL_MESSAGE` (the subject) and `ZFSCTL_BODY` (the full text, also on stdin). Nothing from a host's output is ever put on the command line, so a strange pool name cannot run as code. The hook is killed after 30 seconds. Telegram is a one-line `curl` to the Bot API in the same way; the hook is shown on the Alerts screen but edited in the file.
+The hook runs through `sh -c` with these environment variables: `ZFSCTL_KIND` (`health-alert`, `health-recovered`, `health-reminder`, `health-report`, or a job kind), `ZFSCTL_HOST`, `ZFSCTL_JOB`, `ZFSCTL_RESULT`, `ZFSCTL_MESSAGE` (the subject) and `ZFSCTL_BODY` (the full text, also on stdin). Nothing from a host's output is ever put on the command line, so a strange pool name cannot run as code. The hook is killed after 30 seconds. Telegram is a one-line `curl` to the Bot API in the same way; the hook is shown on the Alerts screen but edited in the file.
 
 > **Safety:** if only a hook is configured (no email), the monitor runs and uses it.
 

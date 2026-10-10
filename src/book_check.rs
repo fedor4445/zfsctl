@@ -138,3 +138,94 @@ fn the_book_has_the_title_and_the_standard_cover_sections() {
         assert!(readme.contains(want), "missing {want}");
     }
 }
+
+fn chapter(name: &str) -> String {
+    std::fs::read_to_string(book_dir().join(name)).unwrap()
+}
+
+/// Keys named in the first backticked cell of a Markdown table row, by section heading.
+fn key_rows(text: &str) -> Vec<(String, String)> {
+    let mut section = String::new();
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if let Some(h) = line.strip_prefix("## ") {
+            section = h.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("| `") {
+            if let Some((key, _)) = rest.split_once("` |") {
+                out.push((section.clone(), key.to_string()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_key_in_the_keys_reference_is_in_the_apps_help_and_every_help_key_is_in_the_book() {
+    let help = crate::ui::state::help_text_for_book();
+    let book = chapter("20-reference-keys.md");
+    let rows = key_rows(&book);
+    assert!(rows.len() > 40, "the keys reference lists the keys of every section ({} found)", rows.len());
+    for (section, key) in &rows {
+        let probe = key.split(" / ").next().unwrap();
+        assert!(help.contains(probe), "{section}: the book documents key `{key}` that the app's Help does not mention");
+    }
+    // Every key line of Help (two leading spaces, a key column, two spaces, a description) is in the book.
+    for line in help.lines().filter(|l| l.starts_with("  ") && !l.trim().is_empty()) {
+        let key = line.trim_start().split("  ").next().unwrap_or("").trim();
+        if key.is_empty() || key.len() > 24 {
+            continue;
+        }
+        assert!(rows.iter().any(|(_, k)| k.split(" / ").any(|part| part == key) || k == key), "Help documents `{key}` but the keys reference does not");
+    }
+}
+
+#[test]
+fn every_config_key_in_the_reference_is_a_real_field_and_every_field_is_listed() {
+    let text = chapter("21-reference-config.md");
+    let documented: Vec<String> = key_rows(&text).into_iter().map(|(_, k)| k).collect();
+    let fields = crate::config::documented_config_keys();
+    for key in &documented {
+        assert!(fields.contains(&key.as_str()), "the book documents config key `{key}` that does not exist");
+    }
+    for key in fields {
+        assert!(documented.iter().any(|d| d == key), "config key `{key}` is not in the reference");
+    }
+}
+
+#[test]
+fn every_command_form_in_the_reference_parses_and_every_form_is_documented() {
+    let text = chapter("22-reference-commands.md");
+    let headings: Vec<String> = text.lines().filter_map(|l| l.strip_prefix("### `")).filter_map(|r| r.strip_suffix('`')).map(str::to_string).collect();
+    for h in &headings {
+        assert!(h.starts_with("zfsctl"), "{h}");
+        let words: Vec<String> = h.split_whitespace().skip(1).map(|w| w.trim_matches(|c| c == '[' || c == ']').to_string()).collect();
+        // An upper-case word is a placeholder (`HOST`, `DIR`, `FEATURE`); give it a plausible value.
+        let with_placeholders: Vec<String> = words.iter().map(|w| if w.chars().all(|c| c.is_ascii_uppercase()) { "somevalue".to_string() } else { w.clone() }).collect();
+        assert!(crate::parse_args_for_book(&with_placeholders).is_ok(), "the book documents `{h}` but the program rejects it");
+    }
+    for want in ["zfsctl", "zfsctl daemon", "zfsctl print-sudoers HOST", "zfsctl check-host HOST", "zfsctl notify-test", "zfsctl report"] {
+        assert!(headings.iter().any(|h| h.starts_with(want)), "command `{want}` is missing from the reference");
+    }
+}
+
+#[test]
+fn every_privileged_command_the_program_runs_is_named_in_the_sudoers_part() {
+    let text = chapter("22-reference-commands.md");
+    for name in crate::exec::privilege::privileged_names() {
+        assert!(text.contains(&format!("`{name}`")), "privileged command `{name}` is not named in the commands reference");
+    }
+}
+
+#[test]
+fn every_glossary_term_is_defined_once_and_every_core_term_used_is_in_the_glossary() {
+    let glossary = chapter("23-glossary.md");
+    let terms: Vec<String> = glossary.lines().filter_map(|l| l.strip_prefix("**")).filter_map(|r| r.split_once("**")).map(|(t, _)| t.to_lowercase()).collect();
+    let mut sorted = terms.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), terms.len(), "a term is defined twice");
+    assert!(terms.len() >= 60, "the glossary defines about 80 terms ({} found)", terms.len());
+    for term in ["pool", "vdev", "dataset", "snapshot", "scrub", "resilver", "replication", "boot environment", "hub"] {
+        assert!(terms.iter().any(|t| t == term), "the glossary does not define '{term}'");
+    }
+}

@@ -81,6 +81,12 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "sudo", features: &[], kind: Kind::Unprivileged },
 ];
 
+/// The names of the commands that run through `sudo`, for the book's drift test.
+#[cfg(test)]
+pub(crate) fn privileged_names() -> Vec<&'static str> {
+    ENTRIES.iter().filter(|e| matches!(e.kind, Kind::Privileged { .. })).map(|e| e.name).collect()
+}
+
 pub fn lookup(name: &str) -> Option<&'static Entry> {
     ENTRIES.iter().find(|e| e.name == name)
 }

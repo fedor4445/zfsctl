@@ -45,7 +45,7 @@ The panel shows the tool's own message. Common ones:
 ## No mail arrives
 
 1. Run `zfsctl notify-test` as root on the hub. It prints one line per channel.
-2. `mail: msmtp exited 78` or similar: the mail command itself failed; run the same command by hand and read its error. Check `~/.msmtprc` of the user the daemon runs as (root).
+2. `mail: failed: exited with status 78` or similar: the mail command itself failed; run the same command by hand and read its error. Check `~/.msmtprc` of the user the daemon runs as (root).
 3. `mail: ok` but nothing arrives: look in spam; check the sender address (`Mail from`) is accepted by your provider.
 4. Nothing configured: the Alerts screen says `Monitor: off`.
 
