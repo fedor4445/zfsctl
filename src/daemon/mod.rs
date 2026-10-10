@@ -2,6 +2,7 @@
 
 pub mod cron;
 pub mod engine;
+pub mod health;
 pub mod heartbeat;
 pub mod history;
 pub mod notify;
