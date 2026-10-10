@@ -161,28 +161,25 @@ pub fn set_notify_section(text: &str, section: &str) -> std::result::Result<Stri
         return Err(BY_HAND.to_string());
     }
     let new_section = fix(section);
-    let result = match headers.first() {
-        Some(&start) => {
-            let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(i, _)| i);
-            let mut out: String = lines.iter().take(start).copied().collect();
-            out.push_str(&new_section);
-            if end < lines.len() {
-                out.push_str(&fix("\n"));
-                out.push_str(&lines.iter().skip(end).copied().collect::<String>());
-            }
-            out
+    let result = if let Some(&start) = headers.first() {
+        let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(i, _)| i);
+        let mut out: String = lines.iter().take(start).copied().collect();
+        out.push_str(&new_section);
+        if end < lines.len() {
+            out.push_str(&fix("\n"));
+            out.push_str(&lines.iter().skip(end).copied().collect::<String>());
         }
-        None => {
-            let mut out = text.to_string();
-            if !out.is_empty() {
-                if !out.ends_with('\n') {
-                    out.push_str(&fix("\n"));
-                }
+        out
+    } else {
+        let mut out = text.to_string();
+        if !out.is_empty() {
+            if !out.ends_with('\n') {
                 out.push_str(&fix("\n"));
             }
-            out.push_str(&new_section);
-            out
+            out.push_str(&fix("\n"));
         }
+        out.push_str(&new_section);
+        out
     };
     let want = toml::from_str::<Config>(section).map_err(|e| format!("the new [notify] section does not parse: {e}"))?.notify;
     let got = toml::from_str::<Config>(&result).map_err(|e| format!("config.toml would no longer parse: {e}"))?.notify;
