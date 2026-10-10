@@ -1,5 +1,6 @@
 pub mod local;
 pub mod privilege;
+pub mod sudoers;
 pub mod ssh;
 
 use crate::error::{AppError, Result};

@@ -34,6 +34,7 @@ impl Feature {
     }
 }
 
+#[derive(Debug)]
 pub enum Kind {
     /// Runs through `sudo -n`. With `pinned` empty any arguments are allowed; otherwise only exactly these
     /// argument lists, and `probe` is one extra argument that sudo must refuse (`check-host` uses it to
@@ -43,6 +44,7 @@ pub enum Kind {
     Unprivileged,
 }
 
+#[derive(Debug)]
 pub struct Entry {
     pub name: &'static str,
     /// The features that need it. Empty: a command only `print-sudoers` / `check-host` themselves run.
