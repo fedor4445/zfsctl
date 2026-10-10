@@ -216,6 +216,10 @@ pub struct App {
     pub host_tags: Vec<String>,
     /// Tags typed in the Add Host form, by lowercase host name, until the host is confirmed reachable.
     pub new_host_tags: HashMap<String, String>,
+    /// The Hosts filter text (empty = none) and whether it is being typed. Only the drawn rows and Up/Down use
+    /// it: `hosts` and `selected_host` stay global indices.
+    pub host_filter: String,
+    pub host_filter_editing: bool,
     /// The latest health probe of each host, by host name.
     pub host_probes: HashMap<String, HostProbeState>,
     /// When probing started: host `i` is first probed `i` seconds after it.
@@ -365,6 +369,8 @@ impl App {
             jobs_view: crate::ui::jobs::JobsView::default(),
             host_tags: vec![String::new(); hosts_for_addr.len()],
             new_host_tags: HashMap::new(),
+            host_filter: String::new(),
+            host_filter_editing: false,
             host_addresses: hosts_for_addr.iter().map(|n| if n == "local" { "local".to_string() } else { "-".to_string() }).collect(),
             host_probes: HashMap::new(),
             probe_epoch: Instant::now(),
@@ -595,6 +601,47 @@ impl App {
     /// there is no runner and no thread. The selection stays on the same job.
     pub fn set_host_addresses(&mut self, addresses: Vec<String>) {
         self.host_addresses = addresses;
+    }
+
+    /// Whether host `index` matches `needle` (case-insensitive substring of its name, address, tag or type word).
+    pub fn host_matches(&self, index: usize, needle: &str) -> bool {
+        let needle = needle.to_lowercase();
+        let Some(name) = self.hosts.get(index) else { return false };
+        let kind = self.host_probes.get(name).and_then(|s| s.kind.as_ref()).map_or("", |k| if matches!(k, crate::zfs::host_health::HostKind::Unknown) { "" } else { k.word() });
+        [name.as_str(), self.host_address(index), self.host_tag(index), kind].iter().any(|f| f.to_lowercase().contains(&needle))
+    }
+
+    /// Global indices of the hosts the filter lets through, in order (all of them when there is no filter).
+    pub fn visible_hosts(&self) -> Vec<usize> {
+        (0..self.hosts.len()).filter(|i| self.host_filter.is_empty() || self.host_matches(*i, &self.host_filter)).collect()
+    }
+
+    /// Keeps the selection on a visible host when the filter hides it (so no section can act on a host the user
+    /// cannot see). With no match at all the selection stays put: such a filter cannot be committed.
+    fn ensure_visible_selection(&mut self) {
+        if let Some(first) = self.visible_hosts().first().copied().filter(|_| !self.visible_hosts().contains(&self.selected_host)) {
+            self.selected_host = first;
+            self.clear_host_data();
+        }
+    }
+
+    fn handle_filter_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char(c) => {
+                self.host_filter.push(c);
+                self.ensure_visible_selection();
+            }
+            KeyCode::Backspace => {
+                self.host_filter.pop();
+                self.ensure_visible_selection();
+            }
+            KeyCode::Esc => {
+                self.host_filter.clear();
+                self.host_filter_editing = false;
+            }
+            KeyCode::Enter if self.host_filter.is_empty() || !self.visible_hosts().is_empty() => self.host_filter_editing = false,
+            _ => {}
+        }
     }
 
     pub fn set_host_tags(&mut self, tags: Vec<String>) {
@@ -837,6 +884,10 @@ impl App {
     // without changing which guard wins.
     #[allow(clippy::match_same_arms)]
     pub fn handle_key(&mut self, key: KeyCode) {
+        if self.host_filter_editing {
+            self.handle_filter_key(key);
+            return;
+        }
         match key {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => {
@@ -861,6 +912,9 @@ impl App {
             }
             KeyCode::Esc if self.current_section() == Section::Disks && !self.selected_disks.is_empty() => {
                 self.selected_disks.clear();
+            }
+            KeyCode::Esc if self.current_section() == Section::Hosts && !self.host_filter.is_empty() => {
+                self.host_filter.clear();
             }
             KeyCode::Esc => self.status_message = None,
             KeyCode::Enter if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
@@ -954,19 +1008,22 @@ impl App {
             KeyCode::Left if self.pane_focus == PaneFocus::Right => {
                 self.pane_focus = PaneFocus::Middle;
             }
-            KeyCode::Down if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
-                self.selected_host = (self.selected_host + 1) % self.hosts.len();
-                self.clear_host_data();
+            KeyCode::Down | KeyCode::Up if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
+                let visible = self.visible_hosts();
+                if !visible.is_empty() {
+                    let at = visible.iter().position(|i| *i == self.selected_host).unwrap_or(0);
+                    let next = if key == KeyCode::Down { (at + 1) % visible.len() } else { (at + visible.len() - 1) % visible.len() };
+                    if let Some(&host) = visible.get(next) {
+                        self.selected_host = host;
+                        self.clear_host_data();
+                    }
+                }
             }
-            KeyCode::Up if self.current_section() == Section::Hosts && self.drilled_pool.is_none() && !self.hosts.is_empty() => {
-                self.selected_host = if self.selected_host == 0 {
-                    self.hosts.len() - 1
-                } else {
-                    self.selected_host - 1
-                };
-                self.clear_host_data();
+            KeyCode::Char('/') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() && self.drilled_pool.is_none() => {
+                self.host_filter_editing = true;
             }
             KeyCode::Char('n') if self.current_section() == Section::Hosts => {
+                self.host_filter.clear();
                 self.modal = Some(Modal::Form {
                     title: "Add Host".to_string(),
                     fields: vec![
@@ -3815,7 +3872,8 @@ Global
 
 Hosts
   Up / Down        select the active host
-  n                add a new host (prompts for Name and SSH target)
+  /                filter the host list by name, address, tag or type (Enter keeps it, Esc clears it)
+  n                add a new host (prompts for Name, SSH target and an optional Tag)
 
 Pools
   Enter            drill into vdev/disk tree
@@ -7765,6 +7823,124 @@ mod tests {
         app.refresh_jobs();
         assert_eq!(app.host_jobs_counts("fbsd16"), (1, 2), "the disabled job counts nowhere");
         assert_eq!(app.host_jobs_counts("local"), (0, 0));
+    }
+
+    fn filter_app() -> App {
+        let mut app = in_section(Section::Hosts);
+        app.hosts = vec!["local".into(), "fbsd16".into(), "t1".into(), "nas".into()];
+        app.set_host_addresses(vec!["local".into(), "10.0.0.60".into(), "10.0.0.61".into(), "10.0.0.9".into()]);
+        app.set_host_tags(vec![String::new(), String::new(), String::new(), "Backup".into()]);
+        app.host_probes.insert("t1".into(), HostProbeState { kind: Some(crate::zfs::host_health::HostKind::Vm("bhyve".into())), ..HostProbeState::default() });
+        app
+    }
+
+    fn type_filter(app: &mut App, text: &str) {
+        app.handle_key(KeyCode::Char('/'));
+        for c in text.chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn slash_filters_live_by_name_address_tag_and_type_ignoring_case() {
+        let mut app = filter_app();
+        type_filter(&mut app, "back");
+        assert_eq!(app.visible_hosts(), vec![3], "tag, case-insensitive");
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        for c in "10.0.0.6".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_hosts(), vec![1, 2], "address");
+        for _ in 0..8 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        assert_eq!(app.visible_hosts().len(), 4, "an empty filter shows everything");
+        for c in "vm".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_hosts(), vec![2], "type word");
+        for _ in 0..2 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        for c in "FBSD".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(app.visible_hosts(), vec![1], "name");
+    }
+
+    #[test]
+    fn typing_in_the_filter_does_not_trigger_other_keys() {
+        let mut app = filter_app();
+        type_filter(&mut app, "qn");
+        assert!(!app.should_quit && app.modal.is_none(), "q and n are text while the filter is open");
+    }
+
+    #[test]
+    fn the_selection_moves_to_a_visible_host_when_the_filter_hides_it() {
+        let mut app = filter_app();
+        app.selected_host = 0;
+        type_filter(&mut app, "nas");
+        assert_eq!(app.selected_host, 3);
+    }
+
+    #[test]
+    fn up_and_down_move_among_visible_hosts_and_wrap() {
+        let mut app = filter_app();
+        type_filter(&mut app, "10.0.0.");
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.visible_hosts(), vec![1, 2, 3]);
+        assert_eq!(app.selected_host, 1);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_host, 2);
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_host, 1, "wraps within the visible hosts");
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.selected_host, 3);
+    }
+
+    #[test]
+    fn enter_with_no_match_keeps_the_input_open_and_esc_clears_everything() {
+        let mut app = filter_app();
+        app.selected_host = 2;
+        type_filter(&mut app, "zzz");
+        assert!(app.visible_hosts().is_empty());
+        assert_eq!(app.selected_host, 2, "no match: the selection stays where it was, on a host that exists");
+        app.handle_key(KeyCode::Enter);
+        assert!(app.host_filter_editing, "cannot commit a filter that matches nothing");
+        app.handle_key(KeyCode::Esc);
+        assert!(app.host_filter.is_empty() && !app.host_filter_editing);
+        assert_eq!(app.visible_hosts().len(), 4);
+    }
+
+    #[test]
+    fn esc_after_a_committed_filter_clears_it() {
+        let mut app = filter_app();
+        type_filter(&mut app, "nas");
+        app.handle_key(KeyCode::Enter);
+        assert!(!app.host_filter_editing && app.host_filter == "nas");
+        app.handle_key(KeyCode::Esc);
+        assert!(app.host_filter.is_empty());
+    }
+
+    #[test]
+    fn slash_outside_hosts_is_not_a_filter_and_add_host_clears_one() {
+        let mut app = in_section(Section::Pools);
+        app.handle_key(KeyCode::Char('/'));
+        assert!(!app.host_filter_editing);
+        let mut app = filter_app();
+        type_filter(&mut app, "nas");
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(app.host_filter.is_empty(), "opening Add Host clears the filter so the new host will be visible");
+    }
+
+    #[test]
+    fn help_documents_the_hosts_filter_key() {
+        let text = help_text();
+        assert!(text.contains("filter"), "{text}");
     }
 
     #[test]

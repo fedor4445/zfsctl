@@ -351,10 +351,10 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     let name_w = u16::try_from(longest + 2).unwrap_or(16).clamp(8, 16);
     let tag_w = u16::try_from(app.host_tags.iter().map(|t| t.chars().count()).max().unwrap_or(0)).unwrap_or(14).min(14);
     let cols = fit_host_columns(inner, name_w, tag_w);
-    let rows: Vec<Row> = app
-        .hosts
+    let visible = app.visible_hosts();
+    let rows: Vec<Row> = visible
         .iter()
-        .enumerate()
+        .filter_map(|&i| app.hosts.get(i).map(|name| (i, name)))
         .map(|(i, name)| {
             let assessment = app.host_assessment(i);
             let (marker_style, name_style, state_style) = match assessment.level {
@@ -434,12 +434,21 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     } else {
         area
     };
+    let title = if app.host_filter.is_empty() && !app.host_filter_editing {
+        "Hosts".to_string()
+    } else {
+        format!("Hosts (filter: {}{} — {}/{})", app.host_filter, if app.host_filter_editing { "_" } else { "" }, visible.len(), app.hosts.len())
+    };
     let table = Table::new(rows, widths)
         .header(Row::new(headers))
-        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title("Hosts"));
+        .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title));
     // The offset follows the selection, so the selected host stays on screen however many hosts there are.
-    let mut state = TableState::default().with_selected(Some(app.selected_host));
+    let mut state = TableState::default().with_selected(visible.iter().position(|i| *i == app.selected_host));
     f.render_stateful_widget(table, table_area, &mut state);
+    if visible.is_empty() && table_area.height > 3 {
+        let line = Rect { x: table_area.x + 1, y: table_area.y + 2, width: table_area.width.saturating_sub(2), height: 1 };
+        f.render_widget(Paragraph::new("no host matches").style(theme.dim()), line);
+    }
 }
 
 /// Name column width the Pools table protects before it spends space on
@@ -2406,6 +2415,20 @@ mod tests {
         for want in ["Name", "Address", "State", "172.16.10.60"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    #[test]
+    fn the_hosts_title_shows_the_filter_and_only_matching_rows_are_drawn() {
+        let mut app = hosts_app();
+        app.host_filter = "dead".into();
+        app.selected_host = 3;
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("deadbox") && !text.contains("fbsd16t1"), "{text}");
+        assert!(text.contains("filter: dead") && text.contains("1/4"), "{text}");
+        app.host_filter_editing = true;
+        assert!(render(&mut app, 120, 30).join("\n").contains("filter: dead_"), "a cursor while typing");
+        app.host_filter = "zzz".into();
+        assert!(render(&mut app, 120, 30).join("\n").contains("no host matches"));
     }
 
     #[test]
