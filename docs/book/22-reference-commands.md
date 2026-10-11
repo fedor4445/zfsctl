@@ -5,13 +5,17 @@
 - Every way to start zfsctl, with its options and exit codes.
 - Exactly which programs it may run as root on a managed host.
 
-zfsctl must be started as root (on the hub, or through `sudo`). The command forms below are checked by the book's tests against the program's own command-line parser.
+zfsctl must be started as root (on the hub, or through `sudo`), except for `--help`, which anyone can run. The command forms below are checked by the book's tests against the program's own command-line parser.
 
 ## Commands
 
 ### `zfsctl`
 
 Opens the terminal interface.
+
+### `zfsctl --help`
+
+Prints the usage of every command, the feature names `--with` and `--without` accept, the files zfsctl reads and writes, and the exit codes, then exits 0. `-h` does the same, and so does `--help` after any command (`zfsctl print-sudoers --help`). It is the only command that does not need root, so you can read it before you have set anything up.
 
 ### `zfsctl daemon`
 

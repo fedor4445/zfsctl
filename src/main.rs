@@ -7,6 +7,7 @@ mod config;
 mod daemon;
 mod error;
 mod exec;
+mod help;
 mod hosts;
 mod jobs;
 mod notify_cli;
@@ -31,9 +32,10 @@ enum Command {
     CheckHost { host: String, with: Vec<String>, without: Vec<String> },
     NotifyTest,
     Report { state_dir: PathBuf },
+    Help,
 }
 
-const USAGE: &str = "usage: zfsctl [daemon [--state-dir DIR] | print-sudoers HOST [--with FEATURE] [--without FEATURE] | check-host HOST [--with FEATURE] [--without FEATURE] | notify-test | report [--state-dir DIR]]";
+const USAGE: &str = "usage: zfsctl [daemon [--state-dir DIR] | print-sudoers HOST [--with FEATURE] [--without FEATURE] | check-host HOST [--with FEATURE] [--without FEATURE] | notify-test | report [--state-dir DIR] | --help] (see zfsctl --help)";
 
 /// `HOST [--with F]... [--without F]...` for the two admin commands.
 fn parse_host_flags(rest: &[String]) -> Option<(String, Vec<String>, Vec<String>)> {
@@ -56,6 +58,10 @@ fn parse_host_flags(rest: &[String]) -> Option<(String, Vec<String>, Vec<String>
 
 fn parse_args(args: &[String]) -> error::Result<Command> {
     let usage = || error::AppError::Config(USAGE.to_string());
+    // `--help` anywhere asks for the help, whatever else was typed.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Ok(Command::Help);
+    }
     match args {
         [] => Ok(Command::Tui),
         [cmd] if cmd == "daemon" => Ok(Command::Daemon { state_dir: PathBuf::from(daemon::engine::DEFAULT_STATE_DIR) }),
@@ -78,6 +84,11 @@ fn parse_args_for_book(args: &[String]) -> std::result::Result<(), String> {
 fn run() -> error::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = parse_args(&args)?;
+    // Before the root check: asking for help must work for anyone.
+    if command == Command::Help {
+        print!("{}", help::text());
+        return Ok(());
+    }
     check_root()?;
     let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
     if let Command::Daemon { state_dir } = command {
@@ -172,6 +183,13 @@ mod tests {
         assert_eq!(parse_args(&[]).unwrap(), Command::Tui);
         assert_eq!(parse_args(&args(&["daemon"])).unwrap(), Command::Daemon { state_dir: PathBuf::from("/var/db/zfsctl") });
         assert_eq!(parse_args(&args(&["daemon", "--state-dir", "/tmp/x"])).unwrap(), Command::Daemon { state_dir: PathBuf::from("/tmp/x") });
+    }
+
+    #[test]
+    fn help_is_asked_for_with_dash_dash_help_or_dash_h_anywhere_on_the_line() {
+        for ask in [&["--help"][..], &["-h"], &["daemon", "--help"], &["print-sudoers", "fbsd16", "--help"], &["bogus", "-h"], &["--help", "--state-dir"]] {
+            assert_eq!(parse_args(&args(ask)).unwrap(), Command::Help, "{ask:?}");
+        }
     }
 
     #[test]
