@@ -119,6 +119,58 @@ pub fn unlock_args(repo: &str, password_file: &str) -> Vec<String> {
     vec!["unlock".to_string(), r, p]
 }
 
+/// `restic cat config`: opens the repository (finding the program, the rclone remote, the password file, the
+/// password and the repository in one go) without locking it or writing a cache. What the preflight check runs.
+pub fn cat_config_args(repo: &str, password_file: &str) -> Vec<String> {
+    let [r, p] = repo_flags(repo, password_file);
+    vec!["cat".to_string(), r, p, "--no-cache".to_string(), "config".to_string()]
+}
+
+/// restic quotes the repository in many of its error messages; a message shown to the user never carries it.
+pub fn redact(text: &str, repo: &str) -> String {
+    if repo.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(repo, "<repository>")
+    }
+}
+
+/// What the preflight check found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Preflight {
+    Ok,
+    /// One plain sentence saying what is wrong and what to do.
+    Problem(String),
+}
+
+/// Turns the outcome of `cat_config_args` into a finding. restic 0.17+ exits 10 for "no repository" and 12 for
+/// "wrong password"; the texts are matched too, for older restic. Anything not recognised passes restic's own line
+/// through, masked: a wrong guess here must never hide a problem.
+pub fn classify_preflight(status: i32, stdout: &str, stderr: &str, repo: &str, host: &str, password_file: &str) -> Preflight {
+    if status == 0 {
+        return Preflight::Ok;
+    }
+    let lower = format!("{stderr}\n{stdout}").to_lowercase();
+    let has = |s: &str| lower.contains(s);
+    let remote = repo.strip_prefix("rclone:").and_then(|r| r.split(':').next()).unwrap_or("");
+    let problem = if has("sudo:") && (has("password is required") || has("not allowed") || has("command not found")) {
+        format!("restic is not installed on {host}, or its sudoers entry does not allow it (run `zfsctl print-sudoers {host}`)")
+    } else if has("didn't find section in config file") {
+        format!("rclone remote '{remote}' is not in root's rclone config on {host} (create it as root with `rclone config`)")
+    } else if has("executable file not found") && has("rclone") {
+        format!("rclone is not installed on {host}")
+    } else if has("resolving password failed") {
+        format!("no readable password file at {password_file} on {host}")
+    } else if status == 12 || has("wrong password") {
+        "the password file does not unlock this repository (wrong password)".to_string()
+    } else if status == 10 || has("is there a repository at the following location") {
+        "no repository at that address yet: create it once with `restic init`".to_string()
+    } else {
+        redact(&failure_text(None, stderr), repo)
+    };
+    Preflight::Problem(problem)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Summary {
     pub new: u64,
@@ -354,5 +406,64 @@ mod tests {
         for ok in ["rest:https://user@host:8000/repo", "rest:http://host:8000/", "sftp:backup@host:/srv/restic", "s3:https://s3.amazonaws.com/bucket/path", "rclone:b2:bucket", "/mnt/usb/restic"] {
             assert!(valid_repository(ok), "{ok}");
         }
+    }
+
+    #[test]
+    fn cat_config_args_are_flag_style_and_never_write_a_cache() {
+        assert_eq!(cat_config_args("/repo", "/pw"), vec!["cat", "--repo=/repo", "--password-file=/pw", "--no-cache", "config"]);
+    }
+
+    #[test]
+    fn redact_masks_the_repository_everywhere_and_leaves_other_text() {
+        assert_eq!(redact("open /mnt/usb/r: gone, at /mnt/usb/r", "/mnt/usb/r"), "open <repository>: gone, at <repository>");
+        assert_eq!(redact("anything", ""), "anything");
+    }
+
+    fn pre(status: i32, stderr: &str) -> Preflight {
+        classify_preflight(status, "", stderr, "rclone:t1:restic-tank", "fb", "/root/.restic-password")
+    }
+
+    fn problem(p: Preflight) -> String {
+        match p {
+            Preflight::Problem(m) => m,
+            Preflight::Ok => panic!("expected a problem"),
+        }
+    }
+
+    #[test]
+    fn a_zero_status_is_ok() {
+        assert_eq!(classify_preflight(0, "{\"id\":\"c8\"}", "", "/r", "fb", "/pw"), Preflight::Ok);
+    }
+
+    // The stderr fixtures below were recorded from restic 0.19.1 on the hub (2026-10-11).
+    #[test]
+    fn each_known_failure_gets_its_own_message_with_a_next_step() {
+        let m = problem(pre(12, "Fatal: wrong password or no key found"));
+        assert!(m.contains("does not unlock"), "{m}");
+        let m = problem(classify_preflight(10, "", "Fatal: repository does not exist: unable to open config file: stat /mnt/usb/restic/config: no such file or directory\nIs there a repository at the following location?\n/mnt/usb/restic", "/mnt/usb/restic", "fb", "/root/.restic-password"));
+        assert!(m.contains("restic init") && !m.contains("/mnt/usb/restic"), "{m}");
+        let m = problem(classify_preflight(10, "", "Fatal: repository does not exist: unable to open config file: <config/> does not exist\nIs there a repository at the following location?\nrclone:t1:x", "rclone:t1:x", "fb", "/pw"));
+        assert!(m.contains("restic init"), "{m}");
+        let m = problem(classify_preflight(1, "", "rclone: 2026/10/11 08:09:15 CRITICAL: Failed to create file system for \"nosuchremote:x\": didn't find section in config file (\"nosuchremote\")\nFatal: unable to open repository at rclone:nosuchremote:x: error talking HTTP to rclone: exit status 1", "rclone:nosuchremote:x", "fb", "/root/.restic-password"));
+        assert!(m.contains("rclone remote 'nosuchremote'") && m.contains("fb") && m.contains("rclone config"), "{m}");
+        let m = problem(pre(1, "Fatal: unable to open repository at rclone:t1:restic-tank: exec: \"rclone\": executable file not found in $PATH"));
+        assert!(m.contains("rclone is not installed on fb"), "{m}");
+        let m = problem(pre(1, "Fatal: Resolving password failed: Fatal: /root/.restic-password does not exist"));
+        assert!(m.contains("no readable password file at /root/.restic-password on fb"), "{m}");
+        let m = problem(pre(1, "sudo: a password is required"));
+        assert!(m.contains("print-sudoers") && m.contains("fb"), "{m}");
+    }
+
+    #[test]
+    fn an_unrecognised_failure_passes_restics_line_through_masked_and_on_one_line() {
+        let m = problem(classify_preflight(1, "", "Fatal: odd thing at rclone:t1:restic-tank/locks\nsecond line", "rclone:t1:restic-tank", "fb", "/pw"));
+        assert_eq!(m, "Fatal: odd thing at <repository>/locks second line");
+        let long = format!("Fatal: {}", "x".repeat(2000));
+        assert!(problem(pre(1, &long)).chars().count() < 600);
+    }
+
+    #[test]
+    fn an_empty_failure_still_says_something() {
+        assert_eq!(problem(pre(1, "")), "restic failed");
     }
 }
