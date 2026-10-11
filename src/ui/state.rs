@@ -1056,14 +1056,29 @@ impl App {
         self.acl_entries_for = None;
     }
 
-    // Arms are ordered by guard precedence, so identical bodies cannot be merged into one `|` arm
-    // without changing which guard wins.
-    #[allow(clippy::match_same_arms)]
+    /// Handles a key press. The match is cut into the `key_*` chunks below, tried in order: the first
+    /// chunk with an arm for the key (and a passing guard) handles it, exactly as one long `match` would.
     pub fn handle_key(&mut self, key: KeyCode) {
         if self.host_filter_editing {
             self.handle_filter_key(key);
             return;
         }
+        let _handled = self.key_global(key)
+            || self.key_navigation(key)
+            || self.key_pools(key)
+            || self.key_datasets(key)
+            || self.key_lists_and_snapshots(key)
+            || self.key_jobs(key)
+            || self.key_alerts_and_shares(key)
+            || self.key_bootenvs(key)
+            || self.key_disks(key);
+    }
+
+
+    /// Quit, help, about, the shell and the Esc ladder. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_global(&mut self, key: KeyCode) -> bool {
         match key {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => {
@@ -1093,6 +1108,16 @@ impl App {
                 self.host_filter.clear();
             }
             KeyCode::Esc => self.status_message = None,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Drilling into a pool, editing a property, Tab and the pane focus, and the Hosts section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_navigation(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Enter if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.pools_table.selected() {
                     if let Some(pool) = self.pools.get(i) {
@@ -1213,6 +1238,16 @@ impl App {
                     kind: FormKind::AddHost,
                 });
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Pools section: a drilled pool's vdevs, the property pane and the pool list. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_pools(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Down if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 move_table_selection(&mut self.vdevs_table, self.vdevs.len(), true);
             }
@@ -1229,7 +1264,7 @@ impl App {
                 if let Some(i) = self.vdevs_table.selected() {
                     if let Some(vdev) = self.vdevs.get(i) {
                         if crate::zfs::pool::is_leaf_disk(&vdev.name) {
-                            let Some(pool) = self.drilled_pool.clone() else { return };
+                            let Some(pool) = self.drilled_pool.clone() else { return true };
                             self.modal = Some(Modal::Form {
                                 title: format!("Replace disk '{}' in pool '{pool}'", vdev.name),
                                 fields: vec![FormField { label: "New device".to_string(), value: String::new() }],
@@ -1245,7 +1280,7 @@ impl App {
             }
             KeyCode::Char('a') if self.current_section() == Section::Pools => {
                 // Only meaningful while drilled into a pool; otherwise `a` does nothing here.
-                let Some(pool) = self.drilled_pool.clone() else { return };
+                let Some(pool) = self.drilled_pool.clone() else { return true };
                 self.modal = Some(Modal::Form {
                     title: format!("Add vdev to pool '{pool}'"),
                     fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3)".to_string(), value: String::new() }],
@@ -1328,6 +1363,16 @@ impl App {
                     kind: FormKind::CreatePool { host: self.selected_host },
                 });
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Datasets section: the Properties, Permissions and ACL tabs, then the dataset list. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_datasets(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Down if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => match self.dataset_detail_tab {
                 DatasetDetailTab::Properties => move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), true),
                 DatasetDetailTab::Permissions => move_table_selection(&mut self.dataset_permissions_table, self.dataset_permissions.len(), true),
@@ -1535,7 +1580,7 @@ impl App {
                 if let Some(name) = self.selected_dataset_name() {
                     if let Some(why) = self.recursive_destroy_refusal(&name) {
                         self.status_message = Some(why);
-                        return;
+                        return true;
                     }
                     let what = self.what_is_under(&name);
                     self.modal = Some(Modal::ConfirmTyped {
@@ -1551,7 +1596,7 @@ impl App {
                     if let Some(ds) = self.datasets.get(i) {
                         if !ds.name.contains('/') {
                             self.status_message = Some(pool_root_message(&ds.name));
-                            return;
+                            return true;
                         }
                         let under = self.has_anything_under(&ds.name);
                         let warning = if under { format!("\nIt has {}, so zfs will refuse; press Esc, then D, to destroy them too.", self.what_is_under(&ds.name)) } else { String::new() };
@@ -1584,7 +1629,7 @@ impl App {
             KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 // Only act (or explain) when a dataset row is selected; with no
                 // selection the key is not advertised and must be inert.
-                let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return; };
+                let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return true; };
                 if !self.shares_loaded {
                     self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
                 } else if self.nfs_available == Some(false) {
@@ -1603,7 +1648,7 @@ impl App {
                 }
             }
             KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
-                let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return; };
+                let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return true; };
                 if !self.shares_loaded {
                     self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
                 } else if self.samba_available == Some(false) {
@@ -1618,6 +1663,16 @@ impl App {
                     }
                 }
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Snapshots section, and Up/Down in the Disks, Shares and Boot Envs lists. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_lists_and_snapshots(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Down if self.current_section() == Section::Snapshots => {
                 move_table_selection(&mut self.snapshots_table, self.snapshots.len(), true);
             }
@@ -1676,6 +1731,16 @@ impl App {
             KeyCode::Up if self.current_section() == Section::BootEnvs => {
                 move_table_selection(&mut self.bootenvs_table, self.bootenvs.len(), false);
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Jobs section (and the `J` job shortcuts of Pools and Datasets). Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_jobs(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Char('J') if self.current_section() == Section::Pools && self.drilled_pool.is_none() && self.pane_focus == PaneFocus::Middle => {
                 match self.selected_pool_name() {
                     Some(pool) => self.modal = Some(self.job_form(None, &pool)),
@@ -1729,7 +1794,7 @@ impl App {
                     if let Some(other) = enable.then(|| crate::jobs::clashing_job(&self.jobs_view.jobs, &as_enabled)).flatten() {
                         let why = crate::jobs::clash_reason(other, &as_enabled).unwrap_or_default();
                         self.set_error(format!("Cannot enable '{}': it clashes with enabled job '{}': {why}", job.id, other.id));
-                        return;
+                        return true;
                     }
                     self.status_message = Some(format!("{} job '{}'…", if enable { "Enabling" } else { "Disabling" }, job.id));
                     self.pending_mutations.push(PendingAction {
@@ -1746,6 +1811,16 @@ impl App {
                     self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Jobs, call } });
                 }
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Alerts section, Up/Down in the Jobs list, and the Shares section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_alerts_and_shares(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Char('e') if self.current_section() == Section::Alerts && self.modal.is_none() && self.picker.is_none() => {
                 if let Some(form) = self.alerts_form() {
                     self.modal = Some(form);
@@ -1794,6 +1869,16 @@ impl App {
                 }
             }
             // A change to a boot environment is still running: do nothing else to the section until it has finished.
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Boot Envs section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_bootenvs(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Char('n' | 'a' | 't' | 'T' | 'R' | 'm' | 'u' | 'd' | 'D') if self.current_section() == Section::BootEnvs && self.bootenv_busy_name().is_some() => {
                 let name = self.bootenv_busy_name().unwrap_or_default().to_string();
                 self.status_message = Some(format!("Still working on '{name}'… wait for it to finish"));
@@ -1812,25 +1897,25 @@ impl App {
                 });
             }
             KeyCode::Char('a') if self.current_section() == Section::BootEnvs => {
-                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate()).map(|b| b.name.clone()) else { return };
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate()).map(|b| b.name.clone()) else { return true };
                 let prompt = format!("Make '{name}' the boot environment for every future boot? (y/n)");
                 let call = MutationCall::ActivateBootEnv { name, temporary: false };
                 self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
             }
             KeyCode::Char('t') if self.current_section() == Section::BootEnvs => {
-                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return };
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_activate_temporarily()).map(|b| b.name.clone()) else { return true };
                 let prompt = format!("Boot '{name}' on the NEXT boot only? Later boots go back to the usual boot environment. (y/n)");
                 let call = MutationCall::ActivateBootEnv { name, temporary: true };
                 self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call } });
             }
             KeyCode::Char('T') if self.current_section() == Section::BootEnvs => {
-                let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return };
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_clear_temporary()).map(|b| b.name.clone()) else { return true };
                 self.status_message = Some(format!("Clearing the next-boot activation of '{name}'…"));
                 let call = MutationCall::ClearTemporaryBootEnv { name };
                 self.queue_bootenv_change(call);
             }
             KeyCode::Char('R') if self.current_section() == Section::BootEnvs => {
-                let Some(from) = self.selected_bootenv().map(|b| b.name.clone()) else { return };
+                let Some(from) = self.selected_bootenv().map(|b| b.name.clone()) else { return true };
                 let existing: Vec<String> = self.bootenvs.iter().map(|b| b.name.clone()).collect();
                 self.modal = Some(Modal::Form {
                     title: format!("Rename boot environment '{from}'"),
@@ -1841,23 +1926,23 @@ impl App {
                 });
             }
             KeyCode::Char('m') if self.current_section() == Section::BootEnvs => {
-                let Some(name) = self.selected_bootenv().filter(|b| b.can_mount()).map(|b| b.name.clone()) else { return };
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_mount()).map(|b| b.name.clone()) else { return true };
                 self.status_message = Some(format!("Mounting '{name}'…"));
                 let call = MutationCall::MountBootEnv { name };
                 self.queue_bootenv_change(call);
             }
             KeyCode::Char('u') if self.current_section() == Section::BootEnvs => {
-                let Some(name) = self.selected_bootenv().filter(|b| b.can_unmount()).map(|b| b.name.clone()) else { return };
+                let Some(name) = self.selected_bootenv().filter(|b| b.can_unmount()).map(|b| b.name.clone()) else { return true };
                 self.status_message = Some(format!("Unmounting '{name}'…"));
                 let call = MutationCall::UnmountBootEnv { name };
                 self.queue_bootenv_change(call);
             }
             KeyCode::Char(key @ ('d' | 'D')) if self.current_section() == Section::BootEnvs => {
-                let Some(be) = self.selected_bootenv() else { return };
+                let Some(be) = self.selected_bootenv() else { return true };
                 let name = be.name.clone();
                 if !be.can_destroy() {
                     self.status_message = Some(format!("'{name}' cannot be destroyed: it is running, set for the next boot, or marked temporary (T clears that)"));
-                    return;
+                    return true;
                 }
                 let origin = key == 'D';
                 let also = if origin { " and its origin snapshot" } else { "" };
@@ -1868,6 +1953,16 @@ impl App {
                     action: PendingAction { host: self.selected_host, section: Section::BootEnvs, call: MutationCall::DestroyBootEnv { name, origin } },
                 });
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Disks section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
+    /// chunk still wins over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_disks(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Char(' ') if self.current_section() == Section::Disks => {
                 if let Some(i) = self.disks_table.selected() {
                     if let Some(disk) = self.disks.get(i) {
@@ -1918,8 +2013,9 @@ impl App {
             KeyCode::Char('a') if self.current_section() == Section::Disks => {
                 self.status_message = Some("select at least one disk with Space first".to_string());
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     /// One identity line per selected disk (by name lookup in
