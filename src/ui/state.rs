@@ -1065,7 +1065,8 @@ impl App {
         let _handled = self.key_global(key)
             || self.key_navigation(key)
             || self.key_pools(key)
-            || self.key_datasets(key)
+            || self.key_dataset_detail(key)
+            || self.key_dataset_list(key)
             || self.key_lists_and_snapshots(key)
             || self.key_jobs(key)
             || self.key_alerts_and_shares(key)
@@ -1074,8 +1075,9 @@ impl App {
     }
 
 
-    /// Quit, help, about, the shell and the Esc ladder. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// Quit, help, about, the shell and the Esc ladder.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_global(&mut self, key: KeyCode) -> bool {
         match key {
@@ -1112,8 +1114,9 @@ impl App {
         true
     }
 
-    /// Drilling into a pool, editing a property, Tab and the pane focus, and the Hosts section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// Drilling into a pool, editing a property, Tab and the pane focus, and the Hosts section.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_navigation(&mut self, key: KeyCode) -> bool {
         match key {
@@ -1242,8 +1245,9 @@ impl App {
         true
     }
 
-    /// The Pools section: a drilled pool's vdevs, the property pane and the pool list. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// The Pools section: a drilled pool's vdevs, the property pane and the pool list.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_pools(&mut self, key: KeyCode) -> bool {
         match key {
@@ -1367,10 +1371,11 @@ impl App {
         true
     }
 
-    /// The Datasets section: the Properties, Permissions and ACL tabs, then the dataset list. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// The Datasets section's right pane: the Properties, Permissions and ACL tabs.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
-    fn key_datasets(&mut self, key: KeyCode) -> bool {
+    fn key_dataset_detail(&mut self, key: KeyCode) -> bool {
         match key {
             KeyCode::Down if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Right => match self.dataset_detail_tab {
                 DatasetDetailTab::Properties => move_table_selection(&mut self.dataset_properties_table, self.dataset_properties.len(), true),
@@ -1542,6 +1547,17 @@ impl App {
                     }
                 }
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Datasets section's list: Up/Down, and the keys for the selected dataset.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
+    #[allow(clippy::match_same_arms)]
+    fn key_dataset_list(&mut self, key: KeyCode) -> bool {
+        match key {
             KeyCode::Down if self.current_section() == Section::Datasets => {
                 move_table_selection(&mut self.datasets_table, self.datasets.len(), true);
                 self.dataset_properties.clear();
@@ -1667,8 +1683,9 @@ impl App {
         true
     }
 
-    /// The Snapshots section, and Up/Down in the Disks, Shares and Boot Envs lists. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// The Snapshots section, and Up/Down in the Disks, Shares and Boot Envs lists.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_lists_and_snapshots(&mut self, key: KeyCode) -> bool {
         match key {
@@ -1735,8 +1752,9 @@ impl App {
         true
     }
 
-    /// The Jobs section (and the `J` job shortcuts of Pools and Datasets). Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// The Jobs section (and the `J` job shortcuts of Pools and Datasets).
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_jobs(&mut self, key: KeyCode) -> bool {
         match key {
@@ -1815,8 +1833,9 @@ impl App {
         true
     }
 
-    /// The Alerts section, Up/Down in the Jobs list, and the Shares section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// The Alerts section, Up/Down in the Jobs list, and the Shares section.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_alerts_and_shares(&mut self, key: KeyCode) -> bool {
         match key {
@@ -1873,8 +1892,9 @@ impl App {
         true
     }
 
-    /// The Boot Envs section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// The Boot Envs section.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_bootenvs(&mut self, key: KeyCode) -> bool {
         match key {
@@ -1957,8 +1977,9 @@ impl App {
         true
     }
 
-    /// The Disks section. Part of `handle_key`: the arms keep their original order, so an arm in an earlier
-    /// chunk still wins over a later one. Returns whether the key was handled.
+    /// The Disks section.
+    /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
+    /// over a later one. Returns whether the key was handled.
     #[allow(clippy::match_same_arms)]
     fn key_disks(&mut self, key: KeyCode) -> bool {
         match key {
