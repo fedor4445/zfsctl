@@ -1,0 +1,10 @@
+┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — ? ('r' refresh, Ente┐
+│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
+│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Disks                 ││                                                 ││                                 │
+│Shares                ││                                                 ││                                 │
+│Boot Envs             ││                                                 ││                                 │
+└──────────────────────┘└─────────────────────────────────────────────────┘└─────────────────────────────────┘
+↑↓ Move  → Properties  n New pool  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

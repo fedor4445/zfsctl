@@ -1,0 +1,40 @@
+┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — scratch ('r' refresh┐
+│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
+│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Disks                 ││                                                 ││                                 │
+│Shares                ││                                                 ││                                 │
+│Boot Envs             ││                                                 ││                                 │
+│Jobs                  ││                                                 ││                                 │
+│Alerts                ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      ││                                                 ││                                 │
+│                      │└─────────────────────────────────────────────────┘└─────────────────────────────────┘
+│                      │┌Metrics — scratch───────────────────────────────────────────────────────────────────┐
+│                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Health  ● ONLINE               │
+│                      ││0 ops  lat -               0 ops  lat -              Used    42%  102M / 240M       │
+│                      ││                                                     Vdevs      1  (1 mirror)       │
+│                      ││                                                     Disks      2  (2 data)         │
+│                      ││                                                     Datasets   2 filesystems       │
+│                      ││                                                     Snapshots  3                   │
+│                      ││                                                     Compress   on 1.00x   Trim on  │
+│                      ││                                                     Frag    40%   Dedup 1.00x      │
+│                      ││                                                     Errors  R0 W0 C0               │
+│                      ││                                                     Scrub   Oct  8 19:48:07 2026   │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Vdevs  → Properties  s Scrub  J Schedule  R Resilver  d Destroy  n New pool  ? Help  q Quit

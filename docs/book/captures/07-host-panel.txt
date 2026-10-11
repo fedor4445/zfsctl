@@ -1,0 +1,36 @@
+┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
+│Hosts                 ││Name       Address            State                               Type   Used  Pools│
+│Pools                 ││● local    local              ok                                  vm     42%   3    │
+│Datasets              ││● fbsd16   172.16.10.60       ok                                  vm     55%   1    │
+│Snapshots             ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
+│Disks                 ││● fbsd16t2 172.16.10.62       ok                                  vm     72%   2    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Alerts                ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Metrics — host fbsd16 (all pools)───────────────────────────────────────────────────┐
+│                      ││I/O     read 0B/s  write 591K/s            ZFS     2.4.99-1149-FreeBSD.g1f380a4f3   │
+│                      ││OS      FreeBSD 16.0-CURRENT               Pools   1 (all ONLINE)                   │
+│                      ││Up      4h 18m   rtt 214ms                 Space   55%  4.2G / 7.5G                 │
+│                      ││Load    0.46 0.26 0.19                     ARC     60.1M / 6.9G  hit 99.6%          │
+│                      ││CPU     4 cores  6%                        Status  all pools are healthy            │
+│                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
+│                      ││Memory  7.9G  free 6.5G  wired 957M                                                 │
+│                      ││Swap    0B / 2.0G                                                                   │
+│                      ││zroot         55% frag 22% ONLINE   scrub never                                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit

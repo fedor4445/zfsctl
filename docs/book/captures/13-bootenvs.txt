@@ -1,0 +1,24 @@
+┌zfsctl────────────────┐┌Boot Environments — local ('r' to refresh)──────────────────────────────────────────┐
+│Hosts                 ││Name                                  Active       Space    Mountpoint              │
+│Pools                 ││default                               Now+Reboot   5.28G    /                       │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Alerts                ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  R Rename  n New  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

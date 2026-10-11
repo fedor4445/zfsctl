@@ -2,6 +2,21 @@ use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Every key a user can write in `config.toml` (`[[hosts]]`, `[ui]`, `[daemon]`, `[notify]`) and in `jobs.toml`
+/// (`[[jobs]]`), as written in TOML. The book's reference chapter is checked against this list, and
+/// `documented_keys_match_the_serialised_fields` checks the list against the structs themselves.
+#[cfg(test)]
+pub(crate) fn documented_config_keys() -> Vec<&'static str> {
+    vec![
+        "name", "ssh_target", "tag",
+        "theme", "auto_refresh_secs",
+        "notify_command",
+        "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
+        "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "force",
+        "repository", "password_file", "retention", "schedule", "catch_up", "enabled", "created_at",
+    ]
+}
+
 pub const DEFAULT_CONFIG_PATH: &str = "/usr/local/etc/zfsctl/config.toml";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -474,6 +489,37 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn documented_keys_match_the_serialised_fields() {
+        let host = HostConfig { name: "n".into(), ssh_target: Some("u@h".into()), tag: Some("t".into()) };
+        let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
+        let daemon = DaemonConfig { notify_command: Some("true".into()) };
+        let notify = NotifyConfig {
+            mail_to: Some("a@b".into()),
+            mail_command: Some("c".into()),
+            mail_from: Some("f@g".into()),
+            check_interval_minutes: Some(5),
+            report_time: Some("07:00".into()),
+            remind_hours: Some(6),
+        };
+        let job = crate::jobs::Job {
+            id: "i".into(), host: "local".into(), kind: "backup".into(), pool: Some("p".into()), dataset: Some("d".into()), recursive: true,
+            prefix: Some("x".into()), keep: Some(1), dest_host: Some("h".into()), dest_dataset: Some("d".into()), dest_dir: Some("/d".into()),
+            force: true, repository: Some("r".into()), password_file: Some("/p".into()), retention: Some("7d".into()), schedule: "* * * * *".into(),
+            catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
+        };
+        let mut found: Vec<String> = Vec::new();
+        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&job).unwrap()] {
+            found.extend(value.as_table().unwrap().keys().cloned());
+        }
+        found.sort();
+        found.dedup();
+        let mut listed: Vec<String> = documented_config_keys().into_iter().map(String::from).collect();
+        listed.sort();
+        listed.dedup();
+        assert_eq!(found, listed, "documented_config_keys() must list exactly the fields the structs serialise");
+    }
+
     use super::*;
 
     #[test]

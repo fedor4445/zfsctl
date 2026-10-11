@@ -1,0 +1,18 @@
+# zfsctl sudoers entry for host fbsd16t1, generated 2026-10-10
+# features: core, acl, disks, bootenvs, shares, samba
+# zfs, bectl are as powerful as root: grant them only to hosts you trust zfsctl with.
+# Install as /usr/local/etc/sudoers.d/zfsctl (owner root, mode 0440) after checking it:
+#   visudo -c -f /usr/local/etc/sudoers.d/zfsctl
+# These run without sudo (needed only if the ssh key is locked to a forced command): getent, uname, date, hostname, sysctl, swapinfo, iostat, showmount
+fbsd ALL=(root) NOPASSWD: \
+    /sbin/zpool, \
+    /sbin/zfs, \
+    /bin/getfacl, \
+    /bin/setfacl, \
+    /sbin/geom, \
+    /sbin/bectl, \
+    /usr/sbin/service, \
+    /usr/local/bin/smbpasswd, \
+    /usr/local/bin/smbstatus -S, \
+    /bin/cat /usr/local/etc/smb4.conf, \
+    /usr/bin/tee /usr/local/etc/smb4.conf

@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Alerts                ││                                                                                    │
+│                     ┌New scrub job───────────────────────────────────────────────────┐                     │
+│                     │> Host: local                                                   │                     │
+│                     │  Pool:                                                         │                     │
+│                     │  Schedule: 0 3 * * 0                                           │                     │
+│                     │  Catch up (y/n): y                                             │─────────────────────┘
+│                     │                                                                │─────────────────────┐
+│                     │Weekly, Sunday 03:00                                            │                     │
+│                     │Next: Sun 2026-10-11 03:00, Sun 2026-10-18 03:00, Sun 2026-10-25│                     │
+│                     │03:00                                                           │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel

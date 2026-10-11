@@ -1,0 +1,34 @@
+┌zfsctl────────────────┐┌Alerts — daemon running (pid 98986)───────────────────────────────────────────────────────────┐
+│Hosts                 ││Settings (config.toml)                                                                        │
+│Pools                 ││Email to       you@example.com                                                             │
+│Datasets              ││Mail command   msmtp -a default -t                                                            │
+│Snapshots             ││Mail from      zfsctl@fb   (default)                                                          │
+│Disks                 ││Check every    5 minutes   (default)                                                          │
+│Shares                ││Daily report   07:00   (default)                                                              │
+│Boot Envs             ││Remind every   6 hours   (default)                                                            │
+│Jobs                  ││Hook command   (not set)   (edit in config.toml)                                              │
+│Alerts                ││                                                                                              │
+│                      ││Monitor on (every 5 min, report at 07:00)                                                     │
+│                      ││Last report sent 2026-10-10                                                                   │
+│                      ││                                                                                              │
+│                      ││Recent events                                                                                 │
+│                      ││10-10 15:21  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-10 15:04  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-10 14:51  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-10 14:11  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+│                      ││                                                                                              │
+└──────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────┘
+e Edit settings  t Send test  p Preview report  ↑↓ Scroll  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

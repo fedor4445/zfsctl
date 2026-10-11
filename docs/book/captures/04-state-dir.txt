@@ -1,0 +1,9 @@
+total 144
+drwx------  2 root wheel     2 Oct  9 22:07 cancel
+-rw-------  1 root wheel   104 Oct 10 15:36 daemon.json
+-rw-r--r--  1 root wheel   428 Oct 10 15:21 health-events.jsonl
+-rw-------  1 root wheel 54844 Oct  9 22:35 history.jsonl
+-rw-------  1 root wheel   179 Oct 10 10:32 jobs.toml
+-rw-r--r--  1 root wheel    29 Oct 10 14:11 notify.json
+drwx------  2 root wheel     2 Oct  9 22:32 progress
+-rw-------  1 root wheel     2 Oct  7 20:52 replication.json

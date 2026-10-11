@@ -1,0 +1,32 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares               ┌New replication job─────────────────────────────────────────────┐                     │
+│Boot Envs            │Sends the newest <prefix>-<timestamp> snapshot, incrementally.  │                     │
+│Jobs                 │The destination is received unmounted and rolled back only if   │                     │
+│Alerts               │Force is y.                                                     │                     │
+│                     │                                                                │                     │
+│                     │> Source host: local                                            │                     │
+│                     │  Source dataset:                                               │                     │
+│                     │  Prefix (snapshots to send): auto                              │                     │
+│                     │  Destination host (or file):                                   │                     │
+│                     │  Destination dataset (or directory):                           │─────────────────────┘
+│                     │  Force: roll back the destination (y/n): n                     │─────────────────────┐
+│                     │  Schedule: 30 * * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Sat 2026-10-10 17:30, Sat 2026-10-10 18:30, Sat 2026-10-10│                     │
+│                     │19:30                                                           │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel

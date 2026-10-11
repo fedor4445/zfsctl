@@ -1,0 +1,16 @@
+┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Permissions — scratch/data ('r' refresh, n/s/c gr┐
+│Hosts                 ││Name                           Used           Avail          Kind        ││Target           Scope           Permissions     │
+│Pools                 ││scratch                        106639360      19189760       Filesystem  ││                                                 │
+│Datasets              ││scratch/data                   105250816      19189760       Filesystem  ││                                                 │
+│Snapshots             ││tpool                          4196505216     5628389760     Filesystem  ││                                                 │
+│Disks                 ││zroot                          11325603840    32899694592    Filesystem  ││                                                 │
+│Shares                ││zroot/ROOT                     5673803776     32899694592    Filesystem  ││                                                 │
+│Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+│Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
+│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
+│                      ││                                                                           Data    100M   Snaps 200K                        │
+│                      ││                                                                           Kids    0B   Refres 0B                           │
+│                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+n Grant  s Grant set  c Create-time  [ ] Tabs  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

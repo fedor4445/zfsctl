@@ -1,0 +1,10 @@
+┌zfsctl────────────────┐┌Hosts (filter: t1_ — 1/4)───────────────────────────────────────────────────────────┐
+│Hosts                 ││Name       Address            State                               Type   Used  Pools│
+│Pools                 ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Keep filter  Esc Clear

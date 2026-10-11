@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod book_check;
 mod restic;
 mod acl;
 mod config;
@@ -64,6 +66,12 @@ fn parse_args(args: &[String]) -> error::Result<Command> {
         [cmd, flag, dir] if cmd == "report" && flag == "--state-dir" => Ok(Command::Report { state_dir: PathBuf::from(dir) }),
         _ => Err(usage()),
     }
+}
+
+/// `parse_args` for the book's drift test: does the program accept this command line?
+#[cfg(test)]
+fn parse_args_for_book(args: &[String]) -> std::result::Result<(), String> {
+    parse_args(args).map(|_| ()).map_err(|e| e.to_string())
 }
 
 fn run() -> error::Result<()> {
