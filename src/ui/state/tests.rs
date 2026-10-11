@@ -1,4 +1,7 @@
 use super::*;
+// The form builders and field parsers these tests exercise live in the `forms` module.
+#[allow(clippy::wildcard_imports)]
+use super::forms::*;
 
 fn smb(dataset: &str) -> crate::zfs::share::Share {
     crate::zfs::share::Share::Smb {
