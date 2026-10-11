@@ -11,7 +11,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("zfsctl check-host HOST [--with FEATURE] [--without FEATURE]", "Check that a host's sudo rules allow exactly what zfsctl needs: one line per program (ok, MISSING or TOO BROAD)."),
     ("zfsctl notify-test", "Send a short test message through every configured channel (mail and hook). Sends real mail."),
     ("zfsctl report [--state-dir DIR]", "Print the daily report as it would be sent now. Sends nothing."),
-    ("zfsctl --help", "Show this text (also -h, and --help after any command). Needs no root."),
+    ("zfsctl --help", "Show this text (also -h, and --help after any command)."),
 ];
 
 /// The widest line the help text uses, so it reads on a plain 100-column terminal.
@@ -67,7 +67,7 @@ pub fn text() -> String {
     out.push_str("/jobs.toml   scheduled jobs; history, heartbeat and reports sit beside it\n");
     out.push_str("\nEXIT CODES\n  0  success\n  1  a problem: a bad command line, a failed check, or an error (the message is on stderr)\n  2  print-sudoers and check-host: the host could not be reached\n");
     out.push_str("\nNOTES\n");
-    push_wrapped(&mut out, 2, "Everything but --help must run as root: on the hub directly, or through sudo.");
+    push_wrapped(&mut out, 2, "zfsctl must run as root, --help included: on the hub directly, or through sudo.");
     push_wrapped(&mut out, 2, "A managed host needs no zfsctl software: it is reached over ssh and sudo (see print-sudoers).");
     out.push_str("\nMORE\n");
     push_wrapped(&mut out, 2, "Inside the terminal interface press ? for the keys of the current section.");

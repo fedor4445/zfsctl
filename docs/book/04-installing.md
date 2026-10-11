@@ -34,7 +34,7 @@ Run it as root:
 sudo zfsctl
 ```
 
-Not sure what is available? `zfsctl --help` prints every command, the files it uses and the exit codes, and works without root.
+Not sure what is available? `sudo zfsctl --help` prints every command, the files it uses and the exit codes.
 
 You land on the Hosts section with one host in the list, `local`: the hub itself. Use `Tab` to move between sections and `q` to quit; press `?` at any time for the Help screen. The next chapters explain every screen.
 

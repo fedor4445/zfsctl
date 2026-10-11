@@ -84,12 +84,11 @@ fn parse_args_for_book(args: &[String]) -> std::result::Result<(), String> {
 fn run() -> error::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = parse_args(&args)?;
-    // Before the root check: asking for help must work for anyone.
+    check_root()?;
     if command == Command::Help {
         print!("{}", help::text());
         return Ok(());
     }
-    check_root()?;
     let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
     if let Command::Daemon { state_dir } = command {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
