@@ -209,6 +209,21 @@ fn every_command_form_in_the_reference_parses_and_every_form_is_documented() {
 }
 
 #[test]
+fn the_commands_reference_and_the_help_describe_the_same_commands() {
+    let text = chapter("22-reference-commands.md");
+    let headings: Vec<String> = text.lines().filter_map(|l| l.strip_prefix("### `")).filter_map(|r| r.strip_suffix('`')).map(str::to_string).collect();
+    // The command a heading or help form names: `zfsctl daemon ...` is `daemon`, `zfsctl --help` is `--help`, `zfsctl` is none.
+    let command_of = |form: &str| form.split_whitespace().nth(1).map(str::to_string);
+    let help: Vec<Option<String>> = crate::help::COMMANDS.iter().map(|(form, _)| command_of(form)).collect();
+    for h in &headings {
+        assert!(help.contains(&command_of(h)), "the book documents `{h}` but `zfsctl --help` does not describe that command");
+    }
+    for form in crate::help::COMMANDS.iter().map(|(form, _)| *form) {
+        assert!(headings.iter().any(|h| command_of(h) == command_of(form)), "`zfsctl --help` describes `{form}` but the commands reference has no heading for it");
+    }
+}
+
+#[test]
 fn every_privileged_command_the_program_runs_is_named_in_the_sudoers_part() {
     let text = chapter("22-reference-commands.md");
     for name in crate::exec::privilege::privileged_names() {

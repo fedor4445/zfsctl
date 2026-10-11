@@ -41,6 +41,13 @@ The panel shows the tool's own message. Common ones:
 - A resume token that cannot be continued: on the destination run `zfs receive -A <dataset>`.
 - restic: `repository does not exist`, or `wrong password`: check the repository and the password file path **on that host**; run `restic snapshots` there as root.
 - rclone: the remote must be in root's rclone config on that host.
+- `skipped: no snapshots with prefix 'x' on tank/data`: the backup's Source is a prefix, and the job only counts snapshots named exactly `x-<UTC timestamp>` (such as `x-20261011T151500Z`). A snapshot called just `x`, or `x-old`, is invisible to it. Set Source to `new` (the job takes its own), to `@name` (that one snapshot), or to a prefix a snapshot job really makes. `F2` on Source lists what exists.
+- `the snapshot tank/data@x no longer exists`: the Source is pinned to `@x` and someone destroyed it. The run fails on purpose, so you notice. Pick another Source.
+- `skipped: up to date (…)`: normal. The repository already holds a backup of that snapshot from this job.
+- `cannot snapshot tank/data: …`: a `new` Source could not take its snapshot (out of space, or a snapshot limit on the dataset).
+- `could not remove the old snapshot …`: the backup worked, but a hold or a clone stops the job from pruning one of its own `zit-…` snapshots; it tries again next run.
+- `sftp: no space left on device`: the disk holding the repository is full. Free space there (for example the package cache with `pkg clean -a`, as root) or move the repository; `df` on that host shows the filesystem.
+- `Note:` lines under `F5` in the backup form are about the password file's location and permissions, not about the backup (chapter 15, "Protect the password file").
 
 ## No mail arrives
 

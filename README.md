@@ -17,6 +17,8 @@ cargo build --release
 sudo ./target/release/zfsctl
 ```
 
+`zfsctl --help` (or `-h`) lists every command, the feature names for `print-sudoers` and `check-host`, the files it uses and the exit codes. Like every other command it must run as root.
+
 ## Configuration
 
 Host inventory lives in `/usr/local/etc/zfsctl/config.toml`:

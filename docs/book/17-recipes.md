@@ -40,7 +40,7 @@ Do not write to the destination dataset: a receive fails if the destination chan
 ## Back up to a USB disk, or the cloud
 
 1. Install restic; make a password file; `restic init` (chapter 15).
-2. Jobs, `B`: the dataset, prefix `daily`, the repository (`/mnt/usb/restic-tank`, or `rclone:myremote:bucket/path`), the password file, Keep `7d 4w 12m`, schedule `30 3 * * *`.
+2. Jobs, `B`: the dataset, Source `new` (it takes its own snapshot each run), the repository (`/mnt/usb/restic-tank`, or `rclone:myremote:bucket/path`), the password file, Keep `7d 4w 12m`, schedule `30 3 * * *`.
 3. Check: Jobs shows `ok`; run `restic snapshots` on the repository. Restore one file as a test.
 
 ## Replace a failed disk
