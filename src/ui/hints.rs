@@ -97,6 +97,9 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
             if build_picker_state(kind, *focused, value).is_some() {
                 v.push(h("F2", "Pick", 1));
             }
+            if matches!(kind, crate::ui::modal::FormKind::BackupJob { .. }) {
+                v.push(h("F5", "Check", 1));
+            }
             v.push(h("Esc", "Cancel", 0));
             v
         }
@@ -801,6 +804,28 @@ mod tests {
 
     fn keys(app: &App) -> Vec<&'static str> {
         hints(app).iter().map(|h| h.key).collect()
+    }
+
+
+    #[test]
+    fn the_backup_form_advertises_f5_and_no_other_form_does() {
+        let mut a = base();
+        a.modal = Some(Modal::Form {
+            title: "t".into(),
+            fields: (0..8).map(|i| FormField { label: format!("f{i}"), value: String::new() }).collect(),
+            focused: 3,
+            description: None,
+            kind: FormKind::BackupJob { hosts: vec!["local".into()], existing: None, jobs: vec![] },
+        });
+        assert!(keys(&a).contains(&"F5"));
+        a.modal = Some(Modal::Form {
+            title: "t".into(),
+            fields: (0..7).map(|i| FormField { label: format!("f{i}"), value: String::new() }).collect(),
+            focused: 3,
+            description: None,
+            kind: FormKind::SnapshotJob { hosts: vec!["local".into()], existing: None, jobs: vec![] },
+        });
+        assert!(!keys(&a).contains(&"F5"));
     }
 
     #[test]

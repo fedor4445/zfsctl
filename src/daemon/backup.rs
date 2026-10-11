@@ -38,11 +38,7 @@ fn zfs(runner: &dyn CommandRunner, args: &[&str]) -> std::result::Result<String,
 
 /// restic quotes the repository in many of its error messages; a run message never carries it.
 fn redact(text: &str, repo: &str) -> String {
-    if repo.is_empty() {
-        text.to_string()
-    } else {
-        text.replace(repo, "<repository>")
-    }
+    restic::redact(text, repo)
 }
 
 fn restic_query(runner: &dyn CommandRunner, repo: &str, args: &[String]) -> std::result::Result<String, String> {

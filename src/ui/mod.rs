@@ -156,6 +156,18 @@ fn poll_host_probes(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued backup-form check its host's runner (same split as the pickers' fetches).
+fn apply_pending_preflights(app: &mut App, inventory: &HostInventory) {
+    for pending in std::mem::take(&mut app.pending_preflight) {
+        if let Some(h) = inventory.hosts.get(pending.host) {
+            app.run_backup_preflight(h.runner.clone(), pending);
+        } else {
+            let message = format!("unknown host '{}'", pending.host_name);
+            app.fail_backup_preflight(pending, message);
+        }
+    }
+}
+
 /// Same split as `apply_pending_account_fetches`, for the job forms' Pool and Dataset pickers.
 fn apply_pending_pool_fetches(app: &mut App, inventory: &HostInventory) {
     for (host, what) in std::mem::take(&mut app.pending_pool_fetch) {
@@ -208,6 +220,7 @@ fn event_loop(
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
+        apply_pending_preflights(app, inventory);
         poll_host_probes(app, inventory);
         app.clear_stale_scan_status();
 
@@ -528,6 +541,37 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(app.picker.as_ref().unwrap().values, vec!["tank/data"]);
+    }
+
+
+    #[test]
+    fn apply_pending_preflights_runs_the_check_on_the_hosts_runner_and_reports_it() {
+        use crate::exec::test_support::FakeRunner;
+        use crate::hosts::Host;
+        use std::sync::Arc;
+        let mut app = App::new(vec!["local".to_string()]);
+        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(FakeRunner::new("{\"id\":\"x\"}")), ssh_target: None, tag: None }] };
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 0, repository: "/r".into(), password_file: "/pw".into(), result: None });
+        app.pending_preflight = vec![crate::ui::state::PendingPreflight { host: 0, host_name: "local".into(), repository: "/r".into(), password_file: "/pw".into() }];
+        apply_pending_preflights(&mut app, &inventory);
+        assert!(app.pending_preflight.is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.backup_preflight.as_ref().is_some_and(|c| c.result.is_none()) && std::time::Instant::now() < deadline {
+            app.drain_worker_messages();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(app.backup_preflight.unwrap().result, Some(crate::restic::Preflight::Ok));
+    }
+
+    #[test]
+    fn a_preflight_for_an_unknown_host_index_reports_a_problem_instead_of_waiting_forever() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let inventory = HostInventory { hosts: vec![] };
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 3, repository: "/r".into(), password_file: "/pw".into(), result: None });
+        app.pending_preflight = vec![crate::ui::state::PendingPreflight { host: 3, host_name: "gone".into(), repository: "/r".into(), password_file: "/pw".into() }];
+        apply_pending_preflights(&mut app, &inventory);
+        app.drain_worker_messages();
+        assert!(matches!(app.backup_preflight.unwrap().result, Some(crate::restic::Preflight::Problem(m)) if m.contains("unknown host")));
     }
 
     #[test]
