@@ -13,7 +13,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "notify_command",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "force",
-        "repository", "password_file", "retention", "schedule", "catch_up", "enabled", "created_at",
+        "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
 }
 
@@ -505,7 +505,7 @@ mod tests {
         let job = crate::jobs::Job {
             id: "i".into(), host: "local".into(), kind: "backup".into(), pool: Some("p".into()), dataset: Some("d".into()), recursive: true,
             prefix: Some("x".into()), keep: Some(1), dest_host: Some("h".into()), dest_dataset: Some("d".into()), dest_dir: Some("/d".into()),
-            force: true, repository: Some("r".into()), password_file: Some("/p".into()), retention: Some("7d".into()), schedule: "* * * * *".into(),
+            force: true, repository: Some("r".into()), password_file: Some("/p".into()), retention: Some("7d".into()), source: Some("new".into()), snapshot: Some("s".into()), path: Some("p".into()), schedule: "* * * * *".into(),
             catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
         };
         let mut found: Vec<String> = Vec::new();

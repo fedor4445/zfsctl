@@ -31,25 +31,24 @@ On the host that will run the backup (the hub, in the running example):
 Press `B` in Jobs:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 10398)───────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 1698)────────────────────────────────────────────────────┐
 │Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5h ago │
-│Datasets              ││                                                                                    │
-│Snapshots             ││                                                                                    │
-│Disks                 ││                                                                                    │
-│Shares                ││                                                                                    │
-│Boot Envs             ││                                                                                    │
-│Jobs                 ┌New backup job──────────────────────────────────────────────────┐                     │
-│Alerts               │Backs up the newest <prefix>-<timestamp> snapshot (it never     │                     │
-│                     │takes snapshots) through a temporary read-only clone. The       │                     │
-│                     │repository must already exist (restic init).                    │                     │
-│                     │                                                                │                     │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 8h ago │
+│Datasets             ┌New backup job──────────────────────────────────────────────────┐0-12 10:41 skipped 24│
+│Snapshots            │Backs up a read-only clone of a snapshot. Source: new = take a  │                     │
+│Disks                │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Shares               │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Boot Envs            │always that one snapshot. The repository must already exist     │                     │
+│Jobs                 │(restic init).                                                  │                     │
+│Alerts               │                                                                │                     │
 │                     │> Host (where restic runs): local                               │                     │
 │                     │  Dataset:                                                      │                     │
-│                     │  Prefix (snapshots to back up): auto                           │                     │
-│                     │  Repository (restic -r; no credentials in it):                 │                     │
-│                     │  Password file (absolute path on the host):                    │─────────────────────┘
-│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │─────────────────────┐
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │─────────────────────┘
+│                     │  Repository (restic -r; no credentials in it):                 │─────────────────────┐
+│                     │  Password file (absolute path on the host):                    │                     │
+│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │                     │
 │                     │  Schedule: 30 3 * * *                                          │                     │
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
@@ -57,20 +56,55 @@ Press `B` in Jobs:
 │                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
+│                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
 Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 ```
 
 - **Host**: where restic runs.
-- **Dataset** and **Prefix**: the dataset, and which of its snapshots to back up. A backup job *never takes snapshots*; pair it with a snapshot job that uses the same prefix, and it backs up the newest one.
+- **Dataset** and **Path**: the dataset, and optionally one directory inside it (`photos/2026`, relative to the dataset's root, no `..`). Blank backs up all of the dataset.
+- **Source**: which snapshot to back up. Press `F2` to choose; it lists what the dataset already has.
+  - `new` (the default for a new job) takes a **fresh snapshot at the start of every run**, backs it up, and keeps the last few of the job's own snapshots (see **Snapshots to keep**). This is the easy way: nothing else to set up.
+  - `@snap4` always backs up that one snapshot, whatever it is called (F2 lists every snapshot as `@name`). After the first run the job reports `skipped: up to date`; if the snapshot is later destroyed, the run **fails** so you notice.
+  - Anything else is a **prefix**, such as `hourly`: the job backs up the newest `hourly-<timestamp>` snapshot and takes none itself, so pair it with a snapshot job that uses the same prefix. F2 lists the prefixes the dataset already uses.
+- **Snapshots to keep**: only for `new`. The job destroys its own older snapshots, named `zit-<job id>-<timestamp>`, beyond this many; blank means 3. It never touches any other snapshot, and zfsctl asks you to confirm when you save a job that will start doing this.
+
+Press `F2` on Source to see what the dataset has: `new`, then the prefixes in use (`hourly` here), then every snapshot as `@name`. Type to filter, Enter to choose.
+
+```screen
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 1698)────────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 8h ago │
+│Datasets             ┌New backup job──────────────────────────────────────────────────┐0-12 10:41 skipped 25│
+│Snapshots            │Backs up a read-only clone of a snapshot. Source: new = take a  │                     │
+│Disks                │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Shares               │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Boot Envs            │always that one snapshot. The repository must already exist     │                     │
+│Jobs                 │(restic init).                                                  │                     │
+│Alerts               │                                                                │                     │
+│                     │  Hos┌Pick a value (type filter, Enter OK, Esc cancel)─────┐    │                     │
+│                     │  Dat│new                                                  │    │                     │
+│                     │  Pat│hourly                                               │    │                     │
+│                     │> Sou│@manual1                                             │    │                     │
+│                     │  Sna│@hourly-20261010T130000Z                             │    │─────────────────────┘
+│                     │  Rep│@hourly-20261010T120000Z                             │    │─────────────────────┐
+│                     │  Pas│                                                     │    │                     │
+│                     │  Kee│                                                     │    │                     │
+│                     │  Sch└─────────────────────────────────────────────────────┘    │                     │
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  type Filter  Enter OK  Esc Cancel
+```
 - **Repository**: restic's `-r` value: a path (`/mnt/usb/restic-tank`), `sftp:user@host:/path`, or `rclone:remote:path`.
 - **Password file**: the absolute path of the file you made, on that host (the form asks for it after the repository).
 - **Keep**: how many backups to keep, in restic's words: `7d 4w 12m 3y` is "seven dailies, four weeklies, twelve monthlies, three yearlies"; blank keeps everything.
@@ -81,25 +115,25 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 Before the first scheduled run, press `F5` in the form. zfsctl tries to open the repository with the password file on that host, and shows the answer at the bottom of the form:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 10398)───────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 1698)────────────────────────────────────────────────────┐
 │Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5h ago │
-│Datasets              ││                                                                                    │
-│Snapshots             ││                                                                                    │
-│Disks                 ││                                                                                    │
-│Shares               ┌New backup job──────────────────────────────────────────────────┐                     │
-│Boot Envs            │Backs up the newest <prefix>-<timestamp> snapshot (it never     │                     │
-│Jobs                 │takes snapshots) through a temporary read-only clone. The       │                     │
-│Alerts               │repository must already exist (restic init).                    │                     │
-│                     │                                                                │                     │
-│                     │  Host (where restic runs): local                               │                     │
+│Pools                ┌New backup job──────────────────────────────────────────────────┐0-18 03:00 ok 8h ago │
+│Datasets             │Backs up a read-only clone of a snapshot. Source: new = take a  │0-12 10:41 skipped 28│
+│Snapshots            │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Disks                │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Shares               │always that one snapshot. The repository must already exist     │                     │
+│Boot Envs            │(restic init).                                                  │                     │
+│Jobs                 │                                                                │                     │
+│Alerts               │  Host (where restic runs): local                               │                     │
 │                     │  Dataset:                                                      │                     │
-│                     │  Prefix (snapshots to back up): auto                           │                     │
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
 │                     │  Repository (restic -r; no credentials in it):                 │                     │
 │                     │/mnt/usb/restic-tank                                            │                     │
-│                     │> Password file (absolute path on the host): /root/.restic-key  │                     │
-│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │─────────────────────┘
-│                     │  Schedule: 30 3 * * *                                          │─────────────────────┐
+│                     │> Password file (absolute path on the host): /root/.restic-key  │─────────────────────┘
+│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │─────────────────────┐
+│                     │  Schedule: 30 3 * * *                                          │                     │
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
@@ -109,11 +143,9 @@ Before the first scheduled run, press `F5` in the form. zfsctl tries to open the
 │                     │Check: no repository at that address yet: create it once with   │                     │
 │                     │`restic init`                                                   │                     │
 │                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
 Enter Next  Tab Next field  Shift+Tab Prev field  F5 Check  Esc Cancel
@@ -136,7 +168,7 @@ Anything else is restic's own message, with the repository address hidden. A fai
 
 ### How a run works
 
-The job finds the newest matching snapshot, makes a temporary read-only clone of it, backs up the clone, and destroys the clone again, even if the backup fails or is cancelled. Backing up a snapshot rather than the live files means the backup is **consistent**: it is exactly the data at one moment, even if the files are changing. If the repository already holds that snapshot, the run is `skipped: up to date`. Because the clone always has the same path, restic recognises unchanged files and does not read them again.
+The job picks its snapshot (taking a new one first, for `new`), makes a temporary read-only clone of it, backs up the clone, and destroys the clone again, even if the backup fails or is cancelled. Backing up a snapshot rather than the live files means the backup is **consistent**: it is exactly the data at one moment, even if the files are changing. If the repository already holds that snapshot, the run is `skipped: up to date`. Because the clone always has the same path, restic recognises unchanged files and does not read them again.
 
 If you set **Keep**, a successful backup is followed by a restic *forget and prune* limited to this job's own backups; without it nothing is ever deleted.
 
@@ -163,7 +195,7 @@ restic restore latest --repo /mnt/usb/restic-tank --password-file /root/.restic-
       --tag zfsctl:backup-local-tank-data --target /restore
 ```
 
-The backed-up path inside is `/var/run/zfsctl/<job id>`. Test a restore of one file now and then; a backup you have never restored from is a hope, not a backup.
+The backed-up path inside is `/var/run/zfsctl/<job id>`, followed by the job's **Path** if it has one. Test a restore of one file now and then; a backup you have never restored from is a hope, not a backup.
 
 ## Cancelling
 
@@ -177,7 +209,7 @@ On a host other than the hub, restic runs over ssh and `sudo`, so it needs resti
 
 ## Try it
 
-Make a small repository on the practice pool, `restic init` it, create a snapshot job and a backup job for the practice dataset, wait for it to run, and restore one file with the command above.
+Make a small repository on the practice pool, `restic init` it, create a backup job for the practice dataset with Source `new`, wait for it to run, and restore one file with the command above.
 
 ## Where next
 

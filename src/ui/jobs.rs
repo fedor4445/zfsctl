@@ -137,6 +137,53 @@ pub fn new_backup_job_id(host: &str, dataset: &str, existing: &[String]) -> Stri
     unique(&format!("backup-{}-{}", safe_key(host), safe_key(dataset)), existing)
 }
 
+/// How a backup job's Source field reads: `new`, `@snapshot`, or the prefix.
+pub fn source_text(job: &Job) -> String {
+    match jobs::backup_source(job) {
+        jobs::BackupSource::Fresh => jobs::SOURCE_NEW.to_string(),
+        jobs::BackupSource::Pinned(name) => format!("@{name}"),
+        jobs::BackupSource::Prefix(prefix) => prefix.to_string(),
+    }
+}
+
+/// What the Jobs panel says a backup job backs up, e.g. `prefix hourly`, `snapshot snap4` or
+/// `new snapshot each run, keep 3`, then its path if it has one.
+pub fn source_summary(job: &Job) -> String {
+    let what = match jobs::backup_source(job) {
+        jobs::BackupSource::Fresh => format!("new snapshot each run, keep {}", job.keep.unwrap_or(jobs::DEFAULT_FRESH_KEEP)),
+        jobs::BackupSource::Pinned(name) => format!("snapshot {name}"),
+        jobs::BackupSource::Prefix(prefix) => format!("prefix {prefix}"),
+    };
+    match job.path.as_deref() {
+        Some(path) => format!("{what}  path {path}"),
+        None => what,
+    }
+}
+
+/// `(source, snapshot, prefix)` of a backup job.
+pub type SourceFields = (Option<String>, Option<String>, Option<String>);
+
+/// The three job fields a backup form's Source text stands for: `(source, snapshot, prefix)`. `new` takes
+/// a fresh snapshot each run, `@name` pins one snapshot, anything else is the prefix of the snapshots to
+/// use (blank is the default prefix).
+pub fn parse_source(text: &str) -> std::result::Result<SourceFields, String> {
+    let text = text.trim();
+    if text == jobs::SOURCE_NEW {
+        return Ok((Some(jobs::SOURCE_NEW.to_string()), None, None));
+    }
+    if let Some(name) = text.strip_prefix('@') {
+        if !jobs::valid_snapshot_name(name) {
+            return Err("Source @name: a snapshot name may only use letters, digits, _ - . and :".to_string());
+        }
+        return Ok((Some(jobs::SOURCE_SNAPSHOT.to_string()), Some(name.to_string()), None));
+    }
+    let prefix = if text.is_empty() { jobs::DEFAULT_PREFIX } else { text };
+    if !jobs::valid_prefix(prefix) {
+        return Err("Source: use new, a prefix (letters, digits, _ - and .), or @snapshot".to_string());
+    }
+    Ok((None, None, Some(prefix.to_string())))
+}
+
 /// `snap-<host>-<dataset>-<prefix>`, made safe the same way.
 pub fn new_snapshot_job_id(host: &str, dataset: &str, prefix: &str, existing: &[String]) -> String {
     unique(&format!("snap-{}-{}-{}", safe_key(host), safe_key(dataset), safe_key(prefix)), existing)
@@ -275,7 +322,7 @@ mod tests {
     }
 
     fn job(id: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
     fn event(job_id: &str, run_id: &str, kind: EventKind, when: &str, result: Option<RunResult>) -> Event {
@@ -284,6 +331,40 @@ mod tests {
 
     fn hosts() -> Vec<String> {
         vec!["local".to_string(), "fbsd16".to_string()]
+    }
+
+    #[test]
+    fn the_source_text_maps_to_the_job_fields_and_back() {
+        assert_eq!(parse_source("new"), Ok((Some("new".into()), None, None)));
+        assert_eq!(parse_source(" @snap4 "), Ok((Some("snapshot".into()), Some("snap4".into()), None)));
+        assert_eq!(parse_source("hourly"), Ok((None, None, Some("hourly".into()))));
+        assert_eq!(parse_source(""), Ok((None, None, Some("auto".into()))));
+        for bad in ["@", "@a b", "@-x", "@a/b", "a b", "a@b"] {
+            assert!(parse_source(bad).is_err(), "{bad:?}");
+        }
+        let mut j = Job::test_backup("b", "tank/data", "hourly", "/r", "/p");
+        assert_eq!(source_text(&j), "hourly");
+        j.source = Some("new".into());
+        assert_eq!(source_text(&j), "new");
+        j.source = Some("snapshot".into());
+        j.snapshot = Some("snap4".into());
+        assert_eq!(source_text(&j), "@snap4");
+    }
+
+    #[test]
+    fn the_panel_summary_names_the_source_and_the_path() {
+        let mut j = Job::test_backup("b", "tank/data", "hourly", "/r", "/p");
+        assert_eq!(source_summary(&j), "prefix hourly");
+        j.path = Some("photos".into());
+        assert_eq!(source_summary(&j), "prefix hourly  path photos");
+        j.source = Some("new".into());
+        assert_eq!(source_summary(&j), "new snapshot each run, keep 3  path photos");
+        j.keep = Some(5);
+        j.path = None;
+        assert_eq!(source_summary(&j), "new snapshot each run, keep 5");
+        j.source = Some("snapshot".into());
+        j.snapshot = Some("snap4".into());
+        assert_eq!(source_summary(&j), "snapshot snap4");
     }
 
     #[test]

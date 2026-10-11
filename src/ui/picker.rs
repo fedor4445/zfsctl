@@ -23,10 +23,30 @@ pub enum AccountField {
 }
 
 /// What a live-fetched name picker lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveNames {
     Pools,
     Datasets,
+    /// The backup form's Source field: `new`, the prefixes in use and every snapshot of this dataset.
+    Snapshots(String),
+}
+
+/// What the backup form's Source picker offers for a dataset whose snapshots are `names` (the parts after
+/// `@`): `new`, then each prefix that snapshots named `<prefix>-<timestamp>` use (newest first), then every
+/// snapshot as `@name`, newest first.
+pub fn source_choices(names: &[String]) -> Vec<String> {
+    let mut sorted: Vec<&String> = names.iter().collect();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let mut out = vec![crate::jobs::SOURCE_NEW.to_string()];
+    for name in &sorted {
+        if let Some((prefix, _)) = name.rsplit_once('-') {
+            if crate::daemon::snapshot::is_own(prefix, name) && !out.iter().any(|v| v == prefix) {
+                out.push(prefix.to_string());
+            }
+        }
+    }
+    out.extend(sorted.iter().map(|n| format!("@{n}")));
+    out
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,7 +206,7 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
         FormKind::Job { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 2 }),
         FormKind::SnapshotJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 5 }),
         FormKind::ReplicateJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0, 3], live_fields: &[1, 4], schedule_field: 6 }),
-        FormKind::BackupJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 6 }),
+        FormKind::BackupJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1, 3], schedule_field: 8 }),
         _ => None,
     };
     if let Some(spec) = job_form {
@@ -499,13 +519,24 @@ mod tests {
     }
 
     #[test]
-    fn the_backup_form_offers_hosts_live_datasets_and_schedule_presets() {
+    fn the_backup_form_offers_hosts_live_datasets_live_sources_and_schedule_presets() {
         let kind = FormKind::BackupJob { hosts: vec!["local".to_string(), "fbsd16".to_string()], existing: None, jobs: vec![] };
         assert_eq!(build_picker_state(&kind, 0, "fbsd16").unwrap().values, vec!["local", "fbsd16"]);
         assert!(build_picker_state(&kind, 1, "").unwrap().pool_host.is_some(), "the dataset field fetches live names");
-        assert!(!build_picker_state(&kind, 6, "").unwrap().values.is_empty(), "schedule presets");
-        for text_field in [2, 3, 4, 5, 7] {
+        assert!(build_picker_state(&kind, 3, "").unwrap().pool_host.is_some(), "the source field fetches the dataset's snapshots");
+        assert!(!build_picker_state(&kind, 8, "").unwrap().values.is_empty(), "schedule presets");
+        for text_field in [2, 4, 5, 6, 7, 9] {
             assert!(build_picker_state(&kind, text_field, "").is_none(), "field {text_field} has no vocabulary");
         }
+    }
+
+    #[test]
+    fn the_source_choices_are_new_then_the_prefixes_in_use_then_every_snapshot_newest_first() {
+        let names: Vec<String> = ["snap4", "hourly-20261008T100000Z", "auto-20261001T000000Z", "hourly-20261008T110000Z", "manual-backup"].iter().map(ToString::to_string).collect();
+        assert_eq!(
+            source_choices(&names),
+            ["new", "snap4x", "hourly", "auto", "@snap4", "@manual-backup", "@hourly-20261008T110000Z", "@hourly-20261008T100000Z", "@auto-20261001T000000Z"].iter().filter(|v| **v != "snap4x").map(ToString::to_string).collect::<Vec<_>>()
+        );
+        assert_eq!(source_choices(&[]), ["new"]);
     }
 }

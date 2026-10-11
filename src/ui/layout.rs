@@ -850,7 +850,7 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
     }
     if job.kind == crate::jobs::KIND_BACKUP {
         let keep = job.retention.as_deref().map(str::trim).filter(|k| !k.is_empty()).map_or_else(|| "keep everything".to_string(), |k| format!("keep {k}"));
-        info.push(Line::from(format!("to {}  {keep}  prefix {}", job.repository.as_deref().unwrap_or(""), crate::jobs::effective_prefix(job))));
+        info.push(Line::from(format!("to {}  {keep}  {}", job.repository.as_deref().unwrap_or(""), crate::ui::jobs::source_summary(job))));
         if let Some(p) = app.jobs_view.progress_of(&job.id) {
             info.push(Line::from(crate::daemon::progress::progress_line(p)));
         }
@@ -1064,7 +1064,7 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
     match kind {
         crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::SnapshotJob { .. } => crate::ui::jobs::preview_lines(fields.get(5).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
-        crate::ui::modal::FormKind::BackupJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        crate::ui::modal::FormKind::BackupJob { .. } => crate::ui::jobs::preview_lines(fields.get(8).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::ReplicateJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         _ => Vec::new(),
     }
@@ -1076,7 +1076,7 @@ fn preflight_status(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::moda
     let crate::ui::modal::FormKind::BackupJob { hosts, .. } = kind else { return None };
     let check = check?;
     let value = |i: usize| fields.get(i).map_or("", |f| f.value.as_str()).trim();
-    if hosts.get(check.host).map(String::as_str) != Some(value(0)) || check.repository != value(3) || check.password_file != value(4) {
+    if hosts.get(check.host).map(String::as_str) != Some(value(0)) || check.repository != value(5) || check.password_file != value(6) {
         return None;
     }
     Some(match &check.result {
@@ -1871,7 +1871,7 @@ mod tests {
     }
 
     fn a_job(id: &str, schedule: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
     #[test]
@@ -2794,7 +2794,7 @@ mod tests {
     }
 
     fn backup_form_fields(host: &str, repo: &str, pw: &str) -> Vec<crate::ui::modal::FormField> {
-        let values = [host, "tank/data", "auto", repo, pw, "", "30 3 * * *", "y"];
+        let values = [host, "tank/data", "", "auto", "", repo, pw, "", "30 3 * * *", "y"];
         values.iter().map(|v| crate::ui::modal::FormField { label: "x".into(), value: (*v).to_string() }).collect()
     }
 

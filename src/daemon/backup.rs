@@ -7,13 +7,16 @@ use super::history::{EventKind, RunResult};
 use super::progress::{self, ProgressWriter};
 use super::replicate::Env;
 use super::scrub::{event, finish, Outcome, Slot};
-use super::snapshot::is_own;
+use super::snapshot::{is_own, snapshot_name};
 use super::transfer::run_lines;
 use crate::exec::CommandRunner;
-use crate::jobs::{effective_prefix, Job};
+use crate::error::AppError;
+use crate::jobs::{backup_source, fresh_prefix, BackupSource, Job, DEFAULT_FRESH_KEEP};
 use crate::restic::{self, Line, Summary};
 use crate::zfs::replication::list_snapshot_infos;
+use crate::zfs::snapshot::{create_snapshot_with, destroy_snapshot_with};
 use chrono::{DateTime, Utc};
+use std::fmt::Write;
 
 /// Where a job's clone is mounted: the same path every run, so restic finds its parent backup.
 pub const MOUNT_ROOT: &str = "/var/run/zfsctl";
@@ -118,6 +121,22 @@ fn snapshot_time(runner: &dyn CommandRunner, dataset: &str, snapshot: &str) -> O
     (text.len() == 19).then_some(text)
 }
 
+/// Destroys a `new`-source job's own older snapshots so that, with the one about to be taken, `keep` remain.
+/// Only exact `<prefix>-<timestamp>` names of this job are candidates, and a failure never stops the run: it
+/// is reported in the run's message and tried again next time.
+fn prune_fresh(runner: &dyn CommandRunner, dataset: &str, prefix: &str, keep: usize, note: &mut String) {
+    let Ok(all) = list_snapshot_infos(runner, dataset) else { return };
+    let mut own: Vec<String> = all.into_iter().map(|s| s.name).filter(|n| is_own(prefix, n)).collect();
+    own.sort_unstable_by(|a, b| b.cmp(a));
+    own.dedup();
+    // Oldest first, so a failure part-way leaves the newest of the excess in place.
+    for old in own.iter().skip(keep.saturating_sub(1)).rev() {
+        if let Err(e) = destroy_snapshot_with(runner, dataset, old, false) {
+            let _ = write!(note, "; could not remove the old snapshot {old} ({e})");
+        }
+    }
+}
+
 enum End {
     Done(Option<Summary>),
     Cancelled(u64),
@@ -170,7 +189,6 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     let dataset = job.dataset.clone().unwrap_or_default();
     let repo = job.repository.clone().unwrap_or_default();
     let password_file = job.password_file.clone().unwrap_or_default();
-    let prefix = effective_prefix(job).to_string();
     let slot = Slot { scheduled_for: Some(scheduled_for), catch_up };
     let failed = |msg: String| finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, msg, slot);
     let skipped = |msg: String| finish(ctx, job, run_id, EventKind::Skipped, RunResult::Skipped, msg, slot);
@@ -187,14 +205,39 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
         }
     }
 
-    let source = match list_snapshot_infos(runner, &dataset) {
-        Ok(s) => s,
-        Err(e) => return failed(e.to_string()),
+    let mut prune_note = String::new();
+    let snapshot = match backup_source(job) {
+        BackupSource::Fresh => {
+            let own = fresh_prefix(&job.id);
+            // Before taking the new one, so a run that fails later never leaves more than `keep` behind.
+            let keep = job.keep.unwrap_or(DEFAULT_FRESH_KEEP).max(1) as usize;
+            prune_fresh(runner, &dataset, &own, keep, &mut prune_note);
+            let name = snapshot_name(&own, ctx.clock.now());
+            match create_snapshot_with(runner, &dataset, &name, false) {
+                Ok(()) => {}
+                Err(AppError::CommandFailed { stderr, .. }) if stderr.contains("already exists") => return skipped(format!("skipped: {name} already exists")),
+                Err(e) => return failed(format!("cannot snapshot {dataset}: {e}")),
+            }
+            name
+        }
+        BackupSource::Pinned(name) => match list_snapshot_infos(runner, &dataset) {
+            Ok(all) if all.iter().any(|s| s.name == name) => name.to_string(),
+            Ok(_) => return failed(format!("the snapshot {dataset}@{name} no longer exists")),
+            Err(e) => return failed(e.to_string()),
+        },
+        BackupSource::Prefix(prefix) => {
+            let all = match list_snapshot_infos(runner, &dataset) {
+                Ok(s) => s,
+                Err(e) => return failed(e.to_string()),
+            };
+            let Some(newest) = all.iter().filter(|s| is_own(prefix, &s.name)).max_by(|a, b| a.name.cmp(&b.name)) else {
+                return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}"));
+            };
+            newest.name.clone()
+        }
     };
-    let Some(newest) = source.iter().filter(|s| is_own(&prefix, &s.name)).max_by(|a, b| a.name.cmp(&b.name)) else {
-        return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}"));
-    };
-    let snapshot = newest.name.clone();
+    // What restic reads: the clone's root, or a directory inside it.
+    let target = job.path.as_deref().map_or_else(|| mount.clone(), |p| format!("{mount}/{}", p.trim_end_matches('/')));
 
     let machine = machine_name(runner, &job.host);
     match restic_query(runner, &repo, &restic::snapshots_args(&repo, &password_file, &machine, &job.id, &snapshot)).and_then(|json| restic::snapshot_count(&json)) {
@@ -214,7 +257,7 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     started.catch_up = catch_up;
     let _ = ctx.history.append(&started);
 
-    let end = backup(env, runner, job, &machine, &repo, &password_file, &snapshot, time.as_deref(), &mount, run_id);
+    let end = backup(env, runner, job, &machine, &repo, &password_file, &snapshot, time.as_deref(), &target, run_id);
     // Always, whatever happened: the clone pins the snapshot and holds a mountpoint.
     let leftover = match destroy_clone(runner, ctx.clock, &clone) {
         Ok(()) => String::new(),
@@ -228,6 +271,7 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
                 Some(s) => format!("backed up {snapshot} ({} new, {} changed, {} unmodified), {} added", s.new, s.changed, s.unmodified, progress::human_bytes(s.added)),
                 None => format!("backed up {snapshot}"),
             };
+            let message = format!("{message}{prune_note}");
             if !leftover.is_empty() {
                 return failed(format!("{message}{leftover}"));
             }
@@ -286,6 +330,10 @@ mod tests {
         backup_script: String,
         date_works: bool,
         clone_fails: bool,
+        /// `zfs snapshot` fails with this message.
+        snapshot_error: Option<&'static str>,
+        /// Destroying a snapshot (not the clone) fails.
+        snapshot_destroy_fails: bool,
         destroy_fails: bool,
         forget_fails: bool,
         /// What a successful `restic forget` does.
@@ -310,6 +358,8 @@ mod tests {
                 backup_script: OK_SCRIPT.to_string(),
                 date_works: true,
                 clone_fails: false,
+                snapshot_error: None,
+                snapshot_destroy_fails: false,
                 destroy_fails: false,
                 forget_fails: false,
                 forget_script: "exit 0".to_string(),
@@ -350,6 +400,10 @@ mod tests {
                     }
                     *self.clone_exists.lock().unwrap() = true;
                     ok("")
+                }
+                ("zfs", Some("snapshot")) => self.snapshot_error.map_or_else(|| ok(""), fail),
+                ("zfs", Some("destroy")) if args.last().is_some_and(|a| a.contains('@')) => {
+                    if self.snapshot_destroy_fails { fail("snapshot has holds") } else { ok("") }
                 }
                 ("zfs", Some("destroy")) => {
                     if self.destroy_fails {
@@ -471,6 +525,129 @@ mod tests {
         assert!(!host.called("restic forget"), "no retention, no forget");
         assert_eq!((history.len(), history[0].result), (1, Some(RunResult::Ok)));
         assert!(crate::daemon::progress::read_all(&rig.state.path().join("progress")).is_empty());
+    }
+
+    const FRESH: &str = "zit-job-20261008T233000Z";
+
+    fn fresh_job() -> Job {
+        let mut j = job();
+        j.source = Some(crate::jobs::SOURCE_NEW.into());
+        j
+    }
+
+    /// A `zfs list -t snapshot` answer for these snapshot names of `tank/data`.
+    fn listing(names: &[&str]) -> String {
+        names.iter().map(|n| format!("tank/data@{n}\t1\t10\n")).collect::<Vec<_>>().concat()
+    }
+
+    fn destroyed_snapshots(host: &Host) -> Vec<String> {
+        host.calls().iter().filter(|c| c.starts_with("zfs destroy -- ")).map(|c| c.trim_start_matches("zfs destroy -- ").to_string()).collect()
+    }
+
+    #[test]
+    fn a_new_source_takes_a_snapshot_then_backs_that_one_up_through_a_clone() {
+        let rig = Rig::new();
+        let host = Host::new();
+        let (outcome, _) = rig.run(&host, &fresh_job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.starts_with(&format!("backed up {FRESH} ")), "{}", outcome.message);
+        let calls = host.calls();
+        let at = |prefix: &str| calls.iter().position(|c| c.starts_with(prefix)).unwrap_or_else(|| panic!("no call starting {prefix:?} in {calls:?}"));
+        assert!(at("zfs snapshot") < at("restic snapshots") && at("restic snapshots") < at("zfs clone"));
+        assert!(calls.contains(&format!("zfs snapshot -- tank/data@{FRESH}")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.starts_with("zfs clone") && c.contains(&format!("tank/data@{FRESH} "))), "{calls:?}");
+        assert!(host.backup_args.lock().unwrap()[0].contains(&format!("--tag=zfsctl-snapshot:{FRESH}")));
+        assert!(destroyed_snapshots(&host).is_empty(), "nothing to prune yet: {:?}", host.calls());
+    }
+
+    #[test]
+    fn a_new_source_keeps_the_last_few_of_its_own_snapshots_and_touches_nothing_else() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        let names = ["zit-job-20261001T000000Z", "zit-job-20261002T000000Z", "zit-job-20261003T000000Z", "zit-job-20261004T000000Z"];
+        host.listing = listing(&[&names[..], &["manual", "zit-other-20261001T000000Z", "zit-job-notes", B]].concat());
+        let mut j = fresh_job();
+        j.keep = Some(3);
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        // keep 3 = the new one plus the two newest older ones: the two oldest go.
+        assert_eq!(destroyed_snapshots(&host), vec!["tank/data@zit-job-20261001T000000Z".to_string(), "tank/data@zit-job-20261002T000000Z".to_string()]);
+    }
+
+    #[test]
+    fn a_new_source_with_no_keep_set_keeps_three() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.listing = listing(&["zit-job-20261001T000000Z", "zit-job-20261002T000000Z", "zit-job-20261003T000000Z", "zit-job-20261004T000000Z", "zit-job-20261005T000000Z"]);
+        let (_, _) = rig.run(&host, &fresh_job());
+        assert_eq!(destroyed_snapshots(&host).len(), 3, "{:?}", host.calls());
+    }
+
+    #[test]
+    fn a_snapshot_that_cannot_be_pruned_is_reported_but_the_backup_still_counts() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.listing = "tank/data@zit-job-20261001T000000Z\t1\t10\n".to_string();
+        host.snapshot_destroy_fails = true;
+        let mut j = fresh_job();
+        j.keep = Some(1);
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("could not remove the old snapshot zit-job-20261001T000000Z"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn a_new_source_that_cannot_snapshot_fails_before_restic_and_one_that_already_exists_is_skipped() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.snapshot_error = Some("cannot create snapshot: out of space");
+        let (outcome, _) = rig.run(&host, &fresh_job());
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("cannot snapshot tank/data") && outcome.message.contains("out of space"), "{}", outcome.message);
+        assert!(!host.called("restic") && !host.called("zfs clone"));
+        host.snapshot_error = Some("dataset already exists");
+        let (outcome, _) = rig.run(&host, &fresh_job());
+        assert_eq!(outcome.result, RunResult::Skipped, "{}", outcome.message);
+    }
+
+    #[test]
+    fn a_pinned_snapshot_is_backed_up_whatever_it_is_called() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.listing = format!("tank/data@snap4\t1\t10\ntank/data@{B}\t2\t20\n");
+        let mut j = job();
+        j.source = Some(crate::jobs::SOURCE_SNAPSHOT.into());
+        j.snapshot = Some("snap4".into());
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.starts_with("backed up snap4 "), "{}", outcome.message);
+        assert!(host.calls().iter().any(|c| c.starts_with("zfs clone") && c.contains("tank/data@snap4 ")));
+        assert!(!host.called("zfs snapshot"), "a pinned source never takes a snapshot");
+    }
+
+    #[test]
+    fn a_pinned_snapshot_that_is_gone_fails_the_run_instead_of_skipping_it() {
+        let rig = Rig::new();
+        let host = Host::new();
+        let mut j = job();
+        j.source = Some(crate::jobs::SOURCE_SNAPSHOT.into());
+        j.snapshot = Some("snap4".into());
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("tank/data@snap4 no longer exists"), "{}", outcome.message);
+        assert!(!host.called("zfs clone") && !host.called("restic"));
+    }
+
+    #[test]
+    fn a_path_backs_up_that_directory_of_the_clone_and_nothing_else() {
+        let rig = Rig::new();
+        let host = Host::new();
+        let mut j = job();
+        j.path = Some("photos/2026/".into());
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(host.backup_args.lock().unwrap()[0].last().map(String::as_str), Some("/var/run/zfsctl/job/photos/2026"));
+        assert!(host.calls().iter().any(|c| c.contains("mountpoint=/var/run/zfsctl/job ")), "the clone itself is still mounted at the job's fixed root");
     }
 
     #[test]
