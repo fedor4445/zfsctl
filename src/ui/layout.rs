@@ -211,6 +211,10 @@ fn split_widths(total: u16, left_want: u16, right_want: u16) -> (u16, u16) {
 
 /// Name column width the Datasets table keeps before it is squeezed.
 const DATASET_NAME_MIN: u16 = 24;
+/// Width of a human-readable size column (`1.0G`, `100M`).
+const SIZE_COL_W: u16 = 8;
+/// Width of the Kind column (`Filesystem`).
+const KIND_COL_W: u16 = 10;
 
 /// Longest value shown in the Properties table's Value column.
 const PROPERTY_VALUE_MIN: u16 = 16;
@@ -244,7 +248,7 @@ fn split_wants(app: &App, section: Section) -> (u16, u16) {
             DatasetDetailTab::Properties => property_pane_want(&app.dataset_properties),
             _ => 0,
         };
-        (name.saturating_add(14 + 14 + 12 + 3 + 2), right)
+        (name.saturating_add(SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3 + 2), right)
     }
 }
 
@@ -584,16 +588,16 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app.datasets.iter().map(|d| {
         Row::new(vec![
             d.name.clone(),
-            d.used.to_string(),
-            d.available.to_string(),
+            crate::zfs::disk::human_size(d.used),
+            crate::zfs::disk::human_size(d.available),
             format!("{:?}", d.kind),
         ])
     });
     let widths = [
         Constraint::Min(DATASET_NAME_MIN),
-        Constraint::Length(14),
-        Constraint::Length(14),
-        Constraint::Length(12),
+        Constraint::Length(SIZE_COL_W),
+        Constraint::Length(SIZE_COL_W),
+        Constraint::Length(KIND_COL_W),
     ];
     let title = format!("Datasets — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
@@ -695,8 +699,8 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .snapshots
         .iter()
-        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), s.used.to_string()]));
-    let widths = [Constraint::Length(34), Constraint::Length(14)];
+        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used)]));
+    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W)];
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Snapshot", "Used"]))
@@ -1688,6 +1692,37 @@ mod tests {
         for want in ["FreeBSD 15.1-RELEASE", "1d 1h", "1 not ONLINE", "hit 99.0%", "0.50 0.25 0.10", "all pools are healthy"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    #[test]
+    fn datasets_list_shows_human_sizes_not_raw_bytes_at_110_columns() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Datasets).unwrap();
+        app.datasets = vec![crate::zfs::dataset::Dataset {
+            name: "tank/data".to_string(),
+            kind: crate::zfs::dataset::DatasetKind::Filesystem,
+            used: 105_250_816,
+            available: 32_899_702_784,
+            referenced: 0,
+            mountpoint: None,
+        }];
+        app.datasets_table.select(Some(0));
+        let text = render(&mut app, 110, 30).join("\n");
+        for want in ["100M", "30.6G", "Filesys"] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(!text.contains("105250816") && !text.contains("32899702784"), "raw bytes must be gone:\n{text}");
+    }
+
+    #[test]
+    fn snapshots_list_shows_human_sizes_not_raw_bytes() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848 }];
+        app.snapshots_table.select(Some(0));
+        let text = render(&mut app, 110, 30).join("\n");
+        assert!(text.contains("tank/data@b") && text.contains("2.0G"), "{text}");
+        assert!(!text.contains("2096734848"), "raw bytes must be gone:\n{text}");
     }
 
     #[test]

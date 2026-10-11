@@ -1,10 +1,10 @@
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Permissions — scratch/data ('r' refresh, n/s/c gr┐
-│Hosts                 ││Name                           Used           Avail          Kind        ││Target           Scope           Permissions     │
-│Pools                 ││scratch                        106639360      19189760       Filesystem  ││                                                 │
-│Datasets              ││scratch/data                   105250816      19189760       Filesystem  ││                                                 │
-│Snapshots             ││tpool                          4196505216     5628389760     Filesystem  ││                                                 │
-│Disks                 ││zroot                          11325603840    32899694592    Filesystem  ││                                                 │
-│Shares                ││zroot/ROOT                     5673803776     32899694592    Filesystem  ││                                                 │
+│Hosts                 ││Name                                         Used     Avail    Kind      ││Target           Scope           Permissions     │
+│Pools                 ││scratch                                      102M     18.3M    Filesystem││                                                 │
+│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││                                                 │
+│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││                                                 │
+│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
+│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
 │Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 │Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
 │Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │

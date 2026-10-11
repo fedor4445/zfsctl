@@ -58,15 +58,15 @@ In Datasets, select a dataset and press `N`. (Visit the Shares section once firs
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
 │Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  1066393 19189760 Filesys││                                 │
-│Datasets              ││scratch/data             1052508 19189760 Filesys││                                 │
-│Snapshots             ││tpool                    4196505 56283897 Filesys││                                 │
-│Disks                 ││zroot                    1132562 32899670 Filesys││                                 │
-│Shares                ││zroot/ROOT               5673803 32899670 Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5673705 32899670 Filesys││                                 │
-│Jobs                  ││zroot/home               5784166 32899670 Filesys││                                 │
-│Alerts                ││zroot/home/alice         147456  32899670 Filesys││                                 │
-│                      ││zroot/home/fb            5780316 32899670 Filesys││                                 │
+│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
+│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
+│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
+│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
+│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
+│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
+│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
+│                      ││zroot/home/fb            554M    30.6G    Filesys││                                 │
 │                     ┌NFS share: 'scratch/data'───────────────────────────────────────┐                     │
 │                     │> Networks: 172.16.10.0/24                                      │                     │
 │                     │  Hosts:                                                        │─────────────────────┘
@@ -102,14 +102,14 @@ FreeBSD's ZFS has no working `sharesmb` property (`zfs set sharesmb=on` just pri
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
 │Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  1066393 19189760 Filesys││                                 │
-│Datasets              ││scratch/data             1052508 19189760 Filesys││                                 │
-│Snapshots             ││tpool                    4196505 56283897 Filesys││                                 │
-│Disks                 ││zroot                    1132700 32898289 Filesys││                                 │
-│Shares                ││zroot/ROOT               5673840 32898289 Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5673742 32898289 Filesys││                                 │
-│Jobs                  ││zroot/home               5784166 32898289 Filesys││                                 │
-│Alerts                ││zroot/home/alice         147456  32898289 Filesys││                                 │
+│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
+│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
+│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
+│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
+│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
+│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
+│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
 │                     ┌SMB share: 'scratch/data'───────────────────────────────────────┐                     │
 │                     │Shares /scratch/data as \\<host>\<name>. The Valid user must    │                     │
 │                     │for every share they use. Blank user + guest n: any Samba user  │                     │
