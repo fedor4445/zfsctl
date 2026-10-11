@@ -110,6 +110,24 @@ fn flatten_permissions_snapshot(snapshot: &crate::zfs::permission::PermissionsSn
 /// result is *about*, so a slow result for a host the user has since
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
+/// What the backup form's F5 check was asked about, and what it found (`None` while it still runs).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreflightCheck {
+    pub host: usize,
+    pub repository: String,
+    pub password_file: String,
+    pub result: Option<crate::restic::Preflight>,
+}
+
+/// A check waiting for the event loop to hand it its host's runner (`App` cannot resolve a host to one itself).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingPreflight {
+    pub host: usize,
+    pub host_name: String,
+    pub repository: String,
+    pub password_file: String,
+}
+
 pub enum WorkerMsg {
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
     AlertsPreview(String),
@@ -149,6 +167,9 @@ pub enum WorkerMsg {
     Accounts(usize, Result<crate::zfs::accounts::HostAccounts>),
     /// The outcome of a live pool-name fetch for the job form's Pool picker.
     PoolNames(usize, Result<Vec<String>>),
+    /// The outcome of the backup form's F5 check: the host index, the repository and password file it was asked
+    /// about (so a result for values since edited is dropped), and what it found.
+    Preflight(usize, String, String, crate::restic::Preflight),
 }
 
 pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
@@ -339,6 +360,8 @@ pub struct App {
     pub account_fetch_in_flight: HashMap<usize, Instant>,
     pub pending_account_fetch: Vec<usize>,
     pub pending_pool_fetch: Vec<(usize, crate::ui::picker::LiveNames)>,
+    pub backup_preflight: Option<PreflightCheck>,
+    pub pending_preflight: Vec<PendingPreflight>,
     /// Lowercased names currently being probed (submitted, not yet
     /// resolved) -- checked alongside `self.hosts` so a second
     /// submission of the same name while the first is still
@@ -447,6 +470,8 @@ impl App {
             account_fetch_in_flight: HashMap::new(),
             pending_account_fetch: Vec::new(),
             pending_pool_fetch: Vec::new(),
+            backup_preflight: None,
+            pending_preflight: Vec::new(),
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
@@ -2144,6 +2169,11 @@ impl App {
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
+                KeyCode::F(5) if matches!(kind, FormKind::BackupJob { .. }) => {
+                    self.request_backup_preflight(field_value(&fields, 0).trim(), field_value(&fields, 3).trim(), field_value(&fields, 4).trim());
+                    self.modal = Some(Modal::Form { title, fields, focused, description, kind });
+                    None
+                }
                 KeyCode::F(2) => {
                     if let Some(mut picker) = build_picker_state(&kind, focused, field_value(&fields, focused)) {
                         if let Some((host, _)) = picker.account {
@@ -2219,6 +2249,43 @@ impl App {
     }
 
     /// Reports a failed pool lookup without running one (the host index no longer resolves).
+    /// F5 in the backup form: validates what the save would validate, then queues the check for the event loop.
+    /// A check already running for the same values is left alone.
+    fn request_backup_preflight(&mut self, host_name: &str, repository: &str, password_file: &str) {
+        let Some(host) = self.hosts.iter().position(|h| h == host_name) else {
+            self.set_error(format!("Unknown host '{host_name}'. Configured hosts: {}", self.hosts.join(", ")));
+            return;
+        };
+        if !crate::restic::valid_repository(repository) {
+            self.set_error("Check: enter the repository first (a path, sftp:user@host:/path or rclone:remote:path, with no password in it)".to_string());
+            return;
+        }
+        if !crate::restic::valid_password_file(password_file) {
+            self.set_error("Check: the password file must be an absolute path on the host, such as /root/.restic-password".to_string());
+            return;
+        }
+        let same = |c: &PreflightCheck| c.host == host && c.repository == repository && c.password_file == password_file;
+        if self.backup_preflight.as_ref().is_some_and(|c| same(c) && c.result.is_none()) {
+            return;
+        }
+        self.backup_preflight = Some(PreflightCheck { host, repository: repository.to_string(), password_file: password_file.to_string(), result: None });
+        self.pending_preflight.push(PendingPreflight { host, host_name: host_name.to_string(), repository: repository.to_string(), password_file: password_file.to_string() });
+    }
+
+    /// Runs one queued check on a worker thread and reports it as `WorkerMsg::Preflight`.
+    pub fn run_backup_preflight(&mut self, runner: Arc<dyn CommandRunner>, pending: PendingPreflight) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE);
+            let _ = tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, result));
+        });
+    }
+
+    /// Reports a check that could not start (the host index no longer resolves) through the same channel.
+    pub fn fail_backup_preflight(&self, pending: PendingPreflight, message: String) {
+        let _ = self.tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, crate::restic::Preflight::Problem(message)));
+    }
+
     pub fn fail_pool_fetch(&self, host: usize, err: crate::error::AppError) {
         let _ = self.tx.send(WorkerMsg::PoolNames(host, Err(err)));
     }
@@ -2907,6 +2974,12 @@ impl App {
                                 p.load = crate::ui::picker::PickerLoad::Failed(e.to_string());
                             }
                         }
+                    }
+                }
+                WorkerMsg::Preflight(host, repository, password_file, result) => {
+                    // Only the answer to the question still asked is kept: a result for edited values is dropped.
+                    if let Some(check) = self.backup_preflight.as_mut().filter(|c| c.host == host && c.repository == repository && c.password_file == password_file && c.result.is_none()) {
+                        check.result = Some(result);
                     }
                 }
                 WorkerMsg::PoolNames(host, result) => {
@@ -11707,4 +11780,75 @@ mod tests {
         assert!(err.contains("ssh fbsd@h") && err.contains("Permission denied"), "{err}");
     }
 
+    fn backup_form_app(values: [&str; 8]) -> App {
+        let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+        app.modal = Some(Modal::Form { title: "x".into(), fields: backup_fields(values), focused: 3, description: None, kind: backup_kind(None, vec![]) });
+        app
+    }
+
+    #[test]
+    fn f5_in_the_backup_form_queues_one_check_for_the_forms_host_and_marks_it_checking() {
+        let mut app = backup_form_app(BACKUP_GOOD);
+        assert_eq!(app.handle_modal_key(KeyCode::F(5)), None);
+        assert_eq!(app.pending_preflight, vec![PendingPreflight { host: 0, host_name: "local".into(), repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into() }]);
+        assert_eq!(app.backup_preflight, Some(PreflightCheck { host: 0, repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into(), result: None }));
+        assert!(matches!(app.modal, Some(Modal::Form { .. })), "the form stays open");
+    }
+
+    #[test]
+    fn f5_twice_while_checking_queues_only_one_check() {
+        let mut app = backup_form_app(BACKUP_GOOD);
+        app.handle_modal_key(KeyCode::F(5));
+        app.handle_modal_key(KeyCode::F(5));
+        assert_eq!(app.pending_preflight.len(), 1);
+    }
+
+    #[test]
+    fn f5_after_a_result_checks_again() {
+        let mut app = backup_form_app(BACKUP_GOOD);
+        app.handle_modal_key(KeyCode::F(5));
+        app.pending_preflight.clear();
+        app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok)).unwrap();
+        app.drain_worker_messages();
+        app.handle_modal_key(KeyCode::F(5));
+        assert_eq!(app.pending_preflight.len(), 1);
+        assert_eq!(app.backup_preflight.as_ref().unwrap().result, None, "a new check clears the old answer");
+    }
+
+    #[test]
+    fn f5_runs_nothing_for_bad_fields_and_says_why() {
+        for (values, want) in [
+            (["nohost", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw", "", "30 3 * * *", "y"], "Unknown host 'nohost'"),
+            (["local", "tank/data", "hourly", "", "/root/pw", "", "30 3 * * *", "y"], "repository"),
+            (["local", "tank/data", "hourly", "/mnt/usb/restic", "pw", "", "30 3 * * *", "y"], "password file"),
+            (["local", "tank/data", "hourly", "rest:https://user:secret@host/r", "/root/pw", "", "30 3 * * *", "y"], "repository"),
+        ] {
+            let mut app = backup_form_app(values);
+            app.handle_modal_key(KeyCode::F(5));
+            assert!(app.pending_preflight.is_empty(), "{values:?}");
+            assert!(app.backup_preflight.is_none(), "{values:?}");
+            assert!(app.status_message.as_deref().is_some_and(|m| m.contains(want)), "{values:?}: {:?}", app.status_message);
+        }
+    }
+
+    #[test]
+    fn f5_does_nothing_in_other_forms() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form { title: "x".into(), fields: vec![FormField { label: "x".into(), value: "/r".into() }], focused: 0, description: None, kind: FormKind::CreateDataset { host: 0 } });
+        app.handle_modal_key(KeyCode::F(5));
+        assert!(app.pending_preflight.is_empty() && app.backup_preflight.is_none());
+    }
+
+    #[test]
+    fn a_result_for_other_values_is_discarded_and_a_matching_one_is_kept() {
+        let mut app = backup_form_app(BACKUP_GOOD);
+        app.handle_modal_key(KeyCode::F(5));
+        let stale = crate::restic::Preflight::Problem("old".into());
+        app.tx.send(WorkerMsg::Preflight(0, "/some/other/repo".into(), "/root/pw".into(), stale)).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.backup_preflight.as_ref().unwrap().result, None);
+        app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok)).unwrap();
+        app.drain_worker_messages();
+        assert_eq!(app.backup_preflight.as_ref().unwrap().result, Some(crate::restic::Preflight::Ok));
+    }
 }
