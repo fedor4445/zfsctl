@@ -1,0 +1,252 @@
+//! Keys while a modal is open: the confirmations, and the forms with their submit paths.
+
+use super::forms::{
+    build_backup_job_action, build_bootenv_action, build_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
+    irreversible_prompt,
+};
+use super::{App, Instant, Modal, MutationCall, PendingAction};
+use crate::ui::modal::{FormField, FormKind};
+use crate::ui::picker::build_picker_state;
+use crossterm::event::KeyCode;
+
+/// The pieces of an open `Modal::Form`, taken apart while one key is handled and put back with `into_modal`.
+struct FormParts {
+    title: String,
+    fields: Vec<FormField>,
+    focused: usize,
+    description: Option<String>,
+    kind: FormKind,
+}
+
+impl FormParts {
+    fn into_modal(self) -> Modal {
+        Modal::Form { title: self.title, fields: self.fields, focused: self.focused, description: self.description, kind: self.kind }
+    }
+}
+
+impl App {
+    /// Routes a key press to the currently open modal. Returns
+    /// `Some(action)` when the modal was submitted/confirmed — the
+    /// caller (event loop) is responsible for looking up the target
+    /// host's runner and calling `dispatch_mutation`. Returns `None`
+    /// for a cancel, an in-progress edit, or an unrecognized key (which
+    /// leaves the modal open rather than silently dismissing it).
+    /// No-ops (returns `None`, does nothing) if no modal is open.
+    pub fn handle_modal_key(&mut self, key: KeyCode) -> Option<PendingAction> {
+        let modal = self.modal.take()?;
+        match modal {
+            Modal::Confirm { prompt, action, choice } => self.confirm_key(key, prompt, action, choice),
+            Modal::ConfirmTyped { prompt, expected, input, action } => self.confirm_typed_key(key, prompt, expected, input, action),
+            Modal::Form { title, fields, focused, description, kind } => self.form_key(key, FormParts { title, fields, focused, description, kind }),
+            Modal::Info { .. } => None,
+        }
+    }
+
+    // Two steps for both outcomes: `y` / `n` / Esc only select, Enter applies the selection.
+    // Enter with nothing selected, and every other key, change nothing.
+    fn confirm_key(&mut self, key: KeyCode, prompt: String, action: PendingAction, choice: Option<bool>) -> Option<PendingAction> {
+        match (key, choice) {
+            (KeyCode::Enter, Some(true)) => {
+                self.confirm_restore = None;
+                Some(action)
+            }
+            (KeyCode::Enter, Some(false)) => {
+                // A confirmation that came from a form hands the form back, values intact.
+                if let Some((tag, form)) = self.confirm_restore.take() {
+                    if tag == prompt {
+                        self.modal = Some(form);
+                    }
+                }
+                None
+            }
+            (KeyCode::Char('y' | 'Y'), _) => {
+                self.modal = Some(Modal::Confirm { prompt, action, choice: Some(true) });
+                None
+            }
+            (KeyCode::Char('n' | 'N') | KeyCode::Esc, _) => {
+                self.modal = Some(Modal::Confirm { prompt, action, choice: Some(false) });
+                None
+            }
+            _ => {
+                self.modal = Some(Modal::Confirm { prompt, action, choice });
+                None
+            }
+        }
+    }
+
+    fn confirm_typed_key(&mut self, key: KeyCode, prompt: String, expected: String, mut input: String, action: PendingAction) -> Option<PendingAction> {
+        match key {
+            KeyCode::Esc => return None,
+            KeyCode::Enter if input == expected => return Some(action),
+            KeyCode::Backspace => {
+                input.pop();
+            }
+            KeyCode::Char(c) => input.push(c),
+            _ => {}
+        }
+        self.modal = Some(Modal::ConfirmTyped { prompt, expected, input, action });
+        None
+    }
+
+    /// Puts the form back on screen, unchanged apart from what the caller already did to it.
+    fn reopen(&mut self, form: FormParts) -> Option<PendingAction> {
+        self.modal = Some(form.into_modal());
+        None
+    }
+
+    /// Shows `msg` and puts the form back with the first field focused, so nothing typed is lost.
+    fn reject(&mut self, mut form: FormParts, msg: String) -> Option<PendingAction> {
+        self.set_error(msg);
+        form.focused = 0;
+        self.reopen(form)
+    }
+
+    fn form_key(&mut self, key: KeyCode, mut form: FormParts) -> Option<PendingAction> {
+        match key {
+            KeyCode::Esc => None,
+            KeyCode::Tab | KeyCode::Down => {
+                form.focused = (form.focused + 1) % form.fields.len();
+                self.reopen(form)
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.focused = if form.focused == 0 { form.fields.len() - 1 } else { form.focused - 1 };
+                self.reopen(form)
+            }
+            KeyCode::Enter => self.submit_form(form),
+            KeyCode::Backspace => {
+                if let Some(field) = form.fields.get_mut(form.focused) {
+                    field.value.pop();
+                }
+                self.reopen(form)
+            }
+            KeyCode::Char(c) => {
+                if let Some(field) = form.fields.get_mut(form.focused) {
+                    field.value.push(c);
+                }
+                self.reopen(form)
+            }
+            KeyCode::F(5) if matches!(form.kind, FormKind::BackupJob { .. }) => {
+                self.request_backup_preflight(field_value(&form.fields, 0).trim(), field_value(&form.fields, 5).trim(), field_value(&form.fields, 6).trim());
+                self.reopen(form)
+            }
+            KeyCode::F(2) => {
+                self.open_form_picker(&form);
+                self.reopen(form)
+            }
+            _ => self.reopen(form),
+        }
+    }
+
+    /// F2: opens the picker for the focused field, if it has one.
+    fn open_form_picker(&mut self, form: &FormParts) {
+        let FormParts { fields, focused, kind, .. } = form;
+        let Some(mut picker) = build_picker_state(kind, *focused, field_value(fields, *focused)) else { return };
+        if let Some((host, _)) = picker.account {
+            self.open_account_picker(&mut picker, host, field_value(fields, *focused), Instant::now());
+        }
+        if picker.pool_host.is_some() {
+            // The destination dataset lists the *destination* host's datasets.
+            let host_field = if matches!(kind, FormKind::ReplicateJob { .. }) && *focused == 4 { 3 } else { 0 };
+            // The backup form's Source field lists the snapshots of the form's dataset.
+            let snapshots_of = (matches!(kind, FormKind::BackupJob { .. }) && *focused == 3).then(|| field_value(fields, 1).trim().to_string());
+            self.open_pool_picker(&mut picker, kind, field_value(fields, host_field), snapshots_of);
+        }
+        self.picker = Some(picker);
+    }
+
+    /// Enter: moves to the next field, and on the last one submits the form.
+    fn submit_form(&mut self, mut form: FormParts) -> Option<PendingAction> {
+        if form.focused + 1 < form.fields.len() {
+            form.focused += 1;
+            return self.reopen(form);
+        }
+        match form.kind {
+            FormKind::NotifySettings => self.submit_notify_form(form),
+            FormKind::AddHost => self.submit_add_host_form(form),
+            FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::BackupJob { .. } | FormKind::ReplicateJob { .. } => self.submit_job_form(form),
+            FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } => match build_bootenv_action(&form.kind, &form.fields) {
+                Ok(action) => {
+                    if let MutationCall::RenameBootEnv { to, .. } = &action.call {
+                        self.bootenv_pin = Some(to.clone());
+                    }
+                    Some(action)
+                }
+                Err(msg) => self.reject(form, msg),
+            },
+            FormKind::ShareSmb { .. } => match build_smb_action(&form.kind, &form.fields, &self.shares) {
+                Ok(action) => Some(action),
+                Err(msg) => self.reject(form, msg),
+            },
+            _ => self.submit_plain_form(form),
+        }
+    }
+
+    fn submit_notify_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        match build_notify_action(&form.fields, &self.config_path) {
+            Ok((mut action, prompt)) => {
+                action.host = self.selected_host;
+                // Declining returns to the form, not to nothing.
+                self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+                self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+                None
+            }
+            Err(msg) => self.reject(form, msg),
+        }
+    }
+
+    fn submit_add_host_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let name = field_value(&form.fields, 0).trim().to_string();
+        let target = field_value(&form.fields, 1).trim().to_string();
+        let name_lower = name.to_lowercase();
+        let is_duplicate = self.hosts.iter().any(|h| h.eq_ignore_ascii_case(&name)) || self.pending_probes.contains(&name_lower);
+        if name.is_empty() || target.is_empty() {
+            return self.reopen(form);
+        }
+        if is_duplicate {
+            self.set_error(format!("A host named '{name}' already exists or is already being added"));
+            return self.reopen(form);
+        }
+        self.pending_probes.insert(name_lower.clone());
+        if let Some(tag) = crate::config::clean_tag(field_value(&form.fields, 2)) {
+            self.new_host_tags.insert(name_lower, tag);
+        }
+        self.begin_add_host(name, target);
+        None
+    }
+
+    /// The four job forms: a scrub job saves at once, the others go through the save confirmation.
+    fn submit_job_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let now = chrono::Utc::now();
+        let (built, confirm) = match form.kind {
+            FormKind::Job { .. } => (build_job_action(&form.kind, &form.fields, &self.state_dir, now), false),
+            FormKind::SnapshotJob { .. } => (build_snapshot_job_action(&form.kind, &form.fields, &self.state_dir, now), true),
+            FormKind::BackupJob { .. } => (build_backup_job_action(&form.kind, &form.fields, &self.state_dir, now), true),
+            _ => (build_replicate_job_action(&form.kind, &form.fields, &self.state_dir, now), true),
+        };
+        match built {
+            Ok(mut action) => {
+                action.host = self.selected_host;
+                if confirm {
+                    self.confirm_job_save(form.into_modal(), action)
+                } else {
+                    Some(action)
+                }
+            }
+            Err(msg) => self.reject(form, msg),
+        }
+    }
+
+    /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.
+    fn submit_plain_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let Some(action) = build_pending_action(&form.kind, &form.fields) else {
+            let msg = form_problem(&form.kind, &form.fields);
+            return self.reject(form, msg);
+        };
+        if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
+            self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+            self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+            return None;
+        }
+        Some(action)
+    }
+}
