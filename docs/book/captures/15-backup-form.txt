@@ -1,6 +1,6 @@
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 10398)───────────────────────────────────────────────────┐
 │Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5h ago │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
 │Disks                 ││                                                                                    │
@@ -21,7 +21,7 @@
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Sun 2026-10-11 03:30, Mon 2026-10-12 03:30, Tue 2026-10-13│                     │
+│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
@@ -33,4 +33,4 @@
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel

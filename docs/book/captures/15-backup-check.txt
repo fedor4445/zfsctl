@@ -1,0 +1,36 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 10398)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5h ago │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares               ┌New backup job──────────────────────────────────────────────────┐                     │
+│Boot Envs            │Backs up the newest <prefix>-<timestamp> snapshot (it never     │                     │
+│Jobs                 │takes snapshots) through a temporary read-only clone. The       │                     │
+│Alerts               │repository must already exist (restic init).                    │                     │
+│                     │                                                                │                     │
+│                     │  Host (where restic runs): local                               │                     │
+│                     │  Dataset:                                                      │                     │
+│                     │  Prefix (snapshots to back up): auto                           │                     │
+│                     │  Repository (restic -r; no credentials in it):                 │                     │
+│                     │/mnt/usb/restic-tank                                            │                     │
+│                     │> Password file (absolute path on the host): /root/.restic-key  │                     │
+│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │─────────────────────┘
+│                     │  Schedule: 30 3 * * *                                          │─────────────────────┐
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │Check: no repository at that address yet: create it once with   │                     │
+│                     │`restic init`                                                   │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F5 Check  Esc Cancel

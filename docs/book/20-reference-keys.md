@@ -16,6 +16,7 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `Up / Down` | select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row) |
 | `r` | refresh the focused pane |
 | `F2` | in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones) |
+| `F5` | in the backup job form: check the repository and password file on the job's host (read-only; never blocks saving) |
 | `Esc` | dismiss a status message, back out of a focused pane, or cancel a modal (in a y/n confirmation Esc selects No, then Enter) |
 | `y / n, Enter` | a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing. Forms that cannot be undone (create pool, add vdev, replace disk, revoke, shrinking a volume, pool features) end in one, showing the exact command |
 | `?` | this Help screen |

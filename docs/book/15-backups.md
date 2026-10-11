@@ -31,9 +31,9 @@ On the host that will run the backup (the hub, in the running example):
 Press `B` in Jobs:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 10398)───────────────────────────────────────────────────┐
 │Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5h ago │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
 │Disks                 ││                                                                                    │
@@ -54,7 +54,7 @@ Press `B` in Jobs:
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Sun 2026-10-11 03:30, Mon 2026-10-12 03:30, Tue 2026-10-13│                     │
+│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
@@ -66,7 +66,7 @@ Press `B` in Jobs:
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 ```
 
 - **Host**: where restic runs.
@@ -75,6 +75,64 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel
 - **Password file**: the absolute path of the file you made, on that host (the form asks for it after the repository).
 - **Keep**: how many backups to keep, in restic's words: `7d 4w 12m 3y` is "seven dailies, four weeklies, twelve monthlies, three yearlies"; blank keeps everything.
 - **Schedule** and **catch up**, as in chapter 14.
+
+### Check before you save
+
+Before the first scheduled run, press `F5` in the form. zfsctl tries to open the repository with the password file on that host, and shows the answer at the bottom of the form:
+
+```screen
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 10398)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5h ago │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares               ┌New backup job──────────────────────────────────────────────────┐                     │
+│Boot Envs            │Backs up the newest <prefix>-<timestamp> snapshot (it never     │                     │
+│Jobs                 │takes snapshots) through a temporary read-only clone. The       │                     │
+│Alerts               │repository must already exist (restic init).                    │                     │
+│                     │                                                                │                     │
+│                     │  Host (where restic runs): local                               │                     │
+│                     │  Dataset:                                                      │                     │
+│                     │  Prefix (snapshots to back up): auto                           │                     │
+│                     │  Repository (restic -r; no credentials in it):                 │                     │
+│                     │/mnt/usb/restic-tank                                            │                     │
+│                     │> Password file (absolute path on the host): /root/.restic-key  │                     │
+│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │─────────────────────┘
+│                     │  Schedule: 30 3 * * *                                          │─────────────────────┐
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │Check: no repository at that address yet: create it once with   │                     │
+│                     │`restic init`                                                   │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F5 Check  Esc Cancel
+```
+
+The check only reads: it never creates a repository (that stays your `restic init`) and never blocks saving, so a USB disk that is not plugged in yet does not stop you saving the job. It runs in the background and gives up after 45 seconds. Editing the host, repository or password file hides the answer, because it no longer describes what is on screen. What the answers mean:
+
+| It says | Do this |
+|---|---|
+| `OK, the repository opens` | nothing: the program, the remote, the password file, the password and the repository all work |
+| `no repository at that address yet` | create it once with `restic init` (see above), or fix the path |
+| `the password file does not unlock this repository` | the file holds a different password than the one the repository was made with |
+| `no readable password file at …` | create it on that host (not on the machine you are typing on), readable by root |
+| `rclone remote '…' is not in root's rclone config` | run `rclone config` as root on that host, and use the remote's name |
+| `rclone is not installed on …` | `pkg install rclone` on that host |
+| `restic is not installed on …, or its sudoers entry does not allow it` | `pkg install restic`, and for a remote host see `zfsctl print-sudoers` |
+| `no answer from … in 45 s` | the target did not respond: an unreachable sftp host, a disk that is not mounted |
+
+Anything else is restic's own message, with the repository address hidden. A failed check is not a reason to panic: fix the cause and press `F5` again.
 
 ### How a run works
 
