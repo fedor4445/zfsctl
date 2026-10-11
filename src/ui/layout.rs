@@ -76,7 +76,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(hint_line), hint_area);
 
     if let Some(modal) = app.modal.clone() {
-        draw_modal(f, &modal, &app.theme, area);
+        draw_modal(f, &modal, app.backup_preflight.as_ref(), &app.theme, area);
     }
     if let Some(picker) = app.picker.clone() {
         draw_picker(f, &picker, &app.theme, area);
@@ -1070,12 +1070,28 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
     }
 }
 
+/// The backup form's F5 result as one line, and whether it is a problem. Shown only while the check still
+/// describes what is on screen: editing the host, repository or password file hides it.
+fn preflight_status(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField], check: Option<&crate::ui::state::PreflightCheck>) -> Option<(String, bool)> {
+    let crate::ui::modal::FormKind::BackupJob { hosts, .. } = kind else { return None };
+    let check = check?;
+    let value = |i: usize| fields.get(i).map_or("", |f| f.value.as_str()).trim();
+    if hosts.get(check.host).map(String::as_str) != Some(value(0)) || check.repository != value(3) || check.password_file != value(4) {
+        return None;
+    }
+    Some(match &check.result {
+        None => ("Check: checking the repository...".to_string(), false),
+        Some(crate::restic::Preflight::Ok) => ("Check: OK, the repository opens.".to_string(), false),
+        Some(crate::restic::Preflight::Problem(m)) => (format!("Check: {m}"), true),
+    })
+}
+
 /// The line under a y/n confirm's prompt. `CONFIRM_YES` is the longest, so it sizes the window.
 const CONFIRM_NONE: &str = "Press y for yes or n for no, then Enter.";
 const CONFIRM_YES: &str = "▶ YES selected: press Enter to run it (n or Esc to change).";
 const CONFIRM_NO: &str = "▶ NO selected: press Enter to cancel (y to change).";
 
-fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
+fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
     // percentage of the terminal's height let long prompts or the
@@ -1097,7 +1113,9 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
         Modal::Form { fields, description, kind, .. } => {
             let preview = form_preview(kind, fields);
             let preview_lines: u16 = if preview.is_empty() { 0 } else { 1 + preview.iter().map(|l| wrapped_line_count(l, inner_width)).sum::<u16>() };
+            let status_lines: u16 = preflight_status(kind, fields, check).map_or(0, |(text, _)| 1 + wrapped_line_count(&text, inner_width));
             let fields_lines: u16 = preview_lines
+                + status_lines
                 + fields
                     .iter()
                     .map(|field| wrapped_line_count(&format!("  {}: {}", field.label, field.value), inner_width))
@@ -1155,22 +1173,26 @@ fn draw_modal(f: &mut Frame, modal: &Modal, theme: &Theme, area: Rect) {
             f.render_widget(p, popup_area);
         }
         Modal::Form { title, fields, focused, description, kind } => {
-            let mut lines = Vec::new();
+            let mut lines: Vec<Line> = Vec::new();
             if let Some(desc) = description {
-                lines.push(desc.clone());
-                lines.push(String::new());
+                lines.extend(desc.split('\n').map(|l| Line::raw(l.to_string())));
+                lines.push(Line::raw(String::new()));
             }
             for (i, field) in fields.iter().enumerate() {
                 let marker = if i == *focused { ">" } else { " " };
                 let shown = if kind.masks_field(i) { "*".repeat(field.value.chars().count()) } else { field.value.clone() };
-                lines.push(format!("{marker} {}: {shown}", field.label));
+                lines.push(Line::raw(format!("{marker} {}: {shown}", field.label)));
             }
             let preview = form_preview(kind, fields);
             if !preview.is_empty() {
-                lines.push(String::new());
-                lines.extend(preview);
+                lines.push(Line::raw(String::new()));
+                lines.extend(preview.into_iter().map(Line::raw));
             }
-            let p = Paragraph::new(lines.join("\n"))
+            if let Some((text, problem)) = preflight_status(kind, fields, check) {
+                lines.push(Line::raw(String::new()));
+                lines.push(if problem { Line::styled(text, theme.danger) } else { Line::raw(text) });
+            }
+            let p = Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
                 .block(Block::default().borders(Borders::ALL).border_style(theme.accent).title(title.as_str()));
             f.render_widget(p, popup_area);
@@ -2766,5 +2788,46 @@ mod tests {
         let mut tiny = host_panel_app(());
         let text = render(&mut tiny, 80, 24).join("\n");
         assert!(text.contains("more lines: enlarge the terminal"), "{text}");
+    }
+
+    fn backup_form_fields(host: &str, repo: &str, pw: &str) -> Vec<crate::ui::modal::FormField> {
+        let values = [host, "tank/data", "auto", repo, pw, "", "30 3 * * *", "y"];
+        values.iter().map(|v| crate::ui::modal::FormField { label: "x".into(), value: (*v).to_string() }).collect()
+    }
+
+    fn backup_kind_for_status() -> crate::ui::modal::FormKind {
+        crate::ui::modal::FormKind::BackupJob { hosts: vec!["local".into(), "fbsd16".into()], existing: None, jobs: vec![] }
+    }
+
+    fn check(host: usize, repo: &str, pw: &str, result: Option<crate::restic::Preflight>) -> crate::ui::state::PreflightCheck {
+        crate::ui::state::PreflightCheck { host, repository: repo.into(), password_file: pw.into(), result }
+    }
+
+    #[test]
+    fn the_check_line_shows_checking_ok_and_a_problem_for_the_values_on_screen() {
+        let fields = backup_form_fields("fbsd16", "/r", "/pw");
+        let kind = backup_kind_for_status();
+        assert_eq!(preflight_status(&kind, &fields, Some(&check(1, "/r", "/pw", None))), Some(("Check: checking the repository...".to_string(), false)));
+        assert_eq!(preflight_status(&kind, &fields, Some(&check(1, "/r", "/pw", Some(crate::restic::Preflight::Ok)))), Some(("Check: OK, the repository opens.".to_string(), false)));
+        let problem = crate::restic::Preflight::Problem("no readable password file at /pw on fbsd16".to_string());
+        assert_eq!(preflight_status(&kind, &fields, Some(&check(1, "/r", "/pw", Some(problem)))), Some(("Check: no readable password file at /pw on fbsd16".to_string(), true)));
+    }
+
+    #[test]
+    fn the_check_line_disappears_when_a_field_it_depends_on_changes() {
+        let kind = backup_kind_for_status();
+        let ok = check(1, "/r", "/pw", Some(crate::restic::Preflight::Ok));
+        assert!(preflight_status(&kind, &backup_form_fields("fbsd16", "/r2", "/pw"), Some(&ok)).is_none(), "repository edited");
+        assert!(preflight_status(&kind, &backup_form_fields("fbsd16", "/r", "/pw2"), Some(&ok)).is_none(), "password file edited");
+        assert!(preflight_status(&kind, &backup_form_fields("local", "/r", "/pw"), Some(&ok)).is_none(), "host edited");
+        assert!(preflight_status(&kind, &backup_form_fields("fbsd16", " /r ", "/pw"), Some(&ok)).is_some(), "surrounding spaces are trimmed like the check does");
+    }
+
+    #[test]
+    fn only_the_backup_form_shows_a_check_line() {
+        let ok = check(0, "/r", "/pw", Some(crate::restic::Preflight::Ok));
+        let kind = crate::ui::modal::FormKind::CreateDataset { host: 0 };
+        assert!(preflight_status(&kind, &backup_form_fields("local", "/r", "/pw"), Some(&ok)).is_none());
+        assert!(preflight_status(&backup_kind_for_status(), &backup_form_fields("local", "/r", "/pw"), None).is_none());
     }
 }
