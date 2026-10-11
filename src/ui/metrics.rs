@@ -7,7 +7,7 @@ use crate::zfs::disk::human_size;
 use crate::zfs::disk::{DiskInfo, DiskMedia, DiskMembership};
 use crate::zfs::disk_detail::DiskLive;
 use crate::zfs::host::HostSummary;
-use crate::zfs::host_health::ScanSummary;
+use crate::zfs::host_health::{Assessment, Level, ScanSummary};
 use crate::zfs::snapshot_detail::SnapshotDetail;
 use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolFacts, PoolIo, TargetSample};
 use crate::zfs::pool_info::PoolContents;
@@ -391,9 +391,29 @@ fn scan_text(scan: Option<&ScanSummary>) -> (String, bool) {
     }
 }
 
+/// The Status line of the host panel: what `zpool status -x` said, in the color of the host's level, so it agrees
+/// with the dot and the State column of the Hosts table; and, on a line of its own below it, the reason when
+/// zfsctl itself found something (a pool 86% full, a failed job) that ZFS does not call unhealthy, so a yellow
+/// line never reads "healthy" without saying why it is yellow. A line ZFS itself complains about is at least a
+/// warning.
+fn status_text(zpool: Option<&str>, assessment: Option<&Assessment>, theme: &Theme) -> (String, Option<String>, Style) {
+    let status = zpool.map_or_else(|| "-".to_string(), str::to_string);
+    let zfs_complains = zpool.is_some_and(|s| !s.contains("healthy"));
+    let level = assessment.map(|a| a.level);
+    let style = match level {
+        Some(Level::Critical | Level::Disconnected) => theme.err,
+        Some(Level::Warning) => theme.warn,
+        _ if zfs_complains => theme.warn,
+        Some(Level::Probing) => theme.dim(),
+        _ => Style::default(),
+    };
+    let reason = assessment.filter(|a| matches!(a.level, Level::Warning | Level::Critical) && !status.contains(&a.reason)).map(|a| a.reason.clone());
+    (status, reason, style)
+}
+
 /// The Hosts panel's text, split into the System and ZFS columns and the per-pool rows. A stale panel (the
 /// last sample failed) is drawn dim.
-pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
+pub fn host_panel(h: &HostSummary, assessment: Option<&Assessment>, theme: &Theme, stale: bool) -> HostPanel {
     let dash = || "-".to_string();
     let dim = |s: Style| if stale { theme.dim() } else { s };
     let (alloc, size) = h.capacity();
@@ -407,8 +427,7 @@ pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
     let cpu = h.cpu.as_ref().map_or_else(dash, |c| format!("{} cores{}", c.cores, c.percent.map_or_else(String::new, |p| format!("  {p:.0}%"))));
     let memory = h.memory.as_ref().map_or_else(dash, |m| format!("{}  free {}  wired {}", human_size(m.physical), human_size(m.free), human_size(m.wired)));
     let swap = h.swap.as_ref().map_or_else(|| "none".to_string(), |s| format!("{} / {}", human_size(s.used), human_size(s.total)));
-    let status = h.status.clone().unwrap_or_else(dash);
-    let status_style = if status.contains("healthy") { Style::default() } else { theme.warn };
+    let (status, status_reason, status_style) = status_text(h.status.as_deref(), assessment, theme);
     let line = |style: Style, text: String| Line::from(Span::styled(text, dim(style)));
     let os = line(Style::default(), format!("OS      {}", h.os.clone().unwrap_or_else(dash)));
     let up = line(Style::default(), format!("Up      {}   rtt {}", h.uptime_secs.map_or_else(dash, duration_text), h.rtt_ms.map_or_else(dash, |ms| format!("{ms}ms"))));
@@ -426,7 +445,7 @@ pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
         let hit = l2.hit_percent().map_or_else(dash, |p| format!("{p:.1}%"));
         line(Style::default(), format!("L2ARC   {}  hit {hit}", human_size(l2.size)))
     });
-    let status_line = line(status_style, format!("Status  {status}"));
+    let status_lines: Vec<Line<'static>> = std::iter::once(line(status_style, format!("Status  {status}"))).chain(status_reason.map(|r| line(status_style, format!("        {r}")))).collect();
     let rows: Vec<Line<'static>> = h
         .pool_rows
         .iter()
@@ -438,7 +457,8 @@ pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
             line(if bad { theme.err } else if p.capacity_percent >= 80 { theme.warn } else { Style::default() }, format!("{:<12} {:>3}% frag {:>3} {:<8} scrub {scrub}", p.name, p.capacity_percent, frag, health))
         })
         .collect();
-    let mut single = vec![pools_line.clone(), status_line.clone()];
+    let mut single = vec![pools_line.clone()];
+    single.extend(status_lines.iter().cloned());
     single.extend(rows.iter().cloned());
     single.push(space.clone());
     single.push(arc.clone());
@@ -450,7 +470,7 @@ pub fn host_panel(h: &HostSummary, theme: &Theme, stale: bool) -> HostPanel {
     system.extend([memory, swap]);
     let mut zfs = vec![zfs_version, pools_line, space, arc];
     zfs.extend(l2arc);
-    zfs.push(status_line);
+    zfs.extend(status_lines);
     HostPanel { system, zfs, pools: rows, single }
 }
 
@@ -488,8 +508,9 @@ fn clip_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
     lines.iter().map(|l| clip_line(l, width)).collect()
 }
 
-fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &HostSummary, stale: bool, theme: &Theme, area: Rect) {
-    let mut panel = host_panel(host, theme, stale);
+fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &HostSummary, assessment: Option<&Assessment>, theme: &Theme, area: Rect) {
+    // A failed sample leaves the last good figures on screen, dimmed.
+    let mut panel = host_panel(host, assessment, theme, view.error.is_some());
     // Below this width the graphs would leave the text too narrow to read: drop them and keep the rates as a line.
     let text = if area.width < 90 {
         let io = Line::raw(format!("I/O     read {}  write {}", per_sec(last.read_bps), per_sec(last.write_bps)));
@@ -617,6 +638,8 @@ pub struct Context<'a> {
     pub disk: Option<&'a DiskInfo>,
     /// The listed share, for a share target.
     pub share: Option<&'a Share>,
+    /// The active host's level and reason, as the Hosts table shows them.
+    pub assessment: Option<&'a Assessment>,
 }
 
 pub fn draw(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, area: Rect) {
@@ -655,7 +678,7 @@ fn draw_body(f: &mut Frame, view: &MetricsView, ctx: &Context, theme: &Theme, ar
         return;
     }
     if let (Some(host), Some(last)) = (&view.host, view.io_history.back()) {
-        draw_host_panel(f, view, last, host, view.error.is_some(), theme, area);
+        draw_host_panel(f, view, last, host, ctx.assessment, theme, area);
         return;
     }
     let (Some(facts), Some(last)) = (&view.facts, view.io_history.back()) else {
@@ -999,7 +1022,7 @@ mod tests {
 
     #[test]
     fn the_panel_names_cpu_memory_swap_and_l2arc() {
-        let panel = host_panel(&rich_host(), &Theme::ansi(), false);
+        let panel = host_panel(&rich_host(), None, &Theme::ansi(), false);
         let system = text_of(&panel.system);
         for want in ["Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz", "36 cores", "12%", "Memory", "19.9G", "Swap", "512K / 2.0G"] {
             assert!(system.contains(want), "missing {want:?} in\n{system}");
@@ -1015,7 +1038,7 @@ mod tests {
         h.memory = None;
         h.swap = None;
         h.l2arc = None;
-        let panel = host_panel(&h, &Theme::ansi(), false);
+        let panel = host_panel(&h, None, &Theme::ansi(), false);
         let all = format!("{}\n{}", text_of(&panel.system), text_of(&panel.zfs));
         assert!(!all.contains("L2ARC"), "{all}");
         assert!(all.contains("CPU     -") && all.contains("Memory  -") && all.contains("Swap    none"), "{all}");
@@ -1023,7 +1046,7 @@ mod tests {
 
     #[test]
     fn each_pool_gets_a_row_with_its_capacity_fragmentation_health_and_last_scrub() {
-        let panel = host_panel(&rich_host(), &Theme::ansi(), false);
+        let panel = host_panel(&rich_host(), None, &Theme::ansi(), false);
         let rows = text_of(&panel.pools);
         for want in ["scratch", "42%", "39%", "ONLINE", "Oct  8 19:48:07 2026", "tank", "91%", "DEGRADED", "running 34%", "never"] {
             assert!(rows.contains(want), "missing {want:?} in\n{rows}");
@@ -1034,7 +1057,7 @@ mod tests {
     #[test]
     fn a_pool_that_is_not_online_or_has_scrub_errors_is_drawn_in_the_error_color() {
         let theme = Theme::ansi();
-        let panel = host_panel(&rich_host(), &theme, false);
+        let panel = host_panel(&rich_host(), None, &theme, false);
         let tank = panel.pools.iter().find(|l| text_of(std::slice::from_ref(l)).contains("tank")).unwrap();
         assert!(tank.spans.iter().any(|s| s.style == theme.err), "{tank:?}");
         let scratch = panel.pools.iter().find(|l| text_of(std::slice::from_ref(l)).contains("scratch")).unwrap();
@@ -1044,9 +1067,76 @@ mod tests {
     #[test]
     fn a_stale_panel_is_drawn_dim() {
         let theme = Theme::ansi();
-        let fresh = host_panel(&rich_host(), &theme, false);
-        let stale = host_panel(&rich_host(), &theme, true);
+        let fresh = host_panel(&rich_host(), None, &theme, false);
+        let stale = host_panel(&rich_host(), None, &theme, true);
         assert!(stale.system.iter().all(|l| l.spans.iter().all(|s| s.style.add_modifier.contains(ratatui::style::Modifier::DIM) || s.style == theme.dim())), "{:?}", stale.system);
         assert!(!fresh.system.iter().all(|l| l.spans.iter().all(|s| s.style == theme.dim())));
+    }
+
+    fn assessed(level: Level, reason: &str) -> Assessment {
+        Assessment { level, reason: reason.to_string() }
+    }
+
+    #[test]
+    fn a_healthy_host_with_a_healthy_line_is_plain_and_unchanged() {
+        let theme = Theme::ansi();
+        let ok = assessed(Level::Ok, "ok");
+        assert_eq!(status_text(Some("all pools are healthy"), Some(&ok), &theme), ("all pools are healthy".to_string(), None, Style::default()));
+        assert_eq!(status_text(Some("all pools are healthy"), None, &theme), ("all pools are healthy".to_string(), None, Style::default()), "no assessment yet: as before");
+    }
+
+    #[test]
+    fn a_warning_host_colors_the_line_yellow_and_says_why_zfs_still_calls_it_healthy() {
+        let theme = Theme::ansi();
+        let (text, reason, style) = status_text(Some("all pools are healthy"), Some(&assessed(Level::Warning, "zroot 86% full")), &theme);
+        assert_eq!((text.as_str(), reason.as_deref(), style), ("all pools are healthy", Some("zroot 86% full"), theme.warn));
+    }
+
+    #[test]
+    fn a_critical_host_colors_the_line_red_and_adds_the_reason() {
+        let theme = Theme::ansi();
+        let (text, reason, style) = status_text(Some("pool: zroot"), Some(&assessed(Level::Critical, "zroot 93% full")), &theme);
+        assert_eq!((text.as_str(), reason.as_deref(), style), ("pool: zroot", Some("zroot 93% full"), theme.err));
+    }
+
+    #[test]
+    fn an_unreachable_host_is_red_and_a_probing_one_dim_and_neither_gets_a_reason() {
+        let theme = Theme::ansi();
+        let (text, reason, style) = status_text(Some("all pools are healthy"), Some(&assessed(Level::Disconnected, "unreachable")), &theme);
+        assert_eq!((text.as_str(), reason, style), ("all pools are healthy", None, theme.err));
+        let (_, reason, style) = status_text(Some("all pools are healthy"), Some(&assessed(Level::Probing, "probing")), &theme);
+        assert_eq!((reason, style), (None, theme.dim()));
+    }
+
+    #[test]
+    fn a_line_zfs_alone_complains_about_is_at_least_a_warning_even_when_the_host_level_is_ok() {
+        let theme = Theme::ansi();
+        let (text, reason, style) = status_text(Some("pool: tank"), Some(&assessed(Level::Ok, "ok")), &theme);
+        assert_eq!((text.as_str(), reason, style), ("pool: tank", None, theme.warn));
+        assert_eq!(status_text(Some("pool: tank"), None, &theme).2, theme.warn);
+    }
+
+    #[test]
+    fn the_reason_is_not_repeated_and_an_unknown_line_is_a_dash() {
+        let theme = Theme::ansi();
+        let w = assessed(Level::Warning, "zroot 86% full");
+        assert_eq!(status_text(Some("note: zroot 86% full already"), Some(&w), &theme).1, None);
+        assert_eq!(status_text(None, Some(&w), &theme).0, "-");
+        assert_eq!(status_text(None, None, &theme).0, "-");
+    }
+
+    #[test]
+    fn the_host_panel_draws_its_status_line_in_the_hosts_level_color_with_the_reason_below_it() {
+        let theme = Theme::ansi();
+        let warn = assessed(Level::Warning, "tank 91% full");
+        let panel = host_panel(&rich_host(), Some(&warn), &theme, false);
+        for lines in [&panel.zfs, &panel.single] {
+            let at = lines.iter().position(|l| text_of(std::slice::from_ref(l)).starts_with("Status")).expect("a Status line");
+            assert!(text_of(std::slice::from_ref(&lines[at])).ends_with("all pools are healthy"), "{:?}", lines[at]);
+            assert_eq!(text_of(std::slice::from_ref(&lines[at + 1])).trim(), "tank 91% full");
+            assert!(lines[at].spans.iter().chain(lines[at + 1].spans.iter()).all(|s| s.style == theme.warn));
+        }
+        let plain = host_panel(&rich_host(), Some(&assessed(Level::Ok, "ok")), &theme, false);
+        assert!(!text_of(&plain.zfs).contains("tank 91% full"), "no reason line when the host is ok");
     }
 }

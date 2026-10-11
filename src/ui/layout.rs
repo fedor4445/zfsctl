@@ -68,7 +68,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             }),
             _ => None,
         };
-        let ctx = crate::ui::metrics::Context { host_name: app.active_host_name(), health: health.as_ref(), disk, share };
+        let assessment = app.host_assessment(app.selected_host);
+        let ctx = crate::ui::metrics::Context { host_name: app.active_host_name(), health: health.as_ref(), disk, share, assessment: Some(&assessment) };
         crate::ui::metrics::draw(f, &app.metrics, &ctx, &app.theme, area);
     }
     draw_status_line(f, &status_text, status_style, gauge, &app.theme, status_area);

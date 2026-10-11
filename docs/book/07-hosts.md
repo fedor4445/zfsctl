@@ -126,7 +126,7 @@ Select a host with `Up` and `Down` and the panel shows it. The first sample of a
 ↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
-On the left is the system: operating system, uptime and round trip, load averages, CPU (cores, current use and the processor model), memory (physical, free, wired) and swap. On the right is ZFS: version, how many pools and whether all are healthy, total space used, the ARC (ZFS's memory cache: its size, its ceiling and its hit rate), and a status line from `zpool status -x`. Below are one row per pool with its fullness, fragmentation, health and last scrub.
+On the left is the system: operating system, uptime and round trip, load averages, CPU (cores, current use and the processor model), memory (physical, free, wired) and swap. On the right is ZFS: version, how many pools and whether all are healthy, total space used, the ARC (ZFS's memory cache: its size, its ceiling and its hit rate), and a status line from `zpool status -x`. That line takes the color of the host's State in the table above (yellow for a warning, red for a critical state or an unreachable host), and when zfsctl found the problem rather than ZFS (a pool 86% full, a failed job) the reason is written under it: ZFS can say "all pools are healthy" about a pool that is nearly full. Below are one row per pool with its fullness, fragmentation, health and last scrub.
 
 When the panel is wide enough (about 90 columns) it also shows two graphs, **Read** and **Write**, with the peak of what is drawn: they plot the whole host's disk activity over the most recent samples (roughly one every second or two). On a narrower terminal, as in the capture above, the panel keeps the figures and shows the rates as one line.
 
