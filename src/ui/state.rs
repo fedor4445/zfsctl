@@ -109,7 +109,6 @@ fn flatten_permissions_snapshot(snapshot: &crate::zfs::permission::PermissionsSn
 /// Each variant carries the index (into `App::hosts`) of the host the
 /// result is *about*, so a slow result for a host the user has since
 /// navigated away from can be told apart from a fresh one instead of
-/// silently overwriting the currently-selected host's pane.
 /// What the backup form's F5 check was asked about, and what it found (`None` while it still runs).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreflightCheck {
@@ -128,6 +127,10 @@ pub struct PendingPreflight {
     pub password_file: String,
 }
 
+/// Each variant carries the index (into `App::hosts`) of the host the
+/// result is *about*, so a slow result for a host the user has since
+/// navigated away from can be told apart from a fresh one instead of
+/// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
     AlertsPreview(String),
@@ -1680,6 +1683,7 @@ impl App {
                 self.modal = Some(self.snapshot_job_form(None, ""));
             }
             KeyCode::Char('B') if self.current_section() == Section::Jobs => {
+                self.backup_preflight = None;
                 self.modal = Some(self.backup_job_form(None));
             }
             KeyCode::Char('R') if self.current_section() == Section::Jobs => {
@@ -1704,7 +1708,10 @@ impl App {
                     self.modal = Some(match job.kind.as_str() {
                         crate::jobs::KIND_SNAPSHOT => self.snapshot_job_form(Some(job), ""),
                         crate::jobs::KIND_REPLICATE => self.replicate_job_form(Some(job)),
-                        crate::jobs::KIND_BACKUP => self.backup_job_form(Some(job)),
+                        crate::jobs::KIND_BACKUP => {
+                            self.backup_preflight = None;
+                            self.backup_job_form(Some(job))
+                        }
                         _ => self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")),
                     });
                 }
@@ -2248,7 +2255,6 @@ impl App {
         });
     }
 
-    /// Reports a failed pool lookup without running one (the host index no longer resolves).
     /// F5 in the backup form: validates what the save would validate, then queues the check for the event loop.
     /// A check already running for the same values is left alone.
     fn request_backup_preflight(&mut self, host_name: &str, repository: &str, password_file: &str) {
@@ -2286,6 +2292,7 @@ impl App {
         let _ = self.tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, crate::restic::Preflight::Problem(message)));
     }
 
+    /// Reports a failed pool lookup without running one (the host index no longer resolves).
     pub fn fail_pool_fetch(&self, host: usize, err: crate::error::AppError) {
         let _ = self.tx.send(WorkerMsg::PoolNames(host, Err(err)));
     }
@@ -11856,5 +11863,14 @@ mod tests {
         app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok)).unwrap();
         app.drain_worker_messages();
         assert_eq!(app.backup_preflight.as_ref().unwrap().result, Some(crate::restic::Preflight::Ok));
+    }
+
+    #[test]
+    fn opening_a_backup_form_forgets_an_earlier_check() {
+        let (mut app, _dir) = app_with_jobs(&[]);
+        app.backup_preflight = Some(PreflightCheck { host: 0, repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into(), result: Some(crate::restic::Preflight::Ok) });
+        app.handle_key(KeyCode::Char('B'));
+        assert!(matches!(app.modal, Some(Modal::Form { .. })));
+        assert!(app.backup_preflight.is_none());
     }
 }

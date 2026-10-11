@@ -120,10 +120,10 @@ pub fn unlock_args(repo: &str, password_file: &str) -> Vec<String> {
 }
 
 /// `restic cat config`: opens the repository (finding the program, the rclone remote, the password file, the
-/// password and the repository in one go) without locking it or writing a cache. What the preflight check runs.
+/// password and the repository in one go) without taking a lock or writing a cache. What the preflight check runs.
 pub fn cat_config_args(repo: &str, password_file: &str) -> Vec<String> {
     let [r, p] = repo_flags(repo, password_file);
-    vec!["cat".to_string(), r, p, "--no-cache".to_string(), "config".to_string()]
+    vec!["cat".to_string(), r, p, "--no-cache".to_string(), "--no-lock".to_string(), "config".to_string()]
 }
 
 /// restic quotes the repository in many of its error messages; a message shown to the user never carries it.
@@ -166,7 +166,9 @@ pub fn classify_preflight(status: i32, stdout: &str, stderr: &str, repo: &str, h
     } else if status == 10 || has("is there a repository at the following location") {
         "no repository at that address yet: create it once with `restic init`".to_string()
     } else {
-        redact(&failure_text(None, stderr), repo)
+        // rclone quotes its remote path without the `rclone:` prefix.
+        let text = redact(&failure_text(None, stderr), repo);
+        repo.strip_prefix("rclone:").map_or(text.clone(), |bare| redact(&text, bare))
     };
     Preflight::Problem(problem)
 }
@@ -410,7 +412,7 @@ mod tests {
 
     #[test]
     fn cat_config_args_are_flag_style_and_never_write_a_cache() {
-        assert_eq!(cat_config_args("/repo", "/pw"), vec!["cat", "--repo=/repo", "--password-file=/pw", "--no-cache", "config"]);
+        assert_eq!(cat_config_args("/repo", "/pw"), vec!["cat", "--repo=/repo", "--password-file=/pw", "--no-cache", "--no-lock", "config"]);
     }
 
     #[test]
@@ -460,6 +462,12 @@ mod tests {
         assert_eq!(m, "Fatal: odd thing at <repository>/locks second line");
         let long = format!("Fatal: {}", "x".repeat(2000));
         assert!(problem(pre(1, &long)).chars().count() < 600);
+    }
+
+    #[test]
+    fn rclones_unprefixed_remote_path_is_masked_too() {
+        let m = problem(classify_preflight(1, "", "Fatal: odd: t1:restic-tank/locks", "rclone:t1:restic-tank", "fb", "/pw"));
+        assert_eq!(m, "Fatal: odd: <repository>/locks");
     }
 
     #[test]

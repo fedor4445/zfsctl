@@ -156,7 +156,6 @@ fn poll_host_probes(app: &mut App, inventory: &HostInventory) {
     }
 }
 
-/// Same split as `apply_pending_account_fetches`, for the job forms' Pool and Dataset pickers.
 /// Hands each queued backup-form check its host's runner (same split as the pickers' fetches).
 fn apply_pending_preflights(app: &mut App, inventory: &HostInventory) {
     for pending in std::mem::take(&mut app.pending_preflight) {
@@ -169,6 +168,7 @@ fn apply_pending_preflights(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Same split as `apply_pending_account_fetches`, for the job forms' Pool and Dataset pickers.
 fn apply_pending_pool_fetches(app: &mut App, inventory: &HostInventory) {
     for (host, what) in std::mem::take(&mut app.pending_pool_fetch) {
         if let Some(h) = inventory.hosts.get(host) {

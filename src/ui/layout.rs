@@ -1113,7 +1113,10 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
         Modal::Form { fields, description, kind, .. } => {
             let preview = form_preview(kind, fields);
             let preview_lines: u16 = if preview.is_empty() { 0 } else { 1 + preview.iter().map(|l| wrapped_line_count(l, inner_width)).sum::<u16>() };
-            let status_lines: u16 = preflight_status(kind, fields, check).map_or(0, |(text, _)| 1 + wrapped_line_count(&text, inner_width));
+            let status_lines: u16 = preflight_status(kind, fields, check).map_or(0, |(text, _)| {
+                let n = wrapped_line_count(&text, inner_width);
+                1 + n + n / 4 + 1
+            });
             let fields_lines: u16 = preview_lines
                 + status_lines
                 + fields
