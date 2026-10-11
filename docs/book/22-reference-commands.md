@@ -64,7 +64,7 @@ On a managed host the unprivileged account may run these programs as root throug
 | `tee` | Samba shares | only on `/usr/local/etc/smb4.conf` |
 | `restic` | backup jobs (`--with restic`) | any arguments |
 
-Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` only read.
+Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat`, `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.
 
 > **Safety:** `zfs`, `zpool`, `bectl` and `restic` are powerful: whoever holds the account's ssh key effectively has root on that host. That is the price of managing it remotely; keep the key safe and the account locked to key logins.
 

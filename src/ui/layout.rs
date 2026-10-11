@@ -1070,20 +1070,31 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
     }
 }
 
-/// The backup form's F5 result as one line, and whether it is a problem. Shown only while the check still
-/// describes what is on screen: editing the host, repository or password file hides it.
-fn preflight_status(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField], check: Option<&crate::ui::state::PreflightCheck>) -> Option<(String, bool)> {
+/// The F5 check that still describes what is on screen: editing the host, repository or password file hides it.
+fn current_check<'a>(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField], check: Option<&'a crate::ui::state::PreflightCheck>) -> Option<&'a crate::ui::state::PreflightCheck> {
     let crate::ui::modal::FormKind::BackupJob { hosts, .. } = kind else { return None };
     let check = check?;
     let value = |i: usize| fields.get(i).map_or("", |f| f.value.as_str()).trim();
-    if hosts.get(check.host).map(String::as_str) != Some(value(0)) || check.repository != value(5) || check.password_file != value(6) {
-        return None;
-    }
+    (hosts.get(check.host).map(String::as_str) == Some(value(0)) && check.repository == value(5) && check.password_file == value(6)).then_some(check)
+}
+
+/// The backup form's F5 result as one line, and whether it is a problem. Shown only while the check still
+/// describes what is on screen.
+fn preflight_status(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField], check: Option<&crate::ui::state::PreflightCheck>) -> Option<(String, bool)> {
+    let check = current_check(kind, fields, check)?;
     Some(match &check.result {
         None => ("Check: checking the repository...".to_string(), false),
         Some(crate::restic::Preflight::Ok) => ("Check: OK, the repository opens.".to_string(), false),
         Some(crate::restic::Preflight::Problem(m)) => (format!("Check: {m}"), true),
     })
+}
+
+/// Advice about the password file under the F5 result: where it is, and who can read it. Empty until the check has
+/// answered, and while it no longer describes what is on screen.
+fn preflight_notes(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField], check: Option<&crate::ui::state::PreflightCheck>) -> Vec<String> {
+    let Some(check) = current_check(kind, fields, check).filter(|c| c.result.is_some()) else { return Vec::new() };
+    let location = crate::restic::password_file_location_note(&check.password_file);
+    location.into_iter().chain(check.file_note.clone()).map(|n| format!("Note: {n}")).collect()
 }
 
 /// The line under a y/n confirm's prompt. `CONFIRM_YES` is the longest, so it sizes the window.
@@ -1116,7 +1127,13 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
             let status_lines: u16 = preflight_status(kind, fields, check).map_or(0, |(text, _)| {
                 let n = wrapped_line_count(&text, inner_width);
                 1 + n + n / 4 + 1
-            });
+            }) + preflight_notes(kind, fields, check)
+                .iter()
+                .map(|note| {
+                    let n = wrapped_line_count(note, inner_width);
+                    n + n / 4 + 1
+                })
+                .sum::<u16>();
             let fields_lines: u16 = preview_lines
                 + status_lines
                 + fields
@@ -1195,6 +1212,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
                 lines.push(Line::raw(String::new()));
                 lines.push(if problem { Line::styled(text, theme.danger) } else { Line::raw(text) });
             }
+            lines.extend(preflight_notes(kind, fields, check).into_iter().map(|note| Line::styled(note, theme.warn)));
             let p = Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
                 .block(Block::default().borders(Borders::ALL).border_style(theme.accent).title(title.as_str()));
@@ -2803,7 +2821,7 @@ mod tests {
     }
 
     fn check(host: usize, repo: &str, pw: &str, result: Option<crate::restic::Preflight>) -> crate::ui::state::PreflightCheck {
-        crate::ui::state::PreflightCheck { host, repository: repo.into(), password_file: pw.into(), result }
+        crate::ui::state::PreflightCheck { host, repository: repo.into(), password_file: pw.into(), result, file_note: None }
     }
 
     #[test]
@@ -2824,6 +2842,31 @@ mod tests {
         assert!(preflight_status(&kind, &backup_form_fields("fbsd16", "/r", "/pw2"), Some(&ok)).is_none(), "password file edited");
         assert!(preflight_status(&kind, &backup_form_fields("local", "/r", "/pw"), Some(&ok)).is_none(), "host edited");
         assert!(preflight_status(&kind, &backup_form_fields("fbsd16", " /r ", "/pw"), Some(&ok)).is_some(), "surrounding spaces are trimmed like the check does");
+    }
+
+    #[test]
+    fn the_notes_wait_for_the_answer_name_the_location_and_the_permissions_and_follow_the_values_on_screen() {
+        let kind = backup_kind_for_status();
+        let fields = backup_form_fields("fbsd16", "/r", "/home/fb/pw");
+        let mut c = check(1, "/r", "/home/fb/pw", None);
+        assert!(preflight_notes(&kind, &fields, Some(&c)).is_empty(), "nothing before the check has answered");
+        c.result = Some(crate::restic::Preflight::Ok);
+        let notes = preflight_notes(&kind, &fields, Some(&c));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].starts_with("Note: ") && notes[0].contains("home or temporary directory"), "{notes:?}");
+        c.file_note = Some("the password file can be read or changed by other users (mode 644): run `chmod 600 /home/fb/pw`".to_string());
+        let notes = preflight_notes(&kind, &fields, Some(&c));
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[1].contains("mode 644"), "{notes:?}");
+        // Editing the password file or the host hides them, like the check line.
+        assert!(preflight_notes(&kind, &backup_form_fields("fbsd16", "/r", "/root/pw"), Some(&c)).is_empty());
+        assert!(preflight_notes(&kind, &backup_form_fields("local", "/r", "/home/fb/pw"), Some(&c)).is_empty());
+        // A good location with nothing else to say has no notes.
+        let fine = backup_form_fields("fbsd16", "/r", "/root/pw");
+        let mut ok = check(1, "/r", "/root/pw", Some(crate::restic::Preflight::Ok));
+        assert!(preflight_notes(&kind, &fine, Some(&ok)).is_empty());
+        ok.file_note = Some(crate::restic::PASSWORD_FILE_UNCHECKED.to_string());
+        assert!(preflight_notes(&kind, &fine, Some(&ok))[0].contains("could not be checked"));
     }
 
     #[test]

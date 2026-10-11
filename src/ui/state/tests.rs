@@ -7619,7 +7619,7 @@ fn f5_in_the_backup_form_queues_one_check_for_the_forms_host_and_marks_it_checki
     let mut app = backup_form_app(BACKUP_GOOD);
     assert_eq!(app.handle_modal_key(KeyCode::F(5)), None);
     assert_eq!(app.pending_preflight, vec![PendingPreflight { host: 0, host_name: "local".into(), repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into() }]);
-    assert_eq!(app.backup_preflight, Some(PreflightCheck { host: 0, repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into(), result: None }));
+    assert_eq!(app.backup_preflight, Some(PreflightCheck { host: 0, repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into(), result: None, file_note: None }));
     assert!(matches!(app.modal, Some(Modal::Form { .. })), "the form stays open");
 }
 
@@ -7636,7 +7636,7 @@ fn f5_after_a_result_checks_again() {
     let mut app = backup_form_app(BACKUP_GOOD);
     app.handle_modal_key(KeyCode::F(5));
     app.pending_preflight.clear();
-    app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok)).unwrap();
+    app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok, None)).unwrap();
     app.drain_worker_messages();
     app.handle_modal_key(KeyCode::F(5));
     assert_eq!(app.pending_preflight.len(), 1);
@@ -7672,18 +7672,33 @@ fn a_result_for_other_values_is_discarded_and_a_matching_one_is_kept() {
     let mut app = backup_form_app(BACKUP_GOOD);
     app.handle_modal_key(KeyCode::F(5));
     let stale = crate::restic::Preflight::Problem("old".into());
-    app.tx.send(WorkerMsg::Preflight(0, "/some/other/repo".into(), "/root/pw".into(), stale)).unwrap();
+    app.tx.send(WorkerMsg::Preflight(0, "/some/other/repo".into(), "/root/pw".into(), stale, None)).unwrap();
     app.drain_worker_messages();
     assert_eq!(app.backup_preflight.as_ref().unwrap().result, None);
-    app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok)).unwrap();
+    app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok, None)).unwrap();
     app.drain_worker_messages();
     assert_eq!(app.backup_preflight.as_ref().unwrap().result, Some(crate::restic::Preflight::Ok));
 }
 
 #[test]
+fn a_check_result_carries_its_password_file_note_and_a_new_check_clears_it() {
+    let mut app = backup_form_app(BACKUP_GOOD);
+    app.handle_modal_key(KeyCode::F(5));
+    app.pending_preflight.clear();
+    let note = "the password file can be read or changed by other users (mode 644): run `chmod 600 /root/pw`".to_string();
+    app.tx.send(WorkerMsg::Preflight(0, "/mnt/usb/restic".into(), "/root/pw".into(), crate::restic::Preflight::Ok, Some(note.clone()))).unwrap();
+    app.drain_worker_messages();
+    let check = app.backup_preflight.as_ref().unwrap();
+    assert_eq!((check.result.clone(), check.file_note.clone()), (Some(crate::restic::Preflight::Ok), Some(note)));
+    app.handle_modal_key(KeyCode::F(5));
+    let check = app.backup_preflight.as_ref().unwrap();
+    assert_eq!((check.result.clone(), check.file_note.clone()), (None, None), "a new check starts without the old advice");
+}
+
+#[test]
 fn opening_a_backup_form_forgets_an_earlier_check() {
     let (mut app, _dir) = app_with_jobs(&[]);
-    app.backup_preflight = Some(PreflightCheck { host: 0, repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into(), result: Some(crate::restic::Preflight::Ok) });
+    app.backup_preflight = Some(PreflightCheck { host: 0, repository: "/mnt/usb/restic".into(), password_file: "/root/pw".into(), result: Some(crate::restic::Preflight::Ok), file_note: None });
     app.handle_key(KeyCode::Char('B'));
     assert!(matches!(app.modal, Some(Modal::Form { .. })));
     assert!(app.backup_preflight.is_none());

@@ -1,0 +1,38 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 9108)────────────────────────────────────────────────────┐
+│Hosts                ┌New backup job──────────────────────────────────────────────────┐run        Last      │
+│Pools                │Backs up a read-only clone of a snapshot. Source: new = take a  │0-18 03:00 ok 10h ago│
+│Datasets             │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Snapshots            │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Disks                │always that one snapshot. The repository must already exist     │                     │
+│Shares               │(restic init).                                                  │                     │
+│Boot Envs            │                                                                │                     │
+│Jobs                 │  Host (where restic runs): local                               │                     │
+│Alerts               │  Dataset:                                                      │                     │
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+│                     │  Repository (restic -r; no credentials in it):                 │                     │
+│                     │/mnt/usb/restic-tank                                            │                     │
+│                     │> Password file (absolute path on the host): /tmp/zit-note-key  │                     │
+│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │                     │
+│                     │  Schedule: 30 3 * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │─────────────────────┘
+│                     │                                                                │─────────────────────┐
+│                     │custom schedule                                                 │                     │
+│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │Check: no repository at that address yet: create it once with   │                     │
+│                     │`restic init`                                                   │                     │
+│                     │Note: the password file is in a home or temporary directory:    │                     │
+│                     │keep it where only root can reach it, such as /root or          │                     │
+│                     │/usr/local/etc                                                  │                     │
+│                     │Note: the password file can be read or changed by other users   │                     │
+│                     │(mode 644): run `chmod 600 /tmp/zit-note-key`                   │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+└─────────────────────└────────────────────────────────────────────────────────────────┘─────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F5 Check  Esc Cancel

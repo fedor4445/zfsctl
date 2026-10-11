@@ -551,7 +551,7 @@ mod tests {
         use std::sync::Arc;
         let mut app = App::new(vec!["local".to_string()]);
         let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(FakeRunner::new("{\"id\":\"x\"}")), ssh_target: None, tag: None }] };
-        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 0, repository: "/r".into(), password_file: "/pw".into(), result: None });
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 0, repository: "/r".into(), password_file: "/pw".into(), result: None, file_note: None });
         app.pending_preflight = vec![crate::ui::state::PendingPreflight { host: 0, host_name: "local".into(), repository: "/r".into(), password_file: "/pw".into() }];
         apply_pending_preflights(&mut app, &inventory);
         assert!(app.pending_preflight.is_empty());
@@ -567,7 +567,7 @@ mod tests {
     fn a_preflight_for_an_unknown_host_index_reports_a_problem_instead_of_waiting_forever() {
         let mut app = App::new(vec!["local".to_string()]);
         let inventory = HostInventory { hosts: vec![] };
-        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 3, repository: "/r".into(), password_file: "/pw".into(), result: None });
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 3, repository: "/r".into(), password_file: "/pw".into(), result: None, file_note: None });
         app.pending_preflight = vec![crate::ui::state::PendingPreflight { host: 3, host_name: "gone".into(), repository: "/r".into(), password_file: "/pw".into() }];
         apply_pending_preflights(&mut app, &inventory);
         app.drain_worker_messages();
