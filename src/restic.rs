@@ -126,6 +126,47 @@ pub fn cat_config_args(repo: &str, password_file: &str) -> Vec<String> {
     vec!["cat".to_string(), r, p, "--no-cache".to_string(), "--no-lock".to_string(), "config".to_string()]
 }
 
+/// Advice about where a password file lives: a home or temporary directory is reachable by other users and by
+/// backups of those directories. `None` when the location is fine.
+pub fn password_file_location_note(path: &str) -> Option<String> {
+    let path = path.trim();
+    ["/home/", "/usr/home/", "/tmp/", "/var/tmp/"]
+        .iter()
+        .any(|dir| path.starts_with(dir))
+        .then(|| "the password file is in a home or temporary directory: keep it where only root can reach it, such as /root or /usr/local/etc".to_string())
+}
+
+/// `stat` arguments printing a file's permission bits and owner (FreeBSD `stat`): `600 root`.
+pub fn password_file_stat_args(path: &str) -> Vec<String> {
+    vec!["-f".to_string(), "%Lp %Su".to_string(), path.to_string()]
+}
+
+/// The mode and owner out of `password_file_stat_args`' output, or `None` if it is not that (another `stat`).
+pub fn parse_password_file_stat(out: &str) -> Option<(u32, String)> {
+    let mut parts = out.split_whitespace();
+    let (mode, owner) = (parts.next()?, parts.next()?);
+    if parts.next().is_some() || !mode.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+        return None;
+    }
+    Some((u32::from_str_radix(mode, 8).ok()?, owner.to_string()))
+}
+
+/// Advice about a password file's mode and owner: anyone but root able to touch it can open the backups. `None`
+/// when only root has access.
+pub fn password_file_permission_note(path: &str, mode: u32, owner: &str) -> Option<String> {
+    let mut problems = Vec::new();
+    if mode & 0o077 != 0 {
+        problems.push(format!("the password file can be read or changed by other users (mode {:03o}): run `chmod 600 {path}`", mode & 0o777));
+    }
+    if owner != "root" {
+        problems.push(format!("the password file is owned by {owner}, not root: run `chown root {path}`"));
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+/// Said when the repository opens but the file's permissions could not be read from here.
+pub const PASSWORD_FILE_UNCHECKED: &str = "the password file's permissions could not be checked from here: make sure only root can read it";
+
 /// restic quotes the repository in many of its error messages; a message shown to the user never carries it.
 pub fn redact(text: &str, repo: &str) -> String {
     if repo.is_empty() {
@@ -473,5 +514,40 @@ mod tests {
     #[test]
     fn an_empty_failure_still_says_something() {
         assert_eq!(problem(pre(1, "")), "restic failed");
+    }
+
+    #[test]
+    fn a_password_file_in_a_home_or_temp_directory_is_flagged_and_one_under_root_is_not() {
+        for bad in ["/home/fb/passwd", "/usr/home/fb/pw", "/tmp/pw", "/var/tmp/pw", "  /home/x/pw "] {
+            assert!(password_file_location_note(bad).is_some_and(|m| m.contains("/root")), "{bad}");
+        }
+        for fine in ["/root/.restic-password", "/usr/local/etc/restic.pw", "/etc/restic/pw", "/homework/pw", "/tmpfiles/pw"] {
+            assert_eq!(password_file_location_note(fine), None, "{fine}");
+        }
+    }
+
+    #[test]
+    fn the_stat_output_is_read_as_a_mode_and_an_owner_and_anything_else_is_refused() {
+        assert_eq!(parse_password_file_stat("600 root\n"), Some((0o600, "root".to_string())));
+        assert_eq!(parse_password_file_stat("644 fb"), Some((0o644, "fb".to_string())));
+        assert_eq!(parse_password_file_stat("0 root"), Some((0, "root".to_string())));
+        for bad in ["", "600", "600 root extra", "rw root", "89 root", "{\"version\":2}", "File: x Size: 5"] {
+            assert_eq!(parse_password_file_stat(bad), None, "{bad:?}");
+        }
+        assert_eq!(password_file_stat_args("/root/pw"), ["-f", "%Lp %Su", "/root/pw"]);
+    }
+
+    #[test]
+    fn only_a_root_owned_file_nobody_else_can_touch_passes_the_permission_check() {
+        assert_eq!(password_file_permission_note("/root/pw", 0o600, "root"), None);
+        assert_eq!(password_file_permission_note("/root/pw", 0o400, "root"), None);
+        let loose = password_file_permission_note("/root/pw", 0o644, "root").unwrap();
+        assert!(loose.contains("mode 644") && loose.contains("chmod 600 /root/pw"), "{loose}");
+        assert!(password_file_permission_note("/root/pw", 0o640, "root").is_some(), "group-readable counts");
+        assert!(password_file_permission_note("/root/pw", 0o620, "root").is_some(), "group-writable counts");
+        let owner = password_file_permission_note("/root/pw", 0o600, "fb").unwrap();
+        assert!(owner.contains("owned by fb") && owner.contains("chown root /root/pw"), "{owner}");
+        let both = password_file_permission_note("/root/pw", 0o666, "fb").unwrap();
+        assert!(both.contains("mode 666") && both.contains("owned by fb"), "{both}");
     }
 }

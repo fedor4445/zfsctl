@@ -121,6 +121,8 @@ pub struct PreflightCheck {
     pub repository: String,
     pub password_file: String,
     pub result: Option<crate::restic::Preflight>,
+    /// Advice about the password file's location, mode and owner, once the check has answered.
+    pub file_note: Option<String>,
 }
 
 /// A check waiting for the event loop to hand it its host's runner (`App` cannot resolve a host to one itself).
@@ -177,7 +179,7 @@ pub enum WorkerMsg {
     PoolNames(usize, Result<Vec<String>>),
     /// The outcome of the backup form's F5 check: the host index, the repository and password file it was asked
     /// about (so a result for values since edited is dropped), and what it found.
-    Preflight(usize, String, String, crate::restic::Preflight),
+    Preflight(usize, String, String, crate::restic::Preflight, Option<String>),
 }
 
 pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
@@ -2162,7 +2164,7 @@ impl App {
         if self.backup_preflight.as_ref().is_some_and(|c| same(c) && c.result.is_none()) {
             return;
         }
-        self.backup_preflight = Some(PreflightCheck { host, repository: repository.to_string(), password_file: password_file.to_string(), result: None });
+        self.backup_preflight = Some(PreflightCheck { host, repository: repository.to_string(), password_file: password_file.to_string(), result: None, file_note: None });
         self.pending_preflight.push(PendingPreflight { host, host_name: host_name.to_string(), repository: repository.to_string(), password_file: password_file.to_string() });
     }
 
@@ -2170,14 +2172,14 @@ impl App {
     pub fn run_backup_preflight(&mut self, runner: Arc<dyn CommandRunner>, pending: PendingPreflight) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE);
-            let _ = tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, result));
+            let report = crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE);
+            let _ = tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, report.result, report.file_note));
         });
     }
 
     /// Reports a check that could not start (the host index no longer resolves) through the same channel.
     pub fn fail_backup_preflight(&self, pending: PendingPreflight, message: String) {
-        let _ = self.tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, crate::restic::Preflight::Problem(message)));
+        let _ = self.tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, crate::restic::Preflight::Problem(message), None));
     }
 
     /// Reports a failed pool lookup without running one (the host index no longer resolves).

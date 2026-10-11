@@ -33,7 +33,7 @@ impl App {
                 WorkerMsg::DatasetPermissions(host, dataset, result) => self.on_dataset_permissions(host, dataset, result, &mut refreshes_needed),
                 WorkerMsg::DatasetAcl(host, path, result) => self.on_dataset_acl(host, path, result, &mut refreshes_needed),
                 WorkerMsg::Accounts(host, result) => self.on_accounts(host, result),
-                WorkerMsg::Preflight(host, repository, password_file, result) => self.on_preflight(host, &repository, &password_file, result),
+                WorkerMsg::Preflight(host, repository, password_file, result, file_note) => self.on_preflight(host, &repository, &password_file, result, file_note),
                 WorkerMsg::PoolNames(host, result) => self.on_pool_names(host, result),
                 WorkerMsg::HostHealth(name, probe) => self.on_host_health(name, probe),
                 WorkerMsg::HostProbe(name, target, result) => self.on_host_probe(name, target, result),
@@ -375,10 +375,11 @@ impl App {
         }
     }
 
-    fn on_preflight(&mut self, host: usize, repository: &str, password_file: &str, result: crate::restic::Preflight) {
+    fn on_preflight(&mut self, host: usize, repository: &str, password_file: &str, result: crate::restic::Preflight, file_note: Option<String>) {
         // Only the answer to the question still asked is kept: a result for edited values is dropped.
         if let Some(check) = self.backup_preflight.as_mut().filter(|c| c.host == host && c.repository == repository && c.password_file == password_file && c.result.is_none()) {
             check.result = Some(result);
+            check.file_note = file_note;
         }
     }
 

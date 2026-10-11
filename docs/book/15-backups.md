@@ -166,6 +166,61 @@ The check only reads: it never creates a repository (that stays your `restic ini
 
 Anything else is restic's own message, with the repository address hidden. A failed check is not a reason to panic: fix the cause and press `F5` again.
 
+### Protect the password file
+
+The password file holds the repository password as plain text, because a scheduled backup has nobody to type it. Anyone who can read it, and reach the repository, can open every backup. So `F5` also looks at the file itself and adds `Note:` lines under its answer:
+
+```screen
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 9108)────────────────────────────────────────────────────┐
+│Hosts                ┌New backup job──────────────────────────────────────────────────┐run        Last      │
+│Pools                │Backs up a read-only clone of a snapshot. Source: new = take a  │0-18 03:00 ok 10h ago│
+│Datasets             │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Snapshots            │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Disks                │always that one snapshot. The repository must already exist     │                     │
+│Shares               │(restic init).                                                  │                     │
+│Boot Envs            │                                                                │                     │
+│Jobs                 │  Host (where restic runs): local                               │                     │
+│Alerts               │  Dataset:                                                      │                     │
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+│                     │  Repository (restic -r; no credentials in it):                 │                     │
+│                     │/mnt/usb/restic-tank                                            │                     │
+│                     │> Password file (absolute path on the host): /tmp/zit-note-key  │                     │
+│                     │  Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything):         │                     │
+│                     │  Schedule: 30 3 * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │─────────────────────┘
+│                     │                                                                │─────────────────────┐
+│                     │custom schedule                                                 │                     │
+│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │Check: no repository at that address yet: create it once with   │                     │
+│                     │`restic init`                                                   │                     │
+│                     │Note: the password file is in a home or temporary directory:    │                     │
+│                     │keep it where only root can reach it, such as /root or          │                     │
+│                     │/usr/local/etc                                                  │                     │
+│                     │Note: the password file can be read or changed by other users   │                     │
+│                     │(mode 644): run `chmod 600 /tmp/zit-note-key`                   │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+└─────────────────────└────────────────────────────────────────────────────────────────┘─────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F5 Check  Esc Cancel
+
+```
+
+| The note says | Do this |
+|---|---|
+| `in a home or temporary directory` | move it to `/root` or `/usr/local/etc`, where only root can reach it, and change the job's Password file |
+| `can be read or changed by other users (mode 644)` | `chmod 600` on the file, as the note spells out |
+| `owned by fb, not root` | `chown root` on the file |
+| `permissions could not be checked from here` | the ssh user cannot see the file (a root-only directory such as `/root`); check it on the host: `ls -l`, it should show `-rw-------` and `root` |
+
+The mode and owner come from a plain `stat`, run without `sudo`, so on the hub (where zfsctl runs as root) every file is seen, and on a remote host only what the ssh user can see. The notes are advice: they never block saving. Keep the password in your password manager too, and never inside a dataset you back up, or the password ends up in the backup it protects.
+
 ### How a run works
 
 The job picks its snapshot (taking a new one first, for `new`), makes a temporary read-only clone of it, backs up the clone, and destroys the clone again, even if the backup fails or is cancelled. Backing up a snapshot rather than the live files means the backup is **consistent**: it is exactly the data at one moment, even if the files are changing. If the repository already holds that snapshot, the run is `skipped: up to date`. Because the clone always has the same path, restic recognises unchanged files and does not read them again.
