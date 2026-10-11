@@ -13,31 +13,31 @@ A snapshot is a read-only picture of a dataset at one moment. Go to Snapshots an
 ```screen
 ┌zfsctl────────────────┐┌Snapshots — local ('r' to refresh)──────────────────────────────────────────────────┐
 │Hosts                 ││Snapshot                           Used                                             │
-│Pools                 ││scratch/data@snap1                 65536                                            │
-│Datasets              ││scratch/data@snap2                 65536                                            │
-│Snapshots             ││scratch/data@snap4                 73728                                            │
-│Disks                 ││tpool@snap1                        95232                                            │
-│Shares                ││tpool@snap2                        2096734848                                       │
-│Boot Envs             ││zroot@09052026                     81920                                            │
-│Jobs                  ││zroot/ROOT@snap1                   0                                                │
-│Alerts                ││zroot/home/alice@alice             8192                                             │
-│                      ││zroot/home/fb@09052026             90112                                            │
-│                      ││zroot/home/fb@09062026             90112                                            │
-│                      ││zroot/home/carol@carol1            0                                                │
-│                      ││zroot/home/carol@snap5             0                                                │
-│                      ││zroot/var@snap1                    0                                                │
-│                      ││zroot/var/log@09052026             229376                                           │
-│                      ││zroot/var/log@snap4                225280                                           │
+│Pools                 ││scratch/data@snap1                 64.0K                                            │
+│Datasets              ││scratch/data@snap2                 64.0K                                            │
+│Snapshots             ││scratch/data@snap4                 72.0K                                            │
+│Disks                 ││tpool@snap1                        93.0K                                            │
+│Shares                ││tpool@snap2                        2.0G                                             │
+│Boot Envs             ││zroot@09052026                     80.0K                                            │
+│Jobs                  ││zroot/ROOT@snap1                   0B                                               │
+│Alerts                ││zroot/home/alice@alice             8.0K                                             │
+│                      ││zroot/home/fb@09052026             88.0K                                            │
+│                      ││zroot/home/fb@09062026             88.0K                                            │
+│                      ││zroot/home/carol@carol1            0B                                               │
+│                      ││zroot/home/carol@snap5             0B                                               │
+│                      ││zroot/var@snap1                    0B                                               │
+│                      ││zroot/var/log@09052026             224K                                             │
+│                      ││zroot/var/log@snap4                220K                                             │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
 │                      │┌Metrics — scratch/data@snap1────────────────────────────────────────────────────────┐
 │                      ││Snapshot  snap1                               Snapshot sizes                        │
-│                      ││Created   34d 20h ago                         oldest → newest, this one lit         │
+│                      ││Created   34d 23h ago                         oldest → newest, this one lit         │
 │                      ││Used      64.0K   Refer 96.0K   Written 96.0K   █                                   │
 │                      ││Reclaim   64.0K  (freed if destroyed)         ▄▄█                                   │
 │                      ││Holds     0   Clones -                        ███                                   │
 │                      ││Dataset   3 snaps, 200K = <1% of used         ███                                   │
-│                      ││Oldest    34d 20h ago                         ███                                   │
-│                      ││Newest    7d 19h ago                          ███                                   │
+│                      ││Oldest    34d 23h ago                         ███                                   │
+│                      ││Newest    7d 22h ago                          ███                                   │
 │                      ││                                              ███                                   │
 │                      ││                                              ███                                   │
 │                      ││                                              ███                                   │
@@ -49,7 +49,7 @@ A snapshot is a read-only picture of a dataset at one moment. Go to Snapshots an
 ↑↓ Move  d Destroy  b Rollback  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
-The list shows every snapshot on the host, named `dataset@name`, with the space it **Used**: the space that would be freed if you destroyed only that snapshot. A snapshot that has just been taken uses nothing; it grows as the dataset changes, because it keeps the old blocks. (The sizes are shown in bytes.)
+The list shows every snapshot on the host, named `dataset@name`, with the space it **Used**: the space that would be freed if you destroyed only that snapshot. A snapshot that has just been taken uses nothing; it grows as the dataset changes, because it keeps the old blocks. (Sizes are in human units, like everywhere else.)
 
 ## The panel
 
@@ -73,15 +73,15 @@ Snapshots are taken from the Datasets section. Select the dataset and press `s`:
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
 │Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  1066393 19189760 Filesys││                                 │
-│Datasets              ││scratch/data             1052508 19189760 Filesys││                                 │
-│Snapshots             ││tpool                    4196505 56283897 Filesys││                                 │
-│Disks                 ││zroot                    1132553 32899768 Filesys││                                 │
-│Shares                ││zroot/ROOT               5673803 32899768 Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5673705 32899768 Filesys││                                 │
-│Jobs                  ││zroot/home               5784166 32899768 Filesys││                                 │
-│Alerts                ││zroot/home/alice         147456  32899768 Filesys││                                 │
-│                      ││zroot/home/fb            5780316 32899768 Filesys││                                 │
+│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
+│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
+│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
+│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
+│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
+│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
+│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
+│                      ││zroot/home/fb            554M    30.6G    Filesys││                                 │
 │                     ┌Snapshot dataset 'scratch/data'─────────────────────────────────┐                     │
 │                     │> Snapshot name:                                                │                     │
 │                     │                                                                │─────────────────────┘

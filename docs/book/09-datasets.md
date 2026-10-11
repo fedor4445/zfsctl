@@ -12,16 +12,16 @@ A *dataset* is a filesystem (or a volume) inside a pool. Go to Datasets and sele
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Properties — scratch/data ('r' refresh, Enter to ┐
-│Hosts                 ││Name                           Used           Avail          Kind        ││Property         Value            Source         │
-│Pools                 ││scratch                        106639360      19189760       Filesystem  ││                                                 │
-│Datasets              ││scratch/data                   105250816      19189760       Filesystem  ││                                                 │
-│Snapshots             ││tpool                          4196505216     5628389760     Filesystem  ││                                                 │
-│Disks                 ││zroot                          11325595648    32899702784    Filesystem  ││                                                 │
-│Shares                ││zroot/ROOT                     5673803776     32899702784    Filesystem  ││                                                 │
-│Boot Envs             ││zroot/ROOT/default             5673705472     32899702784    Filesystem  ││                                                 │
-│Jobs                  ││zroot/home                     578416640      32899702784    Filesystem  ││                                                 │
-│Alerts                ││zroot/home/alice               147456         32899702784    Filesystem  ││                                                 │
-│                      ││zroot/home/fb                  578031616      32899702784    Filesystem  ││                                                 │
+│Hosts                 ││Name                                         Used     Avail    Kind      ││Property         Value            Source         │
+│Pools                 ││scratch                                      102M     18.3M    Filesystem││                                                 │
+│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││                                                 │
+│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││                                                 │
+│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
+│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
+│Boot Envs             ││zroot/ROOT/default                           5.3G     30.6G    Filesystem││                                                 │
+│Jobs                  ││zroot/home                                   554M     30.6G    Filesystem││                                                 │
+│Alerts                ││zroot/home/alice                             144K     30.6G    Filesystem││                                                 │
+│                      ││zroot/home/fb                                554M     30.6G    Filesystem││                                                 │
 │                      │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 │                      │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
 │                      ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
@@ -37,7 +37,7 @@ A *dataset* is a filesystem (or a volume) inside a pool. Go to Datasets and sele
 ↑↓ Move  → Details  n New  d Destroy  D Destroy recursively  s Snapshot  N NFS share  M SMB share  J Snapshot job  r Refresh  ? Help  q Quit
 ```
 
-The columns are the dataset's **Name**, the space it **Used** and the space **Avail**able to it, and its **Kind** (`Filesystem` or `Volume`). The sizes are shown in bytes; on a narrow terminal the columns are cut, so use a wide one (this capture is 150 columns) when you read the numbers. The panel below gives the same figures in human units.
+The columns are the dataset's **Name**, the space it **Used** and the space **Avail**able to it, and its **Kind** (`Filesystem` or `Volume`). The sizes are in human units (`100M`, `30.6G`). On a narrow terminal the Kind column is cut short (this capture is 150 columns wide so that it shows in full). The panel below gives more detail.
 
 On the right is a pane with the selected dataset's details, which you reach with `Right`. Its title says which tab you are in: **Properties**, **Permissions** or **ACL**; `[` and `]` cycle through them.
 
@@ -47,7 +47,7 @@ With a dataset selected, the panel under the list shows where its space goes:
 
 | Line | Meaning |
 |---|---|
-| **Used** | space used, as a percentage and in bytes, of what it could use |
+| **Used** | space used, as a percentage and as sizes, of what it could use |
 | **Refer** and **Logical** | space this dataset refers to (excluding snapshots and children), and the size before compression |
 | **Data**, **Snaps** | space held by the data itself, and by its snapshots |
 | **Kids**, **Refres** | space used by child datasets, and by a reservation |
@@ -61,15 +61,15 @@ With a dataset selected, the panel under the list shows where its space goes:
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)───────────────────────┐┌Properties — scratch/data ('r' refresh, Enter to ed┐
-│Hosts                 ││Name                         Used           Avail          Kind        ││Property         Value                   Source    │
-│Pools                 ││scratch                      106639360      19189760       Filesystem  ││type             filesystem              -         │
-│Datasets              ││scratch/data                 105250816      19189760       Filesystem  ││creation         1788654263              -         │
-│Snapshots             ││tpool                        4196505216     5628389760     Filesystem  ││used             105250816               -         │
-│Disks                 ││zroot                        11325603840    32899694592    Filesystem  ││available        19189760                -         │
-│Shares                ││zroot/ROOT                   5673803776     32899694592    Filesystem  ││referenced       105046016               -         │
-│Boot Envs             ││zroot/ROOT/default           5673705472     32899694592    Filesystem  ││compressratio    1.00                    -         │
-│Jobs                  ││zroot/home                   578416640      32899694592    Filesystem  ││mounted          yes                     -         │
-│Alerts                ││zroot/home/alice             147456         32899694592    Filesystem  ││quota            0                       default   │
+│Hosts                 ││Name                                       Used     Avail    Kind      ││Property         Value                   Source    │
+│Pools                 ││scratch                                    102M     18.3M    Filesystem││type             filesystem              -         │
+│Datasets              ││scratch/data                               100M     18.3M    Filesystem││creation         1788654263              -         │
+│Snapshots             ││tpool                                      3.9G     5.2G     Filesystem││used             105250816               -         │
+│Disks                 ││zroot                                      10.6G    30.6G    Filesystem││available        19189760                -         │
+│Shares                ││zroot/ROOT                                 5.3G     30.6G    Filesystem││referenced       105046016               -         │
+│Boot Envs             ││zroot/ROOT/default                         5.3G     30.6G    Filesystem││compressratio    1.00                    -         │
+│Jobs                  ││zroot/home                                 554M     30.6G    Filesystem││mounted          yes                     -         │
+│Alerts                ││zroot/home/alice                           144K     30.6G    Filesystem││quota            0                       default   │
 │                      │└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────┘
 │                      │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
 │                      ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
@@ -119,12 +119,12 @@ The Permissions tab shows **delegated permissions**: ZFS lets you allow an ordin
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Permissions — scratch/data ('r' refresh, n/s/c gr┐
-│Hosts                 ││Name                           Used           Avail          Kind        ││Target           Scope           Permissions     │
-│Pools                 ││scratch                        106639360      19189760       Filesystem  ││                                                 │
-│Datasets              ││scratch/data                   105250816      19189760       Filesystem  ││                                                 │
-│Snapshots             ││tpool                          4196505216     5628389760     Filesystem  ││                                                 │
-│Disks                 ││zroot                          11325603840    32899694592    Filesystem  ││                                                 │
-│Shares                ││zroot/ROOT                     5673803776     32899694592    Filesystem  ││                                                 │
+│Hosts                 ││Name                                         Used     Avail    Kind      ││Target           Scope           Permissions     │
+│Pools                 ││scratch                                      102M     18.3M    Filesystem││                                                 │
+│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││                                                 │
+│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││                                                 │
+│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
+│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
 │Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 │Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
 │Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
@@ -144,12 +144,12 @@ The ACL tab lists the **file access control list** of the dataset's mount point:
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌ACL — scratch/data ('r' refresh, 'n' add, 'd' rem┐
-│Hosts                 ││Name                           Used           Avail          Kind        ││#   Tar Permissions          Flags         Type  │
-│Pools                 ││scratch                        106639360      19189760       Filesystem  ││0   own read_data/write_data —             Allow │
-│Datasets              ││scratch/data                   105250816      19189760       Filesystem  ││1   gro read_data/execute/re —             Allow │
-│Snapshots             ││tpool                          4196505216     5628389760     Filesystem  ││2   eve read_data/execute/re —             Allow │
-│Disks                 ││zroot                          11325579264    32899719168    Filesystem  ││                                                 │
-│Shares                ││zroot/ROOT                     5673803776     32899719168    Filesystem  ││                                                 │
+│Hosts                 ││Name                                         Used     Avail    Kind      ││#   Tar Permissions          Flags         Type  │
+│Pools                 ││scratch                                      102M     18.3M    Filesystem││0   own read_data/write_data —             Allow │
+│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││1   gro read_data/execute/re —             Allow │
+│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││2   eve read_data/execute/re —             Allow │
+│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
+│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
 │Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
 │Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
 │Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
