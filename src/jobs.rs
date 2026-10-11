@@ -69,6 +69,16 @@ pub struct Job {
     /// A backup job's retention such as `7d 4w 12m 3y`; absent or blank keeps every backup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<String>,
+    /// Which snapshot a backup job backs up: `new` (take a fresh one each run), `snapshot` (the one named
+    /// in `snapshot`), or absent / `prefix` (the newest `<prefix>-<timestamp>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// For `source = "snapshot"`: the snapshot's short name (the part after `@`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
+    /// A backup job's directory inside the dataset, relative to its root; absent backs up the whole dataset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// A five-field cron expression, in the hub's local time zone.
     pub schedule: String,
     #[serde(default = "yes")]
@@ -138,6 +148,52 @@ pub fn valid_prefix(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
+pub const SOURCE_NEW: &str = "new";
+pub const SOURCE_SNAPSHOT: &str = "snapshot";
+pub const SOURCE_PREFIX: &str = "prefix";
+/// How many of its own snapshots a `new`-source backup job keeps when `keep` is not set.
+pub const DEFAULT_FRESH_KEEP: u32 = 3;
+
+/// Which snapshot a backup job backs up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupSource<'a> {
+    /// Take a snapshot at the start of every run.
+    Fresh,
+    /// Always this snapshot (the short name).
+    Pinned(&'a str),
+    /// The newest `<prefix>-<timestamp>` snapshot.
+    Prefix(&'a str),
+}
+
+/// A backup job's source. An unknown `source` reads as the prefix mode here; `resolve` refuses it.
+pub fn backup_source(job: &Job) -> BackupSource<'_> {
+    match job.source.as_deref() {
+        Some(SOURCE_NEW) => BackupSource::Fresh,
+        Some(SOURCE_SNAPSHOT) => BackupSource::Pinned(job.snapshot.as_deref().unwrap_or("")),
+        _ => BackupSource::Prefix(effective_prefix(job)),
+    }
+}
+
+/// The prefix of the snapshots a `new`-source backup job takes. It carries the job id, so no other job's
+/// snapshot can ever be mistaken for one of its own.
+pub fn fresh_prefix(job_id: &str) -> String {
+    format!("zit-{job_id}")
+}
+
+/// Whether `s` can be the short name of an existing snapshot: the characters ZFS allows that are safe on a
+/// command line, no `@`, no leading `-`.
+pub fn valid_snapshot_name(s: &str) -> bool {
+    !s.is_empty() && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+}
+
+/// Whether `s` is a directory inside a dataset: relative, no empty, `.` or `..` component, plain characters only.
+pub fn valid_subpath(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with(['/', '-'])
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+        && s.trim_end_matches('/').split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
 pub fn effective_prefix(job: &Job) -> &str {
     job.prefix.as_deref().unwrap_or(DEFAULT_PREFIX)
 }
@@ -185,8 +241,28 @@ fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
     if !job.dataset.as_deref().is_some_and(valid_dataset) {
         return Err("a backup job needs a dataset like tank/data".to_string());
     }
-    if !valid_prefix(effective_prefix(job)) {
-        return Err("the snapshot prefix may only use letters, digits, _ - and .".to_string());
+    match job.source.as_deref() {
+        None | Some(SOURCE_PREFIX) => {
+            if !valid_prefix(effective_prefix(job)) {
+                return Err("the snapshot prefix may only use letters, digits, _ - and .".to_string());
+            }
+        }
+        Some(SOURCE_NEW) => {
+            if job.keep == Some(0) {
+                return Err("a backup job that takes its own snapshots needs keep of at least 1".to_string());
+            }
+        }
+        Some(SOURCE_SNAPSHOT) => {
+            if !job.snapshot.as_deref().is_some_and(valid_snapshot_name) {
+                return Err("the snapshot name may only use letters, digits, _ - . and :".to_string());
+            }
+        }
+        Some(other) => return Err(format!("unknown backup source '{other}'")),
+    }
+    if let Some(path) = job.path.as_deref() {
+        if !valid_subpath(path) {
+            return Err("the path must be a directory inside the dataset, like photos/2026 (letters, digits, _ - . /; no .. and no leading /)".to_string());
+        }
     }
     // The id becomes a dataset name, a mountpoint and restic tags.
     if !valid_prefix(&job.id) {
@@ -314,15 +390,15 @@ pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<Strin
 #[cfg(test)]
 impl Job {
     pub fn test_snapshot(id: &str, dataset: &str, prefix: &str, keep: u32) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_backup(id: &str, dataset: &str, prefix: &str, repository: &str, password_file: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, source: None, snapshot: None, path: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_replicate(id: &str, dataset: &str, prefix: &str, dest_host: &str, dest_dataset: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, force: false, repository: None, password_file: None, retention: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 }
 
@@ -385,7 +461,7 @@ mod tests {
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false, repository: None, password_file: None, retention: None,
+            force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         }
     }
 
@@ -550,6 +626,65 @@ mod tests {
         assert!(bad(&|j| j.keep = None).contains("keep"));
         assert!(bad(&|j| j.host = "nope".into()).contains("host"));
         assert!(bad(&|j| j.schedule = "x".into()).contains("schedule"));
+    }
+
+    #[test]
+    fn a_backup_job_without_source_fields_is_a_prefix_job_and_the_new_fields_stay_out_of_the_file() {
+        let j = Job::test_backup("b", "tank/data", "hourly", "/r", "/p");
+        assert_eq!(backup_source(&j), BackupSource::Prefix("hourly"));
+        let text = toml::to_string_pretty(&JobFile { jobs: vec![j] }).unwrap();
+        for absent in ["source", "snapshot", "path"] {
+            assert!(!text.contains(absent), "{absent} leaked:\n{text}");
+        }
+    }
+
+    #[test]
+    fn backup_source_new_and_pinned_round_trip_and_resolve() {
+        let hosts = vec!["local".to_string()];
+        let mut fresh = Job::test_backup("b", "tank/data", "hourly", "/r", "/p");
+        fresh.source = Some(SOURCE_NEW.into());
+        fresh.path = Some("photos/2026".into());
+        assert_eq!(backup_source(&fresh), BackupSource::Fresh);
+        assert!(resolve(&fresh, &hosts).is_ok());
+        let mut pinned = Job::test_backup("c", "tank/data", "hourly", "/r", "/p");
+        pinned.source = Some(SOURCE_SNAPSHOT.into());
+        pinned.snapshot = Some("snap4".into());
+        assert_eq!(backup_source(&pinned), BackupSource::Pinned("snap4"));
+        assert!(resolve(&pinned, &hosts).is_ok());
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("jobs.toml");
+        save(&file, &[fresh.clone(), pinned.clone()]).unwrap();
+        assert_eq!(load(&file).unwrap(), vec![fresh, pinned]);
+    }
+
+    #[test]
+    fn resolve_rejects_each_bad_backup_source_field() {
+        let hosts = vec!["local".to_string()];
+        let bad = |f: &dyn Fn(&mut Job)| {
+            let mut j = Job::test_backup("b", "tank/data", "hourly", "/r", "/p");
+            f(&mut j);
+            resolve(&j, &hosts).unwrap_err()
+        };
+        assert!(bad(&|j| j.source = Some("weekly".into())).contains("unknown backup source"));
+        assert!(bad(&|j| j.source = Some(SOURCE_SNAPSHOT.into())).contains("snapshot name"));
+        for evil in ["", "-x", "a@b", "a b", "a/b", "a;b"] {
+            assert!(bad(&|j| { j.source = Some(SOURCE_SNAPSHOT.into()); j.snapshot = Some(evil.into()); }).contains("snapshot name"), "{evil:?}");
+        }
+        assert!(bad(&|j| { j.source = Some(SOURCE_NEW.into()); j.keep = Some(0); }).contains("keep"));
+        for evil in ["/etc", "../x", "a/../b", "a//b", "./a", "-x", "a b", "a;b", ""] {
+            assert!(bad(&|j| j.path = Some(evil.into())).contains("path"), "{evil:?}");
+        }
+        // A pinned or new source does not care about the prefix, a prefix source does.
+        let mut j = Job::test_backup("b", "tank/data", "bad prefix", "/r", "/p");
+        assert!(resolve(&j, &hosts).unwrap_err().contains("prefix"));
+        j.source = Some(SOURCE_NEW.into());
+        assert!(resolve(&j, &hosts).is_ok());
+    }
+
+    #[test]
+    fn a_fresh_backup_prefix_is_a_valid_prefix_that_carries_the_job_id() {
+        assert_eq!(fresh_prefix("backup-local-tank-data"), "zit-backup-local-tank-data");
+        assert!(valid_prefix(&fresh_prefix("backup-local-tank-data")));
     }
 
     #[test]

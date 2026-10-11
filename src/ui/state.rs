@@ -2177,7 +2177,7 @@ impl App {
                     None
                 }
                 KeyCode::F(5) if matches!(kind, FormKind::BackupJob { .. }) => {
-                    self.request_backup_preflight(field_value(&fields, 0).trim(), field_value(&fields, 3).trim(), field_value(&fields, 4).trim());
+                    self.request_backup_preflight(field_value(&fields, 0).trim(), field_value(&fields, 5).trim(), field_value(&fields, 6).trim());
                     self.modal = Some(Modal::Form { title, fields, focused, description, kind });
                     None
                 }
@@ -2189,7 +2189,9 @@ impl App {
                         if picker.pool_host.is_some() {
                             // The destination dataset lists the *destination* host's datasets.
                             let host_field = if matches!(kind, FormKind::ReplicateJob { .. }) && focused == 4 { 3 } else { 0 };
-                            self.open_pool_picker(&mut picker, &kind, field_value(&fields, host_field));
+                            // The backup form's Source field lists the snapshots of the form's dataset.
+                            let snapshots_of = (matches!(kind, FormKind::BackupJob { .. }) && focused == 3).then(|| field_value(&fields, 1).trim().to_string());
+                            self.open_pool_picker(&mut picker, &kind, field_value(&fields, host_field), snapshots_of);
                         }
                         self.picker = Some(picker);
                     }
@@ -2224,8 +2226,8 @@ impl App {
 
     /// Points the job form's Pool picker at the host named in the form's Host field and queues
     /// one fetch of its pool names; an unknown host name fails the picker right away.
-    fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str) {
-        let (hosts, what) = match kind {
+    fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str, snapshots_of: Option<String>) {
+        let (hosts, mut what) = match kind {
             FormKind::Job { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Pools),
             FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } | FormKind::BackupJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
             _ => return,
@@ -2233,6 +2235,13 @@ impl App {
         if host_name.trim() == crate::jobs::DEST_FILE {
             picker.load = crate::ui::picker::PickerLoad::Failed("the destination is a directory on the hub: type its path".to_string());
             return;
+        }
+        if let Some(dataset) = snapshots_of {
+            if !crate::jobs::valid_dataset(&dataset) {
+                picker.load = crate::ui::picker::PickerLoad::Failed("enter the dataset first: the snapshots listed are that dataset's".to_string());
+                return;
+            }
+            what = crate::ui::picker::LiveNames::Snapshots(dataset);
         }
         match hosts.iter().position(|h| h == host_name.trim()) {
             Some(host) => {
@@ -2250,6 +2259,9 @@ impl App {
             let result = match what {
                 crate::ui::picker::LiveNames::Pools => crate::zfs::pool::list_pools(runner.as_ref()).map(|v| v.into_iter().map(|p| p.name).collect()),
                 crate::ui::picker::LiveNames::Datasets => crate::zfs::dataset::list_datasets(runner.as_ref()).map(|v| v.into_iter().map(|d| d.name).collect()),
+                crate::ui::picker::LiveNames::Snapshots(dataset) => {
+                    crate::zfs::replication::list_snapshot_infos_or_empty(runner.as_ref(), &dataset).map(|v| crate::ui::picker::source_choices(&v.into_iter().map(|s| s.name).collect::<Vec<_>>()))
+                }
             };
             let _ = tx.send(WorkerMsg::PoolNames(host, result));
         });
@@ -3193,26 +3205,30 @@ impl App {
 impl App {
     fn backup_job_form(&self, existing: Option<crate::jobs::Job>) -> Modal {
         let yn = |b: bool| if b { "y" } else { "n" }.to_string();
-        let (title, host, dataset, prefix, repository, password_file, keep, schedule, catch_up) = match &existing {
+        let (title, host, dataset, path, source, fresh_keep, repository, password_file, keep, schedule, catch_up) = match &existing {
             Some(j) => (
                 format!("Edit backup job '{}'", j.id),
                 j.host.clone(),
                 j.dataset.clone().unwrap_or_default(),
-                crate::jobs::effective_prefix(j).to_string(),
+                j.path.clone().unwrap_or_default(),
+                crate::ui::jobs::source_text(j),
+                if crate::jobs::backup_source(j) == crate::jobs::BackupSource::Fresh { j.keep.map(|k| k.to_string()).unwrap_or_default() } else { String::new() },
                 j.repository.clone().unwrap_or_default(),
                 j.password_file.clone().unwrap_or_default(),
                 j.retention.clone().unwrap_or_default(),
                 j.schedule.clone(),
                 j.catch_up,
             ),
-            None => ("New backup job".to_string(), self.active_host_name().to_string(), String::new(), crate::jobs::DEFAULT_PREFIX.to_string(), String::new(), String::new(), String::new(), "30 3 * * *".to_string(), true),
+            None => ("New backup job".to_string(), self.active_host_name().to_string(), String::new(), String::new(), crate::jobs::SOURCE_NEW.to_string(), String::new(), String::new(), String::new(), String::new(), "30 3 * * *".to_string(), true),
         };
         Modal::Form {
             title,
             fields: vec![
                 FormField { label: "Host (where restic runs)".to_string(), value: host },
                 FormField { label: "Dataset".to_string(), value: dataset },
-                FormField { label: "Prefix (snapshots to back up)".to_string(), value: prefix },
+                FormField { label: "Path inside the dataset (blank = all of it)".to_string(), value: path },
+                FormField { label: "Source (F2 to pick: new, a prefix, or @snapshot)".to_string(), value: source },
+                FormField { label: format!("Snapshots to keep (Source new only; blank = {})", crate::jobs::DEFAULT_FRESH_KEEP), value: fresh_keep },
                 FormField { label: "Repository (restic -r; no credentials in it)".to_string(), value: repository },
                 FormField { label: "Password file (absolute path on the host)".to_string(), value: password_file },
                 FormField { label: "Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything)".to_string(), value: keep },
@@ -3220,7 +3236,7 @@ impl App {
                 FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
             ],
             focused: 0,
-            description: Some("Backs up the newest <prefix>-<timestamp> snapshot (it never takes snapshots) through a temporary read-only clone. The repository must already exist (restic init).".to_string()),
+            description: Some("Backs up a read-only clone of a snapshot. Source: new = take a fresh snapshot each run and keep the last few of those; a prefix = the newest <prefix>-<timestamp> (it takes none); @name = always that one snapshot. The repository must already exist (restic init).".to_string()),
             kind: FormKind::BackupJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
@@ -3241,16 +3257,20 @@ fn build_backup_job_action(kind: &FormKind, fields: &[FormField], state_dir: &st
         return Err(format!("Unknown host '{host}'. Configured hosts: {}", hosts.join(", ")));
     }
     let dataset = field_value(fields, 1).trim();
-    let prefix = match field_value(fields, 2).trim() {
-        "" => crate::jobs::DEFAULT_PREFIX,
-        p => p,
+    let path = field_value(fields, 2).trim();
+    let (source, snapshot, prefix) = crate::ui::jobs::parse_source(field_value(fields, 3))?;
+    let fresh = source.as_deref() == Some(crate::jobs::SOURCE_NEW);
+    let fresh_keep = match field_value(fields, 4).trim() {
+        "" => None,
+        n if fresh => Some(n.parse::<u32>().ok().filter(|k| *k >= 1).ok_or_else(|| "Snapshots to keep must be a whole number, at least 1".to_string())?),
+        _ => None,
     };
-    let repository = field_value(fields, 3).trim();
-    let password_file = field_value(fields, 4).trim();
-    let keep = field_value(fields, 5).trim();
-    let schedule = field_value(fields, 6).trim();
+    let repository = field_value(fields, 5).trim();
+    let password_file = field_value(fields, 6).trim();
+    let keep = field_value(fields, 7).trim();
+    let schedule = field_value(fields, 8).trim();
     crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
-    let catch_up = yes_no("Catch up", field_value(fields, 7), true)?;
+    let catch_up = yes_no("Catch up", field_value(fields, 9), true)?;
     let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     let base = crate::jobs::Job {
         id: String::new(),
@@ -3259,8 +3279,8 @@ fn build_backup_job_action(kind: &FormKind, fields: &[FormField], state_dir: &st
         pool: None,
         dataset: Some(dataset.to_string()),
         recursive: false,
-        prefix: Some(prefix.to_string()),
-        keep: None,
+        prefix,
+        keep: fresh_keep,
         dest_host: None,
         dest_dataset: None,
         dest_dir: None,
@@ -3268,6 +3288,9 @@ fn build_backup_job_action(kind: &FormKind, fields: &[FormField], state_dir: &st
         repository: Some(repository.to_string()),
         password_file: Some(password_file.to_string()),
         retention: (!keep.is_empty()).then(|| keep.to_string()),
+        source,
+        snapshot,
+        path: (!path.is_empty()).then(|| path.to_string()),
         schedule: schedule.to_string(),
         catch_up,
         enabled: true,
@@ -3329,7 +3352,7 @@ fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], state_dir: 
         force,
         repository: None,
         password_file: None,
-        retention: None,
+        retention: None, source: None, snapshot: None, path: None,
         schedule: schedule.to_string(),
         catch_up,
         enabled: true,
@@ -3391,7 +3414,7 @@ fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false, repository: None, password_file: None, retention: None,
+            force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
             schedule: schedule.to_string(),
             catch_up,
             enabled: true,
@@ -3441,7 +3464,7 @@ fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            force: false, repository: None, password_file: None, retention: None,
+            force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         },
     };
     Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
@@ -3596,13 +3619,24 @@ fn job_save_prompt(old: Option<&crate::jobs::Job>, new: &crate::jobs::Job, snaps
             ))
         }
         KIND_BACKUP => {
-            let retention = new.retention.as_deref()?;
-            (old.is_none_or(|o| o.retention.as_deref() != Some(retention))).then(|| {
-                let repo = new.repository.as_deref().unwrap_or("?");
-                format!(
-                    "Backup job for {dataset}, keep {retention}.\nEvery successful run keeps only that much of this job's backups in {repo} (`restic forget --prune`); older backups are deleted for good.\n\nSave this job? (y/n)"
-                )
-            })
+            let mut parts = Vec::new();
+            if crate::jobs::backup_source(new) == crate::jobs::BackupSource::Fresh {
+                let keep = new.keep.unwrap_or(crate::jobs::DEFAULT_FRESH_KEEP);
+                let was_fresh = old.is_some_and(|o| crate::jobs::backup_source(o) == crate::jobs::BackupSource::Fresh && o.dataset == new.dataset);
+                if !was_fresh || old.and_then(|o| o.keep).unwrap_or(crate::jobs::DEFAULT_FRESH_KEEP) > keep {
+                    parts.push(format!(
+                        "Every run takes a snapshot of {dataset} and then destroys this job's own `{}-<timestamp>` snapshots beyond the newest {keep}.",
+                        crate::jobs::fresh_prefix(&new.id)
+                    ));
+                }
+            }
+            if let Some(retention) = new.retention.as_deref() {
+                if old.is_none_or(|o| o.retention.as_deref() != Some(retention)) {
+                    let repo = new.repository.as_deref().unwrap_or("?");
+                    parts.push(format!("Every successful run keeps only {retention} of this job's backups in {repo} (`restic forget --prune`); older backups are deleted for good."));
+                }
+            }
+            (!parts.is_empty()).then(|| format!("Backup job for {dataset}.\n{}\n\nSave this job? (y/n)", parts.join("\n")))
         }
         _ => None,
     }
@@ -9343,7 +9377,7 @@ mod tests {
     }
 
     fn scrub_job(id: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
     #[test]
@@ -10771,17 +10805,17 @@ mod tests {
         }
     }
 
-    const BACKUP_GOOD: [&str; 8] = ["local", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw", "7d 4w", "30 3 * * *", "y"];
+    const BACKUP_GOOD: [&str; 10] = ["local", "tank/data", "", "hourly", "", "/mnt/usb/restic", "/root/pw", "7d 4w", "30 3 * * *", "y"];
 
     fn backup_kind(existing: Option<crate::jobs::Job>, jobs: Vec<crate::jobs::Job>) -> FormKind {
         FormKind::BackupJob { hosts: vec!["local".to_string(), "fbsd16".to_string()], existing: existing.map(Box::new), jobs }
     }
 
-    fn backup_fields(values: [&str; 8]) -> Vec<FormField> {
+    fn backup_fields(values: [&str; 10]) -> Vec<FormField> {
         values.iter().map(|v| FormField { label: "x".to_string(), value: (*v).to_string() }).collect()
     }
 
-    fn backup_err(values: [&str; 8]) -> String {
+    fn backup_err(values: [&str; 10]) -> String {
         build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err()
     }
 
@@ -10789,8 +10823,88 @@ mod tests {
     fn big_b_in_jobs_opens_the_backup_form_with_sensible_defaults() {
         let (mut app, _dir) = app_with_jobs(&[]);
         app.handle_key(KeyCode::Char('B'));
-        assert_eq!(form_values(&app), ["local", "", "auto", "", "", "", "30 3 * * *", "y"]);
+        assert_eq!(form_values(&app), ["local", "", "", "new", "", "", "", "", "30 3 * * *", "y"]);
         assert!(matches!(&app.modal, Some(Modal::Form { kind: FormKind::BackupJob { .. }, .. })));
+    }
+
+    fn saved_backup(values: [&str; 10]) -> crate::jobs::Job {
+        let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+        let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+        *job
+    }
+
+    #[test]
+    fn the_source_field_saves_new_a_pinned_snapshot_or_a_prefix_and_the_path_is_optional() {
+        let mut values = BACKUP_GOOD;
+        values[3] = "new";
+        values[4] = "5";
+        values[2] = "photos/2026";
+        let job = saved_backup(values);
+        assert_eq!((job.source.as_deref(), job.snapshot.as_deref(), job.prefix.as_deref(), job.keep, job.path.as_deref()), (Some("new"), None, None, Some(5), Some("photos/2026")));
+        assert_eq!(crate::jobs::backup_source(&job), crate::jobs::BackupSource::Fresh);
+        values[4] = "";
+        assert_eq!(saved_backup(values).keep, None, "blank means the default of 3");
+        values[3] = "@snap4";
+        values[4] = "5";
+        values[2] = "";
+        let job = saved_backup(values);
+        assert_eq!((job.source.as_deref(), job.snapshot.as_deref(), job.prefix.as_deref(), job.keep, job.path.as_deref()), (Some("snapshot"), Some("snap4"), None, None, None));
+        let job = saved_backup(BACKUP_GOOD);
+        assert_eq!((job.source.as_deref(), job.prefix.as_deref(), job.keep), (None, Some("hourly"), None));
+    }
+
+    #[test]
+    fn editing_a_new_source_job_shows_new_and_its_keep_and_a_pinned_one_shows_at_name() {
+        let mut job = crate::jobs::Job::test_backup("backup-x", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+        job.source = Some("new".into());
+        job.keep = Some(4);
+        job.path = Some("docs".into());
+        let (mut app, _dir) = app_with_jobs(&[job.clone()]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(form_values(&app)[2..5], ["docs", "new", "4"]);
+        job.source = Some("snapshot".into());
+        job.snapshot = Some("snap4".into());
+        job.keep = None;
+        let (mut app, _dir) = app_with_jobs(&[job]);
+        app.refresh_jobs();
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(form_values(&app)[3..5], ["@snap4", ""]);
+    }
+
+    #[test]
+    fn f2_on_the_source_field_lists_the_snapshots_of_the_forms_dataset() {
+        let mut app = backup_form_app(BACKUP_GOOD);
+        let Some(Modal::Form { focused, .. }) = &mut app.modal else { panic!() };
+        *focused = 3;
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.picker.as_ref().is_some_and(|p| p.pool_host == Some(0)));
+        assert_eq!(app.pending_pool_fetch, vec![(0, crate::ui::picker::LiveNames::Snapshots("tank/data".to_string()))]);
+    }
+
+    #[test]
+    fn f2_on_the_source_field_without_a_dataset_says_to_enter_one_and_fetches_nothing() {
+        let mut values = BACKUP_GOOD;
+        values[1] = "";
+        let mut app = backup_form_app(values);
+        let Some(Modal::Form { focused, .. }) = &mut app.modal else { panic!() };
+        *focused = 3;
+        app.handle_modal_key(KeyCode::F(2));
+        assert!(app.pending_pool_fetch.is_empty());
+        assert!(matches!(&app.picker, Some(p) if matches!(&p.load, crate::ui::picker::PickerLoad::Failed(m) if m.contains("dataset"))));
+    }
+
+    #[test]
+    fn a_backup_job_that_takes_snapshots_asks_before_it_starts_destroying_its_own() {
+        let fresh = |keep: Option<u32>| crate::jobs::Job { source: Some("new".into()), keep, ..backup_job(None) };
+        let prompt = job_save_prompt(None, &fresh(Some(3)), None).expect("a new snapshot-taking job asks");
+        assert!(prompt.contains("takes a snapshot of tank/data") && prompt.contains("newest 3") && prompt.contains("zit-"), "{prompt}");
+        assert_eq!(job_save_prompt(Some(&fresh(Some(3))), &fresh(Some(3)), None), None, "unchanged");
+        assert_eq!(job_save_prompt(Some(&fresh(Some(3))), &fresh(Some(5)), None), None, "keeping more is safe");
+        assert!(job_save_prompt(Some(&fresh(Some(5))), &fresh(Some(3)), None).is_some(), "keeping fewer destroys");
+        assert!(job_save_prompt(Some(&backup_job(None)), &fresh(None), None).is_some(), "switching to new asks");
     }
 
     #[test]
@@ -10813,8 +10927,8 @@ mod tests {
     #[test]
     fn a_blank_keep_field_saves_no_retention_and_a_blank_prefix_means_the_default() {
         let mut values = BACKUP_GOOD;
-        values[5] = "  ";
-        values[2] = "";
+        values[7] = "  ";
+        values[3] = "";
         let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
         let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
         assert_eq!((job.retention, job.prefix.as_deref()), (None, Some(crate::jobs::DEFAULT_PREFIX)));
@@ -10829,13 +10943,22 @@ mod tests {
         };
         assert!(backup_err(with(0, "nope")).contains("host"));
         assert!(backup_err(with(1, "-rf")).contains("dataset"));
-        assert!(backup_err(with(2, "a b")).contains("prefix"));
-        assert!(backup_err(with(3, "")).contains("repository"));
-        assert!(backup_err(with(3, "-r")).contains("repository"));
-        assert!(backup_err(with(4, "relative")).contains("password_file"));
-        assert!(backup_err(with(5, "7x")).contains("retention"));
-        assert!(backup_err(with(6, "bogus")).contains("Schedule"));
-        assert!(backup_err(with(7, "q")).contains("Catch up"));
+        assert!(backup_err(with(3, "a b")).contains("Source"));
+        assert!(backup_err(with(5, "")).contains("repository"));
+        assert!(backup_err(with(5, "-r")).contains("repository"));
+        assert!(backup_err(with(6, "relative")).contains("password_file"));
+        assert!(backup_err(with(7, "7x")).contains("retention"));
+        assert!(backup_err(with(8, "bogus")).contains("Schedule"));
+        assert!(backup_err(with(9, "q")).contains("Catch up"));
+        assert!(backup_err(with(2, "../x")).contains("path"));
+        assert!(backup_err(with(2, "/etc")).contains("path"));
+        assert!(backup_err(with(3, "@a b")).contains("Source"));
+        let mut fresh = BACKUP_GOOD;
+        fresh[3] = "new";
+        fresh[4] = "0";
+        assert!(backup_err(fresh).contains("Snapshots to keep"));
+        fresh[4] = "many";
+        assert!(backup_err(fresh).contains("Snapshots to keep"));
     }
 
     #[test]
@@ -10847,10 +10970,10 @@ mod tests {
         app.refresh_jobs();
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Enter);
-        assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw", "7d", "0 3 * * *", "y"]);
+        assert_eq!(form_values(&app), ["local", "tank/data", "", "hourly", "", "/mnt/usb/restic", "/root/pw", "7d", "0 3 * * *", "y"]);
         let kind = backup_kind(Some(job.clone()), vec![job]);
         let mut values = BACKUP_GOOD;
-        values[3] = "/mnt/other";
+        values[5] = "/mnt/other";
         let action = build_backup_job_action(&kind, &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
         let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
         assert_eq!((job.id.as_str(), job.enabled, job.repository.as_deref()), ("backup-x", false, Some("/mnt/other")));
@@ -11589,7 +11712,7 @@ mod tests {
         crate::jobs::Job {
             id: "snap-local-tank-data".into(), host: "local".into(), kind: crate::jobs::KIND_SNAPSHOT.into(), pool: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true,
             created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, force: false,
-            repository: None, password_file: None, retention: None,
+            repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         }
     }
 
@@ -11662,7 +11785,7 @@ mod tests {
     #[test]
     fn a_backup_job_asks_when_retention_is_set_or_changed_and_names_the_repository() {
         let prompt = job_save_prompt(None, &backup_job(Some("7d 4w")), None).expect("new retention");
-        assert!(prompt.contains("keep 7d 4w") && prompt.contains("/mnt/usb/restic") && prompt.contains("restic forget --prune"), "{prompt}");
+        assert!(prompt.contains("7d 4w") && prompt.contains("/mnt/usb/restic") && prompt.contains("restic forget --prune"), "{prompt}");
         assert!(job_save_prompt(Some(&backup_job(None)), &backup_job(Some("3l")), None).is_some());
         assert!(job_save_prompt(Some(&backup_job(Some("7d"))), &backup_job(Some("3d")), None).is_some());
     }
@@ -11681,9 +11804,9 @@ mod tests {
     }
 
 
-    fn submit_backup_form(values: [&str; 8]) -> (App, Option<PendingAction>) {
+    fn submit_backup_form(values: [&str; 10]) -> (App, Option<PendingAction>) {
         let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
-        app.modal = Some(Modal::Form { title: "x".into(), fields: backup_fields(values), focused: 7, description: None, kind: backup_kind(None, vec![]) });
+        app.modal = Some(Modal::Form { title: "x".into(), fields: backup_fields(values), focused: 9, description: None, kind: backup_kind(None, vec![]) });
         let out = app.handle_modal_key(KeyCode::Enter);
         (app, out)
     }
@@ -11693,7 +11816,7 @@ mod tests {
         let (mut app, out) = submit_backup_form(BACKUP_GOOD);
         assert_eq!(out, None, "Enter must not save a retention that deletes backups");
         let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("expected a confirmation, got {:?}", app.modal) };
-        assert!(prompt.contains("keep 7d 4w") && prompt.contains("/mnt/usb/restic"), "{prompt}");
+        assert!(prompt.contains("7d 4w") && prompt.contains("/mnt/usb/restic"), "{prompt}");
         assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter alone does nothing");
         assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
         let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter saves");
@@ -11707,7 +11830,7 @@ mod tests {
         assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "declined: nothing runs");
         let (values, focused) = open_form_values(&app).expect("declining returns to the form");
         assert_eq!(values, BACKUP_GOOD.map(String::from).to_vec());
-        assert_eq!(focused, 7, "on the last field, so Enter asks again and Esc discards");
+        assert_eq!(focused, 9, "on the last field, so Enter asks again and Esc discards");
     }
 
     #[test]
@@ -11772,7 +11895,7 @@ mod tests {
     #[test]
     fn saving_a_backup_form_without_retention_saves_at_once() {
         let mut values = BACKUP_GOOD;
-        values[5] = "";
+        values[7] = "";
         let (app, out) = submit_backup_form(values);
         assert!(matches!(out.map(|a| a.call), Some(MutationCall::SaveJob { .. })));
         assert!(app.modal.is_none());
@@ -11793,9 +11916,9 @@ mod tests {
         assert!(err.contains("ssh fbsd@h") && err.contains("Permission denied"), "{err}");
     }
 
-    fn backup_form_app(values: [&str; 8]) -> App {
+    fn backup_form_app(values: [&str; 10]) -> App {
         let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
-        app.modal = Some(Modal::Form { title: "x".into(), fields: backup_fields(values), focused: 3, description: None, kind: backup_kind(None, vec![]) });
+        app.modal = Some(Modal::Form { title: "x".into(), fields: backup_fields(values), focused: 5, description: None, kind: backup_kind(None, vec![]) });
         app
     }
 
@@ -11831,10 +11954,10 @@ mod tests {
     #[test]
     fn f5_runs_nothing_for_bad_fields_and_says_why() {
         for (values, want) in [
-            (["nohost", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw", "", "30 3 * * *", "y"], "Unknown host 'nohost'"),
-            (["local", "tank/data", "hourly", "", "/root/pw", "", "30 3 * * *", "y"], "repository"),
-            (["local", "tank/data", "hourly", "/mnt/usb/restic", "pw", "", "30 3 * * *", "y"], "password file"),
-            (["local", "tank/data", "hourly", "rest:https://user:secret@host/r", "/root/pw", "", "30 3 * * *", "y"], "repository"),
+            (["nohost", "tank/data", "", "hourly", "", "/mnt/usb/restic", "/root/pw", "", "30 3 * * *", "y"], "Unknown host 'nohost'"),
+            (["local", "tank/data", "", "hourly", "", "", "/root/pw", "", "30 3 * * *", "y"], "repository"),
+            (["local", "tank/data", "", "hourly", "", "/mnt/usb/restic", "pw", "", "30 3 * * *", "y"], "password file"),
+            (["local", "tank/data", "", "hourly", "", "rest:https://user:secret@host/r", "/root/pw", "", "30 3 * * *", "y"], "repository"),
         ] {
             let mut app = backup_form_app(values);
             app.handle_modal_key(KeyCode::F(5));

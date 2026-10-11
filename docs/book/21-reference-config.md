@@ -61,7 +61,7 @@ The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TU
 | `dataset` | text | none | snapshot, replicate, backup: the dataset |
 | `recursive` | yes/no | `false` | snapshot: include child datasets, atomically |
 | `prefix` | text | `auto` | snapshot: the name prefix; replicate and backup: which snapshots to use. Letters, digits, `_`, `-`, `.` |
-| `keep` | number | none | snapshot: keep the newest N of this job's snapshots (at least 1) |
+| `keep` | number | none | snapshot: keep the newest N of this job's snapshots (at least 1); backup with `source = "new"`: how many of its own snapshots to keep (default 3) |
 | `dest_host` | text | none | replicate: the receiving host |
 | `dest_dataset` | text | none | replicate: the receiving dataset |
 | `dest_dir` | text | none | replicate to files: the directory on the hub that receives the stream |
@@ -69,6 +69,9 @@ The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TU
 | `repository` | text | none | backup: restic's `-r` value; no credentials in it |
 | `password_file` | text | none | backup: absolute path of the password file on the job's host |
 | `retention` | text | none | backup: restic retention, such as `7d 4w 12m 3y 5l`; blank keeps everything |
+| `source` | text | `prefix` | backup: which snapshot to back up: `new` (take a fresh snapshot every run), `snapshot` (the one named in `snapshot`) or `prefix` (the newest `<prefix>-<timestamp>`) |
+| `snapshot` | text | none | backup with `source = "snapshot"`: the snapshot's short name, the part after `@` |
+| `path` | text | none | backup: a directory inside the dataset, such as `photos/2026`; blank backs up the whole dataset |
 | `catch_up` | yes/no | `true` | run once at start-up if a scheduled time was missed |
 | `enabled` | yes/no | `true` | whether the job runs |
 | `created_at` | time | none | when it was made; a catch-up never reaches back before it |
