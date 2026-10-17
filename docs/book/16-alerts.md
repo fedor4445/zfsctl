@@ -107,6 +107,8 @@ Both need to run as root on the hub, like the daemon.
 
 Open Alerts, press `p` to preview the report, press `e`, fill in your address and the mail command you use, save, and press `t` to send a test message. If it does not arrive, run `zfsctl notify-test` in a shell and read what it says; the next chapters cover common causes.
 
+The theme, the Dashboard thresholds and the cloud caps are edited on the Settings screen, the next one in the sidebar.
+
 ## Where next
 
 - [Recipes](17-recipes.md)
