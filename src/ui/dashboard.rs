@@ -347,10 +347,11 @@ fn cloud_label(row: &cloud::Row) -> String {
     if row.host == "local" { row.name.clone() } else { format!("{}:{}", row.host, row.name) }
 }
 
-fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs) -> Line {
+/// `remote_width` is the width of the widest remote, so the columns after it line up.
+fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, remote_width: usize) -> Line {
     let cells = cloud::cells(row, view, inputs.cloud_sizes, inputs.cloud_caps, inputs.now);
-    // The provider's name comes first (padded so the remotes line up), then the remote.
-    let name = format!("{:<16} {}", cloud::provider_name(row.kind.as_deref()), cloud_label(row));
+    // Columns, two spaces apart: the provider's name, then the remote (each padded so the next column lines up).
+    let name = format!("{:<16}  {:<remote_width$}", cloud::provider_name(row.kind.as_deref()), cloud_label(row));
     let name = name.as_str();
     if row.job_ids.is_empty() {
         return Line { level: Level::Unknown, text: format!("{name}  no jobs") };
@@ -425,7 +426,8 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
     let daemon = daemon_line(inputs.jobs, now);
     let (jobs, failed_jobs) = jobs_line(inputs.jobs);
-    let cloud: Vec<Line> = inputs.cloud_rows.iter().map(|r| cloud_line(r, inputs.jobs, inputs)).collect();
+    let remote_width = inputs.cloud_rows.iter().map(|r| cloud_label(r).chars().count()).max().unwrap_or(0);
+    let cloud: Vec<Line> = inputs.cloud_rows.iter().map(|r| cloud_line(r, inputs.jobs, inputs, remote_width)).collect();
     let alerts = alerts_line(inputs.alerts, daemon.level == Level::Fine, now);
 
     let mut attention: Vec<Item> = Vec::new();
@@ -861,9 +863,11 @@ mod tests {
         fx.cloud_rows = crate::ui::cloud::rows(&jobs, &known);
         let d = fx.build(vec![]);
         let texts: Vec<&str> = d.cloud.iter().map(|l| l.text.as_str()).collect();
-        assert!(texts[0].starts_with("Backblaze B2     b2  1 job  last ok"), "{texts:?}");
-        assert!(texts.iter().any(|t| t.starts_with("SFTP             t1  no jobs")), "{texts:?}");
-        assert!(texts.iter().any(|t| t.starts_with("Amazon S3 (etc.) fbsd16:aws  no jobs")), "{texts:?}");
+        // two spaces between the columns; the remote column is as wide as the longest remote (`fbsd16:aws`, 10)
+        let cols = |provider: &str, remote: &str, rest: &str| format!("{provider:<16}  {remote:<10}  {rest}");
+        assert!(texts[0].starts_with(&cols("Backblaze B2", "b2", "1 job  last ok")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with(&cols("SFTP", "t1", "no jobs"))), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with(&cols("Amazon S3 (etc.)", "fbsd16:aws", "no jobs"))), "{texts:?}");
         assert!(texts.iter().all(|t| !t.contains("(b2)") && !t.contains("(sftp)")), "the raw type in parentheses is gone: {texts:?}");
     }
 
