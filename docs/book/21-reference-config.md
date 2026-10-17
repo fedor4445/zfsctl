@@ -55,7 +55,7 @@ The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TU
 |---|---|---|---|
 | `id` | text | (required) | a unique name |
 | `host` | text | (required) | a host name from `config.toml`, or `local` for the hub; where the work runs (the source, for a replication) |
-| `kind` | text | (required) | `scrub`, `snapshot`, `replicate` or `backup` |
+| `kind` | text | (required) | `scrub`, `snapshot`, `replicate`, `backup` or `rclone` |
 | `schedule` | text | (required) | five-field cron in the hub's local time |
 | `pool` | text | none | scrub: the pool |
 | `dataset` | text | none | snapshot, replicate, backup: the dataset |
@@ -66,6 +66,8 @@ The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TU
 | `dest_dataset` | text | none | replicate: the receiving dataset |
 | `dest_dir` | text | none | replicate to files: the directory on the hub that receives the stream |
 | `dest_keep` | number | absent | replicate to a host: keep this many of the job's own snapshots on the destination, destroy the older ones after each run (absent keeps all; minimum 1) |
+| `remote` | text | none | rclone: the remote path to mirror to, such as `aws:mybucket/photos` (a configured rclone remote name, a colon and a path; never keys) |
+| `bwlimit` | text | none | rclone: speed limit in bytes per second with an optional K, M or G, such as `5M` |
 | `force` | yes/no | `false` | replicate: roll the destination back to the base (`receive -F`) |
 | `repository` | text | none | backup: restic's `-r` value; no credentials in it |
 | `password_file` | text | none | backup: absolute path of the password file on the job's host |
