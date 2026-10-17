@@ -13,6 +13,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "notify_command",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
+        "memory_warn", "memory_crit", "swap_warn", "swap_crit", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -32,6 +33,73 @@ pub struct Config {
     pub notify: NotifyConfig,
     #[serde(default, skip_serializing_if = "CloudConfig::is_default")]
     pub cloud: CloudConfig,
+    #[serde(default, skip_serializing_if = "DashboardConfig::is_default")]
+    pub dashboard: DashboardConfig,
+}
+
+/// When the Dashboard turns a reading yellow (watch) and red (issue) (`[dashboard]`). Unset keys take the defaults of
+/// `Thresholds::default`; a pair that does not make sense (warn not below crit, zero, over 100) is ignored as a pair.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DashboardConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub memory_warn: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub memory_crit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub swap_warn: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub swap_crit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cpu_warn: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scrub_warn_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scrub_crit_days: Option<u32>,
+    /// Pools the Dashboard does not judge by scrub age (scratch pools nobody scrubs).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub scrub_ignore: Vec<String>,
+}
+
+/// The Dashboard's thresholds with every default filled in and every pair checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Thresholds {
+    /// Memory in use, percent: (watch, issue).
+    pub memory: (u8, u8),
+    /// Swap in use, percent: (watch, issue).
+    pub swap: (u8, u8),
+    /// CPU busy, percent, over two probes in a row: watch only, never an issue.
+    pub cpu_warn: u8,
+    /// Days since the last scrub: (watch, issue).
+    pub scrub_days: (u32, u32),
+    pub scrub_ignore: Vec<String>,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Thresholds { memory: (90, 97), swap: (50, 90), cpu_warn: 95, scrub_days: (35, 90), scrub_ignore: Vec::new() }
+    }
+}
+
+impl DashboardConfig {
+    fn is_default(&self) -> bool {
+        *self == DashboardConfig::default()
+    }
+
+    pub fn resolve(&self) -> Thresholds {
+        let d = Thresholds::default();
+        let percent_pair = |warn: Option<u8>, crit: Option<u8>, default: (u8, u8)| {
+            let pair = (warn.unwrap_or(default.0), crit.unwrap_or(default.1));
+            if pair.0 > 0 && pair.0 < pair.1 && pair.1 <= 100 { pair } else { default }
+        };
+        let days = (self.scrub_warn_days.unwrap_or(d.scrub_days.0), self.scrub_crit_days.unwrap_or(d.scrub_days.1));
+        Thresholds {
+            memory: percent_pair(self.memory_warn, self.memory_crit, d.memory),
+            swap: percent_pair(self.swap_warn, self.swap_crit, d.swap),
+            cpu_warn: self.cpu_warn.filter(|c| (1..=100).contains(c)).unwrap_or(d.cpu_warn),
+            scrub_days: if days.0 > 0 && days.0 < days.1 { days } else { d.scrub_days },
+            scrub_ignore: self.scrub_ignore.clone(),
+        }
+    }
 }
 
 /// What the Cloud screen needs to know about your cloud accounts (`[cloud]`).
@@ -528,6 +596,16 @@ mod tests {
         let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
         let daemon = DaemonConfig { notify_command: Some("true".into()) };
         let cloud = CloudConfig { caps: [("b2".to_string(), "10G".to_string())].into() };
+        let dashboard = DashboardConfig {
+            memory_warn: Some(90),
+            memory_crit: Some(97),
+            swap_warn: Some(50),
+            swap_crit: Some(90),
+            cpu_warn: Some(95),
+            scrub_warn_days: Some(35),
+            scrub_crit_days: Some(90),
+            scrub_ignore: vec!["scratch".into()],
+        };
         let notify = NotifyConfig {
             mail_to: Some("a@b".into()),
             mail_command: Some("c".into()),
@@ -543,7 +621,7 @@ mod tests {
             catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
         };
         let mut found: Vec<String> = Vec::new();
-        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&job).unwrap()] {
+        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&job).unwrap()] {
             found.extend(value.as_table().unwrap().keys().cloned());
         }
         found.sort();
@@ -555,6 +633,43 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_dashboard_defaults_are_the_specs_numbers() {
+        let t = Thresholds::default();
+        assert_eq!((t.memory, t.swap, t.cpu_warn, t.scrub_days), ((90, 97), (50, 90), 95, (35, 90)));
+        assert!(t.scrub_ignore.is_empty());
+        assert_eq!(Config::default().dashboard.resolve(), t, "no [dashboard] section means the defaults");
+    }
+
+    #[test]
+    fn dashboard_overrides_are_read_from_config_toml_and_resolved() {
+        let text = "[dashboard]\nmemory_warn = 80\nmemory_crit = 95\nswap_warn = 20\nswap_crit = 60\ncpu_warn = 90\nscrub_warn_days = 14\nscrub_crit_days = 30\nscrub_ignore = [\"scratch\", \"tmp\"]\n";
+        let c: Config = toml::from_str(text).unwrap();
+        let t = c.dashboard.resolve();
+        assert_eq!((t.memory, t.swap, t.cpu_warn, t.scrub_days), ((80, 95), (20, 60), 90, (14, 30)));
+        assert_eq!(t.scrub_ignore, ["scratch", "tmp"]);
+        let partial: Config = toml::from_str("[dashboard]\nmemory_warn = 85\n").unwrap();
+        assert_eq!(partial.dashboard.resolve().memory, (85, 97), "one key of a pair keeps the other's default");
+        assert!(!toml::to_string_pretty(&Config::default()).unwrap().contains("dashboard"), "an empty section writes nothing");
+    }
+
+    #[test]
+    fn a_pair_that_is_not_warn_below_crit_within_range_falls_back_to_its_defaults() {
+        let bad = |memory_warn, memory_crit| DashboardConfig { memory_warn, memory_crit, ..DashboardConfig::default() }.resolve().memory;
+        assert_eq!(bad(Some(97), Some(90)), (90, 97), "warn above crit");
+        assert_eq!(bad(Some(90), Some(90)), (90, 97), "warn equal to crit");
+        assert_eq!(bad(Some(0), Some(50)), (90, 97), "zero");
+        assert_eq!(bad(Some(50), Some(101)), (90, 97), "over 100");
+        assert_eq!(bad(Some(50), Some(100)), (50, 100), "100 is allowed");
+        let days = |w, c| DashboardConfig { scrub_warn_days: w, scrub_crit_days: c, ..DashboardConfig::default() }.resolve().scrub_days;
+        assert_eq!(days(Some(0), Some(10)), (35, 90));
+        assert_eq!(days(Some(40), Some(30)), (35, 90));
+        assert_eq!(days(Some(7), Some(8)), (7, 8));
+        assert_eq!(DashboardConfig { cpu_warn: Some(0), ..DashboardConfig::default() }.resolve().cpu_warn, 95);
+        assert_eq!(DashboardConfig { cpu_warn: Some(101), ..DashboardConfig::default() }.resolve().cpu_warn, 95);
+        assert_eq!(DashboardConfig { cpu_warn: Some(100), ..DashboardConfig::default() }.resolve().cpu_warn, 100);
+    }
 
     #[test]
     fn plan_sizes_are_read_the_way_cloud_plans_count_them() {
