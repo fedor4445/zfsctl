@@ -56,6 +56,8 @@ pub struct Theme {
     pub danger: Style,
     /// A second accent, apart from the health colors (the jail host type).
     pub alt: Style,
+    /// Text and background a screen paints over its whole area; `None` leaves the terminal's own.
+    pub canvas: Option<Style>,
 }
 
 fn fg(c: Color) -> Style {
@@ -75,6 +77,7 @@ impl Theme {
             accent: fg(Color::Cyan),
             danger: fg(Color::Red).add_modifier(Modifier::BOLD),
             alt: fg(Color::Magenta),
+            canvas: None,
         }
     }
 
@@ -102,6 +105,7 @@ impl Theme {
             accent: plain.add_modifier(Modifier::BOLD),
             danger: plain.add_modifier(Modifier::BOLD),
             alt: plain.add_modifier(Modifier::UNDERLINED),
+            canvas: None,
         }
     }
 
@@ -132,6 +136,8 @@ impl Theme {
             accent: fg(blue),
             danger: fg(red).add_modifier(Modifier::BOLD),
             alt: fg(c((211, 54, 130), 125)),
+            // Solarized's own dark teal behind light grey-teal text, as Solarized terminals draw it (base02 / base1).
+            canvas: dark.then(|| Style::new().fg(c((147, 161, 161), 246)).bg(c((7, 54, 66), 23))),
         }
     }
 
@@ -538,6 +544,15 @@ mod tests {
         }
         for t in [Theme::mono(), Theme::from_name(ThemeName::SolarizedLight, true)] {
             assert_eq!(t.bright(), t);
+        }
+    }
+
+    #[test]
+    fn only_solarized_dark_paints_a_canvas() {
+        assert!(Theme::from_name(ThemeName::SolarizedDark, true).canvas.is_some());
+        assert!(Theme::from_name(ThemeName::SolarizedDark, false).canvas.is_some());
+        for t in [Theme::ansi(), Theme::mono(), Theme::from_name(ThemeName::SolarizedLight, true)] {
+            assert_eq!(t.canvas, None);
         }
     }
 }
