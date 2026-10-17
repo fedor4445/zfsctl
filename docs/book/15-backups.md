@@ -358,7 +358,7 @@ Each run makes `current` match the dataset. Before it replaces or deletes a file
 
 ### Set up the cloud account
 
-zfsctl has been tried end to end against a real Backblaze B2 bucket (first copy, a later run that replaced and deleted files, cancelling, the check and the refusals) but not yet against AWS S3, so on AWS treat your first run as a test. On either, mirror a small dataset first and look at the bucket.
+zfsctl has been tried end to end against a real Backblaze B2 bucket and a real AWS S3 bucket (first copy, a later run that replaced and deleted files, the check), using exactly the keys and policy below. With any other provider, treat your first run as a test: mirror a small dataset first and look at the bucket.
 
 **AWS S3.** Create a bucket (any region; leave "block public access" on). In IAM create a user that can only use that bucket, with a policy like this (replace `mybucket`):
 
@@ -372,7 +372,7 @@ zfsctl has been tried end to end against a real Backblaze B2 bucket (first copy,
 }
 ```
 
-Create an access key for that user. Optionally turn on **bucket versioning** in the bucket's properties: S3 then keeps every older version of every object on its own, a second safety net behind `old/`.
+The policy does not allow creating buckets, and zfsctl does not ask for it: the bucket must already exist. Create an access key for that user. Optionally turn on **bucket versioning** in the bucket's properties: S3 then keeps every older version of every object on its own, a second safety net behind `old/`.
 
 **Backblaze B2.** Create a private bucket. Under *Application Keys* create a key restricted to that one bucket, allowing list, read, write and delete files. Note the key ID and the key (it is shown once). **A B2 bucket keeps every version of every file by default**, so a file moved into `old/` also leaves a hidden version behind in `current/` and you pay for both. Set the bucket's lifecycle to *Keep only the last version of the file* unless you want that second hidden history.
 

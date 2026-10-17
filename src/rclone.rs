@@ -42,13 +42,15 @@ pub fn run_stamp(at: DateTime<Utc>) -> String {
 }
 
 /// `rclone sync SOURCE REMOTE/current --backup-dir REMOTE/old/STAMP`: what the sync would replace or delete is
-/// moved to the backup directory, a sibling of `current`, never discarded.
+/// moved to the backup directory, a sibling of `current`, never discarded. `--s3-no-check-bucket` stops rclone
+/// trying to create the bucket first, which the one-bucket IAM policy of the guide does not allow (it is ignored
+/// by other backends, and a missing bucket still fails the run).
 pub fn sync_args(source: &str, remote: &str, stamp: &str, bwlimit: Option<&str>) -> Vec<String> {
     let mut args = vec!["sync".to_string(), source.to_string(), join(remote, "current"), "--backup-dir".to_string(), join(remote, &format!("old/{stamp}"))];
     if let Some(limit) = bwlimit {
         args.extend(["--bwlimit".to_string(), limit.to_string()]);
     }
-    for a in ["--use-json-log", "--stats", "1s", "--stats-log-level", "NOTICE", "--log-level", "NOTICE"] {
+    for a in ["--s3-no-check-bucket", "--use-json-log", "--stats", "1s", "--stats-log-level", "NOTICE", "--log-level", "NOTICE"] {
         args.push(a.to_string());
     }
     args
@@ -239,6 +241,7 @@ mod tests {
         assert_eq!(args[..5], ["sync", "/var/run/zfsctl/j/my photos", "aws:my bkt/p/current", "--backup-dir", "aws:my bkt/p/old/20261017T030509Z"]);
         assert!(!args.contains(&"--bwlimit".to_string()));
         assert!(args.contains(&"--use-json-log".to_string()));
+        assert!(args.contains(&"--s3-no-check-bucket".to_string()));
         let limited = sync_args("/s", "b2:bkt", "S", Some("5M"));
         let i = limited.iter().position(|a| a == "--bwlimit").unwrap();
         assert_eq!(limited[i + 1], "5M");
