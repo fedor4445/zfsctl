@@ -89,7 +89,7 @@ impl Theme {
             return self.clone();
         }
         // Fixed 256-color indexes, not the 16 ANSI names: a terminal theme may draw its "bright" colors as dull as the plain ones.
-        Theme { ok: fg(Color::Indexed(120)), warn: fg(Color::Indexed(221)), err: fg(Color::Indexed(210)), muted: fg(Color::Indexed(250)), ..self.clone() }
+        Theme { ok: fg(Color::Indexed(112)), warn: fg(Color::Indexed(221)), err: fg(Color::Indexed(210)), muted: fg(Color::Indexed(250)), ..self.clone() }
     }
 
     /// No colors at all: bold / dim / reverse and the glyphs carry everything.
