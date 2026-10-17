@@ -80,9 +80,9 @@ impl Theme {
 
     /// The same theme with light, fixed 256-color greens, yellows and reds and a lighter grey for muted text, for screens that
     /// are read at a glance (the Dashboard). Terminals draw the plain ANSI green, yellow and dark grey dim on a dark
-    /// background. Other themes are returned unchanged: they chose their own colors.
+    /// background. Solarized dark has the same problem (its muted grey is base01 on base03). The light and mono themes are returned unchanged.
     pub fn bright(&self) -> Theme {
-        if self.name != ThemeName::Ansi {
+        if !matches!(self.name, ThemeName::Ansi | ThemeName::SolarizedDark) {
             return self.clone();
         }
         // Fixed 256-color indexes, not the 16 ANSI names: a terminal theme may draw its "bright" colors as dull as the plain ones.
@@ -531,10 +531,12 @@ mod tests {
     }
 
     #[test]
-    fn bright_lifts_only_the_ansi_theme() {
-        assert_ne!(Theme::ansi().bright().ok, Theme::ansi().ok);
-        assert_ne!(Theme::ansi().bright().muted, Theme::ansi().muted);
-        for t in [Theme::mono(), Theme::from_name(ThemeName::SolarizedDark, true)] {
+    fn bright_lifts_only_the_dark_themes() {
+        for t in [Theme::ansi(), Theme::from_name(ThemeName::SolarizedDark, true)] {
+            assert_ne!(t.bright().ok, t.ok);
+            assert_ne!(t.bright().muted, t.muted);
+        }
+        for t in [Theme::mono(), Theme::from_name(ThemeName::SolarizedLight, true)] {
             assert_eq!(t.bright(), t);
         }
     }
