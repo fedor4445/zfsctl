@@ -102,7 +102,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 
 ## Keys
 
-- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud, Alerts) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `Tab` / `Shift+Tab`: switch sections (Dashboard, Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud, Alerts) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `'['` / `']'` (Datasets right pane only, once focused with `Right`): cycle between the Properties, Permissions, and ACL sub-tabs.
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
@@ -123,6 +123,12 @@ On the four account fields (SMB valid user, NFS "Root user mapping" (users only)
 - `Shift+Tab` / `Up`: move to the previous field (wraps from the first field back to the last)
 - `Enter` on the last field: submit. An invalid value anywhere in the form is rejected with a status message that names the field and what is wrong with it (for the permission and ACL forms: a permission that starts with `-`, a set name typed with its leading `@`, an unknown recipient or type) — the form stays open with everything you typed, focus resets to the first field so you can `Tab`/`Down` through to find and fix the problem without needing to `Esc` and start over
 - `Esc`: cancel, discarding whatever was typed
+
+### Dashboard
+
+zfsctl opens on the Dashboard: one borderless screen with the health of every component, the problems first. A header says whether all is quiet or how many things need attention ("checking..." until every host has answered its first probe, so it never claims quiet before it knows). **Needs attention** lists every issue (red, `✖`) and every thing to watch (yellow, `▲`) with the host or job it is about. **Hosts** has one row per host: state, pools, space, memory (free, inactive and ZFS cache memory are not counted as in use, so a cache-filled RAM is not an alarm), CPU (the busy share between two probes, about 30 s), load, how long since the last scrub, and disk errors, each coloured by how worried to be; gauges appear when the terminal is wide enough and columns drop as it narrows. Below: the daemon (running, heartbeat age), jobs by kind with failed ones flagged, each cloud remote with its last result (bucket size only if you measured it in Cloud), and the alerts monitor. Anything not known yet or not answering is shown as unknown (`○`, `?`), never as fine.
+
+It is display only. `Up` / `Down` select a line of Needs attention and `Enter` jumps to the section that owns it (that is all it does); fixing happens there. It reuses the probes that already run every 30 s and adds two read-only unprivileged commands per host per probe (`sysctl`, `swapinfo`) and one `date +%z` per host per session; no sudoers entry changes, and the daemon's own health probes (and so the alert mail) are unchanged. Defaults: space 80% / 90% (yellow / red); memory 90% / 97%; swap 50% / 90%; CPU 95% (yellow only, never red); last scrub 35 days (yellow, also when never scrubbed) / 90 days (red). They can be changed under `[dashboard]` in `config.toml` (`memory_warn`, `memory_crit`, `swap_warn`, `swap_crit`, `cpu_warn`, `scrub_warn_days`, `scrub_crit_days`), and `scrub_ignore = ["scratch"]` lists pools it should not judge by scrub age. A resilver does not count as a scrub. Not on the Dashboard in this version: NFS and Samba availability (it would cost a privileged check per host per probe), disk wear (needs smartmontools) and predictions such as "this pool fills in 40 days" (needs a history of samples).
 
 ### Hosts
 

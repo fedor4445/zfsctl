@@ -186,7 +186,7 @@ fn plan(hosts: &[HostRow], width: usize) -> Plan {
         columns: COLUMNS.to_vec(),
         gauges: true,
         name_w: longest(|h| h.name.chars().count()).clamp(4, 14),
-        state_w: (longest(|h| h.state.text.chars().count()) + 2).clamp(10, 28),
+        state_w: (longest(|h| h.state.text.chars().count()) + 2).clamp(10, 30),
     };
     while plan.total(hosts) > width {
         if plan.gauges {

@@ -156,7 +156,7 @@ fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, no
     } else {
         Level::Fine
     };
-    let note = (level != Level::Fine).then(|| format!("{} last scrubbed {days} days ago", pool.name));
+    let note = (level != Level::Fine).then(|| format!("{} last scrub {days} d ago", pool.name));
     (level, if days == 0 { "today".to_string() } else { format!("{days} d ago") }, days, note)
 }
 
