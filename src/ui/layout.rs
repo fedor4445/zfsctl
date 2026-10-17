@@ -875,7 +875,7 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
 
 /// The Cloud section: every rclone remote the hub (and any host with a cloud job) knows, with its jobs.
 fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
-    use crate::ui::cloud::{cells, failed};
+    use crate::ui::cloud::{cells, failed, row_fill, Fill};
     let theme = app.theme.clone();
     let now = chrono::Utc::now();
     let rows = app.cloud_rows();
@@ -899,14 +899,16 @@ fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
     let table_rows: Vec<Row> = rows
         .iter()
         .map(|r| {
-            let style = if failed(r, &app.jobs_view) {
+            let style = if failed(r, &app.jobs_view) || row_fill(r, &app.cloud_sizes, &app.cloud_caps) == Some(Fill::Full) {
                 theme.err
+            } else if row_fill(r, &app.cloud_sizes, &app.cloud_caps) == Some(Fill::Warn) {
+                theme.warn
             } else if r.job_ids.is_empty() {
                 theme.dim()
             } else {
                 Style::default()
             };
-            Row::new(cells(r, &app.jobs_view, &app.cloud_sizes, now)).style(style)
+            Row::new(cells(r, &app.jobs_view, &app.cloud_sizes, &app.cloud_caps, now)).style(style)
         })
         .collect();
     let widths = [Constraint::Length(22), Constraint::Length(10), Constraint::Length(7), Constraint::Length(5), Constraint::Length(16), Constraint::Min(10)];
@@ -926,10 +928,20 @@ fn draw_cloud_panel(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new("nothing selected").style(theme.dim()), inner);
         return;
     };
-    let mut lines: Vec<Line> = crate::ui::cloud::detail(&row, &app.jobs_view, &app.cloud_sizes, chrono::Utc::now())
+    // The plan line is yellow from 80% and red from 95%; every other problem line is red.
+    let fill = crate::ui::cloud::row_fill(&row, &app.cloud_sizes, &app.cloud_caps);
+    let mut lines: Vec<Line> = crate::ui::cloud::detail(&row, &app.jobs_view, &app.cloud_sizes, &app.cloud_caps, chrono::Utc::now())
         .into_iter()
         .enumerate()
-        .map(|(i, (text, bad))| Line::styled(text, if bad { theme.err } else if i == 0 { theme.dim() } else { Style::default() }))
+        .map(|(i, (text, bad))| {
+            let style = match (bad, text.starts_with("Plan cap"), fill) {
+                (true, true, Some(crate::ui::cloud::Fill::Warn)) => theme.warn,
+                (true, _, _) => theme.err,
+                _ if i == 0 => theme.dim(),
+                _ => Style::default(),
+            };
+            Line::styled(text, style)
+        })
         .collect();
     if let Some(why) = app.cloud_errors.get(&row.host) {
         lines.push(Line::styled(format!("rclone on {}: {why}", row.host), theme.err));
@@ -1916,6 +1928,21 @@ mod tests {
         app.cloud_table.select(Some(1));
         let idle = render(&mut app, 130, 40).join("\n");
         assert!(idle.contains("Remote — t1:") && idle.contains("No job uses this remote"), "{idle}");
+    }
+
+    #[test]
+    fn the_cloud_section_shows_how_much_of_the_plan_cap_is_used_and_warns_near_the_limit() {
+        let mut app = cloud_app();
+        app.cloud_table.select(Some(0));
+        app.cloud_caps.insert("b2".into(), Ok(10_000_000_000));
+        app.cloud_sizes.insert("mirror-local-tank-photos".into(), crate::ui::cloud::Size { current: Some((412, 1_992_294)), old: Some((3, 24_576)), at: chrono::Utc::now(), problem: None });
+        let text = render(&mut app, 130, 40).join("\n");
+        assert!(text.contains("1.9 MiB of 10 GB (0.02%)") && text.contains("Plan cap 10 GB: using 1.9 MiB (0.02%)"), "{text}");
+        app.cloud_caps.insert("b2".into(), Err("ten gigs".into()));
+        assert!(render(&mut app, 130, 40).join("\n").contains("Plan cap 'ten gigs'"));
+        app.cloud_caps.insert("b2".into(), Ok(2_500_000));
+        let warn = render(&mut app, 130, 40).join("\n");
+        assert!(warn.contains("of 2.5 MB (81%)") && warn.contains("Plan cap 2.5 MB: using 1.9 MiB (81%)"), "{warn}");
     }
 
     #[test]

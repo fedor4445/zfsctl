@@ -423,8 +423,18 @@ You should not have to remember which buckets you have set up. The **Cloud** sec
 
 - **Remote, Host, Type:** the name you gave in `rclone config`, the host whose rclone config has it, and rclone's type for it (`b2`, `s3`, `sftp`...). Only names and types are read (`rclone listremotes --long`): no key is ever read into the screen.
 - **Jobs and Last:** how many cloud mirror jobs (and restic jobs that use an `rclone:` repository) write to the remote, and how the latest run of any of them ended. A remote whose latest run failed turns red, and the panel below says why. A remote nobody uses is dim: it is set up but unused.
-- **In bucket:** blank (`-`) until you press `s`. It then adds up the size of the `current/` folders of that remote's mirror jobs.
+- **In bucket:** blank (`-`) until you press `s`. It then adds up what that remote's mirror jobs hold in the bucket, `current/` and `old/` together, because that is what a plan charges for. With a plan cap set (below) it also says how much of the cap that is.
 - **The panel:** the selected remote's jobs, and after `s` the size of `current/` and of `old/` for each, so you can see when `old/` is getting big. `F5` runs the same read-only check as in the form.
+
+**Seeing how much of a free plan you have used.** Backblaze's free account gives 10 GB and AWS's free tier 5 GB. Tell zfsctl once, in `/usr/local/etc/zfsctl/config.toml`, by remote name:
+
+```toml
+[cloud.caps]
+b2 = "10G"
+zfsctl-aws = "5G"
+```
+
+After you press `s`, the table says `1.1 MiB of 10 GB (0.01%)` and the panel says how much is left. The line turns yellow from 80% and red from 95%, so you notice before an upload fails. Two limits to know: the numbers cover only what zfsctl's mirror jobs put in the bucket (restic repositories and anything else on the account are not counted), and the cap is a number you typed, not one zfsctl asked the provider for. A cap that is not a size such as `10G` is reported on screen and ignored.
 
 > **Tip:** `s` is on demand because measuring a bucket means listing every file in it, which a cloud account may count as requests, and on a free account those are limited. The screen never does it by itself, and says how long ago it was measured.
 

@@ -290,6 +290,8 @@ pub struct App {
     pub cloud_known: crate::ui::cloud::Known,
     pub cloud_errors: HashMap<String, String>,
     pub cloud_sizes: HashMap<String, crate::ui::cloud::Size>,
+    /// `[cloud.caps]` of `config.toml`, read each time the Cloud list is asked for.
+    pub cloud_caps: crate::ui::cloud::Caps,
     pub pending_cloud: Vec<PendingCloud>,
     /// Lookups that were started and have not answered: `remotes:<host>` or `size:<job id>`.
     cloud_busy: HashSet<String>,
@@ -486,6 +488,7 @@ impl App {
             cloud_known: HashMap::new(),
             cloud_errors: HashMap::new(),
             cloud_sizes: HashMap::new(),
+            cloud_caps: HashMap::new(),
             pending_cloud: Vec::new(),
             cloud_busy: HashSet::new(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
@@ -2250,6 +2253,7 @@ impl App {
     /// Nothing is asked twice while an answer is awaited.
     pub fn refresh_cloud(&mut self) {
         self.refresh_jobs();
+        self.cloud_caps = crate::config::Config::load(&self.config_path).map(|c| c.cloud.caps).unwrap_or_default().into_iter().map(|(name, text)| (name, crate::config::parse_cap(&text).ok_or(text))).collect();
         let mut hosts: Vec<usize> = self.hosts.iter().position(|h| h == "local").into_iter().collect();
         for job in &self.jobs_view.jobs {
             if crate::ui::cloud::remote_name(job).is_none() {

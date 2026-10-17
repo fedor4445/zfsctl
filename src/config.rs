@@ -12,6 +12,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "theme", "auto_refresh_secs",
         "notify_command",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
+        "caps",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -29,6 +30,38 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
     pub notify: NotifyConfig,
+    #[serde(default, skip_serializing_if = "CloudConfig::is_default")]
+    pub cloud: CloudConfig,
+}
+
+/// What the Cloud screen needs to know about your cloud accounts (`[cloud]`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CloudConfig {
+    /// `[cloud.caps]`: the room a plan gives you, by rclone remote name, such as `b2 = "10G"`. The Cloud screen shows how much
+    /// of it a remote's buckets use. Only a size; nothing here can reach the account.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub caps: std::collections::BTreeMap<String, String>,
+}
+
+impl CloudConfig {
+    fn is_default(&self) -> bool {
+        self.caps.is_empty()
+    }
+}
+
+/// A plan size: digits (a decimal point is allowed) and an optional `K`, `M`, `G` or `T`, counted the way cloud plans
+/// count (`10G` is 10 000 000 000 bytes). `None` for anything else, zero included.
+pub fn parse_cap(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (number, unit) = match text.char_indices().last()? {
+        (i, c @ ('K' | 'M' | 'G' | 'T')) => (&text[..i], match c { 'K' => 1e3, 'M' => 1e6, 'G' => 1e9, _ => 1e12 }),
+        _ => (text, 1.0),
+    };
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') || number.matches('.').count() > 1 {
+        return None;
+    }
+    let bytes = number.parse::<f64>().ok()? * unit;
+    (bytes >= 1.0 && bytes < 1e18).then(|| bytes.round() as u64)
 }
 
 /// Settings for `zfsctl daemon`.
@@ -494,6 +527,7 @@ mod tests {
         let host = HostConfig { name: "n".into(), ssh_target: Some("u@h".into()), tag: Some("t".into()) };
         let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
         let daemon = DaemonConfig { notify_command: Some("true".into()) };
+        let cloud = CloudConfig { caps: [("b2".to_string(), "10G".to_string())].into() };
         let notify = NotifyConfig {
             mail_to: Some("a@b".into()),
             mail_command: Some("c".into()),
@@ -509,7 +543,7 @@ mod tests {
             catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
         };
         let mut found: Vec<String> = Vec::new();
-        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&job).unwrap()] {
+        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&job).unwrap()] {
             found.extend(value.as_table().unwrap().keys().cloned());
         }
         found.sort();
@@ -521,6 +555,24 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn plan_sizes_are_read_the_way_cloud_plans_count_them() {
+        for (text, bytes) in [("10G", 10_000_000_000), ("2.5G", 2_500_000_000), ("500M", 500_000_000), ("1T", 1_000_000_000_000), ("1000", 1000), (" 10G ", 10_000_000_000)] {
+            assert_eq!(parse_cap(text), Some(bytes), "{text}");
+        }
+        for bad in ["", "G", "0", "0G", "-1G", "10GB", "1.2.3G", "ten", "10 G", "1e9", "99999999999T", "10g"] {
+            assert_eq!(parse_cap(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn caps_are_read_from_the_cloud_section_and_an_empty_section_writes_nothing() {
+        let c: Config = toml::from_str("[cloud.caps]\nb2 = \"10G\"\nzfsctl-aws = \"5G\"\n").unwrap();
+        assert_eq!(c.cloud.caps.get("b2").map(String::as_str), Some("10G"));
+        assert_eq!(c.cloud.caps.len(), 2);
+        assert!(!toml::to_string_pretty(&Config::default()).unwrap().contains("cloud"));
+    }
 
     #[test]
     fn load_missing_file_returns_default() {
