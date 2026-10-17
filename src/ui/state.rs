@@ -27,6 +27,7 @@ const POOL_SCAN_STATUS_DISPLAY_DURATION: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
+    Dashboard,
     Hosts,
     Pools,
     Datasets,
@@ -299,6 +300,10 @@ pub struct App {
     pub cloud_sizes: HashMap<String, crate::ui::cloud::Size>,
     /// `[cloud.caps]` of `config.toml`, read each time the Cloud list is asked for.
     pub cloud_caps: crate::ui::cloud::Caps,
+    /// `[dashboard]` of `config.toml`, read each time the Dashboard refreshes.
+    pub dashboard_thresholds: crate::config::Thresholds,
+    /// The selected line of the Dashboard's Needs attention list.
+    pub dashboard_table: TableState,
     pub pending_cloud: Vec<PendingCloud>,
     /// Lookups that were started and have not answered: `remotes:<host>` or `size:<job id>`.
     cloud_busy: HashSet<String>,
@@ -465,8 +470,10 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let hosts_for_addr = hosts.clone();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Cloud, Section::Alerts],
-            selected_section: 0,
+            sections: vec![Section::Dashboard, Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Cloud, Section::Alerts],
+            // The section after the Dashboard (Hosts): the program opens on the Dashboard through `open_dashboard`, but
+            // a fresh `App` starts on Hosts, which most behaviour (and its tests) is about.
+            selected_section: 1,
             hosts,
             selected_host: 0,
             pools: Vec::new(),
@@ -496,6 +503,8 @@ impl App {
             cloud_errors: HashMap::new(),
             cloud_sizes: HashMap::new(),
             cloud_caps: HashMap::new(),
+            dashboard_thresholds: crate::config::Thresholds::default(),
+            dashboard_table: TableState::default(),
             pending_cloud: Vec::new(),
             cloud_busy: HashSet::new(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
@@ -567,7 +576,7 @@ impl App {
     }
 
     pub fn current_section(&self) -> Section {
-        // `selected_section` is always in range; Hosts (the first section) is the harmless fallback.
+        // `selected_section` is always in range; Hosts is the harmless fallback.
         self.sections.get(self.selected_section).copied().unwrap_or(Section::Hosts)
     }
 
@@ -730,6 +739,7 @@ impl App {
             Section::Shares => self.refresh_shares(runner),
             Section::BootEnvs => self.refresh_bootenvs(runner),
             Section::Jobs => self.refresh_jobs(),
+            Section::Dashboard => self.refresh_dashboard(),
             Section::Cloud => self.refresh_cloud(),
             Section::Alerts => self.refresh_alerts(),
             _ => {}
@@ -881,12 +891,58 @@ impl App {
         }
     }
 
+    /// Makes the Dashboard the section on screen: what zfsctl shows when it starts.
+    pub fn open_dashboard(&mut self) {
+        if let Some(position) = self.sections.iter().position(|s| *s == Section::Dashboard) {
+            self.selected_section = position;
+        }
+    }
+
+    /// Reloads everything the Dashboard shows that is not a host probe: the jobs, the alert settings, the cloud remotes and the
+    /// `[dashboard]` thresholds (an unreadable `config.toml` means the defaults). Probes arrive on their own every 30 s.
+    pub fn refresh_dashboard(&mut self) {
+        self.dashboard_thresholds = crate::config::Config::load(&self.config_path).map(|c| c.dashboard.resolve()).unwrap_or_default();
+        self.refresh_alerts();
+        self.refresh_cloud();
+    }
+
+    /// The Dashboard as it stands: the host probes and readings, the jobs, the cloud list and the alert settings, judged by
+    /// the thresholds. Cheap (everything is in memory), so it is built on every draw and every key.
+    pub fn dashboard(&self) -> crate::ui::dashboard::Dashboard {
+        let hosts = self
+            .hosts
+            .iter()
+            .enumerate()
+            .map(|(i, name)| crate::ui::dashboard::HostInput {
+                name,
+                assessment: self.host_assessment(i),
+                probe: self.host_probes.get(name).and_then(|s| s.last.as_ref()),
+                resources: self.host_resources(name),
+                utc_offset_secs: self.host_probes.get(name).and_then(|s| s.utc_offset_secs),
+            })
+            .collect();
+        crate::ui::dashboard::build(&crate::ui::dashboard::Inputs {
+            hosts,
+            jobs: &self.jobs_view,
+            cloud_rows: self.cloud_rows(),
+            cloud_sizes: &self.cloud_sizes,
+            cloud_caps: &self.cloud_caps,
+            alerts: &self.alerts_view,
+            thresholds: &self.dashboard_thresholds,
+            now: chrono::Utc::now(),
+        })
+    }
+
     /// Asks for the rclone remotes when the Cloud section is on screen and they were last asked for a minute ago or
     /// never (the first time it is opened). The remote list changes only when someone runs `rclone config`.
     pub fn refresh_cloud_if_stale(&mut self, now: Instant) {
-        if self.current_section() == Section::Cloud && self.last_cloud_refresh.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(60)) {
+        if matches!(self.current_section(), Section::Cloud | Section::Dashboard) && self.last_cloud_refresh.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(60)) {
             self.last_cloud_refresh = Some(now);
-            self.refresh_cloud();
+            if self.current_section() == Section::Dashboard {
+                self.refresh_dashboard();
+            } else {
+                self.refresh_cloud();
+            }
         }
     }
 
@@ -894,7 +950,7 @@ impl App {
     /// (so a run's result appears live), every 10 otherwise (so the failed-jobs indicator is
     /// right from any section). The first call always loads.
     pub fn refresh_jobs_if_stale(&mut self, now: Instant) {
-        let every = if matches!(self.current_section(), Section::Jobs | Section::Cloud) { Duration::from_secs(2) } else { Duration::from_secs(10) };
+        let every = if matches!(self.current_section(), Section::Jobs | Section::Cloud | Section::Dashboard) { Duration::from_secs(2) } else { Duration::from_secs(10) };
         if self.last_jobs_refresh.is_none_or(|t| now.duration_since(t) >= every) {
             self.last_jobs_refresh = Some(now);
             self.refresh_jobs();
@@ -998,7 +1054,7 @@ impl App {
     /// Reloads the Alerts data every 5 seconds while that section is on screen (so a new event or a changed
     /// file shows up), and never otherwise.
     pub fn refresh_alerts_if_stale(&mut self, now: Instant) {
-        if self.current_section() != Section::Alerts {
+        if !matches!(self.current_section(), Section::Alerts | Section::Dashboard) {
             return;
         }
         if self.last_alerts_refresh.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
@@ -1965,6 +2021,22 @@ impl App {
             }
             KeyCode::Up if self.current_section() == Section::Alerts => {
                 self.alerts_view.scroll = self.alerts_view.scroll.saturating_sub(1);
+            }
+            KeyCode::Down if self.current_section() == Section::Dashboard => {
+                let lines = self.dashboard().attention.len();
+                move_table_selection(&mut self.dashboard_table, lines, true);
+            }
+            KeyCode::Up if self.current_section() == Section::Dashboard => {
+                let lines = self.dashboard().attention.len();
+                move_table_selection(&mut self.dashboard_table, lines, false);
+            }
+            // Navigation only: the Dashboard shows, the section that owns the problem fixes.
+            KeyCode::Enter if self.current_section() == Section::Dashboard => {
+                let target = self.dashboard_table.selected().and_then(|i| self.dashboard().attention.get(i).map(|item| item.goto));
+                if let Some(position) = target.and_then(|goto| self.sections.iter().position(|s| *s == goto)) {
+                    self.selected_section = position;
+                    self.pane_focus = PaneFocus::Middle;
+                }
             }
             KeyCode::Down if self.current_section() == Section::Cloud => {
                 let rows = self.cloud_rows().len();
@@ -2958,6 +3030,11 @@ Jobs
   c                cancel the selected replication or backup while it is running
   Space            enable / disable the job
   d                delete the job (y/n; its past runs stay in the history)
+
+Dashboard
+  Up / Down        select a line of Needs attention
+  Enter            go to the section that owns that line (the Dashboard itself changes nothing)
+  r                reload the jobs, alerts, cloud list and [dashboard] settings
 
 Cloud
   Up / Down        select an rclone remote (the hub's, and those of hosts that have a cloud job)

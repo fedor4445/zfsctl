@@ -158,6 +158,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, s)| {
             let label = match s {
+                Section::Dashboard => "Dashboard",
                 Section::Hosts => "Hosts",
                 Section::Pools => "Pools",
                 Section::Datasets => "Datasets",
@@ -283,6 +284,8 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     match section {
+        // Replaced by the real screen in the next task.
+        Section::Dashboard => f.render_widget(Paragraph::new(app.dashboard().verdict.text), area),
         Section::Hosts => draw_hosts(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
         Section::Disks => draw_disks(f, app, area),
@@ -2204,7 +2207,7 @@ mod tests {
         let h = History::new(dir.path().join("history.jsonl"));
         h.append(&history_event("a", "r1", EventKind::Finished, 60, Some(RunResult::Failed), "boom")).unwrap();
         app.refresh_jobs();
-        app.selected_section = 0;
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("1 job failed"), "{text}");
         h.append(&history_event("b", "r2", EventKind::Finished, 30, Some(RunResult::Failed), "boom")).unwrap();
