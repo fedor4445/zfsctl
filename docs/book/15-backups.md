@@ -389,11 +389,11 @@ The policy does not allow creating buckets, and zfsctl does not ask for it: the 
 You should not have to remember which buckets you have set up. The **Cloud** section (between Jobs and Alerts in the sidebar) lists every rclone remote on the hub, plus the remote of any job on another host, with the jobs that write to it:
 
 ```screen
-┌zfsctl────────────────┐┌Cloud — 3 remotes, 2 jobs───────────────────────────────────────────────────────────┐
-│Hosts                 ││Remote                 Host       Type    Jobs  Last             In bucket          │
-│Pools                 ││b2:                    local      b2      1     ok 3m ago        1.1 MiB            │
-│Datasets              ││t1:                    local      sftp    0     -                -                  │
-│Snapshots             ││zfsctl-aws:            local      s3      1     ok 3m ago        -                  │
+┌zfsctl────────────────┐┌Cloud — 3 remotes, 1 job────────────────────────────────────────────────────────────┐
+│Hosts                 ││Remote             Host     Type   Jobs Last           In bucket                    │
+│Pools                 ││b2:                local    b2     1    ok 4m ago      1.4 MiB of 10 GB (0.02%)     │
+│Datasets              ││t1:                local    sftp   0    -              -                            │
+│Snapshots             ││zfsctl-aws:        local    s3     0    -              -                            │
 │Disks                 ││                                                                                    │
 │Shares                ││                                                                                    │
 │Boot Envs             ││                                                                                    │
@@ -406,12 +406,12 @@ You should not have to remember which buckets you have set up. The **Cloud** sec
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
 │                      │┌Remote — b2:────────────────────────────────────────────────────────────────────────┐
 │                      ││b2: (b2) on local                                                                   │
-│                      ││mirror-local-scratch-zt-cloud  scratch/zt-cloud → b2:zfsctl/cloudtest  49 * * * *   │
-│                      ││last ok 3m ago                                                                      │
-│                      ││    current/ 1.1 MiB (3 files)   no old/ yet   measured just now                    │
+│                      ││Plan cap 10 GB: using 1.4 MiB (0.02%), 10 GB left. Counts only this remote's        │
+│                      ││measured mirror jobs (current/ and old/).                                           │
+│                      ││mirror-local-scratch-zt-cap  scratch/zt-cap → b2:zfsctl/captest  8 * * * *  last ok │
+│                      ││4m ago                                                                              │
+│                      ││    current/ 1.4 MiB (2 files)   no old/ yet   measured just now                    │
 │                      ││Check: OK, the remote opens.                                                        │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │

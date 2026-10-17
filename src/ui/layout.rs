@@ -911,7 +911,7 @@ fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
             Row::new(cells(r, &app.jobs_view, &app.cloud_sizes, &app.cloud_caps, now)).style(style)
         })
         .collect();
-    let widths = [Constraint::Length(22), Constraint::Length(10), Constraint::Length(7), Constraint::Length(5), Constraint::Length(16), Constraint::Min(10)];
+    let widths = [Constraint::Length(18), Constraint::Length(8), Constraint::Length(6), Constraint::Length(4), Constraint::Length(14), Constraint::Min(10)];
     let table = Table::new(table_rows, widths).header(Row::new(vec!["Remote", "Host", "Type", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.cloud_table);
 }
@@ -1943,6 +1943,16 @@ mod tests {
         app.cloud_caps.insert("b2".into(), Ok(2_500_000));
         let warn = render(&mut app, 130, 40).join("\n");
         assert!(warn.contains("of 2.5 MB (81%)") && warn.contains("Plan cap 2.5 MB: using 1.9 MiB (81%)"), "{warn}");
+    }
+
+    #[test]
+    fn the_plan_percentage_fits_a_110_column_terminal() {
+        let mut app = cloud_app();
+        app.cloud_table.select(Some(0));
+        app.cloud_caps.insert("b2".into(), Ok(10_000_000_000));
+        app.cloud_sizes.insert("mirror-local-tank-photos".into(), crate::ui::cloud::Size { current: Some((412, 1_992_294)), old: None, at: chrono::Utc::now(), problem: None });
+        let text = render(&mut app, 110, 30).join("\n");
+        assert!(text.contains("1.9 MiB of 10 GB (0.02%)"), "{text}");
     }
 
     #[test]

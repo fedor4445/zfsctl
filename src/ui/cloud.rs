@@ -198,9 +198,8 @@ fn plan_lines(row: &Row, sizes: &HashMap<String, Size>, caps: &Caps) -> Vec<Line
         Some(Ok(cap)) => match used_bytes(row, sizes) {
             None => vec![(format!("Plan cap {}: press s to see how much of it is used", cap_text(*cap)), false)],
             Some(used) => {
-                let uncounted = if row.job_ids.is_empty() { "" } else { " (current/ and old/ of the measured mirror jobs; restic repositories and other buckets on the account are not counted)" };
                 let left = cap.saturating_sub(used);
-                let text = format!("Plan cap {}: using {} ({}), {} left{uncounted}", cap_text(*cap), human_bytes(used), percent_text(used, *cap), human_bytes(left));
+                let text = format!("Plan cap {}: using {} ({}), {} left. Counts only this remote's measured mirror jobs (current/ and old/).", cap_text(*cap), human_bytes(used), percent_text(used, *cap), cap_text(left));
                 vec![(text, fill(used, *cap) != Fill::Fine)]
             }
         },
@@ -460,7 +459,7 @@ mod tests {
         assert_eq!(in_bucket(&row, &sizes, &Caps::new()), "3.8 MiB", "no cap, no percentage");
         assert_eq!(in_bucket(&row, &HashMap::new(), &ten_gb), "-", "nothing is shown before s");
         let lines = detail(&row, &view, &sizes, &ten_gb, now);
-        assert!(lines.iter().any(|(t, bad)| !*bad && t.contains("Plan cap 10 GB: using 3.8 MiB (0.04%)") && t.contains("not counted")), "{lines:?}");
+        assert!(lines.iter().any(|(t, bad)| !*bad && t.contains("Plan cap 10 GB: using 3.8 MiB (0.04%), 10 GB left") && t.contains("Counts only")), "{lines:?}");
         let before = detail(&row, &view, &HashMap::new(), &ten_gb, now);
         assert!(before.iter().any(|(t, _)| t.contains("Plan cap 10 GB: press s")), "{before:?}");
         assert_eq!(row_fill(&row, &sizes, &ten_gb), Some(Fill::Fine));
