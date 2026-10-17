@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn restic_is_in_the_line_only_when_selected() {
         let features = select(&["restic".to_string()], &["samba".to_string()]).unwrap();
-        let lines = "zpool=/sbin/zpool\nzfs=/sbin/zfs\ngetfacl=/bin/getfacl\nsetfacl=/bin/setfacl\ngeom=/sbin/geom\nbectl=/sbin/bectl\nservice=/usr/sbin/service\nrestic=/usr/local/bin/restic\n";
+        let lines = "zpool=/sbin/zpool\nzfs=/sbin/zfs\ngetfacl=/bin/getfacl\nsetfacl=/bin/setfacl\ngeom=/sbin/geom\nbectl=/sbin/bectl\nservice=/usr/sbin/service\nrestic=/usr/local/bin/restic\nreadlink=/usr/bin/readlink\n";
         let resolved = resolution_for("h", lines, &features).unwrap();
         let text = render("h", "fbsd", &features, &resolved, "d");
         assert!(text.contains("/usr/local/bin/restic"), "{text}");
@@ -490,7 +490,7 @@ mod tests {
     const ALL_PATHS: &[(&str, &str)] = &[
         ("zpool", "/sbin/zpool"), ("zfs", "/sbin/zfs"), ("getfacl", "/bin/getfacl"), ("setfacl", "/bin/setfacl"), ("geom", "/sbin/geom"),
         ("bectl", "/sbin/bectl"), ("service", "/usr/sbin/service"), ("smbpasswd", "/usr/local/bin/smbpasswd"), ("smbstatus", "/usr/local/bin/smbstatus"),
-        ("cat", "/bin/cat"), ("tee", "/usr/bin/tee"), ("restic", "/usr/local/bin/restic"),
+        ("cat", "/bin/cat"), ("tee", "/usr/bin/tee"), ("restic", "/usr/local/bin/restic"), ("readlink", "/usr/bin/readlink"),
     ];
 
     #[test]
@@ -510,7 +510,7 @@ mod tests {
         let runner = host_with(ALL_PATHS);
         let features = select(&["restic".to_string()], &[]).unwrap();
         let text = print_sudoers(&runner, "fbsd16", "fbsd@h", &features, "d").unwrap();
-        assert!(runner.calls.lock().unwrap()[0].ends_with("tee restic"));
+        assert!(runner.calls.lock().unwrap()[0].ends_with("tee restic readlink"));
         assert!(text.contains("/usr/local/bin/restic"), "{text}");
     }
 
@@ -628,9 +628,9 @@ mod tests {
 
     #[test]
     fn restic_is_checked_only_when_selected() {
-        let runner = sudo_host(&["/usr/local/bin/restic"], ALL_PATHS);
+        let runner = sudo_host(&["/usr/local/bin/restic", "/usr/bin/readlink"], ALL_PATHS);
         let report = check_host(&runner, "h", &select(&["restic".to_string()], &["core", "acl", "disks", "bootenvs", "shares", "samba"].map(String::from)).unwrap()).unwrap();
-        assert_eq!(statuses(&report), [("restic", Status::Ok)]);
+        assert_eq!(statuses(&report), [("restic", Status::Ok), ("readlink", Status::Ok)]);
     }
 
     #[test]

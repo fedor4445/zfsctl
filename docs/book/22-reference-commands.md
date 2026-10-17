@@ -67,6 +67,7 @@ On a managed host the unprivileged account may run these programs as root throug
 | `cat` | Samba shares | only on `/usr/local/etc/smb4.conf` |
 | `tee` | Samba shares | only on `/usr/local/etc/smb4.conf` |
 | `restic` | backup jobs (`--with restic`) | any arguments |
+| `readlink` | backup jobs with a path (`--with restic`) | any arguments (it only reads where a symlink points) |
 | `rclone` | cloud mirror jobs (`--with rclone`) | any arguments |
 
 Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat`, `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.

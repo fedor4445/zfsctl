@@ -250,6 +250,23 @@ pub(super) fn target_dir(job: &Job, mount: &str) -> String {
     job.path.as_deref().map_or_else(|| mount.to_string(), |p| format!("{mount}/{}", p.trim_end_matches('/')))
 }
 
+/// Every part of the job's `path` must be a real folder inside the clone: restic runs as root, the kernel follows
+/// a symlink in the middle of a path, and `docs -> /` with `path = docs/etc` would back up the host's own files.
+/// `readlink` prints the target of a symlink and exits 1, silently, for anything else.
+fn path_has_no_symlink(runner: &dyn CommandRunner, mount: &str, path: &str) -> std::result::Result<(), String> {
+    let mut so_far = mount.to_string();
+    for part in path.split('/').filter(|p| !p.is_empty() && *p != ".") {
+        so_far = format!("{so_far}/{part}");
+        match runner.run("readlink", &[&so_far]) {
+            Ok(out) if out.success() => return Err(format!("the path '{path}' goes through a symlink ('{part}'); nothing was backed up")),
+            Ok(out) if out.status == 1 && out.stderr.trim().is_empty() => {}
+            Ok(out) => return Err(format!("cannot check the path '{path}' for symlinks: {} (a host set up before this check needs `zfsctl print-sudoers HOST --with restic` installed again, for readlink)", out.stderr.trim())),
+            Err(e) => return Err(format!("cannot check the path '{path}' for symlinks: {e}")),
+        }
+    }
+    Ok(())
+}
+
 pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
     let ctx = env.ctx;
     let dataset = job.dataset.clone().unwrap_or_default();
@@ -293,7 +310,11 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     started.catch_up = catch_up;
     let _ = ctx.history.append(&started);
 
-    let end = backup(env, runner, job, &machine, &repo, &password_file, &snapshot, time.as_deref(), &target, run_id);
+    let checked = job.path.as_deref().map_or(Ok(()), |path| path_has_no_symlink(runner, &mount, path));
+    let end = match checked {
+        Ok(()) => backup(env, runner, job, &machine, &repo, &password_file, &snapshot, time.as_deref(), &target, run_id),
+        Err(e) => End::Failed(e),
+    };
     // Always, whatever happened: the clone pins the snapshot and holds a mountpoint.
     let leftover = match destroy_clone(runner, ctx.clock, &clone) {
         Ok(()) => String::new(),
@@ -366,6 +387,10 @@ mod tests {
         backup_script: String,
         date_works: bool,
         clone_fails: bool,
+        /// `readlink` answers for these full paths as for a symlink (a target on stdout, exit 0); any other is exit 1.
+        symlinks: Vec<String>,
+        /// `readlink` is refused by sudo.
+        readlink_refused: bool,
         /// `zfs snapshot` fails with this message.
         snapshot_error: Option<&'static str>,
         /// Destroying a snapshot (not the clone) fails.
@@ -394,6 +419,8 @@ mod tests {
                 backup_script: OK_SCRIPT.to_string(),
                 date_works: true,
                 clone_fails: false,
+                symlinks: vec![],
+                readlink_refused: false,
                 snapshot_error: None,
                 snapshot_destroy_fails: false,
                 destroy_fails: false,
@@ -464,6 +491,12 @@ mod tests {
                     }
                     *self.forget_locked.lock().unwrap() = false;
                     ok("")
+                }
+                ("readlink", Some(path)) => {
+                    if self.readlink_refused {
+                        return Ok(CommandOutput { stdout: String::new(), stderr: "sudo: a password is required".into(), status: 1 });
+                    }
+                    if self.symlinks.iter().any(|l| l == path) { ok("/\n") } else { Ok(CommandOutput { stdout: String::new(), stderr: String::new(), status: 1 }) }
                 }
                 other => panic!("unexpected call {other:?}"),
             }
@@ -690,6 +723,47 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
         assert_eq!(host.backup_args.lock().unwrap()[0].last().map(String::as_str), Some("/var/run/zfsctl/job/photos/2026"));
         assert!(host.calls().iter().any(|c| c.contains("mountpoint=/var/run/zfsctl/job ")), "the clone itself is still mounted at the job's fixed root");
+    }
+
+    #[test]
+    fn a_path_through_a_symlink_is_refused_before_restic_reads_anything() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        // `photos` is real, `photos/out` is a link (to `/`, say): restic would follow it as root.
+        host.symlinks = vec!["/var/run/zfsctl/job/photos/out".into()];
+        let mut j = job();
+        j.path = Some("photos/out/etc".into());
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("goes through a symlink ('out')") && outcome.message.contains("nothing was backed up"), "{}", outcome.message);
+        assert!(host.backup_args.lock().unwrap().is_empty());
+        assert!(!host.clone_exists(), "the clone is destroyed");
+        let checked: Vec<String> = host.calls().into_iter().filter(|c| c.starts_with("readlink")).collect();
+        assert_eq!(checked, ["readlink /var/run/zfsctl/job/photos", "readlink /var/run/zfsctl/job/photos/out"], "it stops at the first link");
+    }
+
+    #[test]
+    fn a_host_whose_sudoers_does_not_allow_readlink_fails_the_run_safely_and_says_what_to_do() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.readlink_refused = true;
+        let mut j = job();
+        j.path = Some("photos".into());
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("cannot check the path") && outcome.message.contains("print-sudoers") && outcome.message.contains("--with restic"), "{}", outcome.message);
+        assert!(host.backup_args.lock().unwrap().is_empty());
+        assert!(!host.clone_exists());
+    }
+
+    #[test]
+    fn a_job_without_a_path_runs_no_readlink_at_all() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.readlink_refused = true;
+        let (outcome, _) = rig.run(&host, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(!host.called("readlink"));
     }
 
     #[test]

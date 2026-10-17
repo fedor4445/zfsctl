@@ -100,6 +100,7 @@ Twelve programs may run as root through sudo; each is there for a feature, so a 
 | `smbstatus -S` | which clients are connected to an SMB share |
 | `cat` and `tee`, each pinned to `/usr/local/etc/smb4.conf` | reading and writing the managed Samba block |
 | `restic` | backup jobs (add with `--with restic`) |
+| `readlink` | backup jobs with a path (comes with `--with restic`) |
 
 Eight small read-only programs run over ssh **without** sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount`. They need no entry, unless the ssh key on that host is locked to a single forced command, in which case that command must allow them.
 

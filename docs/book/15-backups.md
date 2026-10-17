@@ -66,6 +66,8 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 
 - **Host**: where restic runs.
 - **Dataset** and **Path**: the dataset, and optionally one directory inside it (`photos/2026`, relative to the dataset's root, no `..`). Blank backs up all of the dataset.
+
+> **Safety:** every part of a Path must be a real folder. If one is a symlink, the run stops with an error before restic reads anything, because restic runs as root and would follow the link out of the snapshot (a `docs -> /` link with Path `docs/etc` would back up the host's own `/etc`). To look, the run uses `readlink`, which `zfsctl print-sudoers HOST --with restic` includes; a remote host set up before this check must have that line installed again, or its jobs that have a Path fail with a message saying so. Jobs without a Path are not affected.
 - **Source**: which snapshot to back up. Press `F2` to choose; it lists what the dataset already has.
   - `new` (the default for a new job) takes a **fresh snapshot at the start of every run**, backs it up, and keeps the last few of the job's own snapshots (see **Snapshots to keep**). This is the easy way: nothing else to set up.
   - `@snap4` always backs up that one snapshot, whatever it is called (F2 lists every snapshot as `@name`). After the first run the job reports `skipped: up to date`; if the snapshot is later destroyed, the run **fails** so you notice.
