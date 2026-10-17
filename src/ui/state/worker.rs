@@ -33,6 +33,7 @@ impl App {
                 WorkerMsg::DatasetPermissions(host, dataset, result) => self.on_dataset_permissions(host, dataset, result, &mut refreshes_needed),
                 WorkerMsg::DatasetAcl(host, path, result) => self.on_dataset_acl(host, path, result, &mut refreshes_needed),
                 WorkerMsg::Accounts(host, result) => self.on_accounts(host, result),
+                WorkerMsg::HostResources(name, resources, offset) => self.on_host_resources(name, resources, offset),
                 WorkerMsg::CloudRemotes(host, result) => self.on_cloud_remotes(host, result),
                 WorkerMsg::CloudSize(job_id, size) => self.on_cloud_size(job_id, size),
                 WorkerMsg::Preflight(host, repository, password_file, result, file_note) => self.on_preflight(host, &repository, &password_file, result, file_note),
@@ -472,8 +473,31 @@ impl App {
             if let crate::zfs::host_health::HostProbe::Reached { kind: Some(k), .. } = &probe {
                 state.kind = Some(k.clone());
             }
+            // Numbers from before the host stopped answering must not stay on screen.
+            if !matches!(probe, crate::zfs::host_health::HostProbe::Reached { .. }) {
+                state.resources.clear();
+            }
             state.last = Some(probe);
             state.finished_at = Some(Instant::now());
+        }
+    }
+
+    fn on_host_resources(&mut self, name: String, resources: Option<crate::zfs::host_resources::Resources>, offset: Option<i32>) {
+        if !self.hosts.contains(&name) {
+            return;
+        }
+        let state = self.host_probes.entry(name).or_default();
+        if offset.is_some() {
+            state.utc_offset_secs = offset;
+        }
+        match resources {
+            Some(r) => {
+                state.resources.push(r);
+                if state.resources.len() > 2 {
+                    state.resources.remove(0);
+                }
+            }
+            None => state.resources.clear(),
         }
     }
 

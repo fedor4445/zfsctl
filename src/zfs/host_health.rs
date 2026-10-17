@@ -26,6 +26,9 @@ pub struct PoolProbe {
     /// Read + write + checksum errors of the pool's top-level line; `None` when `zpool status` was unavailable.
     pub errors: Option<u64>,
     pub scan: Option<ScanSummary>,
+    /// When the last **scrub** finished, as `zpool status` prints it (the host's local time, no zone). A resilver, a canceled
+    /// or a running scrub is not a finished scrub, so this stays `None` for them. `scrub_age_days` turns it into an age.
+    pub last_scrub: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +117,7 @@ pub struct StatusFacts {
     pub name: String,
     pub errors: Option<u64>,
     pub scan: ScanSummary,
+    pub last_scrub: Option<String>,
 }
 
 /// A READ/WRITE/CKSUM token: a number, or a count with a suffix (`1.2K` is 1200). Anything else non-zero is at least 1.
@@ -151,6 +155,23 @@ pub(crate) fn scan_summary(block: &str) -> ScanSummary {
     }
 }
 
+/// The time of the last finished scrub in one pool's `zpool status` block: only a `scrub repaired ... on <time>` line counts.
+fn last_scrub_when(block: &str) -> Option<String> {
+    match parse_pool_scan_status(block)? {
+        ScanStatus::Completed { summary, .. } if summary.starts_with("scrub repaired") => summary.split_once(" on ").map(|(_, when)| when.trim().to_string()).filter(|w| !w.is_empty()),
+        _ => None,
+    }
+}
+
+/// How many whole days ago a scrub finished. `when` is the host's local time as `zpool status` prints it and
+/// `utc_offset_secs` is that host's offset from UTC (`date +%z`). Never negative (a skewed clock reads as today); `None` when
+/// `when` does not parse.
+pub fn scrub_age_days(when: &str, utc_offset_secs: i32, now_utc: chrono::DateTime<chrono::Utc>) -> Option<i64> {
+    let local = chrono::NaiveDateTime::parse_from_str(&when.split_whitespace().collect::<Vec<_>>().join(" "), "%a %b %d %H:%M:%S %Y").ok()?;
+    let finished = local.and_utc() - chrono::Duration::seconds(i64::from(utc_offset_secs));
+    Some((now_utc - finished).num_days().max(0))
+}
+
 /// Splits `zpool status` (all pools) at its `pool:` lines and reads each block on its own.
 pub fn parse_status_all(output: &str) -> Vec<StatusFacts> {
     let mut blocks: Vec<(String, Vec<&str>)> = Vec::new();
@@ -184,7 +205,7 @@ pub fn parse_status_all(output: &str) -> Vec<StatusFacts> {
                 }
             });
             let errors = has_rows.then(|| device_errors + data_errors);
-            StatusFacts { scan: scan_summary(&text), name, errors }
+            StatusFacts { scan: scan_summary(&text), last_scrub: last_scrub_when(&text), name, errors }
         })
         .collect()
 }
@@ -230,7 +251,7 @@ pub fn probe_host(runner: &dyn CommandRunner, detect_kind: bool) -> HostProbe {
         .map(|(pool, frag)| {
             let status = facts.as_ref().and_then(|all| all.iter().find(|f| f.name == pool.name));
             let capacity = if pool.size == 0 { 0 } else { u8::try_from(u128::from(pool.allocated) * 100 / u128::from(pool.size)).unwrap_or(100).min(100) };
-            PoolProbe { name: pool.name, health: pool.health, capacity_percent: capacity, frag_percent: frag, errors: status.and_then(|s| s.errors), scan: status.map(|s| s.scan.clone()) }
+            PoolProbe { name: pool.name, health: pool.health, capacity_percent: capacity, frag_percent: frag, errors: status.and_then(|s| s.errors), scan: status.map(|s| s.scan.clone()), last_scrub: status.and_then(|s| s.last_scrub.clone()) }
         })
         .collect();
     // An ssh-level failure (255) says nothing about the host's type: leave it undetected so the next probe asks again.
@@ -356,7 +377,7 @@ mod tests {
     const STATUS: &str = "  pool: scratch\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tscratch                         ONLINE       0     0     0\n\t  mirror-0                      ONLINE       0     0     0\n\t    /root/zfsctl-scratch/vdev3  ONLINE       0     0     0\n\nerrors: No known data errors\n\n  pool: tpool\n state: ONLINE\n  scan: resilvered 501M in 00:00:30 with 0 errors on Sat Sep 26 13:15:14 2026\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttpool       ONLINE       0     0     0\n\t  raidz2-0  ONLINE       0     0     0\n\nerrors: No known data errors\n\n  pool: zroot\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\tzroot       ONLINE       0     0     0\n\t  ada0p4    ONLINE       0     0     0\n\nerrors: No known data errors\n";
 
     fn pool(name: &str, health: PoolHealth, capacity: u8) -> PoolProbe {
-        PoolProbe { name: name.to_string(), health, capacity_percent: capacity, frag_percent: Some(1), errors: Some(0), scan: Some(ScanSummary::Never) }
+        PoolProbe { name: name.to_string(), health, capacity_percent: capacity, frag_percent: Some(1), errors: Some(0), scan: Some(ScanSummary::Never), last_scrub: None }
     }
 
     fn reached(pools: Vec<PoolProbe>) -> HostProbe {
@@ -447,7 +468,7 @@ mod tests {
     }
 
     fn pp(name: &str, cap: u8, scan: Option<ScanSummary>) -> PoolProbe {
-        PoolProbe { name: name.to_string(), health: PoolHealth::Online, capacity_percent: cap, frag_percent: None, errors: Some(0), scan }
+        PoolProbe { name: name.to_string(), health: PoolHealth::Online, capacity_percent: cap, frag_percent: None, errors: Some(0), scan, last_scrub: None }
     }
 
     #[test]
@@ -690,5 +711,31 @@ mod tests {
             }
         }
         assert!(matches!(probe_host_guarded(&Boom, false), HostProbe::Unavailable { reason } if reason.contains("crashed")));
+    }
+
+    #[test]
+    fn the_last_scrub_is_remembered_only_for_a_finished_scrub() {
+        let facts = parse_status_all(STATUS);
+        let by = |n: &str| facts.iter().find(|f| f.name == n).unwrap().last_scrub.clone();
+        assert_eq!(by("scratch"), Some("Thu Oct  8 19:48:07 2026".to_string()), "a finished scrub");
+        assert_eq!(by("tpool"), None, "a resilver is not a scrub");
+        assert_eq!(by("zroot"), None, "nothing ever ran");
+        let canceled = "  pool: c\n state: ONLINE\n  scan: scrub canceled on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tc     ONLINE  0  0  0\n";
+        assert_eq!(parse_status_all(canceled)[0].last_scrub, None, "a canceled scrub did not finish");
+        let running = "  pool: a\n state: ONLINE\n  scan: scrub in progress since Thu Oct  8 19:00:00 2026\n\t1G scanned\n\t0B repaired, 24.40% done, 00:00:30 to go\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\ta     ONLINE  0  0  0\n";
+        assert_eq!(parse_status_all(running)[0].last_scrub, None);
+    }
+
+    #[test]
+    fn scrub_age_counts_whole_days_in_the_hosts_own_time() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-17T20:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        // 19:48:07 host time at UTC+2 is 17:48:07 UTC on Oct 8: nine days and two hours before `now`.
+        assert_eq!(scrub_age_days("Thu Oct  8 19:48:07 2026", 7200, now), Some(9));
+        // At UTC-5 the same wall-clock time is 00:48:07 UTC on Oct 9: eight days and 19 hours ago.
+        assert_eq!(scrub_age_days("Thu Oct  8 19:48:07 2026", -3600 * 5, now), Some(8));
+        assert_eq!(scrub_age_days("Sat Oct 17 21:00:00 2026", 0, now), Some(0), "a scrub 'in the future' (clock skew) is today, never negative");
+        assert_eq!(scrub_age_days("Thu Oct 15 20:00:00 2026", 0, now), Some(2));
+        assert_eq!(scrub_age_days("garbage", 0, now), None);
+        assert_eq!(scrub_age_days("", 0, now), None);
     }
 }

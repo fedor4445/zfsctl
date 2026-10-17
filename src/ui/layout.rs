@@ -158,6 +158,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, s)| {
             let label = match s {
+                Section::Dashboard => "Dashboard",
                 Section::Hosts => "Hosts",
                 Section::Pools => "Pools",
                 Section::Datasets => "Datasets",
@@ -283,6 +284,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     match section {
+        Section::Dashboard => crate::ui::dashboard_view::draw_dashboard(f, app, area),
         Section::Hosts => draw_hosts(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
         Section::Disks => draw_disks(f, app, area),
@@ -2204,7 +2206,7 @@ mod tests {
         let h = History::new(dir.path().join("history.jsonl"));
         h.append(&history_event("a", "r1", EventKind::Finished, 60, Some(RunResult::Failed), "boom")).unwrap();
         app.refresh_jobs();
-        app.selected_section = 0;
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("1 job failed"), "{text}");
         h.append(&history_event("b", "r2", EventKind::Finished, 30, Some(RunResult::Failed), "boom")).unwrap();
@@ -2759,8 +2761,8 @@ mod tests {
     fn hosts_app() -> App {
         let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string(), "fbsd16t1".to_string(), "deadbox".to_string()]);
         app.set_host_addresses(vec!["local".into(), "172.16.10.60".into(), "172.16.10.61".into(), "172.16.10.99".into()]);
-        let probe = |p: crate::zfs::host_health::HostProbe| crate::ui::state::HostProbeState { last: Some(p), in_flight: false, finished_at: Some(std::time::Instant::now()), started_at: None, kind: None };
-        let pool = |n: &str, h: crate::zfs::pool::PoolHealth, c: u8| crate::zfs::host_health::PoolProbe { name: n.to_string(), health: h, capacity_percent: c, frag_percent: None, errors: Some(0), scan: None };
+        let probe = |p: crate::zfs::host_health::HostProbe| crate::ui::state::HostProbeState { last: Some(p), in_flight: false, finished_at: Some(std::time::Instant::now()), started_at: None, kind: None, resources: vec![], utc_offset_secs: None };
+        let pool = |n: &str, h: crate::zfs::pool::PoolHealth, c: u8| crate::zfs::host_health::PoolProbe { name: n.to_string(), health: h, capacity_percent: c, frag_percent: None, errors: Some(0), scan: None, last_scrub: None };
         use crate::zfs::host_health::HostProbe;
         app.host_probes.insert("local".into(), probe(HostProbe::Reached { rtt_ms: 3, pools: vec![pool("zroot", crate::zfs::pool::PoolHealth::Online, 20)], kind: None }));
         app.host_probes.insert("fbsd16".into(), probe(HostProbe::Reached { rtt_ms: 12, pools: vec![pool("tank", crate::zfs::pool::PoolHealth::Degraded, 20)], kind: None }));

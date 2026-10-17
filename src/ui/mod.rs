@@ -1,5 +1,7 @@
 pub mod alerts;
 pub mod cloud;
+pub mod dashboard;
+pub mod dashboard_view;
 pub mod hints;
 pub mod jobs;
 pub mod layout;
@@ -75,6 +77,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
             app.status_message = resolved.note;
             app.set_host_addresses(inventory.hosts.iter().map(|h| state::address_of(h.ssh_target.as_deref())).collect());
             app.set_host_tags(inventory.hosts.iter().map(|h| h.tag.clone().unwrap_or_default()).collect());
+            app.open_dashboard();
             if let Some(first_host) = inventory.hosts.first() {
                 app.refresh_pools(first_host.runner.clone());
             }
@@ -273,6 +276,7 @@ fn event_loop(
                     Section::Disks => app.refresh_disks(host.runner.clone()),
                     Section::Shares => app.refresh_shares(host.runner.clone()),
                     Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
+                    Section::Dashboard => app.refresh_dashboard(),
                     Section::Jobs => app.refresh_jobs(),
                     Section::Cloud => app.refresh_cloud(),
                     Section::Alerts => app.refresh_alerts(),
@@ -328,6 +332,9 @@ fn event_loop(
                 } else {
                     app.handle_key(key.code);
                     if key.code == KeyCode::Char('r') {
+                        if inventory.hosts.get(app.selected_host).is_none() && app.current_section() == Section::Dashboard {
+                            app.refresh_dashboard();
+                        }
                         if let Some(host) = inventory.hosts.get(app.selected_host) {
                             if let Some(pool) = app.drilled_pool.clone() {
                                 app.refresh_vdevs(host.runner.clone(), pool);
@@ -365,6 +372,7 @@ fn event_loop(
                                     Section::Disks => app.refresh_disks(host.runner.clone()),
                                     Section::Shares => app.refresh_shares(host.runner.clone()),
                                     Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
+                                    Section::Dashboard => app.refresh_dashboard(),
                                     Section::Jobs => app.refresh_jobs(),
                                     Section::Cloud => app.refresh_cloud(),
                                     Section::Alerts => app.refresh_alerts(),

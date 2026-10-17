@@ -49,7 +49,7 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 ↑↓ Move  → Properties  n New pool  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
-- **The sidebar** (left) lists the sections: Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud and Alerts. The highlighted one is where you are.
+- **The sidebar** (left) lists the sections: Dashboard, Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud and Alerts. The highlighted one is where you are. zfsctl opens on the Dashboard.
 - **The list** (top right) shows the items of that section: hosts, pools, datasets and so on. In Pools and Datasets a second pane on the right shows the selected item's properties.
 - **The panel** (bottom right) shows live details of whatever is selected: space, health, counts, and two graphs of read and write activity. It disappears on a very short terminal so that the list keeps room.
 - **The hint bar** is the last line of the screen. It lists exactly the keys that work right now, and it changes as you move: a key that would do nothing is not shown. When there is a message for you (a result, an error), it appears on the line just above.
@@ -57,6 +57,64 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 > **Coming from Windows:** the sidebar is like the tree on the left of Disk Management or an MMC console; the list is the main window; the panel is the status area.
 
 > **Coming from Linux:** the movement keys are the ones you know from tools like `htop` or `k9s`, minus the vi bindings: arrows and `Tab`.
+
+## The Dashboard
+
+zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
+
+```screen
+┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 13:09                                                                                  ▲ 4 to watch
+│Dashboard             │
+│Hosts                 │ NEEDS ATTENTION ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Pools                 │   ▲ watch fbsd16    zroot never scrubbed
+│Datasets              │   ▲ watch fbsd16t1  zroot never scrubbed
+│Snapshots             │   ▲ watch fbsd16t2  zroot never scrubbed
+│Disks                 │   ▲ watch local     zroot last scrub 41 d ago
+│Shares                │
+│Boot Envs             │ HOSTS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Jobs                  │  Host      State                        Pools  Space             Memory             CPU              Load  Scrub     Errors
+│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ▕███░░░░░▏ 42%    ▕█░░░░░░░▏ 14%     ▕░░░░░░░░▏ 0%    0.96  41 d ago  0
+│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ▕█████░░░▏ 61%    ▕█░░░░░░░▏ 18%     ▕░░░░░░░░▏ 1%    0.01  never     0
+│                      │  fbsd16t1  ▲ zroot never scrubbed       2      ▕████░░░░▏ 52%    ▕████░░░░▏ 44%     ▕░░░░░░░░▏ 2%    0.32  never     0
+│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ▕██████░░▏ 73%    ▕████░░░░▏ 44%     ▕░░░░░░░░▏ 1%    0.57  never     0
+│                      │
+│                      │ DAEMON AND JOBS ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ● daemon  running (pid 14735), heartbeat 1s ago
+│                      │   ● jobs    scrub 1/1 ok
+│                      │
+│                      │ CLOUD ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ○ b2 (b2)  no jobs
+│                      │   ○ t1 (sftp)  no jobs
+│                      │   ○ zfsctl-aws (s3)  no jobs
+│                      │
+│                      │ ALERTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ● monitor on · last alert fbsd16 zroot 86% full (5d ago) · report 2026-10-17
+└──────────────────────┘
+↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+```
+
+- **The header** names the screen and gives the verdict on the right: `all quiet`, or how many things need attention (`1 issue, 1 to watch`). Until every host has answered its first probe it says `checking...`, because a screen that does not know yet must not say all is quiet.
+- **Needs attention** lists the problems, worst first. `✖ issue` (red) is wrong now; `▲ watch` (yellow) is an early warning from today's numbers, such as a pool at 85% or a memory reading that is too high. When all is well it says `nothing needs attention`. It shows six lines and counts the rest (`+3 more`).
+- **Hosts** has a row per host. State is the same verdict as in the Hosts section, raised (never lowered) by the readings that only the Dashboard has. **Space** is the fullest pool. **Memory** is memory in use *not counting* free pages, inactive pages and the ZFS cache: on FreeBSD the cache fills most of the RAM by design and gives it back when asked, so counting it would make the screen alarm all the time. **CPU** is the busy share between the last two probes (about 30 seconds). **Load** is the one-minute average and is never coloured. **Scrub** is how long since the last finished scrub (a resilver does not count). **Errors** is the read, write and checksum errors ZFS has counted.
+- **Daemon and jobs, Cloud, Alerts** are one line each: whether the daemon runs and how fresh its heartbeat is, how many jobs of each kind are fine (`backup 0/1 FAILED`), each cloud remote with its last result (a bucket's size appears only if you measured it in Cloud), and whether the alert monitor can send mail.
+- **Unknown is never green.** A host that has not answered, or a reading that cannot be taken yet (the first CPU figure needs two probes), is shown as `?` in dim text. Every status has a glyph and a word as well as a colour, so the `mono` theme reads the same.
+
+| Reading | Yellow (watch) | Red (issue) |
+|---|---|---|
+| Space | 80% | 90% |
+| Memory in use | 90% | 97% |
+| Swap in use | 50% | 90% |
+| CPU, last two probes | 95% | never |
+| Last scrub | 35 days, or never | 90 days |
+| Host does not answer | | unreachable |
+
+These defaults can be changed under `[dashboard]` in `config.toml` (see the configuration reference). To stop a pool nobody scrubs, such as a scratch pool, from keeping the screen yellow, list it in `scrub_ignore = ["scratch"]`.
+
+> **Safety:** the Dashboard only displays. `Up` / `Down` select a line of Needs attention and `Enter` takes you to the section that owns it; that is all. To fix something, go there: scrub a pool in Pools, look at a failed job in Jobs.
+
+> **Tip:** gauges (`▕███░░░░░▏`) appear when the terminal is wide enough. On a narrower one they go first, then the least useful columns; the host's name and state always stay. It stays readable at 80 columns.
+
+> **Not built yet:** NFS and Samba availability, disk wear (SMART) and predictions such as "this pool fills in 40 days". The first needs a privileged check per host on every probe, the second needs smartmontools on each host, the third needs a history of samples that zfsctl does not keep.
 
 ## Moving around
 

@@ -517,6 +517,8 @@ fn handle_key_navigates_sections_and_wraps() {
     app.handle_key(KeyCode::BackTab);
     assert_eq!(app.current_section(), Section::Hosts);
     app.handle_key(KeyCode::BackTab);
+    assert_eq!(app.current_section(), Section::Dashboard);
+    app.handle_key(KeyCode::BackTab);
     assert_eq!(app.current_section(), Section::Alerts);
 }
 
@@ -1777,6 +1779,8 @@ fn tab_cycles_sections_and_resets_pane_focus() {
 fn backtab_cycles_sections_backward() {
     let mut app = App::new(vec!["local".to_string()]);
     assert_eq!(app.current_section(), Section::Hosts);
+    app.handle_key(KeyCode::BackTab);
+    assert_eq!(app.current_section(), Section::Dashboard, "Hosts is the second section now");
     app.handle_key(KeyCode::BackTab);
     assert_eq!(app.current_section(), Section::Alerts, "must wrap backward from the first section to the last");
 }
@@ -4008,6 +4012,7 @@ fn alerts_app(config: &str) -> (App, tempfile::TempDir) {
 #[test]
 fn alerts_is_the_last_sidebar_section_after_jobs_and_cloud() {
     let app = App::new(vec!["local".to_string()]);
+    assert_eq!(&app.sections[..2], [Section::Dashboard, Section::Hosts], "the Dashboard comes first, then Hosts");
     assert_eq!(app.sections.last(), Some(&Section::Alerts));
     assert_eq!(app.sections[app.sections.len() - 2], Section::Cloud);
     assert_eq!(app.sections[app.sections.len() - 3], Section::Jobs);
@@ -4065,7 +4070,7 @@ fn the_alerts_data_is_reloaded_every_five_seconds_only_while_the_section_is_open
     assert!(!app.alerts_view.monitor_on(), "too soon");
     app.refresh_alerts_if_stale(t0 + Duration::from_secs(6));
     assert!(app.alerts_view.monitor_on());
-    app.selected_section = 0;
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
     std::fs::write(dir.path().join("config.toml"), "").unwrap();
     app.refresh_alerts_if_stale(t0 + Duration::from_secs(60));
     assert!(app.alerts_view.monitor_on(), "another section is open: no reload");
@@ -4259,7 +4264,7 @@ fn p_runs_the_preview_in_the_background_and_shows_it_in_a_popup_and_not_twice_at
 fn a_preview_result_is_shown_even_when_it_arrives_after_leaving_the_screen() {
     let (mut app, _dir) = alerts_app("");
     app.alerts_preview_busy = true;
-    app.selected_section = 0;
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
     app.tx.send(WorkerMsg::AlertsPreview("Subject: x\n\nbody".to_string())).unwrap();
     app.drain_worker_messages();
     assert!(!app.alerts_preview_busy);
@@ -5085,7 +5090,9 @@ fn tab_cycles_through_jobs_cloud_and_alerts_and_wraps_to_hosts() {
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_section(), Section::Alerts);
     app.handle_key(KeyCode::Tab);
-    assert_eq!(app.current_section(), Section::Hosts, "wraps to the first section");
+    assert_eq!(app.current_section(), Section::Dashboard, "wraps to the first section, the Dashboard");
+    app.handle_key(KeyCode::BackTab);
+    assert_eq!(app.current_section(), Section::Alerts);
 }
 
 #[test]
@@ -5134,7 +5141,7 @@ fn jobs_refresh_happens_at_once_then_every_two_seconds_in_the_section_and_ten_el
     app.refresh_jobs_if_stale(t0 + Duration::from_secs(2));
     assert_eq!(app.jobs_view.jobs.len(), 2);
     crate::jobs::save(&dir.path().join("jobs.toml"), &[scrub_job("a")]).unwrap();
-    app.selected_section = 0;
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
     app.refresh_jobs_if_stale(t0 + Duration::from_secs(5));
     assert_eq!(app.jobs_view.jobs.len(), 2, "ten seconds apply from another section");
     app.refresh_jobs_if_stale(t0 + Duration::from_secs(12));
@@ -7210,11 +7217,11 @@ fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result
     let mut app = probes_app();
     let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
     let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
-    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None });
+    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None, resources: vec![], utc_offset_secs: None });
     let a = app.host_assessment(1);
     assert_eq!(a.level, crate::zfs::host_health::Level::Warning);
     assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
-    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None });
+    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None, resources: vec![], utc_offset_secs: None });
     assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
 }
 
@@ -8101,4 +8108,201 @@ fn the_plan_caps_are_read_from_config_toml_each_time_the_remotes_are_asked() {
     std::fs::write(&app.config_path, "this is not toml [").unwrap();
     app.refresh_cloud();
     assert!(app.cloud_caps.is_empty(), "an unreadable config shows no caps rather than stale ones");
+}
+
+// ---- host resources (Dashboard) ----
+
+fn reading(free_gib: u64) -> crate::zfs::host_resources::Resources {
+    crate::zfs::host_resources::Resources { cores: 4, physical: 20 << 30, free: free_gib << 30, inactive: 0, arc: 0, load: None, cpu_ticks: None, swap: None }
+}
+
+#[test]
+fn the_last_two_readings_of_a_host_are_kept_newest_first_for_the_cpu_difference() {
+    let mut app = probes_app();
+    assert!(app.host_resources("fbsd16").is_none());
+    for free in [1, 2, 3] {
+        app.tx.send(WorkerMsg::HostResources("fbsd16".into(), Some(reading(free)), None)).unwrap();
+    }
+    app.drain_worker_messages();
+    let (now, before) = app.host_resources("fbsd16").expect("readings");
+    assert_eq!((now.free >> 30, before.map(|b| b.free >> 30)), (3, Some(2)), "only the last two are kept");
+    assert_eq!(app.host_probes["fbsd16"].resources.len(), 2);
+}
+
+#[test]
+fn the_utc_offset_is_kept_once_asked_and_a_reading_without_it_does_not_erase_it() {
+    let mut app = probes_app();
+    app.tx.send(WorkerMsg::HostResources("local".into(), Some(reading(1)), Some(7200))).unwrap();
+    app.tx.send(WorkerMsg::HostResources("local".into(), Some(reading(2)), None)).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.host_probes["local"].utc_offset_secs, Some(7200));
+}
+
+#[test]
+fn a_probe_that_did_not_reach_the_host_clears_its_readings_so_stale_numbers_do_not_stay() {
+    let mut app = probes_app();
+    app.tx.send(WorkerMsg::HostResources("fbsd16".into(), Some(reading(1)), None)).unwrap();
+    app.drain_worker_messages();
+    assert!(app.host_resources("fbsd16").is_some());
+    app.tx.send(WorkerMsg::HostHealth("fbsd16".into(), crate::zfs::host_health::HostProbe::Disconnected)).unwrap();
+    app.drain_worker_messages();
+    assert!(app.host_resources("fbsd16").is_none(), "an unreachable host has no current readings");
+    app.tx.send(WorkerMsg::HostResources("fbsd16".into(), Some(reading(1)), None)).unwrap();
+    app.tx.send(WorkerMsg::HostResources("fbsd16".into(), None, None)).unwrap();
+    app.drain_worker_messages();
+    assert!(app.host_resources("fbsd16").is_none(), "a failed reading clears too");
+    app.tx.send(WorkerMsg::HostResources("ghost".into(), Some(reading(1)), Some(0))).unwrap();
+    app.drain_worker_messages();
+    assert!(!app.host_probes.contains_key("ghost"), "a host that no longer exists is ignored");
+}
+
+#[test]
+fn a_probe_reads_the_resources_and_asks_for_the_utc_offset_only_until_it_is_known() {
+    const STATUS: &str = "  pool: scratch\n state: ONLINE\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tscratch  ONLINE  0  0  0\n";
+    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n";
+    let runner = std::sync::Arc::new(
+        FakeRunner::new("").route("zpool", "list", "scratch\t100\t10\t90\t1\tONLINE\n").route("zpool", "status", STATUS).route("sysctl", "-n", SYSCTL).route("date", "+%z", "+0200\n"),
+    );
+    let mut app = probes_app();
+    for round in 1..=2 {
+        app.start_host_probe(0, runner.clone());
+        wait_until(&mut app, |a| a.host_probes["local"].resources.len() == round);
+    }
+    assert_eq!(app.host_probes["local"].resources.len(), 2);
+    assert_eq!(app.host_probes["local"].utc_offset_secs, Some(7200));
+    let calls = runner.unprivileged_calls.lock().unwrap().clone();
+    let count = |cmd: &str| calls.iter().filter(|(c, _)| c == cmd).count();
+    assert_eq!(count("date"), 1, "the offset is read once per host, not every probe");
+    assert_eq!(count("swapinfo"), 2, "memory, CPU and swap are read on every probe");
+    assert_eq!(calls.iter().filter(|(c, a)| c == "sysctl" && a.contains(&"hw.ncpu".to_string())).count(), 2);
+}
+
+#[test]
+fn the_daemons_probe_makes_no_resource_calls() {
+    let runner = FakeRunner::new("").route("zpool", "list", "scratch\t100\t10\t90\t1\tONLINE\n");
+    let _ = crate::zfs::host_health::probe_host_guarded(&runner, false);
+    let calls = runner.unprivileged_calls.lock().unwrap().clone();
+    assert!(!calls.iter().any(|(c, _)| c == "swapinfo" || c == "date"), "{calls:?}");
+    assert!(!calls.iter().any(|(_, a)| a.contains(&"hw.ncpu".to_string())), "{calls:?}");
+}
+
+// ---- Dashboard ----
+
+fn dash_app() -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+    app.state_dir = dir.path().to_path_buf();
+    app.config_path = dir.path().join("config.toml");
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Dashboard).unwrap();
+    (app, dir)
+}
+
+fn reached_probe(capacity: u8) -> crate::zfs::host_health::HostProbe {
+    let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: capacity, frag_percent: None, errors: Some(0), scan: Some(crate::zfs::host_health::ScanSummary::Never), last_scrub: None };
+    crate::zfs::host_health::HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None }
+}
+
+#[test]
+fn the_program_opens_on_the_dashboard_which_is_the_first_sidebar_section() {
+    let mut app = App::new(vec!["local".to_string()]);
+    assert_eq!(app.sections.first(), Some(&Section::Dashboard));
+    assert_eq!(app.current_section(), Section::Hosts, "a bare App starts on Hosts; the launch calls open_dashboard");
+    app.open_dashboard();
+    assert_eq!(app.current_section(), Section::Dashboard);
+}
+
+#[test]
+fn the_dashboard_is_built_from_the_probes_the_readings_and_the_thresholds_in_config() {
+    let (mut app, dir) = dash_app();
+    app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(85)), resources: vec![reading(10), reading(10)], utc_offset_secs: Some(0), ..HostProbeState::default() });
+    app.refresh_dashboard();
+    let d = app.dashboard();
+    assert_eq!(d.hosts.len(), 2, "every configured host has a row");
+    assert_eq!(d.hosts[0].space.level, crate::ui::dashboard::Level::Watch);
+    assert_eq!(d.hosts[1].state.level, crate::ui::dashboard::Level::Unknown, "fbsd16 has not answered yet");
+    assert_eq!(d.verdict.text, "checking... 1 issue, 2 to watch", "known problems show while a host is still unanswered");
+    assert_eq!(d.hosts[0].memory.level, crate::ui::dashboard::Level::Fine, "10 of 20 GiB free is fine with the defaults");
+    std::fs::write(dir.path().join("config.toml"), "[dashboard]\nmemory_warn = 1\nmemory_crit = 2\n").unwrap();
+    app.refresh_dashboard();
+    assert_eq!(app.dashboard().hosts[0].memory.level, crate::ui::dashboard::Level::Issue, "the [dashboard] thresholds are read when the Dashboard refreshes");
+    std::fs::write(dir.path().join("config.toml"), "not toml [").unwrap();
+    app.refresh_dashboard();
+    assert_eq!(app.dashboard().hosts[0].memory.level, crate::ui::dashboard::Level::Fine, "an unreadable config means the defaults");
+}
+
+#[test]
+fn up_down_and_enter_on_the_dashboard_only_navigate() {
+    let (mut app, _dir) = dash_app();
+    app.refresh_jobs();
+    let items = app.dashboard().attention;
+    assert!(items.iter().any(|i| i.subject == "daemon"), "no heartbeat: the daemon is the one problem: {items:?}");
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.dashboard_table.selected(), Some(0));
+    app.handle_key(KeyCode::Up);
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Jobs, "the daemon line belongs to Jobs");
+    assert!(app.pending_mutations.is_empty() && app.modal.is_none() && app.picker.is_none(), "Enter changed nothing but the section");
+}
+
+#[test]
+fn enter_on_a_host_line_selects_that_host_in_hosts() {
+    let (mut app, _dir) = dash_app();
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(95)), ..HostProbeState::default() });
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.subject == "fbsd16").expect("fbsd16 has a line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Hosts);
+    assert_eq!(app.selected_host, 1, "the host the line is about, not the one that was selected before");
+}
+
+#[test]
+fn a_probe_that_gave_up_leaves_no_old_readings_on_the_dashboard() {
+    let (mut app, _dir) = dash_app();
+    app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(85)), resources: vec![reading(10), reading(10)], utc_offset_secs: Some(0), in_flight: true, started_at: Some(std::time::Instant::now() - Duration::from_secs(120)), ..HostProbeState::default() });
+    let d = app.dashboard();
+    assert_eq!(d.hosts[0].space.level, crate::ui::dashboard::Level::Unknown);
+    assert_eq!(d.hosts[0].memory.level, crate::ui::dashboard::Level::Unknown);
+    assert!(d.hosts[0].state.text.starts_with("no answer"), "{:?}", d.hosts[0].state);
+}
+
+#[test]
+fn enter_with_nothing_selected_and_keys_that_change_things_do_nothing_on_the_dashboard() {
+    let (mut app, _dir) = dash_app();
+    app.handle_key(KeyCode::Enter);
+    for key in ['d', 'n', 'N', 'B', 's', ' '] {
+        app.handle_key(KeyCode::Char(key));
+    }
+    assert_eq!(app.current_section(), Section::Dashboard);
+    assert!(app.pending_mutations.is_empty() && app.modal.is_none(), "{:?}", app.modal);
+}
+
+#[test]
+fn r_on_the_dashboard_reloads_the_jobs_and_asks_the_hub_for_its_remotes() {
+    let (mut app, _dir) = dash_app();
+    app.refresh_visible(Arc::new(FakeRunner::new("")));
+    assert!(app.jobs_view.loaded, "the jobs are reloaded");
+    assert_eq!(app.pending_cloud.len(), 1, "the hub is asked which rclone remotes it has");
+}
+
+#[test]
+fn while_the_dashboard_is_open_the_jobs_alerts_and_cloud_list_keep_fresh() {
+    let (mut app, _dir) = dash_app();
+    let t0 = Instant::now();
+    app.refresh_jobs_if_stale(t0);
+    assert!(app.jobs_view.loaded, "jobs load on the first call");
+    app.refresh_alerts_if_stale(t0);
+    assert!(app.alerts_view.loaded, "alerts load too, they feed the Alerts line");
+    app.refresh_cloud_if_stale(t0);
+    assert_eq!(app.pending_cloud.len(), 1);
+    app.pending_cloud.clear();
+    app.tx.send(WorkerMsg::CloudRemotes("local".into(), Ok(vec![]))).unwrap();
+    app.drain_worker_messages();
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(30));
+    assert!(app.pending_cloud.is_empty(), "not again within a minute");
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(61));
+    assert_eq!(app.pending_cloud.len(), 1);
 }

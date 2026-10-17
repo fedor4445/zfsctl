@@ -5,6 +5,7 @@ pub mod disk;
 pub mod disk_detail;
 pub mod host;
 pub mod host_health;
+pub mod host_resources;
 pub mod metrics;
 pub mod permission;
 pub mod pool;

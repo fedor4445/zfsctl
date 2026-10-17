@@ -9,7 +9,7 @@ This chapter is checked against the program's own list of settings by the book's
 
 ## config.toml
 
-The file is `/usr/local/etc/zfsctl/config.toml`. It has up to five parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[daemon]`, `[notify]` and `[cloud]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is.
+The file is `/usr/local/etc/zfsctl/config.toml`. It has up to six parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[daemon]`, `[notify]`, `[cloud]` and `[dashboard]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is.
 
 ### `[[hosts]]`: one table per remote host
 
@@ -50,6 +50,21 @@ The monitor runs only when at least one way of reaching you is set: `mail_to` or
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `caps` | table | none | `[cloud.caps]`: the room your cloud plan gives you, by rclone remote name, such as `b2 = "10G"` or `zfsctl-aws = "5G"`. A size is digits (a decimal point is allowed) and an optional `K`, `M`, `G` or `T`, counted the way cloud plans count (`10G` is 10 000 000 000 bytes). The Cloud screen then shows how much of it each remote uses |
+
+### `[dashboard]`
+
+When the Dashboard turns a reading yellow ("to watch") and red ("issue"). All keys are optional. A warn/crit pair that does not make sense (warn not below crit, zero, over 100) is ignored and its defaults are used.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `memory_warn` | number | `90` | memory in use, in percent, from which the value turns yellow; free pages, inactive pages and the ZFS cache do not count as in use |
+| `memory_crit` | number | `97` | memory in use, in percent, from which it turns red |
+| `swap_warn` | number | `50` | swap in use, in percent, from which it turns yellow |
+| `swap_crit` | number | `90` | swap in use, in percent, from which it turns red |
+| `cpu_warn` | number | `95` | CPU busy, in percent, from which it turns yellow, measured between the last two probes (about 30 seconds); the CPU alone never turns red |
+| `scrub_warn_days` | number | `35` | days since a pool's last finished scrub from which it turns yellow (a pool never scrubbed is yellow too) |
+| `scrub_crit_days` | number | `90` | days since the last scrub from which it turns red |
+| `scrub_ignore` | list of text | none | pool names the Dashboard does not judge by scrub age, such as `["scratch"]`; a resilver does not count as a scrub |
 
 ## jobs.toml
 

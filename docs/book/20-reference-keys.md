@@ -132,6 +132,14 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `Space` | enable / disable the job |
 | `d` | delete the job (y/n; its past runs stay in the history) |
 
+## Dashboard
+
+| Key | What it does |
+|---|---|
+| `Up / Down` | select a line of Needs attention |
+| `Enter` | go to the section that owns that line (the Dashboard itself changes nothing) |
+| `r` | reload the jobs, alerts, cloud list and `[dashboard]` settings |
+
 ## Cloud
 
 | Key | What it does |

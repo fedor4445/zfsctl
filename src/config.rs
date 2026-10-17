@@ -13,6 +13,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "notify_command",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
+        "memory_warn", "memory_crit", "swap_warn", "swap_crit", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -30,8 +31,99 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
     pub notify: NotifyConfig,
-    #[serde(default, skip_serializing_if = "CloudConfig::is_default")]
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "CloudConfig::is_default")]
     pub cloud: CloudConfig,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "DashboardConfig::is_default")]
+    pub dashboard: DashboardConfig,
+}
+
+/// When the Dashboard turns a reading yellow (watch) and red (issue) (`[dashboard]`). Unset keys take the defaults of
+/// `Thresholds::default`; a pair that does not make sense (warn not below crit, zero, over 100) is ignored as a pair.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DashboardConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub memory_warn: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub memory_crit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub swap_warn: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub swap_crit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub cpu_warn: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub scrub_warn_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub scrub_crit_days: Option<u32>,
+    /// Pools the Dashboard does not judge by scrub age (scratch pools nobody scrubs).
+    #[serde(skip_serializing_if = "Vec::is_empty", default, deserialize_with = "lenient")]
+    pub scrub_ignore: Vec<String>,
+}
+
+/// The Dashboard's thresholds with every default filled in and every pair checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Thresholds {
+    /// Memory in use, percent: (watch, issue).
+    pub memory: (u8, u8),
+    /// Swap in use, percent: (watch, issue).
+    pub swap: (u8, u8),
+    /// CPU busy, percent, over the ~30 s between the last two probes: watch only, never an issue.
+    pub cpu_warn: u8,
+    /// Days since the last scrub: (watch, issue).
+    pub scrub_days: (u32, u32),
+    pub scrub_ignore: Vec<String>,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Thresholds { memory: (90, 97), swap: (50, 90), cpu_warn: 95, scrub_days: (35, 90), scrub_ignore: Vec::new() }
+    }
+}
+
+impl DashboardConfig {
+    fn is_default(&self) -> bool {
+        *self == DashboardConfig::default()
+    }
+
+    pub fn resolve(&self) -> Thresholds {
+        let d = Thresholds::default();
+        let percent_pair = |warn: Option<u8>, crit: Option<u8>, default: (u8, u8)| {
+            let pair = (warn.unwrap_or(default.0), crit.unwrap_or(default.1));
+            if pair.0 > 0 && pair.0 < pair.1 && pair.1 <= 100 { pair } else { default }
+        };
+        let days = (self.scrub_warn_days.unwrap_or(d.scrub_days.0), self.scrub_crit_days.unwrap_or(d.scrub_days.1));
+        Thresholds {
+            memory: percent_pair(self.memory_warn, self.memory_crit, d.memory),
+            swap: percent_pair(self.swap_warn, self.swap_crit, d.swap),
+            cpu_warn: self.cpu_warn.filter(|c| (1..=100).contains(c)).unwrap_or(d.cpu_warn),
+            scrub_days: if days.0 > 0 && days.0 < days.1 { days } else { d.scrub_days },
+            scrub_ignore: self.scrub_ignore.clone(),
+        }
+    }
+}
+
+/// For settings that only decorate a screen: a value of the wrong type (`memory_warn = 300`, `= "90"`, a table where a list
+/// belongs) becomes the default instead of an error, because the daemon and the TUI refuse to start on a config that does not
+/// parse, and a typo in a display setting must never take the jobs and the alerts down with it.
+fn lenient<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(value.try_into().unwrap_or_default())
+}
+
+/// `[cloud.caps]`: a cap that is not text (`b2 = 10`) is kept as its text, so the Cloud screen can say it is not a size.
+fn lenient_caps<'de, D>(deserializer: D) -> std::result::Result<std::collections::BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(match value {
+        toml::Value::Table(table) => table.into_iter().map(|(name, v)| (name, v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect(),
+        _ => std::collections::BTreeMap::new(),
+    })
 }
 
 /// What the Cloud screen needs to know about your cloud accounts (`[cloud]`).
@@ -39,7 +131,7 @@ pub struct Config {
 pub struct CloudConfig {
     /// `[cloud.caps]`: the room a plan gives you, by rclone remote name, such as `b2 = "10G"`. The Cloud screen shows how much
     /// of it a remote's buckets use. Only a size; nothing here can reach the account.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[serde(default, deserialize_with = "lenient_caps", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub caps: std::collections::BTreeMap<String, String>,
 }
 
@@ -528,6 +620,16 @@ mod tests {
         let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
         let daemon = DaemonConfig { notify_command: Some("true".into()) };
         let cloud = CloudConfig { caps: [("b2".to_string(), "10G".to_string())].into() };
+        let dashboard = DashboardConfig {
+            memory_warn: Some(90),
+            memory_crit: Some(97),
+            swap_warn: Some(50),
+            swap_crit: Some(90),
+            cpu_warn: Some(95),
+            scrub_warn_days: Some(35),
+            scrub_crit_days: Some(90),
+            scrub_ignore: vec!["scratch".into()],
+        };
         let notify = NotifyConfig {
             mail_to: Some("a@b".into()),
             mail_command: Some("c".into()),
@@ -543,7 +645,7 @@ mod tests {
             catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
         };
         let mut found: Vec<String> = Vec::new();
-        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&job).unwrap()] {
+        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&job).unwrap()] {
             found.extend(value.as_table().unwrap().keys().cloned());
         }
         found.sort();
@@ -555,6 +657,77 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_dashboard_defaults_are_the_specs_numbers() {
+        let t = Thresholds::default();
+        assert_eq!((t.memory, t.swap, t.cpu_warn, t.scrub_days), ((90, 97), (50, 90), 95, (35, 90)));
+        assert!(t.scrub_ignore.is_empty());
+        assert_eq!(Config::default().dashboard.resolve(), t, "no [dashboard] section means the defaults");
+    }
+
+    #[test]
+    fn dashboard_overrides_are_read_from_config_toml_and_resolved() {
+        let text = "[dashboard]\nmemory_warn = 80\nmemory_crit = 95\nswap_warn = 20\nswap_crit = 60\ncpu_warn = 90\nscrub_warn_days = 14\nscrub_crit_days = 30\nscrub_ignore = [\"scratch\", \"tmp\"]\n";
+        let c: Config = toml::from_str(text).unwrap();
+        let t = c.dashboard.resolve();
+        assert_eq!((t.memory, t.swap, t.cpu_warn, t.scrub_days), ((80, 95), (20, 60), 90, (14, 30)));
+        assert_eq!(t.scrub_ignore, ["scratch", "tmp"]);
+        let partial: Config = toml::from_str("[dashboard]\nmemory_warn = 85\n").unwrap();
+        assert_eq!(partial.dashboard.resolve().memory, (85, 97), "one key of a pair keeps the other's default");
+        assert!(!toml::to_string_pretty(&Config::default()).unwrap().contains("dashboard"), "an empty section writes nothing");
+    }
+
+    #[test]
+    fn a_pair_that_is_not_warn_below_crit_within_range_falls_back_to_its_defaults() {
+        let bad = |memory_warn, memory_crit| DashboardConfig { memory_warn, memory_crit, ..DashboardConfig::default() }.resolve().memory;
+        assert_eq!(bad(Some(97), Some(90)), (90, 97), "warn above crit");
+        assert_eq!(bad(Some(90), Some(90)), (90, 97), "warn equal to crit");
+        assert_eq!(bad(Some(0), Some(50)), (90, 97), "zero");
+        assert_eq!(bad(Some(50), Some(101)), (90, 97), "over 100");
+        assert_eq!(bad(Some(50), Some(100)), (50, 100), "100 is allowed");
+        let days = |w, c| DashboardConfig { scrub_warn_days: w, scrub_crit_days: c, ..DashboardConfig::default() }.resolve().scrub_days;
+        assert_eq!(days(Some(0), Some(10)), (35, 90));
+        assert_eq!(days(Some(40), Some(30)), (35, 90));
+        assert_eq!(days(Some(7), Some(8)), (7, 8));
+        assert_eq!(DashboardConfig { cpu_warn: Some(0), ..DashboardConfig::default() }.resolve().cpu_warn, 95);
+        assert_eq!(DashboardConfig { cpu_warn: Some(101), ..DashboardConfig::default() }.resolve().cpu_warn, 95);
+        assert_eq!(DashboardConfig { cpu_warn: Some(100), ..DashboardConfig::default() }.resolve().cpu_warn, 100);
+    }
+
+    #[test]
+    fn a_typo_in_a_display_setting_never_stops_the_config_from_loading() {
+        // The daemon and the TUI refuse to start on a config that does not parse: [dashboard] and [cloud] only decorate a
+        // screen, so a wrong type there must cost that one setting, not the jobs and the alerts after a reboot.
+        for text in [
+            "[dashboard]\nmemory_warn = 300\n",
+            "[dashboard]\nmemory_warn = -1\n",
+            "[dashboard]\nmemory_warn = 92.5\n",
+            "[dashboard]\nmemory_warn = \"90\"\n",
+            "[dashboard]\nscrub_ignore = \"scratch\"\n",
+            "[dashboard]\nscrub_ignore = [1, 2]\n",
+            "dashboard = 5\n",
+            "cloud = 3\n",
+            "[cloud]\ncaps = 7\n",
+            "[cloud.caps]\nb2 = 10\n",
+        ] {
+            let parsed: std::result::Result<Config, toml::de::Error> = toml::from_str(text);
+            assert!(parsed.is_ok(), "{text:?}: {parsed:?}");
+        }
+        let bad: Config = toml::from_str("[dashboard]\nmemory_warn = 300\nswap_warn = 20\nswap_crit = 60\nscrub_ignore = \"scratch\"\n").unwrap();
+        let t = bad.dashboard.resolve();
+        assert_eq!((t.memory, t.swap), ((90, 97), (20, 60)), "the bad key falls back, the good ones are kept");
+        assert!(t.scrub_ignore.is_empty());
+        let caps: Config = toml::from_str("[cloud.caps]\nb2 = 10\nzfsctl-aws = \"5G\"\n").unwrap();
+        assert_eq!(caps.cloud.caps.get("b2").map(String::as_str), Some("10"), "a non-text cap is kept as text, to be reported as not a size");
+        assert_eq!(caps.cloud.caps.get("zfsctl-aws").map(String::as_str), Some("5G"));
+        // a whole config with a bad section still loads from disk, and its other parts are intact.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n\n[dashboard]\nmemory_crit = 999\n").unwrap();
+        let loaded = Config::load(&path).expect("a bad [dashboard] value must not stop the program from starting");
+        assert_eq!(loaded.hosts.len(), 1);
+    }
 
     #[test]
     fn plan_sizes_are_read_the_way_cloud_plans_count_them() {

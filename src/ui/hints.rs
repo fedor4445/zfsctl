@@ -317,6 +317,16 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("r", "Refresh", 4));
         }
+        (Section::Dashboard, _) => {
+            let has_lines = !app.dashboard().attention.is_empty();
+            if has_lines {
+                v.push(h("↑↓", "Move", 1));
+            }
+            if has_lines && app.dashboard_table.selected().is_some() {
+                v.push(h("Enter", "Go to section", 1));
+            }
+            v.push(h("r", "Refresh", 4));
+        }
         (Section::Cloud, _) => {
             let row = app.cloud_table.selected().and_then(|i| app.cloud_rows().into_iter().nth(i));
             if !app.cloud_rows().is_empty() {
@@ -575,12 +585,40 @@ mod tests {
         a
     }
 
+    fn dashboard(selected: bool) -> App {
+        let mut a = base();
+        go(&mut a, Section::Dashboard);
+        // Three lines of Needs attention: no heartbeat (the daemon is down), and a pool 85% full that was never scrubbed.
+        let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: 85, frag_percent: None, errors: Some(0), scan: None, last_scrub: None };
+        let name = a.hosts[0].clone();
+        a.host_probes.insert(name, crate::ui::state::HostProbeState { last: Some(crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![pool], kind: None }), ..Default::default() });
+        a.dashboard_table.select(selected.then_some(0));
+        a
+    }
+
     fn alerts() -> App {
         let mut a = base();
         go(&mut a, Section::Alerts);
         let e = |n: usize| crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: format!("n{n}") };
         a.alerts_view.events = (0..4).map(e).collect();
         a
+    }
+
+    #[test]
+    fn the_dashboard_offers_move_always_go_only_with_a_selected_line_and_nothing_that_changes_anything() {
+        let labels = |a: &App| hints(a).iter().map(|h| (h.key, h.label)).collect::<Vec<_>>();
+        let none = labels(&dashboard(false));
+        assert!(none.contains(&("↑↓", "Move")) && none.contains(&("r", "Refresh")) && !none.iter().any(|(k, _)| *k == "Enter"), "{none:?}");
+        let some = labels(&dashboard(true));
+        assert!(some.contains(&("Enter", "Go to section")), "{some:?}");
+        for (key, label) in &some {
+            assert!(!matches!(*key, "d" | "n" | "N" | "B" | "C" | "R" | "s" | "Space"), "the Dashboard must not advertise {key} {label}");
+        }
+        let mut quiet = dashboard(false);
+        quiet.host_probes.clear();
+        quiet.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() });
+        let keys: Vec<&str> = hints(&quiet).iter().map(|h| h.key).collect();
+        assert!(!keys.contains(&"↑↓") && !keys.contains(&"Enter"), "nothing to move through when all is quiet: {keys:?}");
     }
 
     #[test]
@@ -654,6 +692,8 @@ mod tests {
             ("boot envs, unavailable", boot_envs_unavailable()),
             ("jobs, one selected", jobs(true)),
             ("jobs, none selected", jobs(false)),
+            ("dashboard, line selected", dashboard(true)),
+            ("dashboard, none selected", dashboard(false)),
             ("cloud, with a mirror job", cloud(true)),
             ("cloud, no job", cloud(false)),
             ("alerts", alerts()),
@@ -710,6 +750,7 @@ mod tests {
                 a.bootenvs_table.selected(),
                 a.jobs_table.selected(),
                 a.cloud_table.selected(),
+                a.dashboard_table.selected(),
                 a.vdevs_table.selected(),
                 a.pool_properties_table.selected(),
                 a.dataset_properties_table.selected(),
@@ -1127,6 +1168,8 @@ mod tests {
         a.shares.clear();
         a.bootenvs.clear();
         a.jobs_view.jobs.clear();
+        // A running daemon: its absence is a line of the Dashboard's Needs attention list, and this clears every list.
+        a.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() });
         a.cloud_known.clear();
         a.alerts_view.events.clear();
     }
