@@ -1,30 +1,30 @@
-┌zfsctl────────────────┐┌Cloud — 3 remotes, 1 job────────────────────────────────────────────────────────────┐
-│Hosts                 ││Remote             Host     Type   Jobs Last           In bucket                    │
-│Pools                 ││b2:                local    b2     1    ok 4m ago      1.4 MiB of 10 GB (0.02%)     │
-│Datasets              ││t1:                local    sftp   0    -              -                            │
-│Snapshots             ││zfsctl-aws:        local    s3     0    -              -                            │
-│Disks                 ││                                                                                    │
-│Shares                ││                                                                                    │
-│Boot Envs             ││                                                                                    │
-│Jobs                  ││                                                                                    │
-│Cloud                 ││                                                                                    │
-│Alerts                ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Remote — b2:────────────────────────────────────────────────────────────────────────┐
-│                      ││b2: (b2) on local                                                                   │
-│                      ││Plan cap 10 GB: using 1.4 MiB (0.02%), 10 GB left. Counts only this remote's        │
-│                      ││measured mirror jobs (current/ and old/).                                           │
-│                      ││mirror-local-scratch-zt-cap  scratch/zt-cap → b2:zfsctl/captest  8 * * * *  last ok │
-│                      ││4m ago                                                                              │
-│                      ││    current/ 1.4 MiB (2 files)   no old/ yet   measured just now                    │
-│                      ││Check: OK, the remote opens.                                                        │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  s Bucket size  F5 Check  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+┌zfsctl────────────────┐┌Cloud — 3 remotes, 0 jobs─────────────────────────────────────────────────┐
+│Dashboard             ││Provider         Remote         Host     Jobs Last         In bucket      │
+│Hosts                 ││Backblaze B2     b2:            local    0    -            -              │
+│Pools                 ││SFTP             t1:            local    0    -            -              │
+│Datasets              ││Amazon S3 (etc.) zfsctl-aws:    local    0    -            -              │
+│Snapshots             ││                                                                          │
+│Disks                 ││                                                                          │
+│Shares                ││                                                                          │
+│Boot Envs             ││                                                                          │
+│Jobs                  ││                                                                          │
+│Cloud                 ││                                                                          │
+│Alerts                ││                                                                          │
+│Settings              ││                                                                          │
+│                      ││                                                                          │
+│                      │└──────────────────────────────────────────────────────────────────────────┘
+│                      │┌Remote────────────────────────────────────────────────────────────────────┐
+│                      ││nothing selected                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+└──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

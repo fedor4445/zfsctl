@@ -389,44 +389,44 @@ The policy does not allow creating buckets, and zfsctl does not ask for it: the 
 You should not have to remember which buckets you have set up. The **Cloud** section (between Jobs and Alerts in the sidebar) lists every rclone remote on the hub, plus the remote of any job on another host, with the jobs that write to it:
 
 ```screen
-┌zfsctl────────────────┐┌Cloud — 3 remotes, 1 job────────────────────────────────────────────────────────────┐
-│Hosts                 ││Remote             Host     Type   Jobs Last           In bucket                    │
-│Pools                 ││b2:                local    b2     1    ok 4m ago      1.4 MiB of 10 GB (0.02%)     │
-│Datasets              ││t1:                local    sftp   0    -              -                            │
-│Snapshots             ││zfsctl-aws:        local    s3     0    -              -                            │
-│Disks                 ││                                                                                    │
-│Shares                ││                                                                                    │
-│Boot Envs             ││                                                                                    │
-│Jobs                  ││                                                                                    │
-│Cloud                 ││                                                                                    │
-│Alerts                ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Remote — b2:────────────────────────────────────────────────────────────────────────┐
-│                      ││b2: (b2) on local                                                                   │
-│                      ││Plan cap 10 GB: using 1.4 MiB (0.02%), 10 GB left. Counts only this remote's        │
-│                      ││measured mirror jobs (current/ and old/).                                           │
-│                      ││mirror-local-scratch-zt-cap  scratch/zt-cap → b2:zfsctl/captest  8 * * * *  last ok │
-│                      ││4m ago                                                                              │
-│                      ││    current/ 1.4 MiB (2 files)   no old/ yet   measured just now                    │
-│                      ││Check: OK, the remote opens.                                                        │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  s Bucket size  F5 Check  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+┌zfsctl────────────────┐┌Cloud — 3 remotes, 0 jobs─────────────────────────────────────────────────┐
+│Dashboard             ││Provider         Remote         Host     Jobs Last         In bucket      │
+│Hosts                 ││Backblaze B2     b2:            local    0    -            -              │
+│Pools                 ││SFTP             t1:            local    0    -            -              │
+│Datasets              ││Amazon S3 (etc.) zfsctl-aws:    local    0    -            -              │
+│Snapshots             ││                                                                          │
+│Disks                 ││                                                                          │
+│Shares                ││                                                                          │
+│Boot Envs             ││                                                                          │
+│Jobs                  ││                                                                          │
+│Cloud                 ││                                                                          │
+│Alerts                ││                                                                          │
+│Settings              ││                                                                          │
+│                      ││                                                                          │
+│                      │└──────────────────────────────────────────────────────────────────────────┘
+│                      │┌Remote────────────────────────────────────────────────────────────────────┐
+│                      ││nothing selected                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+└──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
-- **Remote, Host, Type:** the name you gave in `rclone config`, the host whose rclone config has it, and rclone's type for it (`b2`, `s3`, `sftp`...). Only names and types are read (`rclone listremotes --long`): no key is ever read into the screen.
+- **Provider, Remote, Host:** the provider behind the remote (`Backblaze B2`, `Amazon S3 (etc.)`, `Google Drive`, `SFTP`...), the name you gave in `rclone config`, and the host whose rclone config has it. rclone says only the *type* of a remote, so every `s3` remote reads `Amazon S3 (etc.)`, whether it is Amazon, Wasabi, Cloudflare R2 or your own MinIO, and a type zfsctl has no name for is shown as rclone calls it. Only names and types are read (`rclone listremotes --long`): no key is ever read into the screen.
 - **Jobs and Last:** how many cloud mirror jobs (and restic jobs that use an `rclone:` repository) write to the remote, and how the latest run of any of them ended. A remote whose latest run failed turns red, and the panel below says why. A remote nobody uses is dim: it is set up but unused.
 - **In bucket:** blank (`-`) until you press `s`. It then adds up what that remote's mirror jobs hold in the bucket, `current/` and `old/` together, because that is what a plan charges for. With a plan cap set (below) it also says how much of the cap that is.
 - **The panel:** the selected remote's jobs, and after `s` the size of `current/` and of `old/` for each, so you can see when `old/` is getting big. `F5` runs the same read-only check as in the form.
 
-**Seeing how much of a free plan you have used.** Backblaze's free account gives 10 GB and AWS's free tier 5 GB. Tell zfsctl once, in `/usr/local/etc/zfsctl/config.toml`, by remote name:
+**Seeing how much of a free plan you have used.** Backblaze's free account gives 10 GB and AWS's free tier 5 GB. Tell zfsctl once, on the Settings screen or in `/usr/local/etc/zfsctl/config.toml`, by remote name:
 
 ```toml
 [cloud.caps]
