@@ -309,6 +309,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("N", "New snapshot job", 3));
             v.push(h("R", "New replication job", 3));
             v.push(h("B", "New backup job", 3));
+            v.push(h("C", "New cloud mirror", 3));
             if let Some(job) = app.jobs_table.selected().and_then(|i| app.jobs_view.jobs.get(i)) {
                 if crate::jobs::is_cancellable(job) && app.jobs_view.is_running(&job.id) {
                     v.push(h("c", "Cancel transfer", 1).tone(Tone::Warn));
@@ -1309,6 +1310,7 @@ mod tests {
         let a = jobs(true);
         let labels: Vec<(&str, &str)> = hints(&a).iter().map(|h| (h.key, h.label)).collect();
         assert!(labels.contains(&("B", "New backup job")), "{labels:?}");
+        assert!(labels.contains(&("C", "New cloud mirror")), "{labels:?}");
         assert!(!labels.iter().any(|(k, _)| *k == "c"), "nothing is running");
     }
 

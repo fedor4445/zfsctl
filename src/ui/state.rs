@@ -1027,7 +1027,7 @@ impl App {
     fn confirm_job_save(&mut self, form: Modal, action: PendingAction) -> Option<PendingAction> {
         let MutationCall::SaveJob { job, .. } = &action.call else { return Some(action) };
         let old = match &form {
-            Modal::Form { kind: FormKind::SnapshotJob { existing, .. } | FormKind::ReplicateJob { existing, .. } | FormKind::BackupJob { existing, .. }, .. } => existing.as_deref(),
+            Modal::Form { kind: FormKind::SnapshotJob { existing, .. } | FormKind::ReplicateJob { existing, .. } | FormKind::BackupJob { existing, .. } | FormKind::MirrorJob { existing, .. }, .. } => existing.as_deref(),
             _ => None,
         };
         // The snapshot list is only known for the host on screen.
@@ -1803,6 +1803,9 @@ impl App {
                 self.backup_preflight = None;
                 self.modal = Some(self.backup_job_form(None));
             }
+            KeyCode::Char('C') if self.current_section() == Section::Jobs => {
+                self.modal = Some(self.mirror_job_form(None));
+            }
             KeyCode::Char('R') if self.current_section() == Section::Jobs => {
                 self.modal = Some(self.replicate_job_form(None));
             }
@@ -1829,6 +1832,7 @@ impl App {
                             self.backup_preflight = None;
                             self.backup_job_form(Some(job))
                         }
+                        crate::jobs::KIND_MIRROR => self.mirror_job_form(Some(job)),
                         _ => self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")),
                     });
                 }
@@ -2134,7 +2138,7 @@ impl App {
     fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str, snapshots_of: Option<String>) {
         let (hosts, mut what) = match kind {
             FormKind::Job { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Pools),
-            FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } | FormKind::BackupJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
+            FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } | FormKind::BackupJob { hosts, .. } | FormKind::MirrorJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
             _ => return,
         };
         if host_name.trim() == crate::jobs::DEST_FILE {

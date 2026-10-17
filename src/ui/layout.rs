@@ -859,6 +859,13 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
             info.push(Line::from(crate::daemon::progress::progress_line(p)));
         }
     }
+    if job.kind == crate::jobs::KIND_MIRROR {
+        let limit = job.bwlimit.as_deref().map(|l| format!("  limit {l}/s")).unwrap_or_default();
+        info.push(Line::from(format!("to {}{limit}  {}", job.remote.as_deref().unwrap_or(""), crate::ui::jobs::source_summary(job))));
+        if let Some(p) = app.jobs_view.progress_of(&job.id) {
+            info.push(Line::from(crate::daemon::progress::progress_line(p)));
+        }
+    }
     f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
 }
 
@@ -1069,6 +1076,7 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
         crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::SnapshotJob { .. } => crate::ui::jobs::preview_lines(fields.get(5).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::BackupJob { .. } => crate::ui::jobs::preview_lines(fields.get(8).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        crate::ui::modal::FormKind::MirrorJob { .. } => crate::ui::jobs::preview_lines(fields.get(7).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         crate::ui::modal::FormKind::ReplicateJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
         _ => Vec::new(),
     }
@@ -2400,6 +2408,19 @@ mod tests {
         app.handle_key(crossterm::event::KeyCode::Char('N'));
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("New snapshot job") && text.contains("Hourly") && text.contains("Next:"), "the default 0 * * * * is the Hourly preset:\n{text}");
+    }
+
+    #[test]
+    fn a_mirror_job_shows_its_remote_as_the_target_and_the_limit_only_when_set() {
+        let mut m = crate::jobs::Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/photos");
+        m.bwlimit = Some("5M".into());
+        let (mut app, _dir) = jobs_app(&[m]);
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 130, 34).join("\n");
+        assert!(text.contains("tank/data") && text.contains("aws:bkt/photos") && text.contains("limit 5M/s"), "{text}");
+        let (mut app, _dir) = jobs_app(&[crate::jobs::Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/photos")]);
+        app.handle_key(crossterm::event::KeyCode::Down);
+        assert!(!render(&mut app, 130, 34).join("\n").contains("limit "));
     }
 
     #[test]

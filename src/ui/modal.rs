@@ -325,6 +325,9 @@ pub enum FormKind {
     /// `source` is `new`, `@snapshot` or a prefix; `snapshots to keep` only matters for `new`. `keep` is blank
     /// (keep everything) or text like `7d 4w 12m 3y`. `jobs` is every current job.
     BackupJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
+    /// Fields: `[host, dataset, path, source, snapshots to keep, remote, speed limit, schedule, catch_up (y/n)]`.
+    /// The first five are the backup form's; `remote` is an rclone `name:path`; `speed limit` is blank or like `5M`.
+    MirrorJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
     /// Fields: `[name, ssh_target]` — both required. Unlike every
     /// other `FormKind`, submitting this one never produces a
     /// `PendingAction`: there's no existing host/runner to dispatch

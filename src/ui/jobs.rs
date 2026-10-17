@@ -137,6 +137,10 @@ pub fn new_backup_job_id(host: &str, dataset: &str, existing: &[String]) -> Stri
     unique(&format!("backup-{}-{}", safe_key(host), safe_key(dataset)), existing)
 }
 
+pub fn new_mirror_job_id(host: &str, dataset: &str, existing: &[String]) -> String {
+    unique(&format!("mirror-{}-{}", safe_key(host), safe_key(dataset)), existing)
+}
+
 /// How a backup job's Source field reads: `new`, `@snapshot`, or the prefix.
 pub fn source_text(job: &Job) -> String {
     match jobs::backup_source(job) {
@@ -201,6 +205,7 @@ pub fn job_target(job: &Job) -> String {
             None => source,
         },
         jobs::KIND_BACKUP => format!("{source} → {}", job.repository.as_deref().unwrap_or("")),
+        jobs::KIND_MIRROR => format!("{source} → {}", job.remote.as_deref().unwrap_or("")),
         _ => source,
     }
 }
