@@ -8087,3 +8087,18 @@ fn the_cloud_section_asks_for_its_remotes_when_first_opened_and_then_once_a_minu
     app.refresh_cloud_if_stale(t0 + Duration::from_secs(200));
     assert!(app.pending_cloud.is_empty(), "other sections do not ask");
 }
+
+#[test]
+fn the_plan_caps_are_read_from_config_toml_each_time_the_remotes_are_asked() {
+    let (mut app, dir) = cloud_app(&[]);
+    app.config_path = dir.path().join("config.toml");
+    app.refresh_cloud();
+    assert!(app.cloud_caps.is_empty(), "no config file: no caps");
+    std::fs::write(&app.config_path, "[cloud.caps]\nb2 = \"10G\"\nzfsctl-aws = \"ten gigs\"\n").unwrap();
+    app.refresh_cloud();
+    assert_eq!(app.cloud_caps.get("b2"), Some(&Ok(10_000_000_000)));
+    assert_eq!(app.cloud_caps.get("zfsctl-aws"), Some(&Err("ten gigs".to_string())), "a bad size is kept as text, to be reported");
+    std::fs::write(&app.config_path, "this is not toml [").unwrap();
+    app.refresh_cloud();
+    assert!(app.cloud_caps.is_empty(), "an unreadable config shows no caps rather than stale ones");
+}

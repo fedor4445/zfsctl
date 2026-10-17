@@ -120,16 +120,68 @@ pub fn failed(row: &Row, view: &JobsView) -> bool {
     jobs_of(row, view).iter().any(|j| j.enabled && view.last_run(&j.id).is_some_and(|r| r.result == Some(RunResult::Failed)))
 }
 
-/// The table's In bucket column: the measured size of the row's `current/` folders added up, or `-` before `s`.
-pub fn in_bucket(row: &Row, sizes: &HashMap<String, Size>) -> String {
-    let measured: Vec<u64> = row.job_ids.iter().filter_map(|id| sizes.get(id)).filter_map(|s| s.current.map(|(_, bytes)| bytes)).collect();
-    if measured.is_empty() { "-".to_string() } else { human_bytes(measured.iter().sum()) }
+/// What the row's measured mirror jobs hold in the bucket: `current/` plus `old/`, which is what a plan counts. `None`
+/// before `s` (or when nothing could be measured).
+pub fn used_bytes(row: &Row, sizes: &HashMap<String, Size>) -> Option<u64> {
+    let measured: Vec<u64> = row.job_ids.iter().filter_map(|id| sizes.get(id)).filter(|s| s.current.is_some()).map(|s| s.current.map_or(0, |c| c.1) + s.old.map_or(0, |o| o.1)).collect();
+    (!measured.is_empty()).then(|| measured.iter().sum())
+}
+
+/// A remote's plan cap, as the Cloud screen has it: the size, or the text that is not a size.
+pub type Caps = HashMap<String, Result<u64, String>>;
+
+/// How full the plan is, as a percentage with enough decimals to tell a little from nothing: `0.02%`, `3.4%`, `87%`.
+pub fn percent_text(used: u64, cap: u64) -> String {
+    let pct = used as f64 * 100.0 / cap as f64;
+    if pct < 1.0 { format!("{pct:.2}%") } else if pct < 10.0 { format!("{pct:.1}%") } else { format!("{pct:.0}%") }
+}
+
+/// A plan size as it reads on screen: `10 GB`, `2.5 GB`, `500 MB` (decimal, like the plan).
+pub fn cap_text(bytes: u64) -> String {
+    let (value, unit) = match bytes {
+        b if b >= 1_000_000_000_000 => (b as f64 / 1e12, "TB"),
+        b if b >= 1_000_000_000 => (b as f64 / 1e9, "GB"),
+        b if b >= 1_000_000 => (b as f64 / 1e6, "MB"),
+        b if b >= 1_000 => (b as f64 / 1e3, "KB"),
+        b => return format!("{b} B"),
+    };
+    if (value - value.round()).abs() < 0.05 { format!("{value:.0} {unit}") } else { format!("{value:.1} {unit}") }
+}
+
+/// How full a plan is, as the colour to show it in: nothing special below 80%, a warning from 80%, a problem from 95%.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    Fine,
+    Warn,
+    Full,
+}
+
+pub fn fill(used: u64, cap: u64) -> Fill {
+    let pct = used as f64 * 100.0 / cap as f64;
+    if pct >= 95.0 { Fill::Full } else if pct >= 80.0 { Fill::Warn } else { Fill::Fine }
+}
+
+/// The table's In bucket column: what the row holds (`-` before `s`), and against its cap, if it has one, `of 10 GB (0.02%)`.
+pub fn in_bucket(row: &Row, sizes: &HashMap<String, Size>, caps: &Caps) -> String {
+    let Some(used) = used_bytes(row, sizes) else { return "-".to_string() };
+    match caps.get(&row.name) {
+        Some(Ok(cap)) => format!("{} of {} ({})", human_bytes(used), cap_text(*cap), percent_text(used, *cap)),
+        _ => human_bytes(used),
+    }
+}
+
+/// The row's fill against its plan, once measured.
+pub fn row_fill(row: &Row, sizes: &HashMap<String, Size>, caps: &Caps) -> Option<Fill> {
+    match (used_bytes(row, sizes), caps.get(&row.name)) {
+        (Some(used), Some(Ok(cap))) => Some(fill(used, *cap)),
+        _ => None,
+    }
 }
 
 /// The table's cells for a row: Remote, Host, Type, Jobs, Last, In bucket.
-pub fn cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, now: DateTime<Utc>) -> Vec<String> {
+pub fn cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: DateTime<Utc>) -> Vec<String> {
     let last = if row.job_ids.is_empty() { "-".to_string() } else { last_result_text(last_run(row, view), now) };
-    vec![format!("{}:", row.name), row.host.clone(), row.kind.clone().unwrap_or_else(|| "?".to_string()), row.job_ids.len().to_string(), last, in_bucket(row, sizes)]
+    vec![format!("{}:", row.name), row.host.clone(), row.kind.clone().unwrap_or_else(|| "?".to_string()), row.job_ids.len().to_string(), last, in_bucket(row, sizes, caps)]
 }
 
 /// How a measured folder reads: `1.9 MiB (4 files)`.
@@ -138,14 +190,31 @@ fn folder_text(folder: (u64, u64)) -> String {
     format!("{} ({files} file{})", human_bytes(bytes), if files == 1 { "" } else { "s" })
 }
 
+/// The panel's plan line: the cap from `[cloud.caps]`, how much of it is used, and what is not counted.
+fn plan_lines(row: &Row, sizes: &HashMap<String, Size>, caps: &Caps) -> Vec<Line> {
+    match caps.get(&row.name) {
+        None => vec![],
+        Some(Err(text)) => vec![(format!("Plan cap '{text}' in [cloud.caps] is not a size like 10G, 500M or 2.5T"), true)],
+        Some(Ok(cap)) => match used_bytes(row, sizes) {
+            None => vec![(format!("Plan cap {}: press s to see how much of it is used", cap_text(*cap)), false)],
+            Some(used) => {
+                let left = cap.saturating_sub(used);
+                let text = format!("Plan cap {}: using {} ({}), {} left. Counts only this remote's measured mirror jobs (current/ and old/).", cap_text(*cap), human_bytes(used), percent_text(used, *cap), cap_text(left));
+                vec![(text, fill(used, *cap) != Fill::Fine)]
+            }
+        },
+    }
+}
+
 /// A line of the detail panel and whether it is a problem.
 pub type Line = (String, bool);
 
 /// The detail panel for a row: each job that uses the remote, then what `s` measured for it.
-pub fn detail(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, now: DateTime<Utc>) -> Vec<Line> {
+pub fn detail(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: DateTime<Utc>) -> Vec<Line> {
     let mut out: Vec<Line> = Vec::new();
     let kind = row.kind.as_deref().map_or_else(String::new, |k| format!(" ({k})"));
     out.push((format!("{}:{kind} on {}", row.name, row.host), false));
+    out.extend(plan_lines(row, sizes, caps));
     let jobs = jobs_of(row, view);
     if jobs.is_empty() {
         out.push(("No job uses this remote. Press C to mirror a dataset to it.".to_string(), false));
@@ -269,13 +338,13 @@ mod tests {
         );
         let row = rows(&jobs, &known()).remove(0);
         let now = at("2026-10-17T05:33:00Z");
-        assert_eq!(cells(&row, &view, &HashMap::new(), now), ["b2:", "local", "b2", "2", "ok 2h ago", "-"]);
+        assert_eq!(cells(&row, &view, &HashMap::new(), &Caps::new(), now), ["b2:", "local", "b2", "2", "ok 2h ago", "-"]);
         let mut sizes = HashMap::new();
         sizes.insert("m1".to_string(), Size { current: Some((3, 2_000_000)), old: None, at: now, problem: None });
         sizes.insert("m2".to_string(), Size { current: Some((1, 1_000_000)), old: Some((1, 5)), at: now, problem: None });
-        assert_eq!(cells(&row, &view, &sizes, now)[5], "2.9 MiB");
+        assert_eq!(cells(&row, &view, &sizes, &Caps::new(), now)[5], "2.9 MiB");
         let idle = rows(&jobs, &known()).remove(1);
-        assert_eq!(cells(&idle, &view, &sizes, now), ["t1:", "local", "sftp", "0", "-", "-"], "a remote nobody uses");
+        assert_eq!(cells(&idle, &view, &sizes, &Caps::new(), now), ["t1:", "local", "sftp", "0", "-", "-"], "a remote nobody uses");
     }
 
     #[test]
@@ -287,7 +356,7 @@ mod tests {
         );
         let row = rows(&jobs, &known()).remove(0);
         assert!(failed(&row, &view));
-        let lines = detail(&row, &view, &HashMap::new(), at("2026-10-17T04:00:00Z"));
+        let lines = detail(&row, &view, &HashMap::new(), &Caps::new(), at("2026-10-17T04:00:00Z"));
         assert!(lines.iter().any(|(t, bad)| *bad && t.contains("last failed")), "{lines:?}");
         assert!(lines.iter().any(|(t, bad)| *bad && t.trim() == "the source holds no files to copy"), "only the first line of the reason: {lines:?}");
         let ok_view = view_with(jobs, &[]);
@@ -303,7 +372,7 @@ mod tests {
         let view = view_with(jobs.clone(), &[]);
         let row = rows(&jobs, &known()).remove(0);
         let now = at("2026-10-17T05:00:00Z");
-        let text = |sizes: &HashMap<String, Size>| detail(&row, &view, sizes, now).into_iter().map(|(t, _)| t).collect::<Vec<_>>().join("\n");
+        let text = |sizes: &HashMap<String, Size>| detail(&row, &view, sizes, &Caps::new(), now).into_iter().map(|(t, _)| t).collect::<Vec<_>>().join("\n");
         let before = text(&HashMap::new());
         assert!(before.contains("b2: (b2) on local") && before.contains("not measured yet, press s") && before.contains("a restic repository"), "{before}");
         let mut sizes = HashMap::new();
@@ -313,7 +382,7 @@ mod tests {
         sizes.insert("m1".to_string(), Size { current: Some((1, 10)), old: None, at: now, problem: None });
         assert!(text(&sizes).contains("no old/ yet") && text(&sizes).contains("(1 file)"));
         sizes.insert("m1".to_string(), Size { current: None, old: None, at: now, problem: Some("the keys were refused".into()) });
-        let bad = detail(&row, &view, &sizes, now);
+        let bad = detail(&row, &view, &sizes, &Caps::new(), now);
         assert!(bad.iter().any(|(t, is_bad)| *is_bad && t.contains("the keys were refused")), "{bad:?}");
     }
 
@@ -371,10 +440,65 @@ mod tests {
         assert_eq!((size.current, size.old), (None, None));
     }
 
+    fn caps(pairs: &[(&str, Result<u64, &str>)]) -> Caps {
+        pairs.iter().map(|(n, c)| ((*n).to_string(), c.clone().map_err(str::to_string))).collect()
+    }
+
+    #[test]
+    fn a_plan_is_counted_with_old_included_and_shown_as_a_percentage_of_its_cap() {
+        let jobs = vec![mirror("m1", "local", "b2:zfsctl/photos"), mirror("m2", "local", "b2:zfsctl/docs")];
+        let view = view_with(jobs.clone(), &[]);
+        let row = rows(&jobs, &known()).remove(0);
+        let now = at("2026-10-17T05:00:00Z");
+        let mut sizes = HashMap::new();
+        sizes.insert("m1".to_string(), Size { current: Some((3, 2_000_000)), old: Some((1, 1_000_000)), at: now, problem: None });
+        sizes.insert("m2".to_string(), Size { current: Some((1, 1_000_000)), old: None, at: now, problem: None });
+        assert_eq!(used_bytes(&row, &sizes), Some(4_000_000), "old/ counts: the plan charges for it");
+        let ten_gb = caps(&[("b2", Ok(10_000_000_000))]);
+        assert_eq!(in_bucket(&row, &sizes, &ten_gb), "3.8 MiB of 10 GB (0.04%)");
+        assert_eq!(in_bucket(&row, &sizes, &Caps::new()), "3.8 MiB", "no cap, no percentage");
+        assert_eq!(in_bucket(&row, &HashMap::new(), &ten_gb), "-", "nothing is shown before s");
+        let lines = detail(&row, &view, &sizes, &ten_gb, now);
+        assert!(lines.iter().any(|(t, bad)| !*bad && t.contains("Plan cap 10 GB: using 3.8 MiB (0.04%), 10 GB left") && t.contains("Counts only")), "{lines:?}");
+        let before = detail(&row, &view, &HashMap::new(), &ten_gb, now);
+        assert!(before.iter().any(|(t, _)| t.contains("Plan cap 10 GB: press s")), "{before:?}");
+        assert_eq!(row_fill(&row, &sizes, &ten_gb), Some(Fill::Fine));
+    }
+
+    #[test]
+    fn a_plan_that_is_nearly_full_is_a_warning_and_a_full_one_a_problem() {
+        assert_eq!((fill(79, 100), fill(80, 100), fill(94, 100), fill(95, 100), fill(150, 100)), (Fill::Fine, Fill::Warn, Fill::Warn, Fill::Full, Fill::Full));
+        let jobs = vec![mirror("m1", "local", "b2:zfsctl/photos")];
+        let view = view_with(jobs.clone(), &[]);
+        let row = rows(&jobs, &known()).remove(0);
+        let now = at("2026-10-17T05:00:00Z");
+        let mut sizes = HashMap::new();
+        sizes.insert("m1".to_string(), Size { current: Some((1, 9_000)), old: None, at: now, problem: None });
+        let c = caps(&[("b2", Ok(10_000))]);
+        assert_eq!(row_fill(&row, &sizes, &c), Some(Fill::Warn));
+        assert!(detail(&row, &view, &sizes, &c, now).iter().any(|(t, bad)| *bad && t.contains("90%") && t.contains("left")));
+    }
+
+    #[test]
+    fn a_cap_that_is_not_a_size_is_said_so_and_never_guessed() {
+        let jobs = vec![mirror("m1", "local", "b2:zfsctl/photos")];
+        let view = view_with(jobs.clone(), &[]);
+        let row = rows(&jobs, &known()).remove(0);
+        let lines = detail(&row, &view, &HashMap::new(), &caps(&[("b2", Err("ten gigs"))]), at("2026-10-17T05:00:00Z"));
+        assert!(lines.iter().any(|(t, bad)| *bad && t.contains("'ten gigs'") && t.contains("not a size")), "{lines:?}");
+        assert_eq!(row_fill(&row, &HashMap::new(), &caps(&[("b2", Err("x"))])), None);
+    }
+
+    #[test]
+    fn sizes_and_percentages_read_plainly() {
+        assert_eq!((cap_text(10_000_000_000), cap_text(2_500_000_000), cap_text(500_000_000), cap_text(1_000_000_000_000), cap_text(900)), ("10 GB".to_string(), "2.5 GB".to_string(), "500 MB".to_string(), "1 TB".to_string(), "900 B".to_string()));
+        assert_eq!((percent_text(2, 10_000), percent_text(340, 10_000), percent_text(8_700, 10_000), percent_text(0, 10_000)), ("0.02%".to_string(), "3.4%".to_string(), "87%".to_string(), "0.00%".to_string()));
+    }
+
     #[test]
     fn a_remote_nobody_uses_invites_a_first_job() {
         let row = rows(&[], &known()).remove(1);
-        let lines = detail(&row, &JobsView::default(), &HashMap::new(), at("2026-10-17T05:00:00Z"));
+        let lines = detail(&row, &JobsView::default(), &HashMap::new(), &Caps::new(), at("2026-10-17T05:00:00Z"));
         assert!(lines.iter().any(|(t, _)| t.contains("No job uses this remote") && t.contains("press C") || t.contains("Press C")), "{lines:?}");
     }
 }

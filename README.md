@@ -297,7 +297,7 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 The Cloud section lists the rclone remotes (`rclone listremotes --long`, names and types only, never keys) of the hub and of any host that has a cloud job, with the jobs that write to each (a cloud mirror, or a restic backup whose repository is `rclone:`), the latest result of any of them and, after `s`, the size of the bucket. It only reads. A remote whose latest run failed is red; a remote no job uses is dim. The bottom panel shows the selected remote's jobs and the failure reason, if any.
 
 - `Up` / `Down`: select a remote
-- `s`: measure the bucket: the size and file count of `current/` and `old/` for each of the remote's cloud mirror jobs (`rclone size`; it lists the bucket, which a cloud account may count as requests, so it only runs when asked and shows when it was measured)
+- `s`: measure the bucket: the size and file count of `current/` and `old/` for each of the remote's cloud mirror jobs. With `[cloud.caps]` set in `config.toml` (`b2 = "10G"`, the room your plan gives you, by remote name) the table and panel also show how much of the cap is used (yellow from 80%, red from 95%) (`rclone size`; it lists the bucket, which a cloud account may count as requests, so it only runs when asked and shows when it was measured)
 - `F5`: the form's read-only remote check, for the remote of its first cloud mirror job
 - `C`: new cloud mirror job
 - `r`: reload the jobs and ask the hosts again (otherwise the list is asked when the section opens and then once a minute while it is on screen)

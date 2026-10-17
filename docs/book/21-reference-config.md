@@ -9,7 +9,7 @@ This chapter is checked against the program's own list of settings by the book's
 
 ## config.toml
 
-The file is `/usr/local/etc/zfsctl/config.toml`. It has up to four parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[daemon]` and `[notify]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is.
+The file is `/usr/local/etc/zfsctl/config.toml`. It has up to five parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[daemon]`, `[notify]` and `[cloud]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is.
 
 ### `[[hosts]]`: one table per remote host
 
@@ -44,6 +44,12 @@ The file is `/usr/local/etc/zfsctl/config.toml`. It has up to four parts: any nu
 | `remind_hours` | number | `6` | repeat an unresolved alert this often; `0` for never |
 
 The monitor runs only when at least one way of reaching you is set: `mail_to` or `notify_command`.
+
+### `[cloud]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `caps` | table | none | `[cloud.caps]`: the room your cloud plan gives you, by rclone remote name, such as `b2 = "10G"` or `zfsctl-aws = "5G"`. A size is digits (a decimal point is allowed) and an optional `K`, `M`, `G` or `T`, counted the way cloud plans count (`10G` is 10 000 000 000 bytes). The Cloud screen then shows how much of it each remote uses |
 
 ## jobs.toml
 
