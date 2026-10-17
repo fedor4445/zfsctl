@@ -38,6 +38,7 @@ pub enum Section {
     Jobs,
     Cloud,
     Alerts,
+    Settings,
     Vdevs,
     PoolProperties,
     DatasetProperties,
@@ -314,6 +315,11 @@ pub struct App {
     /// `config.toml`, read and (for the alert settings) written by the Alerts screen.
     pub config_path: std::path::PathBuf,
     pub alerts_view: crate::ui::alerts::AlertsView,
+    /// The Settings section: the rest of `config.toml` that can be edited here.
+    pub settings_view: crate::ui::settings::SettingsView,
+    pub settings_table: TableState,
+    /// How often the list on screen reloads by itself; `None` is off. Set from `[ui]` at start and after a save in Settings.
+    pub auto_refresh_interval: Option<Duration>,
     last_alerts_refresh: Option<Instant>,
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
@@ -470,7 +476,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let hosts_for_addr = hosts.clone();
         App {
-            sections: vec![Section::Dashboard, Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Cloud, Section::Alerts],
+            sections: vec![Section::Dashboard, Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Cloud, Section::Alerts, Section::Settings],
             // The section after the Dashboard (Hosts): the program opens on the Dashboard through `open_dashboard`, but
             // a fresh `App` starts on Hosts, which most behaviour (and its tests) is about.
             selected_section: 1,
@@ -512,6 +518,9 @@ impl App {
             last_cloud_refresh: None,
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
+            settings_view: crate::ui::settings::SettingsView::default(),
+            settings_table: TableState::default(),
+            auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
             done_note: None,
             alerts_preview_busy: false,
@@ -742,6 +751,7 @@ impl App {
             Section::Dashboard => self.refresh_dashboard(),
             Section::Cloud => self.refresh_cloud(),
             Section::Alerts => self.refresh_alerts(),
+            Section::Settings => self.refresh_settings(),
             _ => {}
         }
     }
@@ -1045,6 +1055,46 @@ impl App {
             focused: 0,
             description: Some("Blank means the default. Clear Email to to turn email off.".to_string()),
             kind: FormKind::NotifySettings,
+        })
+    }
+
+    /// Reloads the Settings rows from `config.toml`; the cap rows list the remotes the Cloud screen knows. The selection
+    /// stays on its row number, or is dropped when there are no rows.
+    pub fn refresh_settings(&mut self) {
+        let mut remotes: Vec<String> = self.cloud_rows().into_iter().map(|r| r.name).collect();
+        remotes.sort();
+        remotes.dedup();
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+        self.settings_view = crate::ui::settings::load(&self.config_path, &remotes, no_color);
+        let rows = self.settings_view.rows.len();
+        match self.settings_table.selected() {
+            _ if rows == 0 => self.settings_table.select(None),
+            Some(i) if i < rows => {}
+            _ => self.settings_table.select(Some(0)),
+        }
+    }
+
+    /// Loads the Settings rows when the section has just been opened (by any key), and forgets them once it is left,
+    /// so the next visit reads the file again. Called on every pass of the event loop, before drawing.
+    pub fn ensure_settings_loaded(&mut self) {
+        if self.current_section() != Section::Settings {
+            self.settings_view.loaded = false;
+        } else if !self.settings_view.loaded {
+            self.refresh_settings();
+        }
+    }
+
+    /// The edit form for the selected setting, or `None` when nothing is selected.
+    fn settings_form(&self) -> Option<Modal> {
+        let row = self.settings_table.selected().and_then(|i| self.settings_view.rows.get(i))?;
+        let pair = row.raw.len() > 1;
+        let description = if pair { "Fill both numbers, or leave both empty for the defaults." } else { "Leave empty to go back to the default." };
+        Some(Modal::Form {
+            title: row.label.clone(),
+            fields: crate::ui::settings::form_fields(row).into_iter().map(|(label, value)| FormField { label, value }).collect(),
+            focused: 0,
+            description: Some(description.to_string()),
+            kind: FormKind::Setting { setting: row.setting.clone() },
         })
     }
 
@@ -2030,6 +2080,19 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Alerts => {
                 self.alerts_view.scroll = self.alerts_view.scroll.saturating_sub(1);
             }
+            KeyCode::Down if self.current_section() == Section::Settings => {
+                move_table_selection(&mut self.settings_table, self.settings_view.rows.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Settings => {
+                move_table_selection(&mut self.settings_table, self.settings_view.rows.len(), false);
+            }
+            KeyCode::Enter if self.current_section() == Section::Settings && self.modal.is_none() && self.picker.is_none() => {
+                if let Some(problem) = self.settings_view.problem.clone() {
+                    self.set_error(format!("{problem}: fix config.toml before editing here"));
+                } else if let Some(form) = self.settings_form() {
+                    self.modal = Some(form);
+                }
+            }
             KeyCode::Down if self.current_section() == Section::Dashboard => {
                 let lines = self.dashboard().attention.len();
                 move_table_selection(&mut self.dashboard_table, lines, true);
@@ -2369,9 +2432,38 @@ impl App {
 
     /// Reloads the jobs and asks the hub, and each host that has a job writing to a remote, which remotes it has.
     /// Nothing is asked twice while an answer is awaited.
+    /// Reads `[cloud.caps]` from `config.toml` again (an unreadable file means no caps).
+    fn reload_cloud_caps(&mut self) {
+        self.cloud_caps = crate::config::Config::load(&self.config_path).map(|c| c.cloud.caps).unwrap_or_default().into_iter().map(|(name, text)| (name, crate::config::parse_cap(&text).ok_or(text))).collect();
+    }
+
+    /// After a save in Settings: the theme, the auto-refresh interval, the Dashboard thresholds and the cloud caps
+    /// follow `config.toml` without a restart. A theme name that does not resolve changes nothing and says why.
+    pub fn apply_saved_settings(&mut self) {
+        self.apply_saved_settings_with(&crate::ui::theme::ThemeEnv::from_process());
+    }
+
+    pub fn apply_saved_settings_with(&mut self, env: &crate::ui::theme::ThemeEnv) {
+        let Ok(config) = crate::config::Config::load(&self.config_path) else { return };
+        match crate::ui::theme::resolve(config.ui.theme.as_deref(), env) {
+            Ok(resolved) => {
+                let changed = self.theme.name != resolved.theme.name;
+                self.theme = resolved.theme.bright();
+                // The "Saved" note of the save that got us here stays unless the theme changed and has something to say.
+                if changed && resolved.note.is_some() {
+                    self.status_message = resolved.note;
+                }
+            }
+            Err(e) => self.set_error(e.to_string()),
+        }
+        self.auto_refresh_interval = config.ui.auto_refresh_interval();
+        self.dashboard_thresholds = config.dashboard.resolve();
+        self.reload_cloud_caps();
+    }
+
     pub fn refresh_cloud(&mut self) {
         self.refresh_jobs();
-        self.cloud_caps = crate::config::Config::load(&self.config_path).map(|c| c.cloud.caps).unwrap_or_default().into_iter().map(|(name, text)| (name, crate::config::parse_cap(&text).ok_or(text))).collect();
+        self.reload_cloud_caps();
         let mut hosts: Vec<usize> = self.hosts.iter().position(|h| h == "local").into_iter().collect();
         for job in &self.jobs_view.jobs {
             if crate::ui::cloud::remote_name(job).is_none() {
@@ -3071,6 +3163,11 @@ Alerts
   t                send a test message through the saved settings (a real message; asks first)
   p                preview the daily report as it would be sent now (sends nothing)
   Up / Down        scroll the recent events
+
+Settings
+  Up / Down        select a setting (theme, auto-refresh, Dashboard thresholds, cloud caps)
+  Enter            edit the setting in a form (blank = default; saved into config.toml after a y/n confirmation)
+  r                reload the settings from config.toml
 
 Press any key to close."
         .to_string()

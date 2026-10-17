@@ -166,6 +166,7 @@ impl App {
         }
         match form.kind {
             FormKind::NotifySettings => self.submit_notify_form(form),
+            FormKind::Setting { .. } => self.submit_setting_form(form),
             FormKind::AddHost => self.submit_add_host_form(form),
             FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::ReplicateJob { .. } => self.submit_job_form(form),
             FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } => match build_bootenv_action(&form.kind, &form.fields) {
@@ -190,6 +191,21 @@ impl App {
             Ok((mut action, prompt)) => {
                 action.host = self.selected_host;
                 // Declining returns to the form, not to nothing.
+                self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+                self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+                None
+            }
+            Err(msg) => self.reject(form, msg),
+        }
+    }
+
+    fn submit_setting_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let FormKind::Setting { setting } = form.kind.clone() else { return None };
+        let values: Vec<String> = form.fields.iter().map(|f| f.value.clone()).collect();
+        match crate::ui::settings::build_changes(&setting, &values) {
+            Ok(_) => {
+                let prompt = format!("Save to config.toml?\n  {}\n(y/n)", crate::ui::settings::describe(&setting, &values));
+                let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Settings, call: MutationCall::SaveSettings { config_path: self.config_path.clone(), setting, values } };
                 self.confirm_restore = Some((prompt.clone(), form.into_modal()));
                 self.modal = Some(Modal::Confirm { choice: None, prompt, action });
                 None

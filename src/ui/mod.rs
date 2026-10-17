@@ -8,6 +8,7 @@ pub mod layout;
 pub mod metrics;
 pub mod modal;
 pub mod picker;
+pub mod settings;
 pub mod shell;
 pub mod state;
 pub mod theme;
@@ -73,6 +74,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
             let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
             let mut app = App::new(host_names);
             app.theme = resolved.theme.bright();
+            app.auto_refresh_interval = auto_refresh;
             app.config_path = config_path.to_path_buf();
             app.status_message = resolved.note;
             app.set_host_addresses(inventory.hosts.iter().map(|h| state::address_of(h.ssh_target.as_deref())).collect());
@@ -82,7 +84,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
                 app.refresh_pools(first_host.runner.clone());
             }
 
-            event_loop(&mut terminal, &mut app, &mut inventory, config_path, auto_refresh)
+            event_loop(&mut terminal, &mut app, &mut inventory, config_path)
         });
 
     let _ = disable_raw_mode();
@@ -235,7 +237,6 @@ fn event_loop(
     app: &mut App,
     inventory: &mut HostInventory,
     config_path: &std::path::Path,
-    auto_refresh: Option<Duration>,
 ) -> Result<()> {
     // `None` = never refreshed yet, so the first poll happens immediately.
     let mut last_vdevs_auto_refresh: Option<Instant> = None;
@@ -246,6 +247,7 @@ fn event_loop(
         app.refresh_jobs_if_stale(Instant::now());
         app.refresh_cloud_if_stale(Instant::now());
         app.refresh_alerts_if_stale(Instant::now());
+        app.ensure_settings_loaded();
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
@@ -261,7 +263,7 @@ fn event_loop(
                 last_vdevs_auto_refresh = Some(Instant::now());
             }
         }
-        if let (Some(interval), Some(host)) = (auto_refresh, inventory.hosts.get(app.selected_host)) {
+        if let (Some(interval), Some(host)) = (app.auto_refresh_interval, inventory.hosts.get(app.selected_host)) {
             app.auto_refresh(host.runner.clone(), Instant::now(), interval);
         }
         if let Some(host) = inventory.hosts.get(app.selected_host) {
@@ -280,6 +282,7 @@ fn event_loop(
                     Section::Jobs => app.refresh_jobs(),
                     Section::Cloud => app.refresh_cloud(),
                     Section::Alerts => app.refresh_alerts(),
+                    Section::Settings => app.refresh_settings(),
                     Section::Vdevs => {
                         if let Some(pool) = app.drilled_pool.clone() {
                             app.refresh_vdevs(host.runner.clone(), pool);
@@ -376,6 +379,7 @@ fn event_loop(
                                     Section::Jobs => app.refresh_jobs(),
                                     Section::Cloud => app.refresh_cloud(),
                                     Section::Alerts => app.refresh_alerts(),
+                                    Section::Settings => app.refresh_settings(),
                                     Section::Hosts
                                     | Section::Vdevs
                                     | Section::PoolProperties

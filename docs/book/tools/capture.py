@@ -10,7 +10,7 @@ Needs: pip install pexpect pyte. Captures are written to docs/book/captures/NAME
 import argparse, os, re, subprocess, sys, time
 from pathlib import Path
 
-SECTIONS = ["Dashboard", "Hosts", "Pools", "Datasets", "Snapshots", "Disks", "Shares", "Boot Envs", "Jobs", "Cloud", "Alerts"]
+SECTIONS = ["Dashboard", "Hosts", "Pools", "Datasets", "Snapshots", "Disks", "Shares", "Boot Envs", "Jobs", "Cloud", "Alerts", "Settings"]
 KEYS = {"<Tab>": "\t", "<S-Tab>": "\x1b[Z", "<Enter>": "\r", "<Esc>": "\x1b", "<Down>": "\x1b[B", "<Up>": "\x1b[A",
         "<Left>": "\x1b[D", "<Right>": "\x1b[C", "<Space>": " ", "<Backspace>": "\x7f", "<F2>": "\x1bOQ", "<F5>": "\x1b[15~"}
 # An address, but not user@192.0.2.1 (an ssh target with a numeric host is not an email address).

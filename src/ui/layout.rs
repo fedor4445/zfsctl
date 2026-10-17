@@ -188,6 +188,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Jobs => "Jobs",
                 Section::Cloud => "Cloud",
                 Section::Alerts => "Alerts",
+                Section::Settings => "Settings",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
@@ -312,6 +313,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Jobs => draw_jobs(f, app, area),
         Section::Cloud => draw_cloud(f, app, area),
         Section::Alerts => draw_alerts(f, app, area),
+        Section::Settings => draw_settings(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl => {
             unreachable!("never in App::sections")
@@ -983,6 +985,61 @@ fn draw_cloud_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The Alerts section: the saved `[notify]` settings, the monitor's status, the recent health events.
+/// The Settings section: the rows of `ui::settings` under their group titles, the selected one as a bar.
+fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
+    use crate::ui::settings::{Row, Setting};
+    let theme = app.theme.clone();
+    let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title("Settings — config.toml");
+    let width = usize::from(area.width.saturating_sub(2));
+    let height = usize::from(area.height.saturating_sub(2));
+    let v = &app.settings_view;
+    if !v.loaded {
+        f.render_widget(Paragraph::new("Loading…").style(theme.dim()).block(block), area);
+        return;
+    }
+    if let Some(problem) = &v.problem {
+        let lines = vec![
+            Line::styled(truncate_with_ellipsis(problem, width), theme.err),
+            Line::styled("Fix config.toml by hand: nothing can be edited here until it parses.".to_string(), theme.dim()),
+        ];
+        f.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    }
+    let selected = app.settings_table.selected();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut selected_line = 0;
+    let mut group = "";
+    let mut title = |lines: &mut Vec<Line>, name: &'static str| {
+        if !lines.is_empty() {
+            lines.push(Line::raw(String::new()));
+        }
+        lines.push(Line::styled(name.to_string(), theme.dim()));
+    };
+    for (i, row) in v.rows.iter().enumerate() {
+        let Row { group: g, label, value, is_default, setting, .. } = row;
+        if *g != group {
+            group = g;
+            title(&mut lines, g);
+        }
+        let label = if matches!(setting, Setting::Cap(_)) { format!("Cap of {label}") } else { label.clone() };
+        let text = format!("  {label:<24} {value}");
+        if selected == Some(i) {
+            selected_line = lines.len();
+            lines.push(Line::styled(format!("{text:<width$}"), theme.selected_row()));
+        } else if *is_default {
+            lines.push(Line::from(vec![Span::raw(truncate_with_ellipsis(&text, width.saturating_sub(12))), Span::styled("   (default)".to_string(), theme.dim())]));
+        } else {
+            lines.push(Line::raw(truncate_with_ellipsis(&text, width)));
+        }
+    }
+    if group != "Cloud caps" {
+        title(&mut lines, "Cloud caps");
+        lines.push(Line::styled("  (open Cloud once to list your remotes)".to_string(), theme.dim()));
+    }
+    let skip = (selected_line + 1).saturating_sub(height);
+    f.render_widget(Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()).block(block), area);
+}
+
 fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
     use crate::ui::alerts::{event_line, EVENTS_SHOWN};
     use crate::ui::jobs::DaemonState;
@@ -2886,6 +2943,51 @@ mod tests {
         for want in ["Alerts", "Email to", "me@x.org", "Mail command", "msmtp -t", "(default)", "Hook command", "curl -s x", "edit in config.toml", "Monitor on", "Last report sent 2026-10-10", "fbsd16", "alert", "tank DEGRADED"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    fn settings_render_app(config: &str) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = alerts_render_app(config);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Settings).unwrap();
+        app.refresh_settings();
+        (app, dir)
+    }
+
+    #[test]
+    fn the_settings_screen_shows_groups_rows_and_defaults() {
+        let (mut app, _dir) = settings_render_app("[dashboard]\nmemory_warn = 80\n[cloud.caps]\nb2 = \"10G\"\n");
+        let text = render(&mut app, 120, 30).join("\n");
+        for want in ["Settings", "Display", "Theme", "Dashboard thresholds", "Memory warn / crit", "80 / 97 %", "CPU warn", "95 %", "(default)", "Cloud caps", "b2", "10G"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_settings_screen_without_remotes_says_how_to_list_them() {
+        let (mut app, _dir) = settings_render_app("");
+        assert!(render(&mut app, 120, 30).join("\n").contains("open Cloud once to list your remotes"));
+    }
+
+    #[test]
+    fn the_settings_screen_shows_the_problem_when_the_file_is_unreadable() {
+        let (mut app, _dir) = settings_render_app("[dashboard\n");
+        let text = render(&mut app, 120, 30).join("\n");
+        assert!(text.contains("config.toml") && text.contains("by hand"), "{text}");
+        assert!(!text.contains("Memory warn"), "{text}");
+    }
+
+    #[test]
+    fn before_the_first_load_the_settings_screen_says_so() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Settings).unwrap();
+        assert!(render(&mut app, 100, 30).join("\n").contains("Loading"));
+    }
+
+    #[test]
+    fn a_selection_below_the_visible_rows_scrolls_into_view() {
+        let (mut app, _dir) = settings_render_app("");
+        app.settings_table.select(Some(app.settings_view.rows.len() - 1));
+        let text = render(&mut app, 100, 12).join("\n");
+        assert!(text.contains("Scrub ignore"), "{text}");
     }
 
     #[test]

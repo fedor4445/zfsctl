@@ -459,7 +459,7 @@ pub fn append_host_to_file(path: &Path, host: &HostConfig) -> Result<()> {
 
 /// The safe rewrite both saves share: `edit` turns the old text into the new text (or refuses), and the file is
 /// replaced only if every step succeeds; any failure leaves the original untouched.
-fn rewrite_config(path: &Path, edit: &dyn Fn(&str) -> std::result::Result<String, String>) -> Result<()> {
+pub(crate) fn rewrite_config(path: &Path, edit: &dyn Fn(&str) -> std::result::Result<String, String>) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());

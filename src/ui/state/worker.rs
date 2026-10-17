@@ -532,7 +532,7 @@ impl App {
             self.alerts_test_busy = false;
         }
         // The Alerts calls are local to the hub: their result matters whichever host is selected now.
-        if host != self.selected_host && section != Section::Alerts {
+        if host != self.selected_host && !matches!(section, Section::Alerts | Section::Settings) {
             return;
         }
         if section == Section::BootEnvs {
@@ -541,10 +541,13 @@ impl App {
                 self.bootenv_pin = None;
             }
         }
-        let note = if section == Section::Alerts { self.done_note.take() } else { None };
+        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { None };
         match result {
             Ok(()) => {
                 self.status_message = note;
+                if section == Section::Settings {
+                    self.apply_saved_settings();
+                }
                 refreshes_needed.push(section);
                 if section == Section::Vdevs {
                     // A disk going offline/online/being replaced

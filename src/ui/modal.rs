@@ -45,6 +45,9 @@ pub enum MutationCall {
     /// Replaces the `[notify]` section of `config.toml`, nothing else in the file. A local file edit: the
     /// runner is not used.
     SaveNotify { config_path: std::path::PathBuf, section: String },
+    /// Writes one Settings row (`setting` with the form's `values`) into `config.toml`, checked again against the
+    /// file as it is at that moment. A local file edit: the runner is not used.
+    SaveSettings { config_path: std::path::PathBuf, setting: crate::ui::settings::Setting, values: Vec<String> },
     /// Sends a real test message through the saved channels (`zfsctl notify-test`). The runner is not used.
     SendTestMessage { settings: Box<crate::config::NotifySettings>, hook: Option<String> },
 }
@@ -74,6 +77,7 @@ impl MutationCall {
     pub fn done_note(&self) -> Option<String> {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
+            MutationCall::SaveSettings { .. } => Some("Saved to config.toml".to_string()),
             MutationCall::SendTestMessage { .. } => Some("Test message sent: the mail command accepted it (run from this terminal; the daemon runs it with root's home)".to_string()),
             _ => None,
         }
@@ -110,6 +114,7 @@ impl MutationCall {
             | MutationCall::SetPoolProperty { .. }
             | MutationCall::SaveJob { .. }
             | MutationCall::SaveNotify { .. }
+            | MutationCall::SaveSettings { .. }
             | MutationCall::SendTestMessage { .. }
             | MutationCall::SetJobEnabled { .. }
             | MutationCall::SetSmbShare { .. }
@@ -159,6 +164,7 @@ impl MutationCall {
             MutationCall::DeleteJob { .. } => "DELETE JOB",
             MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
             MutationCall::SaveNotify { .. } => "SAVE ALERT SETTINGS",
+            MutationCall::SaveSettings { .. } => "SAVE SETTING",
             MutationCall::SendTestMessage { .. } => "SEND TEST MESSAGE",
         }
     }
@@ -216,6 +222,10 @@ impl MutationCall {
             MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
             MutationCall::SaveNotify { config_path, section } => crate::config::save_notify_section(config_path, section),
+            MutationCall::SaveSettings { config_path, setting, values } => {
+                let changes = crate::ui::settings::build_changes(setting, values).map_err(crate::error::AppError::Config)?;
+                crate::config_edit::save(config_path, &changes)
+            }
             MutationCall::SendTestMessage { settings, hook } => {
                 let (text, code) = crate::notify_cli::notify_test(settings, hook.as_deref(), chrono::Utc::now());
                 if code == 0 { Ok(()) } else { Err(crate::error::AppError::Config(text.trim().to_string())) }
@@ -251,6 +261,8 @@ pub enum FormKind {
     /// Fields: `[email to, mail command, mail from, check every (minutes), daily report at (HH:MM or off), remind
     /// every (hours)]`; a blank field is unset (the default).
     NotifySettings,
+    /// The Settings section: one row's fields, in the order of `settings::form_fields`.
+    Setting { setting: crate::ui::settings::Setting },
     /// Fields: `[host, pool, schedule, catch_up]`. `hosts` are the configured host names (for the
     /// host picker and for validation); `existing` is the job being edited, if any; `taken_ids`
     /// are the job ids already in use, so a new job can be named without a collision.

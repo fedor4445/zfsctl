@@ -1,0 +1,22 @@
+┌zfsctl────────────────┐┌Settings — config.toml────────────────────────────────────────────────────┐
+│Dashboard             ││Display                                                                   │
+│Hosts                 ││  Theme                    solarized-dark                                 │
+│Pools                 ││  Auto-refresh             10 s   (default)                               │
+│Datasets              ││                                                                          │
+│Snapshots             ││Dashboard thresholds                                                      │
+│Disks                 ││  Memory warn / crit       90 / 97 %   (default)                          │
+│Shares                ││  Swap warn / crit         50 / 90 %   (default)                          │
+│Boot Envs             ││  CPU warn                 95 %   (default)                               │
+│Jobs                  ││  Scrub warn / crit        35 / 90 days   (default)                       │
+│Cloud                 ││  Scrub ignore             (none)   (default)                             │
+│Alerts                ││                                                                          │
+│Settings              ││Cloud caps                                                                │
+│                      ││  Cap of b2                10G                                            │
+│                      ││  Cap of t1                (no cap)   (default)                           │
+│                      ││  Cap of zfsctl-aws        (no cap)   (default)                           │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+└──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Edit  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

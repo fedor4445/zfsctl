@@ -102,7 +102,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 
 ## Keys
 
-- `Tab` / `Shift+Tab`: switch sections (Dashboard, Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud, Alerts) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `Tab` / `Shift+Tab`: switch sections (Dashboard, Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud, Alerts, Settings) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `'['` / `']'` (Datasets right pane only, once focused with `Right`): cycle between the Properties, Permissions, and ACL sub-tabs.
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
@@ -297,6 +297,10 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 - `Enter`: edit the selected job (its id, creation time and enabled flag are kept)
 - `Space`: enable or disable the selected job
 - `d`: delete the selected job (y/n; its past runs stay in the history until pruned)
+
+### Settings
+
+The last sidebar section edits the rest of `config.toml` in place: the theme and auto-refresh (`[ui]`), the Dashboard thresholds (`[dashboard]`) and the cloud caps (`[cloud.caps]`). `Enter` on a row opens a form (a blank field means the default; a warn/crit pair needs both numbers, warn above 0 and below crit), then the usual two-key confirmation. Only that key is written, through the same safe write as the Alerts screen (backup `config.toml.bak`, private temporary file, same owner and mode, rename), so comments, hosts and other sections stay as they are; the change applies at once, with no restart. Alerts keep the notify settings and the hook command stays in the file.
 
 ### Cloud
 

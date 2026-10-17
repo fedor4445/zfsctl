@@ -159,6 +159,14 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `p` | preview the daily report as it would be sent now (sends nothing) |
 | `Up / Down` | scroll the recent events |
 
+## Settings
+
+| Key | What it does |
+|---|---|
+| `Up / Down` | select a setting |
+| `Enter` | edit the setting in a form (blank = default; saved into `config.toml` after a y/n confirmation) |
+| `r` | reload the settings from `config.toml` |
+
 ## Try it
 
 Press `?` in zfsctl and compare it with this list; they are the same words.

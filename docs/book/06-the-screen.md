@@ -49,7 +49,7 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 ↑↓ Move  → Properties  n New pool  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
-- **The sidebar** (left) lists the sections: Dashboard, Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud and Alerts. The highlighted one is where you are. zfsctl opens on the Dashboard.
+- **The sidebar** (left) lists the sections: Dashboard, Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud, Alerts and Settings. The highlighted one is where you are. zfsctl opens on the Dashboard.
 - **The list** (top right) shows the items of that section: hosts, pools, datasets and so on. In Pools and Datasets a second pane on the right shows the selected item's properties.
 - **The panel** (bottom right) shows live details of whatever is selected: space, health, counts, and two graphs of read and write activity. It disappears on a very short terminal so that the list keeps room.
 - **The hint bar** is the last line of the screen. It lists exactly the keys that work right now, and it changes as you move: a key that would do nothing is not shown. When there is a message for you (a result, an error), it appears on the line just above.
@@ -115,6 +115,35 @@ These defaults can be changed under `[dashboard]` in `config.toml` (see the conf
 > **Tip:** gauges (`━━━━╌╌╌╌╌╌`) appear when the terminal is wide enough. On a narrower one they go first, then the least useful columns; the host's name and state always stay. It stays readable at 80 columns.
 
 > **Not built yet:** NFS and Samba availability, disk wear (SMART) and predictions such as "this pool fills in 40 days". The first needs a privileged check per host on every probe, the second needs smartmontools on each host, the third needs a history of samples that zfsctl does not keep.
+
+## Settings
+
+The last section of the sidebar edits the parts of `config.toml` that no other screen has: the **theme** and the **auto-refresh** interval (`[ui]`), the **Dashboard thresholds** (`[dashboard]`: memory, swap, CPU, scrub age, and the pools the Dashboard does not judge by scrub age) and the **cloud caps** (`[cloud.caps]`, one row per rclone remote). Up and Down select a row and `Enter` opens a small form for it; a blank field goes back to the default, and a dimmed `(default)` marks every setting you have not set. A pair such as *Memory warn / crit* needs both numbers (or both empty), with warn above 0 and below crit. A save asks for the usual two-key confirmation, then writes only that key into `config.toml`: comments, hosts and every other section stay as they were, and the old file is kept as `config.toml.bak`. The change shows at once, with no restart: the theme repaints, the Dashboard uses the new thresholds and the Cloud screen the new caps. The email and report settings stay on the Alerts screen, and the hook command is edited in the file.
+
+```screen
+┌zfsctl────────────────┐┌Settings — config.toml────────────────────────────────────────────────────┐
+│Dashboard             ││Display                                                                   │
+│Hosts                 ││  Theme                    solarized-dark                                 │
+│Pools                 ││  Auto-refresh             10 s   (default)                               │
+│Datasets              ││                                                                          │
+│Snapshots             ││Dashboard thresholds                                                      │
+│Disks                 ││  Memory warn / crit       90 / 97 %   (default)                          │
+│Shares                ││  Swap warn / crit         50 / 90 %   (default)                          │
+│Boot Envs             ││  CPU warn                 95 %   (default)                               │
+│Jobs                  ││  Scrub warn / crit        35 / 90 days   (default)                       │
+│Cloud                 ││  Scrub ignore             (none)   (default)                             │
+│Alerts                ││                                                                          │
+│Settings              ││Cloud caps                                                                │
+│                      ││  Cap of b2                10G                                            │
+│                      ││  Cap of t1                (no cap)   (default)                           │
+│                      ││  Cap of zfsctl-aws        (no cap)   (default)                           │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+└──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Edit  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+```
 
 ## Moving around
 
