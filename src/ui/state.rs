@@ -2447,9 +2447,10 @@ impl App {
         let Ok(config) = crate::config::Config::load(&self.config_path) else { return };
         match crate::ui::theme::resolve(config.ui.theme.as_deref(), env) {
             Ok(resolved) => {
+                let changed = self.theme.name != resolved.theme.name;
                 self.theme = resolved.theme.bright();
-                // The "Saved" note of the save that got us here stays unless there is something more to say.
-                if resolved.note.is_some() {
+                // The "Saved" note of the save that got us here stays unless the theme changed and has something to say.
+                if changed && resolved.note.is_some() {
                     self.status_message = resolved.note;
                 }
             }

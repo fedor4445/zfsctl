@@ -8525,3 +8525,14 @@ fn the_settings_load_on_entering_the_section_and_again_after_leaving_it() {
     app.ensure_settings_loaded();
     assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "CPU warn").unwrap().value, "70 %");
 }
+
+#[test]
+fn the_theme_note_is_repeated_only_when_the_theme_changes() {
+    let (mut app, _dir) = settings_app("[ui]\ntheme = \"solarized-dark\"\n");
+    let no_truecolor = crate::ui::theme::ThemeEnv { no_color: None, colorterm: None };
+    app.apply_saved_settings_with(&no_truecolor);
+    assert!(app.status_message.is_some(), "the theme changed from the default: say what the terminal lacks");
+    app.status_message = Some("Saved to config.toml".to_string());
+    app.apply_saved_settings_with(&no_truecolor);
+    assert_eq!(app.status_message.as_deref(), Some("Saved to config.toml"), "the same theme again: keep the saved note");
+}
