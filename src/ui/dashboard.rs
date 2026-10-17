@@ -273,6 +273,8 @@ pub struct Item {
     pub subject: String,
     pub what: String,
     pub goto: Section,
+    /// The host or job to select there: a host name for Hosts, a job id for Jobs.
+    pub target: Option<String>,
 }
 
 /// The whole screen, ready to draw.
@@ -338,9 +340,15 @@ fn jobs_line(view: &JobsView) -> (Line, Vec<String>) {
     (Line { level, text: parts.join("  ") }, failed_jobs)
 }
 
+/// A remote's name, with its host in front unless it is the hub's, so two hosts' `b2` read differently.
+fn cloud_label(row: &cloud::Row) -> String {
+    if row.host == "local" { row.name.clone() } else { format!("{}:{}", row.host, row.name) }
+}
+
 fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs) -> Line {
     let cells = cloud::cells(row, view, inputs.cloud_sizes, inputs.cloud_caps, inputs.now);
-    let name = row.name.as_str();
+    let name = cloud_label(row);
+    let name = name.as_str();
     if row.job_ids.is_empty() {
         return Line { level: Level::Unknown, text: format!("{name} ({})  no jobs", cells[2]) };
     }
@@ -393,17 +401,17 @@ pub fn build(inputs: &Inputs) -> Dashboard {
 
     let mut attention: Vec<Item> = Vec::new();
     for row in &hosts {
-        attention.extend(host_attention(row).into_iter().map(|(level, what)| Item { level, subject: row.name.clone(), what, goto: Section::Hosts }));
+        attention.extend(host_attention(row).into_iter().map(|(level, what)| Item { level, subject: row.name.clone(), what, goto: Section::Hosts, target: Some(row.name.clone()) }));
     }
     if daemon.level == Level::Issue {
-        attention.push(Item { level: Level::Issue, subject: "daemon".to_string(), what: daemon.text.clone(), goto: Section::Jobs });
+        attention.push(Item { level: Level::Issue, subject: "daemon".to_string(), what: daemon.text.clone(), goto: Section::Jobs, target: None });
     }
     for job in inputs.jobs.jobs.iter().filter(|j| j.enabled && is_failed(inputs.jobs, j)) {
         let Some(run) = inputs.jobs.last_run(&job.id) else { continue };
         let age = age_text(now, run.finished_at.unwrap_or(run.started_at));
         let why = run.message.lines().next().unwrap_or("").trim();
         let what = if why.is_empty() { format!("failed {age}") } else { format!("failed {age}: {why}") };
-        attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs });
+        attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs, target: Some(job.id.clone()) });
     }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
@@ -411,14 +419,14 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             Some(Fill::Warn) => Level::Watch,
             _ => continue,
         };
-        attention.push(Item { level, subject: row.name.clone(), what: format!("plan {}", cloud::in_bucket(row, inputs.cloud_sizes, inputs.cloud_caps)), goto: Section::Cloud });
+        attention.push(Item { level, subject: cloud_label(row), what: format!("plan {}", cloud::in_bucket(row, inputs.cloud_sizes, inputs.cloud_caps)), goto: Section::Cloud, target: None });
     }
     if let Some(problem) = &inputs.alerts.problem {
-        attention.push(Item { level: Level::Watch, subject: "alerts".to_string(), what: problem.clone(), goto: Section::Alerts });
+        attention.push(Item { level: Level::Watch, subject: "alerts".to_string(), what: problem.clone(), goto: Section::Alerts, target: None });
     }
     attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
 
-    let checking = inputs.hosts.iter().any(|h| h.probe.is_none());
+    let checking = inputs.hosts.iter().any(|h| h.assessment.level == HealthLevel::Probing);
     let verdict = {
         let issues = attention.iter().filter(|i| i.level == Level::Issue).count();
         let watches = attention.iter().filter(|i| i.level == Level::Watch).count();

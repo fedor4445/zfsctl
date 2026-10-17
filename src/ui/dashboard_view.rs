@@ -107,9 +107,15 @@ fn attention_lines(d: &Dashboard, selected: Option<usize>, width: usize, cap: us
         ]);
         lines.push(if selected == Some(index) { line.patch_style(theme.selected_row()) } else { line });
     }
-    let hidden = d.attention.len().saturating_sub(cap);
-    if hidden > 0 {
-        lines.push(Line::styled(format!("     +{hidden} more"), theme.dim()));
+    let below = d.attention.len().saturating_sub(start + cap);
+    let text = match (start, below) {
+        (0, 0) => None,
+        (0, b) => Some(format!("     +{b} more")),
+        (a, 0) => Some(format!("     ↑ {a} above")),
+        (a, b) => Some(format!("     ↑ {a} above, +{b} more")),
+    };
+    if let Some(text) = text {
+        lines.push(Line::styled(text, theme.dim()));
     }
     lines
 }

@@ -864,6 +864,10 @@ impl App {
 
     /// The health of host `index` from its latest probe and from the Jobs data (an enabled job of this host
     /// whose latest run failed).
+    fn host_probe_gave_up(&self, name: &str) -> bool {
+        self.host_probes.get(name).filter(|s| s.in_flight).and_then(|s| s.started_at).is_some_and(|t| t.elapsed() > HOST_PROBE_GIVE_UP)
+    }
+
     pub fn host_assessment(&self, index: usize) -> crate::zfs::host_health::Assessment {
         let Some(name) = self.hosts.get(index) else { return crate::zfs::host_health::assess(None, false) };
         // A probe that has been running far longer than any healthy one (a hung ssh, a wedged pool) must not
@@ -913,12 +917,16 @@ impl App {
             .hosts
             .iter()
             .enumerate()
-            .map(|(i, name)| crate::ui::dashboard::HostInput {
-                name,
-                assessment: self.host_assessment(i),
-                probe: self.host_probes.get(name).and_then(|s| s.last.as_ref()),
-                resources: self.host_resources(name),
-                utc_offset_secs: self.host_probes.get(name).and_then(|s| s.utc_offset_secs),
+            .map(|(i, name)| {
+                // A probe that gave up waiting leaves no old reading on screen as if it were current.
+                let gave_up = self.host_probe_gave_up(name);
+                crate::ui::dashboard::HostInput {
+                    name,
+                    assessment: self.host_assessment(i),
+                    probe: self.host_probes.get(name).and_then(|s| s.last.as_ref()).filter(|_| !gave_up),
+                    resources: self.host_resources(name).filter(|_| !gave_up),
+                    utc_offset_secs: self.host_probes.get(name).and_then(|s| s.utc_offset_secs),
+                }
             })
             .collect();
         crate::ui::dashboard::build(&crate::ui::dashboard::Inputs {
@@ -2032,10 +2040,25 @@ impl App {
             }
             // Navigation only: the Dashboard shows, the section that owns the problem fixes.
             KeyCode::Enter if self.current_section() == Section::Dashboard => {
-                let target = self.dashboard_table.selected().and_then(|i| self.dashboard().attention.get(i).map(|item| item.goto));
-                if let Some(position) = target.and_then(|goto| self.sections.iter().position(|s| *s == goto)) {
-                    self.selected_section = position;
-                    self.pane_focus = PaneFocus::Middle;
+                let item = self.dashboard_table.selected().and_then(|i| self.dashboard().attention.get(i).cloned());
+                if let Some(item) = item {
+                    if let Some(position) = self.sections.iter().position(|s| *s == item.goto) {
+                        self.selected_section = position;
+                        self.pane_focus = PaneFocus::Middle;
+                    }
+                    match (item.goto, item.target) {
+                        (Section::Hosts, Some(name)) => {
+                            if let Some(index) = self.hosts.iter().position(|h| *h == name) {
+                                self.selected_host = index;
+                            }
+                        }
+                        (Section::Jobs, Some(id)) => {
+                            if let Some(index) = self.jobs_view.jobs.iter().position(|j| j.id == id) {
+                                self.jobs_table.select(Some(index));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             KeyCode::Down if self.current_section() == Section::Cloud => {

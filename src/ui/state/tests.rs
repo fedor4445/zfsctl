@@ -8246,6 +8246,30 @@ fn up_down_and_enter_on_the_dashboard_only_navigate() {
 }
 
 #[test]
+fn enter_on_a_host_line_selects_that_host_in_hosts() {
+    let (mut app, _dir) = dash_app();
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(95)), ..HostProbeState::default() });
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.subject == "fbsd16").expect("fbsd16 has a line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Hosts);
+    assert_eq!(app.selected_host, 1, "the host the line is about, not the one that was selected before");
+}
+
+#[test]
+fn a_probe_that_gave_up_leaves_no_old_readings_on_the_dashboard() {
+    let (mut app, _dir) = dash_app();
+    app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(85)), resources: vec![reading(10), reading(10)], utc_offset_secs: Some(0), in_flight: true, started_at: Some(std::time::Instant::now() - Duration::from_secs(120)), ..HostProbeState::default() });
+    let d = app.dashboard();
+    assert_eq!(d.hosts[0].space.level, crate::ui::dashboard::Level::Unknown);
+    assert_eq!(d.hosts[0].memory.level, crate::ui::dashboard::Level::Unknown);
+    assert!(d.hosts[0].state.text.starts_with("no answer"), "{:?}", d.hosts[0].state);
+}
+
+#[test]
 fn enter_with_nothing_selected_and_keys_that_change_things_do_nothing_on_the_dashboard() {
     let (mut app, _dir) = dash_app();
     app.handle_key(KeyCode::Enter);
