@@ -141,8 +141,8 @@ fn errors_cell(pools: &[PoolProbe]) -> Cell {
 /// How one pool's last scrub reads: its level, the cell text, how many days (to pick the worst) and the attention note.
 fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, now: DateTime<Utc>) -> (Level, String, i64, Option<String>) {
     match pool.scan {
-        Some(ScanSummary::Running { percent }) => return (Level::Fine, percent.map_or_else(|| "running".to_string(), |p| format!("running {p}%")), -1, None),
-        Some(ScanSummary::Paused) => return (Level::Fine, "paused".to_string(), -1, None),
+        Some(ScanSummary::Running { percent, .. }) => return (Level::Fine, percent.map_or_else(|| "running".to_string(), |p| format!("running {p}%")), -1, None),
+        Some(ScanSummary::Paused { .. }) => return (Level::Fine, "paused".to_string(), -1, None),
         _ => {}
     }
     let Some(when) = pool.last_scrub.as_deref() else {
@@ -300,6 +300,8 @@ pub struct Inputs<'a> {
     pub cloud_caps: &'a Caps,
     pub alerts: &'a AlertsView,
     pub thresholds: &'a Thresholds,
+    /// What the daemon's daily `smartctl` check found (`smart.json`).
+    pub smart: &'a crate::daemon::smart_check::SmartFile,
     pub now: DateTime<Utc>,
 }
 
@@ -391,6 +393,32 @@ fn plural(n: usize, word: &str) -> String {
 
 /// Builds the whole Dashboard. The verdict says `checking...` until every host has answered its first probe, so a screen that
 /// does not know yet never claims everything is quiet.
+/// A check older than this, with the daemon running, is a broken check rather than good health.
+const SMART_STALE_DAYS: i64 = 3;
+
+/// One line per reachable host whose disks have a problem, and one line when the daily check itself has stopped
+/// happening. Healthy hosts, hosts that never answered and unreachable hosts (the Hosts row says so) add nothing.
+fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
+    use crate::smart::Severity;
+    let mut items = Vec::new();
+    for found in crate::daemon::smart_check::problems(inputs.smart) {
+        let Some(host) = inputs.hosts.iter().find(|h| h.name == found.host) else { continue };
+        if !matches!(host.probe, Some(HostProbe::Reached { .. })) {
+            continue;
+        }
+        let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
+        let what = format!("{}   (checked {})", found.disks, age_text(inputs.now, found.checked_at));
+        items.push(Item { level, subject: found.host.clone(), what, goto: Section::Disks, target: Some(found.host) });
+    }
+    if let (true, Some(last)) = (daemon_running && !inputs.smart.hosts.is_empty(), inputs.smart.newest_check()) {
+        let days = (inputs.now - last).num_days();
+        if days >= SMART_STALE_DAYS {
+            items.push(Item { level: Level::Watch, subject: "disks".to_string(), what: format!("disk check is {days} days old"), goto: Section::Jobs, target: None });
+        }
+    }
+    items
+}
+
 pub fn build(inputs: &Inputs) -> Dashboard {
     let now = inputs.now;
     let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
@@ -403,6 +431,18 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     for row in &hosts {
         attention.extend(host_attention(row).into_iter().map(|(level, what)| Item { level, subject: row.name.clone(), what, goto: Section::Hosts, target: Some(row.name.clone()) }));
     }
+    for host in &inputs.hosts {
+        let Some(HostProbe::Reached { pools, .. }) = host.probe else { continue };
+        for pool in pools {
+            let what = match &pool.scan {
+                Some(ScanSummary::Running { percent, resilver: true }) => percent.map_or_else(|| format!("{} resilvering", pool.name), |p| format!("{} resilvering {p}%", pool.name)),
+                Some(ScanSummary::Paused { resilver: true }) => format!("{} resilver paused", pool.name),
+                _ => continue,
+            };
+            attention.push(Item { level: Level::Watch, subject: host.name.to_string(), what, goto: Section::Pools, target: Some(host.name.to_string()) });
+        }
+    }
+    attention.extend(smart_items(inputs, daemon.level == Level::Fine));
     if daemon.level == Level::Issue {
         attention.push(Item { level: Level::Issue, subject: "daemon".to_string(), what: daemon.text.clone(), goto: Section::Jobs, target: None });
     }
@@ -590,7 +630,7 @@ mod tests {
 
     #[test]
     fn a_running_or_paused_scan_is_not_judged_and_no_utc_offset_means_unknown_age() {
-        let running = PoolProbe { scan: Some(ScanSummary::Running { percent: Some(34) }), ..pool("tank", 10, 0, None) };
+        let running = PoolProbe { scan: Some(ScanSummary::Running { percent: Some(34), resilver: false }), ..pool("tank", 10, 0, None) };
         let r = default_row(&reached(vec![running]), Some(&reading(10, 0, 0, 100))).scrub;
         assert_eq!((r.level, r.text.as_str()), (Level::Fine, "running 34%"));
         let probe = reached(vec![pool("tank", 10, 0, Some(when(50)))]);
@@ -736,15 +776,16 @@ mod tests {
         sizes: HashMap<String, crate::ui::cloud::Size>,
         caps: crate::ui::cloud::Caps,
         thresholds: Thresholds,
+        smart: crate::daemon::smart_check::SmartFile,
     }
 
     impl Fixture {
         fn new(view: JobsView) -> Fixture {
-            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default() }
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default() }
         }
 
         fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, now: now() })
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, now: now() })
         }
     }
 
@@ -819,6 +860,108 @@ mod tests {
         let d = fx.build(vec![]);
         assert_eq!(d.cloud[0].level, Level::Issue);
         assert_eq!(d.attention.iter().filter(|i| i.subject == "m1" || i.subject == "b2").count(), 1, "{:?}", d.attention);
+    }
+
+    #[test]
+    fn a_resilvering_pool_is_one_yellow_line_and_a_scrub_or_a_finished_resilver_is_none() {
+        let fx = Fixture::new(view(vec![], &[], beat(1)));
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let items = |scan: ScanSummary, health: PoolHealth| {
+            let probe = reached(vec![PoolProbe { scan: Some(scan), health, last_scrub: Some(when(1)), ..pool("tank", 10, 0, Some(when(1))) }]);
+            fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("resilver")).collect::<Vec<_>>()
+        };
+        let one = items(ScanSummary::Running { percent: Some(42), resilver: true }, PoolHealth::Online);
+        assert_eq!(one.len(), 1, "{one:?}");
+        assert_eq!((one[0].level, one[0].subject.as_str(), one[0].what.as_str(), one[0].goto, one[0].target.as_deref()), (Level::Watch, "h", "tank resilvering 42%", Section::Pools, Some("h")));
+        assert_eq!(items(ScanSummary::Running { percent: None, resilver: true }, PoolHealth::Online)[0].what, "tank resilvering");
+        assert_eq!(items(ScanSummary::Paused { resilver: true }, PoolHealth::Online)[0].what, "tank resilver paused");
+        assert!(items(ScanSummary::Running { percent: Some(42), resilver: false }, PoolHealth::Online).is_empty(), "a scrub gets no line");
+        assert!(items(ScanSummary::Finished { when: when(1), errors: 0 }, PoolHealth::Online).is_empty(), "a finished resilver gets no line");
+        let degraded = items(ScanSummary::Running { percent: Some(5), resilver: true }, PoolHealth::Degraded);
+        assert_eq!(degraded.len(), 1, "the resilver line shows once next to the pool's own health line");
+    }
+
+    fn smart_file(entries: &[(&str, i64, &[(&str, crate::smart::Severity, &str)])]) -> crate::daemon::smart_check::SmartFile {
+        use crate::daemon::smart_check::{HostResult, SmartFile};
+        let mut file = SmartFile::default();
+        for (host, hours_ago, disks) in entries {
+            let mut list: Vec<crate::smart::Disk> = Vec::new();
+            for (dev, severity, text) in *disks {
+                match list.iter_mut().find(|d| d.dev == *dev) {
+                    Some(d) => d.problems.push(crate::smart::Problem { severity: *severity, text: (*text).to_string() }),
+                    None => list.push(crate::smart::Disk { dev: (*dev).to_string(), problems: vec![crate::smart::Problem { severity: *severity, text: (*text).to_string() }] }),
+                }
+            }
+            file.hosts.insert((*host).to_string(), HostResult { checked_at: now() - Duration::hours(*hours_ago), disks: list, error: None });
+        }
+        file
+    }
+
+    fn disk_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Disks || i.subject == "disks").collect()
+    }
+
+    #[test]
+    fn a_host_with_a_failing_disk_is_one_red_line_and_a_healthy_host_none() {
+        use crate::smart::Severity::{Issue, Watch};
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.smart = smart_file(&[("h", 3, &[("ada0", Issue, "SMART health FAILED")]), ("ok", 3, &[])]);
+        let items = disk_items(&fx, &["h", "ok"]);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!((items[0].level, items[0].subject.as_str(), items[0].goto, items[0].target.as_deref()), (Level::Issue, "h", Section::Disks, Some("h")));
+        assert!(items[0].what.contains("ada0 SMART health FAILED") && items[0].what.contains("checked 3h ago"), "{}", items[0].what);
+        fx.smart = smart_file(&[("h", 3, &[("ada0", Watch, "reallocated sectors 8"), ("ada4", Watch, "SSD wear 87%")])]);
+        let items = disk_items(&fx, &["h"]);
+        assert_eq!((items.len(), items[0].level), (1, Level::Watch), "several disks share one yellow line");
+        assert!(items[0].what.contains("ada0 reallocated sectors 8; ada4 SSD wear 87%"), "{}", items[0].what);
+    }
+
+    #[test]
+    fn the_last_good_result_stays_after_a_failed_check_with_its_real_age() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.smart = smart_file(&[("h", 30, &[("ada0", crate::smart::Severity::Watch, "pending sectors 2")])]);
+        fx.smart.hosts.get_mut("h").unwrap().error = Some("no route".into());
+        let items = disk_items(&fx, &["h"]);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].what.contains("checked 1d ago"), "{}", items[0].what);
+    }
+
+    #[test]
+    fn a_check_older_than_three_days_while_the_daemon_runs_adds_one_yellow_line() {
+        let problem: &[(&str, crate::smart::Severity, &str)] = &[("ada0", crate::smart::Severity::Watch, "pending sectors 2")];
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.smart = smart_file(&[("h", 24 * 4, problem)]);
+        let stale: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "disks").collect();
+        assert_eq!(stale.len(), 1);
+        assert_eq!((stale[0].level, stale[0].what.as_str()), (Level::Watch, "disk check is 4 days old"));
+        fx.smart.ran_at = Some(now() - Duration::hours(1));
+        let still: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "disks").collect();
+        assert_eq!(still.len(), 1, "the daemon ran an hour ago but no host has answered for 4 days: the check is broken, not fine");
+        fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::hours(24);
+        assert!(disk_items(&fx, &["h"]).iter().all(|i| i.subject != "disks"), "a host answered yesterday");
+        fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::days(4);
+        fx.smart.ran_at = Some(now() - Duration::days(5));
+        let mut off = Fixture::new(view(vec![], &[], None));
+        off.smart = fx.smart.clone();
+        assert!(disk_items(&off, &["h"]).iter().all(|i| i.subject != "disks"), "the daemon is not running: its own line says so, and this one would only repeat it");
+    }
+
+    #[test]
+    fn an_unreachable_host_and_a_missing_file_show_no_disk_line_and_the_verdict_counts_the_rest() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        assert!(disk_items(&fx, &["h"]).is_empty(), "no smart.json");
+        fx.smart = smart_file(&[("h", 3, &[("ada0", crate::smart::Severity::Issue, "SMART health FAILED")])]);
+        let down = HostProbe::Disconnected;
+        let input = HostInput { name: "h", assessment: assess(Some(&down), false), probe: Some(&down), resources: None, utc_offset_secs: Some(0) };
+        let d = fx.build(vec![input]);
+        assert!(d.attention.iter().all(|i| i.goto != Section::Disks), "the Hosts row already says it is unreachable: {:?}", d.attention);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("h", &probe, &r, &b)]);
+        assert!(d.verdict.text.contains("1 issue"), "{}", d.verdict.text);
     }
 
     #[test]

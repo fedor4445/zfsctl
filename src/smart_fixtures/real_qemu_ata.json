@@ -1,0 +1,207 @@
+{
+ "json_format_version": [
+  1,
+  0
+ ],
+ "device": {
+  "name": "/dev/ada0",
+  "info_name": "/dev/ada0",
+  "type": "atacam",
+  "protocol": "ATA"
+ },
+ "model_name": "QEMU HARDDISK",
+ "user_capacity": {
+  "blocks": 94371840,
+  "bytes": 48318382080
+ },
+ "logical_block_size": 512,
+ "physical_block_size": 512,
+ "trim": {
+  "supported": true,
+  "deterministic": true,
+  "zeroed": false
+ },
+ "in_smartctl_database": false,
+ "ata_version": {
+  "string": "ATA/ATAPI-7, ATA/ATAPI-5 published, ANSI NCITS 340-2000",
+  "major_value": 240,
+  "minor_value": 22
+ },
+ "smart_support": {
+  "available": true,
+  "enabled": true
+ },
+ "smart_status": {
+  "passed": true
+ },
+ "ata_smart_attributes": {
+  "revision": 1,
+  "table": [
+   {
+    "id": 1,
+    "name": "Raw_Read_Error_Rate",
+    "value": 100,
+    "worst": 100,
+    "thresh": 6,
+    "when_failed": "",
+    "flags": {
+     "value": 3,
+     "string": "PO---- ",
+     "prefailure": true,
+     "updated_online": true,
+     "performance": false,
+     "error_rate": false,
+     "event_count": false,
+     "auto_keep": false
+    },
+    "raw": {
+     "value": 0,
+     "string": "0"
+    }
+   },
+   {
+    "id": 3,
+    "name": "Spin_Up_Time",
+    "value": 100,
+    "worst": 100,
+    "thresh": 0,
+    "when_failed": "",
+    "flags": {
+     "value": 3,
+     "string": "PO---- ",
+     "prefailure": true,
+     "updated_online": true,
+     "performance": false,
+     "error_rate": false,
+     "event_count": false,
+     "auto_keep": false
+    },
+    "raw": {
+     "value": 16,
+     "string": "16"
+    }
+   },
+   {
+    "id": 4,
+    "name": "Start_Stop_Count",
+    "value": 100,
+    "worst": 100,
+    "thresh": 20,
+    "when_failed": "",
+    "flags": {
+     "value": 2,
+     "string": "-O---- ",
+     "prefailure": false,
+     "updated_online": true,
+     "performance": false,
+     "error_rate": false,
+     "event_count": false,
+     "auto_keep": false
+    },
+    "raw": {
+     "value": 100,
+     "string": "100"
+    }
+   },
+   {
+    "id": 5,
+    "name": "Reallocated_Sector_Ct",
+    "value": 100,
+    "worst": 100,
+    "thresh": 36,
+    "when_failed": "",
+    "flags": {
+     "value": 3,
+     "string": "PO---- ",
+     "prefailure": true,
+     "updated_online": true,
+     "performance": false,
+     "error_rate": false,
+     "event_count": false,
+     "auto_keep": false
+    },
+    "raw": {
+     "value": 0,
+     "string": "0"
+    }
+   },
+   {
+    "id": 9,
+    "name": "Power_On_Hours",
+    "value": 100,
+    "worst": 100,
+    "thresh": 0,
+    "when_failed": "",
+    "flags": {
+     "value": 3,
+     "string": "PO---- ",
+     "prefailure": true,
+     "updated_online": true,
+     "performance": false,
+     "error_rate": false,
+     "event_count": false,
+     "auto_keep": false
+    },
+    "raw": {
+     "value": 1,
+     "string": "1"
+    }
+   },
+   {
+    "id": 12,
+    "name": "Power_Cycle_Count",
+    "value": 100,
+    "worst": 100,
+    "thresh": 0,
+    "when_failed": "",
+    "flags": {
+     "value": 3,
+     "string": "PO---- ",
+     "prefailure": true,
+     "updated_online": true,
+     "performance": false,
+     "error_rate": false,
+     "event_count": false,
+     "auto_keep": false
+    },
+    "raw": {
+     "value": 0,
+     "string": "0"
+    }
+   },
+   {
+    "id": 190,
+    "name": "Airflow_Temperature_Cel",
+    "value": 69,
+    "worst": 69,
+    "thresh": 50,
+    "when_failed": "",
+    "flags": {
+     "value": 3,
+     "string": "PO---- ",
+     "prefailure": true,
+     "updated_online": true,
+     "performance": false,
+     "error_rate": false,
+     "event_count": false,
+     "auto_keep": false
+    },
+    "raw": {
+     "value": 522125343,
+     "string": "31 (Min/Max 31/31)"
+    }
+   }
+  ]
+ },
+ "spare_available": {
+  "current_percent": 100,
+  "threshold_percent": 36
+ },
+ "power_on_time": {
+  "hours": 1
+ },
+ "power_cycle_count": 0,
+ "temperature": {
+  "current": 31
+ }
+}

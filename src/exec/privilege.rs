@@ -13,10 +13,11 @@ pub enum Feature {
     Samba,
     Restic,
     Rclone,
+    Smart,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 8] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone];
+    pub const ALL: [Feature; 9] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -28,6 +29,7 @@ impl Feature {
             Feature::Samba => "samba",
             Feature::Restic => "restic",
             Feature::Rclone => "rclone",
+            Feature::Smart => "smart",
         }
     }
 
@@ -40,7 +42,8 @@ impl Feature {
 pub enum Kind {
     /// Runs through `sudo -n`. With `pinned` empty any arguments are allowed; otherwise only exactly these
     /// argument lists, and `probe` is one extra argument that sudo must refuse (`check-host` uses it to
-    /// notice an entry that is broader than pinned).
+    /// notice an entry that is broader than pinned). An empty `probe` means the pinned forms end in a wildcard on
+    /// purpose, so `check-host` does not try to widen them.
     Privileged { pinned: &'static [&'static [&'static str]], probe: &'static str },
     /// Runs without sudo; never in the sudoers line.
     Unprivileged,
@@ -55,6 +58,7 @@ pub struct Entry {
 }
 
 const ANY: Kind = Kind::Privileged { pinned: &[], probe: "" };
+const SMARTCTL: Kind = Kind::Privileged { pinned: &[&["--scan", "-j"], &["-j", "-H", "-A", "-i", "/dev/*"]], probe: "" };
 const SMB_CONF: Kind = Kind::Privileged { pinned: &[&[crate::zfs::smb::CONF_PATH]], probe: "/etc/master.passwd" };
 
 pub const ENTRIES: &[Entry] = &[
@@ -72,6 +76,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "restic", features: &[Feature::Restic], kind: ANY },
     Entry { name: "rclone", features: &[Feature::Rclone], kind: ANY },
     Entry { name: "readlink", features: &[Feature::Restic], kind: ANY },
+    Entry { name: "smartctl", features: &[Feature::Smart], kind: SMARTCTL },
     Entry { name: "getent", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "uname", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "date", features: &[Feature::Core], kind: Kind::Unprivileged },
@@ -120,7 +125,7 @@ pub fn require_registered(name: &str, privileged: bool) -> Result<()> {
     }
 }
 
-/// The features a run covers: all but `restic`, plus `with`, minus `without`.
+/// The features a run covers: all but `restic`, `rclone` and `smart`, plus `with`, minus `without`.
 pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     let parse = |name: &String| {
         Feature::parse(name).ok_or_else(|| {
@@ -133,7 +138,7 @@ pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     if let Some(f) = added.iter().find(|f| removed.contains(f)) {
         return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
     }
-    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone) || added.contains(f)) && !removed.contains(f)).collect())
+    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
 fn serving(entry: &Entry, features: &[Feature]) -> bool {
@@ -237,7 +242,9 @@ mod tests {
     fn pinned_entries_carry_a_probe_and_no_pinned_argument_needs_sudoers_escaping() {
         for entry in ENTRIES {
             if let Kind::Privileged { pinned, probe } = &entry.kind {
-                assert_eq!(pinned.is_empty(), probe.is_empty(), "{}: a pinned entry needs a probe, an open one has none", entry.name);
+                // A pin that ends in a wildcard (smartctl's /dev/*) has no probe: widening it would only be allowed.
+                let wildcard = pinned.iter().any(|args| args.iter().any(|a| a.contains('*')));
+                assert_eq!(pinned.is_empty() || wildcard, probe.is_empty(), "{}: a pinned entry needs a probe (unless it ends in a wildcard), an open one has none", entry.name);
                 for args in *pinned {
                     for arg in *args {
                         assert!(!arg.contains([' ', ',', '\\', ':', '=', '#']), "{}: {arg:?} would need escaping in sudoers", entry.name);
@@ -345,7 +352,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone`";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/*";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);

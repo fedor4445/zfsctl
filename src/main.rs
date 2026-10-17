@@ -2,6 +2,7 @@
 mod book_check;
 mod preflight;
 mod rclone;
+mod smart;
 mod restic;
 mod acl;
 mod config;

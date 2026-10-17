@@ -60,7 +60,7 @@ fbsd ALL=(root) NOPASSWD: \
 
 Check the output, then on the host save it as `/usr/local/etc/sudoers.d/zfsctl` (owner `root`, mode `0440`) and test it first with `visudo -c -f /usr/local/etc/sudoers.d/zfsctl`, as the comment says.
 
-Options: `--with restic` adds the restic entry (needed only on hosts that run backup jobs), and `--without samba` (or `acl`, `disks`, `bootenvs`, `shares`) leaves a feature out. If a program cannot be found on the host, or is found in an unexpected place (such as a home directory), zfsctl says so and prints nothing rather than a risky line. The exit code is 0 on success, 1 for a problem such as a missing program, and 2 if the host cannot be reached.
+Options: `--with restic` adds the restic entry (needed only on hosts that run backup jobs), `--with smart` adds `smartctl` for the daily disk health check (the host needs `smartmontools`), and `--without samba` (or `acl`, `disks`, `bootenvs`, `shares`) leaves a feature out. If a program cannot be found on the host, or is found in an unexpected place (such as a home directory), zfsctl says so and prints nothing rather than a risky line. The exit code is 0 on success, 1 for a problem such as a missing program, and 2 if the host cannot be reached.
 
 Then check that the host really allows exactly what is needed:
 
@@ -101,6 +101,7 @@ Twelve programs may run as root through sudo; each is there for a feature, so a 
 | `cat` and `tee`, each pinned to `/usr/local/etc/smb4.conf` | reading and writing the managed Samba block |
 | `restic` | backup jobs (add with `--with restic`) |
 | `readlink` | backup jobs with a path (comes with `--with restic`) |
+| `smartctl` | the daily disk health check (add with `--with smart`) |
 
 Eight small read-only programs run over ssh **without** sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount`. They need no entry, unless the ssh key on that host is locked to a single forced command, in which case that command must allow them.
 

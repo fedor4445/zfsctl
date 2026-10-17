@@ -8536,3 +8536,46 @@ fn the_theme_note_is_repeated_only_when_the_theme_changes() {
     app.apply_saved_settings_with(&no_truecolor);
     assert_eq!(app.status_message.as_deref(), Some("Saved to config.toml"), "the same theme again: keep the saved note");
 }
+
+#[test]
+fn enter_on_a_resilver_line_selects_that_host_in_pools() {
+    let (mut app, _dir) = dash_app();
+    let mut probe = reached_probe(10);
+    if let crate::zfs::host_health::HostProbe::Reached { pools, .. } = &mut probe {
+        pools[0].scan = Some(crate::zfs::host_health::ScanSummary::Running { percent: Some(42), resilver: true });
+    }
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(probe), ..HostProbeState::default() });
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.what.contains("resilvering 42%")).expect("a resilver line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Pools);
+    assert_eq!(app.selected_host, 1);
+}
+
+#[test]
+fn the_dashboard_reads_smart_json_and_enter_on_its_line_selects_that_host_in_disks() {
+    let (mut app, dir) = dash_app();
+    let mut file = crate::daemon::smart_check::SmartFile::default();
+    file.hosts.insert(
+        "fbsd16".into(),
+        crate::daemon::smart_check::HostResult {
+            checked_at: chrono::Utc::now() - chrono::Duration::hours(2),
+            disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "reallocated sectors 8".into() }] }],
+            error: None,
+        },
+    );
+    file.save(&dir.path().join("smart.json")).unwrap();
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
+    app.refresh_dashboard();
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.what.contains("da1 reallocated sectors 8")).expect("a disk line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Disks);
+    assert_eq!(app.selected_host, 1);
+}

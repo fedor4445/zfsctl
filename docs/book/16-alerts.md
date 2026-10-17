@@ -14,7 +14,7 @@ When the daemon is running and at least one way of reaching you is configured, i
 - **An escalation** if it gets worse (yellow to red).
 - **A reminder** every six hours while it stays bad.
 - **A recovery** when the host is fine again on two checks.
-- **A daily report** at 07:00: a table of all hosts, what needs attention, and what happened since yesterday (jobs run and failed, scrubs finished, alerts and recoveries). It is sent even on a perfect day, so that silence means the sender is broken, not the hosts.
+- **A daily report** at 07:00: a table of all hosts, what needs attention, and what happened since yesterday (jobs run and failed, scrubs finished, alerts and recoveries). The disks that have a SMART problem are listed under what needs attention (see chapter 6); there are no separate alerts for them. It is sent even on a perfect day, so that silence means the sender is broken, not the hosts.
 
 Failed scheduled jobs also reach you, through the same channels.
 
