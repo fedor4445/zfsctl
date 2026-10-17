@@ -284,8 +284,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     match section {
-        // Replaced by the real screen in the next task.
-        Section::Dashboard => f.render_widget(Paragraph::new(app.dashboard().verdict.text), area),
+        Section::Dashboard => crate::ui::dashboard_view::draw_dashboard(f, app, area),
         Section::Hosts => draw_hosts(f, app, area),
         Section::Snapshots => draw_snapshots(f, app, area),
         Section::Disks => draw_disks(f, app, area),

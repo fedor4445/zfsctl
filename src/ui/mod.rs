@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod cloud;
 pub mod dashboard;
+pub mod dashboard_view;
 pub mod hints;
 pub mod jobs;
 pub mod layout;

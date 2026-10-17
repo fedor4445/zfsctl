@@ -157,7 +157,7 @@ fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, no
         Level::Fine
     };
     let note = (level != Level::Fine).then(|| format!("{} last scrubbed {days} days ago", pool.name));
-    (level, format!("{days} d ago"), days, note)
+    (level, if days == 0 { "today".to_string() } else { format!("{days} d ago") }, days, note)
 }
 
 fn scrub_cell(pools: &[PoolProbe], utc_offset_secs: Option<i32>, t: &Thresholds, now: DateTime<Utc>) -> Cell {
@@ -538,6 +538,7 @@ mod tests {
         let at = |days: i64| default_row(&reached(vec![pool("tank", 10, 0, Some(when(days)))]), Some(&reading(10, 0, 0, 100))).scrub;
         assert_eq!((at(34).level, at(35).level, at(89).level, at(90).level), (Level::Fine, Level::Watch, Level::Watch, Level::Issue));
         assert_eq!(at(8).text, "8 d ago");
+        assert_eq!(at(0).text, "today");
         assert!(at(40).note.as_deref().unwrap().contains("tank") && at(40).note.as_deref().unwrap().contains("40"), "{:?}", at(40).note);
     }
 
@@ -656,10 +657,6 @@ mod tests {
     use crate::ui::jobs::JobsView;
     use crate::ui::state::Section;
     use std::collections::HashMap;
-
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
-    }
 
     fn mirror(id: &str, remote: &str) -> Job {
         Job::test_mirror(id, "tank/data", "hourly", remote)
