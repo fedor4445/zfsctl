@@ -154,7 +154,11 @@ impl Theme {
     /// it works everywhere, and the accent is reserved for the focused pane.
     #[allow(clippy::unused_self)] // kept a method so every theme style is read the same way
     pub fn selected_row(&self) -> Style {
-        Style::new().add_modifier(Modifier::REVERSED)
+        // On a painted canvas inverse video is a block of light text-colour; a blue bar (the accent) with the text colour reads better.
+        match (self.canvas.and_then(|c| c.fg), self.accent.fg) {
+            (Some(text), Some(bar)) => Style::new().fg(text).bg(bar).add_modifier(Modifier::BOLD),
+            _ => Style::new().add_modifier(Modifier::REVERSED),
+        }
     }
 
     pub fn pane_border(&self, focused: bool) -> Style {
@@ -506,8 +510,11 @@ mod tests {
     }
 
     #[test]
-    fn selected_row_is_reverse_video_in_every_theme() {
-        for t in [Theme::ansi(), Theme::mono(), Theme::from_name(ThemeName::SolarizedDark, true)] {
+    fn selected_row_is_reverse_video_unless_the_theme_paints_a_canvas() {
+        let dark = Theme::from_name(ThemeName::SolarizedDark, true);
+        assert_eq!(dark.selected_row().bg, dark.accent.fg, "a blue bar on the teal canvas");
+        assert!(dark.selected_row().fg.is_some());
+        for t in [Theme::ansi(), Theme::mono(), Theme::from_name(ThemeName::SolarizedLight, true)] {
             assert_eq!(t.selected_row(), Style::new().add_modifier(Modifier::REVERSED));
         }
     }
