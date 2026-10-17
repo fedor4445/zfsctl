@@ -142,16 +142,16 @@ The job takes a snapshot of the dataset named `<prefix>-<UTC timestamp>` (for ex
 Press `R` in Jobs:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 12894)───────────────────────────────────────────────────┐
 │Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5d ago │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
-│Disks                 ││                                                                                    │
-│Shares               ┌New replication job─────────────────────────────────────────────┐                     │
-│Boot Envs            │Sends the newest <prefix>-<timestamp> snapshot, incrementally.  │                     │
-│Jobs                 │The destination is received unmounted and rolled back only if   │                     │
-│Alerts               │Force is y.                                                     │                     │
+│Disks                ┌New replication job─────────────────────────────────────────────┐                     │
+│Shares               │Sends the newest <prefix>-<timestamp> snapshot, incrementally.  │                     │
+│Boot Envs            │The destination is received unmounted and rolled back only if   │                     │
+│Jobs                 │Force is y. Keep on target destroys this job's older snapshots  │                     │
+│Alerts               │on a host destination after each run.                           │                     │
 │                     │                                                                │                     │
 │                     │> Source host: local                                            │                     │
 │                     │  Source dataset:                                               │                     │
@@ -161,14 +161,14 @@ Press `R` in Jobs:
 │                     │  Force: roll back the destination (y/n): n                     │─────────────────────┐
 │                     │  Schedule: 30 * * * *                                          │                     │
 │                     │  Catch up (y/n): y                                             │                     │
+│                     │  Keep on target (blank = keep everything):                     │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Sat 2026-10-10 17:30, Sat 2026-10-10 18:30, Sat 2026-10-10│                     │
-│                     │19:30                                                           │                     │
+│                     │Next: Fri 2026-10-16 22:30, Fri 2026-10-16 23:30, Sat 2026-10-17│                     │
+│                     │00:30                                                           │                     │
+│                     │                                                                │                     │
 │                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
@@ -181,9 +181,12 @@ It copies the newest snapshot with a given prefix (typically the ones a snapshot
 - **Nothing is destroyed on the source.** The destination is received unmounted, and is only touched if you set **Force** to `y`; without it, a destination that has been written to fails the run with ZFS's own message.
 - **Interrupted transfers resume** (to another host). After a network drop, a cancel or a restart, the next run continues where it stopped. A transfer to files cannot resume; it starts again.
 - **Progress and cancel.** A running replication shows `sent 12.3 GiB of 40.0 GiB (30%) 85.0 MiB/s eta 5m 00s` in the panel; `c` cancels it within a second or two. A cancelled run is not a failure and sends no alert.
+- **Keep on target** (optional, hosts only). The last field of the form, `dest_keep` in `jobs.toml`: keep only the newest N of this job's own snapshots on the destination and destroy the older ones after each run. Blank keeps everything, which is the default. When you save, zfsctl looks at the destination and, if the setting would destroy snapshots right now, shows how many, the oldest and the newest of them, and how many stay; it needs a second keystroke. Only snapshots named exactly `<prefix>-<timestamp>` are ever destroyed, never ones you made by hand, and a snapshot with a hold or a clone is left alone. A destination that is a file is never pruned.
 - Two enabled jobs cannot write to the same destination, and `Space` refuses to enable one that would clash.
 
 > **Safety:** **Force** adds `zfs receive -F`: it rolls the destination back to the last snapshot both sides share, **destroying destination snapshots and changes newer than that**. Leave it at `n` unless you know the destination has stray changes you want to discard.
+
+> **Safety:** **Keep on target** permanently destroys snapshots on the destination, including ones the source no longer has. Choose N large enough to go back as far as you may need, and read the confirmation before you accept it.
 
 > **Safety:** replication is not a backup of mistakes: a deleted file is deleted on the copy at the next run. Keep several snapshots on the destination (a snapshot job there) if you want to go back.
 

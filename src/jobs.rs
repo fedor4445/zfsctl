@@ -57,6 +57,10 @@ pub struct Job {
     /// For `dest_host = "file"`: an absolute directory on the hub.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dest_dir: Option<String>,
+    /// A host-target replication job's retention on the destination: keep this many of the job's own
+    /// snapshots there. Absent keeps everything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_keep: Option<u32>,
     /// Receive with `-F`, rolling the destination back to the incremental base.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
@@ -314,6 +318,12 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
     if !known_hosts.iter().any(|h| h == &job.host) {
         return Err(format!("host '{}' is not in config.toml", job.host));
     }
+    if job.dest_keep == Some(0) {
+        return Err("dest_keep must be at least 1".to_string());
+    }
+    if job.dest_keep.is_some() && !(job.kind == KIND_REPLICATE && job.dest_host.as_deref() != Some(DEST_FILE)) {
+        return Err("dest_keep is only for a replication job to a host, not to a file".to_string());
+    }
     if job.kind == KIND_REPLICATE {
         match job.dest_host.as_deref() {
             Some(DEST_FILE) => {}
@@ -390,15 +400,15 @@ pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<Strin
 #[cfg(test)]
 impl Job {
     pub fn test_snapshot(id: &str, dataset: &str, prefix: &str, keep: u32) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_backup(id: &str, dataset: &str, prefix: &str, repository: &str, password_file: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, source: None, snapshot: None, path: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, source: None, snapshot: None, path: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_replicate(id: &str, dataset: &str, prefix: &str, dest_host: &str, dest_dataset: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 }
 
@@ -461,6 +471,7 @@ mod tests {
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
+            dest_keep: None,
             force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         }
     }
@@ -754,7 +765,7 @@ mod tests {
         save(&path, &[repl.clone(), snap.clone()]).unwrap();
         assert_eq!(load(&path).unwrap(), vec![repl, snap.clone()]);
         let text = toml::to_string_pretty(&JobFile { jobs: vec![snap, scrub("x")] }).unwrap();
-        for absent in ["dest_host", "dest_dataset", "dest_dir", "force"] {
+        for absent in ["dest_host", "dest_dataset", "dest_dir", "dest_keep", "force"] {
             assert!(!text.contains(absent), "{absent} leaked:\n{text}");
         }
     }
@@ -780,6 +791,39 @@ mod tests {
         assert!(bad(&|j| j.dest_dir = Some("/mnt/x".into())).contains("dest_dir"));
         assert!(bad(&|j| { j.host = "fbsd16".into(); j.dest_dataset = j.dataset.clone(); }).contains("same dataset"), "source and destination must differ");
         assert!(bad(&|j| j.schedule = "x".into()).contains("schedule"));
+    }
+
+    #[test]
+    fn dest_keep_of_zero_is_rejected() {
+        let mut j = Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data");
+        j.dest_keep = Some(0);
+        assert!(resolve(&j, &hosts()).unwrap_err().contains("dest_keep"));
+    }
+
+    #[test]
+    fn dest_keep_is_accepted_on_a_host_target_replication_and_nowhere_else() {
+        let mut j = Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data");
+        j.dest_keep = Some(3);
+        assert!(resolve(&j, &hosts()).is_ok());
+        let mut file = Job::test_replicate("r", "tank/data", "hourly", "file", "x");
+        file.dest_dataset = None;
+        file.dest_dir = Some("/var/streams".into());
+        file.dest_keep = Some(3);
+        assert!(resolve(&file, &["local".to_string()]).unwrap_err().contains("dest_keep"));
+        for mut other in [Job::test_snapshot("s", "tank/data", "hourly", 3), scrub("x"), Job::test_backup("b", "tank/data", "hourly", "/r", "/p")] {
+            other.dest_keep = Some(3);
+            assert!(resolve(&other, &hosts()).unwrap_err().contains("dest_keep"), "{}", other.kind);
+        }
+    }
+
+    #[test]
+    fn dest_keep_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        let mut repl = Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data");
+        repl.dest_keep = Some(5);
+        save(&path, &[repl.clone()]).unwrap();
+        assert_eq!(load(&path).unwrap(), vec![repl]);
     }
 
     #[test]

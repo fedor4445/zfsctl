@@ -1,13 +1,13 @@
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 12894)───────────────────────────────────────────────────┐
 │Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5d ago │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
-│Disks                 ││                                                                                    │
-│Shares               ┌New replication job─────────────────────────────────────────────┐                     │
-│Boot Envs            │Sends the newest <prefix>-<timestamp> snapshot, incrementally.  │                     │
-│Jobs                 │The destination is received unmounted and rolled back only if   │                     │
-│Alerts               │Force is y.                                                     │                     │
+│Disks                ┌New replication job─────────────────────────────────────────────┐                     │
+│Shares               │Sends the newest <prefix>-<timestamp> snapshot, incrementally.  │                     │
+│Boot Envs            │The destination is received unmounted and rolled back only if   │                     │
+│Jobs                 │Force is y. Keep on target destroys this job's older snapshots  │                     │
+│Alerts               │on a host destination after each run.                           │                     │
 │                     │                                                                │                     │
 │                     │> Source host: local                                            │                     │
 │                     │  Source dataset:                                               │                     │
@@ -17,14 +17,14 @@
 │                     │  Force: roll back the destination (y/n): n                     │─────────────────────┐
 │                     │  Schedule: 30 * * * *                                          │                     │
 │                     │  Catch up (y/n): y                                             │                     │
+│                     │  Keep on target (blank = keep everything):                     │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Sat 2026-10-10 17:30, Sat 2026-10-10 18:30, Sat 2026-10-10│                     │
-│                     │19:30                                                           │                     │
+│                     │Next: Fri 2026-10-16 22:30, Fri 2026-10-16 23:30, Sat 2026-10-17│                     │
+│                     │00:30                                                           │                     │
+│                     │                                                                │                     │
 │                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │

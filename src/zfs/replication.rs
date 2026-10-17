@@ -88,6 +88,34 @@ pub fn plan(source: &[SnapInfo], dest: &[SnapInfo], prefix: &str) -> Plan {
     Plan::Send { new: newest.name.clone(), base }
 }
 
+/// What the next run would destroy if it first adds one more own snapshot to the destination (a send
+/// does): the preview a form shows, so a save that makes the next run destroy an existing snapshot is
+/// never described as harmless. It is an upper bound: a run that finds nothing to send destroys less.
+pub fn prune_preview(listing: &[SnapInfo], prefix: &str, keep: u32) -> Vec<String> {
+    match keep {
+        0 => Vec::new(),
+        1 => {
+            let mut own: Vec<&SnapInfo> = listing.iter().filter(|s| is_own(prefix, &s.name)).collect();
+            own.sort_by(|a, b| (a.createtxg, &a.name).cmp(&(b.createtxg, &b.name)));
+            own.iter().map(|s| s.name.clone()).collect()
+        }
+        n => prune_selection(listing, prefix, n - 1),
+    }
+}
+
+/// The names (after `@`) of the job's own snapshots on the destination to destroy, oldest first: all
+/// but the newest `keep` by `createtxg`. Anything not exactly `<prefix>-<timestamp>` is never listed,
+/// and `keep` of 0 selects nothing rather than everything.
+pub fn prune_selection(listing: &[SnapInfo], prefix: &str, keep: u32) -> Vec<String> {
+    if keep == 0 {
+        return Vec::new();
+    }
+    let mut own: Vec<&SnapInfo> = listing.iter().filter(|s| is_own(prefix, &s.name)).collect();
+    own.sort_by(|a, b| (a.createtxg, &a.name).cmp(&(b.createtxg, &b.name)));
+    let excess = own.len().saturating_sub(keep as usize);
+    own[..excess].iter().map(|s| s.name.clone()).collect()
+}
+
 /// `zfs send [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size.
 pub fn send_args(dataset: &str, new: &str, base: Option<&str>, dry: bool) -> Vec<String> {
     let mut args = vec!["send".to_string()];
@@ -132,6 +160,53 @@ mod tests {
 
     fn info(name: &str, guid: u64, txg: u64) -> SnapInfo {
         SnapInfo { name: name.to_string(), guid, createtxg: txg }
+    }
+
+    const T1: &str = "hourly-20261006T100000Z";
+    const T2: &str = "hourly-20261006T110000Z";
+    const T3: &str = "hourly-20261006T120000Z";
+
+    #[test]
+    fn only_exact_prefix_timestamp_names_are_selected() {
+        let listing = vec![
+            info("hourly-latest", 1, 1),
+            info("hourly-20261006T1000Z", 2, 2),
+            info("hourlyx-20261006T090000Z", 3, 3),
+            info("manual", 4, 4),
+            info("hourly-20261006T090000Z-keep", 5, 5),
+            info(T1, 6, 10),
+            info(T2, 7, 20),
+            info(T3, 8, 30),
+        ];
+        assert_eq!(prune_selection(&listing, "hourly", 1), vec![T1, T2]);
+    }
+
+    #[test]
+    fn order_is_by_createtxg_not_name() {
+        let listing = vec![info(T1, 1, 30), info(T2, 2, 20), info(T3, 3, 10)];
+        assert_eq!(prune_selection(&listing, "hourly", 1), vec![T3, T2]);
+    }
+
+    #[test]
+    fn the_newest_is_kept_and_nothing_is_selected_when_there_are_n_or_fewer() {
+        let three = vec![info(T1, 1, 10), info(T2, 2, 20), info(T3, 3, 30)];
+        assert!(prune_selection(&three[..1], "hourly", 1).is_empty());
+        assert!(prune_selection(&three, "hourly", 3).is_empty());
+        assert_eq!(prune_selection(&three, "hourly", 2), vec![T1]);
+    }
+
+    #[test]
+    fn the_preview_counts_the_snapshot_the_next_send_adds() {
+        let three = vec![info(T1, 1, 10), info(T2, 2, 20), info(T3, 3, 30)];
+        assert_eq!(prune_preview(&three, "hourly", 3), vec![T1], "three exist, keep 3: the run adds a fourth, so the oldest goes");
+        assert_eq!(prune_preview(&three, "hourly", 1), vec![T1, T2, T3], "keep 1: the new one is the only survivor");
+        assert!(prune_preview(&three, "hourly", 4).is_empty());
+        assert!(prune_preview(&three, "hourly", 0).is_empty());
+    }
+
+    #[test]
+    fn keep_zero_selects_nothing() {
+        assert!(prune_selection(&[info(T1, 1, 10), info(T2, 2, 20)], "hourly", 0).is_empty());
     }
 
     #[test]

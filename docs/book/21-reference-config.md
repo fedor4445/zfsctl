@@ -65,6 +65,7 @@ The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TU
 | `dest_host` | text | none | replicate: the receiving host |
 | `dest_dataset` | text | none | replicate: the receiving dataset |
 | `dest_dir` | text | none | replicate to files: the directory on the hub that receives the stream |
+| `dest_keep` | number | absent | replicate to a host: keep this many of the job's own snapshots on the destination, destroy the older ones after each run (absent keeps all; minimum 1) |
 | `force` | yes/no | `false` | replicate: roll the destination back to the base (`receive -F`) |
 | `repository` | text | none | backup: restic's `-r` value; no credentials in it |
 | `password_file` | text | none | backup: absolute path of the password file on the job's host |
