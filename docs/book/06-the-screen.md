@@ -63,31 +63,31 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 13:59                                                                                  ▲ 4 to watch
+┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 14:08                                                                                                 ▲ 4 to watch
 │Dashboard             │
-│Hosts                 │ NEEDS ATTENTION ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Hosts                 │ NEEDS ATTENTION ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ▲ watch fbsd16    zroot never scrubbed
 │Datasets              │   ▲ watch fbsd16t1  zroot never scrubbed
 │Snapshots             │   ▲ watch fbsd16t2  zroot never scrubbed
 │Disks                 │   ▲ watch local     zroot last scrub 41 d ago
 │Shares                │
-│Boot Envs             │ HOSTS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Jobs                  │  Host      State                        Pools  Space             Memory             CPU              Load  Scrub     Errors
-│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ━━━━╌╌╌╌╌╌ 42%    ━╌╌╌╌╌╌╌╌╌ 14%     ╌╌╌╌╌╌╌╌╌╌ 0%    0.64  41 d ago  0
-│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ━━━━━━╌╌╌╌ 61%    ━━╌╌╌╌╌╌╌╌ 18%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.35  never     0
-│                      │  fbsd16t1  ▲ zroot never scrubbed       2      ━━━━━╌╌╌╌╌ 52%    ━━━━╌╌╌╌╌╌ 44%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.47  never     0
-│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ━━━━━━━╌╌╌ 73%    ━━━━╌╌╌╌╌╌ 44%     ╌╌╌╌╌╌╌╌╌╌ 2%    0.35  never     0
+│Boot Envs             │ HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Jobs                  │  Host      State                        Pools  Capacity             Memory             CPU              Load  Scrub     Errors
+│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ━━━━╌╌╌╌╌╌ 42%       ━╌╌╌╌╌╌╌╌╌ 14%     ╌╌╌╌╌╌╌╌╌╌ 0%    0.24  41 d ago  0
+│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ━━━━━━╌╌╌╌ 61%       ━━╌╌╌╌╌╌╌╌ 18%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.24  never     0
+│                      │  fbsd16t1  ▲ zroot never scrubbed       2      ━━━━━╌╌╌╌╌ 52%       ━━━━╌╌╌╌╌╌ 44%     ╌╌╌╌╌╌╌╌╌╌ 2%    0.55  never     0
+│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ━━━━━━━╌╌╌ 73%       ━━━━━╌╌╌╌╌ 45%     ╌╌╌╌╌╌╌╌╌╌ 2%    0.30  never     0
 │                      │
-│                      │ DAEMON AND JOBS ────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 15572), heartbeat 1s ago
-│                      │   ● jobs    scrub 1/1 ok
+│                      │ DAEMON AND JOBS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ● daemon  running (pid 16127), heartbeat 1s ago
+│                      │   ● jobs    scrub 1/1 ok  cloud 2/2 ok
 │                      │
-│                      │ CLOUD ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ○ b2 (b2)  no jobs
+│                      │ CLOUD ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ● b2 (b2)  1 job  last never
 │                      │   ○ t1 (sftp)  no jobs
-│                      │   ○ zfsctl-aws (s3)  no jobs
+│                      │   ● zfsctl-aws (s3)  1 job  last never
 │                      │
-│                      │ ALERTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │ ALERTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │   ● monitor on · last alert fbsd16 zroot 86% full (6d ago) · report 2026-10-17
 └──────────────────────┘
 ↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
@@ -95,13 +95,13 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 
 - **The header** names the screen and gives the verdict on the right: `all quiet`, or how many things need attention (`1 issue, 1 to watch`). Until every host has answered its first probe it says `checking...`, because a screen that does not know yet must not say all is quiet.
 - **Needs attention** lists the problems, worst first. `✖ issue` (red) is wrong now; `▲ watch` (yellow) is an early warning from today's numbers, such as a pool at 85% or a memory reading that is too high. When all is well it says `nothing needs attention`. It shows six lines and counts the rest (`+3 more`).
-- **Hosts** has a row per host. State is the same verdict as in the Hosts section, raised (never lowered) by the readings that only the Dashboard has. **Space** is the fullest pool. **Memory** is memory in use *not counting* free pages, inactive pages and the ZFS cache: on FreeBSD the cache fills most of the RAM by design and gives it back when asked, so counting it would make the screen alarm all the time. **CPU** is the busy share between the last two probes (about 30 seconds). **Load** is the one-minute average and is never coloured. **Scrub** is how long since the last finished scrub (a resilver does not count). **Errors** is the read, write and checksum errors ZFS has counted.
+- **Hosts** has a row per host. State is the same verdict as in the Hosts section, raised (never lowered) by the readings that only the Dashboard has. **Capacity** is how full the fullest pool. **Memory** is memory in use *not counting* free pages, inactive pages and the ZFS cache: on FreeBSD the cache fills most of the RAM by design and gives it back when asked, so counting it would make the screen alarm all the time. **CPU** is the busy share between the last two probes (about 30 seconds). **Load** is the one-minute average and is never coloured. **Scrub** is how long since the last finished scrub (a resilver does not count). **Errors** is the read, write and checksum errors ZFS has counted.
 - **Daemon and jobs, Cloud, Alerts** are one line each: whether the daemon runs and how fresh its heartbeat is, how many jobs of each kind are fine (`backup 0/1 FAILED`), each cloud remote with its last result (a bucket's size appears only if you measured it in Cloud), and whether the alert monitor can send mail.
 - **Unknown is never green.** A host that has not answered, or a reading that cannot be taken yet (the first CPU figure needs two probes), is shown as `?` in dim text. Every status has a glyph and a word as well as a colour, so the `mono` theme reads the same.
 
 | Reading | Yellow (watch) | Red (issue) |
 |---|---|---|
-| Space | 80% | 90% |
+| Capacity | 80% | 90% |
 | Memory in use | 90% | 97% |
 | Swap in use | 50% | 90% |
 | CPU, last two probes | 95% | never |

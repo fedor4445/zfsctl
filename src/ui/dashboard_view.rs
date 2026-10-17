@@ -136,7 +136,7 @@ impl Col {
     fn title(self) -> &'static str {
         match self {
             Col::Pools => "Pools",
-            Col::Space => "Space",
+            Col::Space => "Capacity",
             Col::Memory => "Memory",
             Col::Cpu => "CPU",
             Col::Load => "Load",
