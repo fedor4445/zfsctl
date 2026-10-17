@@ -8507,3 +8507,21 @@ fn help_has_a_settings_section() {
     let text = help_text();
     assert!(text.contains("\nSettings\n") && text.contains("edit the setting in a form"), "{text}");
 }
+
+#[test]
+fn the_settings_load_on_entering_the_section_and_again_after_leaving_it() {
+    let (mut app, dir) = alerts_app("");
+    let go = |app: &mut App, s: Section| app.selected_section = app.sections.iter().position(|x| *x == s).unwrap();
+    go(&mut app, Section::Settings);
+    assert!(!app.settings_view.loaded);
+    app.ensure_settings_loaded();
+    assert!(app.settings_view.loaded);
+    std::fs::write(dir.path().join("config.toml"), "[dashboard]\ncpu_warn = 70\n").unwrap();
+    app.ensure_settings_loaded();
+    assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "CPU warn").unwrap().value, "95 %", "no reload while it stays open");
+    go(&mut app, Section::Alerts);
+    app.ensure_settings_loaded();
+    go(&mut app, Section::Settings);
+    app.ensure_settings_loaded();
+    assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "CPU warn").unwrap().value, "70 %");
+}

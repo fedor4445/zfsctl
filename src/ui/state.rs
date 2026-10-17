@@ -1074,6 +1074,16 @@ impl App {
         }
     }
 
+    /// Loads the Settings rows when the section has just been opened (by any key), and forgets them once it is left,
+    /// so the next visit reads the file again. Called on every pass of the event loop, before drawing.
+    pub fn ensure_settings_loaded(&mut self) {
+        if self.current_section() != Section::Settings {
+            self.settings_view.loaded = false;
+        } else if !self.settings_view.loaded {
+            self.refresh_settings();
+        }
+    }
+
     /// The edit form for the selected setting, or `None` when nothing is selected.
     fn settings_form(&self) -> Option<Modal> {
         let row = self.settings_table.selected().and_then(|i| self.settings_view.rows.get(i))?;

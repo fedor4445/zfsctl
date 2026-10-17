@@ -247,6 +247,7 @@ fn event_loop(
         app.refresh_jobs_if_stale(Instant::now());
         app.refresh_cloud_if_stale(Instant::now());
         app.refresh_alerts_if_stale(Instant::now());
+        app.ensure_settings_loaded();
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
