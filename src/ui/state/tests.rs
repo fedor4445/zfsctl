@@ -519,7 +519,7 @@ fn handle_key_navigates_sections_and_wraps() {
     app.handle_key(KeyCode::BackTab);
     assert_eq!(app.current_section(), Section::Dashboard);
     app.handle_key(KeyCode::BackTab);
-    assert_eq!(app.current_section(), Section::Alerts);
+    assert_eq!(app.current_section(), Section::Settings);
 }
 
 #[test]
@@ -1782,7 +1782,7 @@ fn backtab_cycles_sections_backward() {
     app.handle_key(KeyCode::BackTab);
     assert_eq!(app.current_section(), Section::Dashboard, "Hosts is the second section now");
     app.handle_key(KeyCode::BackTab);
-    assert_eq!(app.current_section(), Section::Alerts, "must wrap backward from the first section to the last");
+    assert_eq!(app.current_section(), Section::Settings, "must wrap backward from the first section to the last");
 }
 
 #[test]
@@ -4010,12 +4010,13 @@ fn alerts_app(config: &str) -> (App, tempfile::TempDir) {
 }
 
 #[test]
-fn alerts_is_the_last_sidebar_section_after_jobs_and_cloud() {
+fn alerts_comes_after_jobs_and_cloud_and_settings_is_last() {
     let app = App::new(vec!["local".to_string()]);
     assert_eq!(&app.sections[..2], [Section::Dashboard, Section::Hosts], "the Dashboard comes first, then Hosts");
-    assert_eq!(app.sections.last(), Some(&Section::Alerts));
-    assert_eq!(app.sections[app.sections.len() - 2], Section::Cloud);
-    assert_eq!(app.sections[app.sections.len() - 3], Section::Jobs);
+    assert_eq!(app.sections.last(), Some(&Section::Settings));
+    assert_eq!(app.sections[app.sections.len() - 2], Section::Alerts);
+    assert_eq!(app.sections[app.sections.len() - 3], Section::Cloud);
+    assert_eq!(app.sections[app.sections.len() - 4], Section::Jobs);
 }
 
 #[test]
@@ -5079,9 +5080,9 @@ fn scrub_job(id: &str) -> crate::jobs::Job {
 }
 
 #[test]
-fn tab_cycles_through_jobs_cloud_and_alerts_and_wraps_to_hosts() {
+fn tab_cycles_through_jobs_cloud_alerts_and_settings_and_wraps_to_the_dashboard() {
     let mut app = App::new(vec!["local".to_string()]);
-    assert_eq!(app.sections.last(), Some(&Section::Alerts));
+    assert_eq!(app.sections.last(), Some(&Section::Settings));
     app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_section(), Section::Jobs);
@@ -5090,9 +5091,11 @@ fn tab_cycles_through_jobs_cloud_and_alerts_and_wraps_to_hosts() {
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_section(), Section::Alerts);
     app.handle_key(KeyCode::Tab);
+    assert_eq!(app.current_section(), Section::Settings);
+    app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_section(), Section::Dashboard, "wraps to the first section, the Dashboard");
     app.handle_key(KeyCode::BackTab);
-    assert_eq!(app.current_section(), Section::Alerts);
+    assert_eq!(app.current_section(), Section::Settings);
 }
 
 #[test]
@@ -6211,7 +6214,7 @@ fn boot_envs_sits_between_shares_and_jobs() {
     let at = |s| app.sections.iter().position(|x| *x == s).unwrap();
     assert_eq!(at(Section::BootEnvs), at(Section::Shares) + 1);
     assert_eq!(at(Section::Jobs), at(Section::BootEnvs) + 1);
-    assert_eq!(app.sections.last(), Some(&Section::Alerts));
+    assert_eq!(app.sections.last(), Some(&Section::Settings));
 }
 
 #[test]
@@ -8305,4 +8308,140 @@ fn while_the_dashboard_is_open_the_jobs_alerts_and_cloud_list_keep_fresh() {
     assert!(app.pending_cloud.is_empty(), "not again within a minute");
     app.refresh_cloud_if_stale(t0 + Duration::from_secs(61));
     assert_eq!(app.pending_cloud.len(), 1);
+}
+
+fn settings_app(config: &str) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = alerts_app(config);
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Settings).unwrap();
+    app.refresh_settings();
+    (app, dir)
+}
+
+fn select_setting(app: &mut App, label: &str) {
+    let at = app.settings_view.rows.iter().position(|r| r.label == label).unwrap_or_else(|| panic!("no row {label}"));
+    app.settings_table.select(Some(at));
+}
+
+/// Enter through every field of the open form, then answer the confirmation with `y` and Enter: the save to run.
+fn submit_setting(app: &mut App) -> Option<PendingAction> {
+    let fields = match &app.modal {
+        Some(Modal::Form { fields, .. }) => fields.len(),
+        other => panic!("expected a form, got {other:?}"),
+    };
+    for _ in 0..fields {
+        assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    }
+    if !matches!(app.modal, Some(Modal::Confirm { .. })) {
+        return None;
+    }
+    app.handle_modal_key(KeyCode::Char('y'));
+    app.handle_modal_key(KeyCode::Enter)
+}
+
+fn set_setting_fields(app: &mut App, values: &[&str]) {
+    let Some(Modal::Form { fields, .. }) = &mut app.modal else { panic!("no form open") };
+    for (f, v) in fields.iter_mut().zip(values) {
+        f.value = (*v).to_string();
+    }
+}
+
+fn run_save(action: &PendingAction) {
+    action.call.run(&crate::exec::test_support::FakeRunner::new("")).unwrap();
+}
+
+#[test]
+fn the_settings_section_loads_its_rows_from_the_file() {
+    let (app, _dir) = settings_app("[dashboard]\ncpu_warn = 80\n");
+    assert_eq!(app.current_section(), Section::Settings);
+    assert!(app.settings_view.loaded);
+    assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "CPU warn").unwrap().value, "80 %");
+}
+
+#[test]
+fn enter_on_a_setting_opens_its_form_with_the_saved_values() {
+    let (mut app, _dir) = settings_app("[dashboard]\nmemory_warn = 80\n");
+    select_setting(&mut app, "Memory warn / crit");
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(form_values(&app), ["80", ""]);
+}
+
+#[test]
+fn a_valid_setting_is_confirmed_then_saved_keeping_the_rest_of_the_file() {
+    let (mut app, dir) = settings_app("# keep\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\n");
+    select_setting(&mut app, "Memory warn / crit");
+    app.handle_key(KeyCode::Enter);
+    set_setting_fields(&mut app, &["85", "95"]);
+    for _ in 0..2 {
+        app.handle_modal_key(KeyCode::Enter);
+    }
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("Memory warn / crit: 85 / 95 %"), "{prompt}");
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter alone does nothing");
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter applies");
+    assert_eq!(action.section, Section::Settings);
+    run_save(&action);
+    let saved = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(saved.starts_with("# keep\n[[hosts]]") && saved.contains("memory_warn = 85"), "{saved}");
+    assert!(dir.path().join("config.toml.bak").exists());
+    app.refresh_settings();
+    assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "Memory warn / crit").unwrap().value, "85 / 95 %");
+}
+
+#[test]
+fn an_invalid_setting_keeps_the_form_open_and_writes_nothing() {
+    let (mut app, dir) = settings_app("");
+    select_setting(&mut app, "Swap warn / crit");
+    app.handle_key(KeyCode::Enter);
+    set_setting_fields(&mut app, &["95", "60"]);
+    assert!(submit_setting(&mut app).is_none());
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "the form stays open");
+    assert!(app.status_message.clone().unwrap_or_default().contains("below critical"), "{:?}", app.status_message);
+    assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), "");
+}
+
+#[test]
+fn a_hand_edit_made_while_the_form_is_open_is_not_overwritten() {
+    let (mut app, dir) = settings_app("");
+    select_setting(&mut app, "CPU warn");
+    app.handle_key(KeyCode::Enter);
+    set_setting_fields(&mut app, &["80"]);
+    std::fs::write(dir.path().join("config.toml"), "[ui]\ntheme = \"mono\"\n").unwrap();
+    let action = submit_setting(&mut app).expect("a save");
+    run_save(&action);
+    let saved = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(saved.contains("theme = \"mono\"") && saved.contains("cpu_warn = 80"), "{saved}");
+}
+
+#[test]
+fn an_unparsable_config_shows_the_problem_and_enter_edits_nothing() {
+    let (mut app, _dir) = settings_app("[dashboard\n");
+    assert!(app.settings_view.problem.is_some() && app.settings_view.rows.is_empty());
+    app.handle_key(KeyCode::Enter);
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn refreshing_reloads_the_settings_from_the_file() {
+    let (mut app, dir) = settings_app("");
+    std::fs::write(dir.path().join("config.toml"), "[dashboard]\ncpu_warn = 70\n").unwrap();
+    app.refresh_visible(std::sync::Arc::new(crate::exec::test_support::FakeRunner::new("")));
+    assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "CPU warn").unwrap().value, "70 %");
+}
+
+#[test]
+fn a_cap_is_set_and_cleared_from_its_row() {
+    let (mut app, dir) = settings_app("[cloud.caps]\nb2 = \"10G\"\n");
+    select_setting(&mut app, "b2");
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(form_values(&app), ["10G"]);
+    set_setting_fields(&mut app, &["20G"]);
+    run_save(&submit_setting(&mut app).unwrap());
+    assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("b2 = \"20G\""));
+    app.refresh_settings();
+    select_setting(&mut app, "b2");
+    app.handle_key(KeyCode::Enter);
+    set_setting_fields(&mut app, &[""]);
+    run_save(&submit_setting(&mut app).unwrap());
+    assert!(!std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("cloud"));
 }

@@ -38,6 +38,7 @@ pub enum Section {
     Jobs,
     Cloud,
     Alerts,
+    Settings,
     Vdevs,
     PoolProperties,
     DatasetProperties,
@@ -314,6 +315,9 @@ pub struct App {
     /// `config.toml`, read and (for the alert settings) written by the Alerts screen.
     pub config_path: std::path::PathBuf,
     pub alerts_view: crate::ui::alerts::AlertsView,
+    /// The Settings section: the rest of `config.toml` that can be edited here.
+    pub settings_view: crate::ui::settings::SettingsView,
+    pub settings_table: TableState,
     last_alerts_refresh: Option<Instant>,
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
@@ -470,7 +474,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let hosts_for_addr = hosts.clone();
         App {
-            sections: vec![Section::Dashboard, Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Cloud, Section::Alerts],
+            sections: vec![Section::Dashboard, Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Cloud, Section::Alerts, Section::Settings],
             // The section after the Dashboard (Hosts): the program opens on the Dashboard through `open_dashboard`, but
             // a fresh `App` starts on Hosts, which most behaviour (and its tests) is about.
             selected_section: 1,
@@ -512,6 +516,8 @@ impl App {
             last_cloud_refresh: None,
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
+            settings_view: crate::ui::settings::SettingsView::default(),
+            settings_table: TableState::default(),
             last_alerts_refresh: None,
             done_note: None,
             alerts_preview_busy: false,
@@ -742,6 +748,7 @@ impl App {
             Section::Dashboard => self.refresh_dashboard(),
             Section::Cloud => self.refresh_cloud(),
             Section::Alerts => self.refresh_alerts(),
+            Section::Settings => self.refresh_settings(),
             _ => {}
         }
     }
@@ -1045,6 +1052,36 @@ impl App {
             focused: 0,
             description: Some("Blank means the default. Clear Email to to turn email off.".to_string()),
             kind: FormKind::NotifySettings,
+        })
+    }
+
+    /// Reloads the Settings rows from `config.toml`; the cap rows list the remotes the Cloud screen knows. The selection
+    /// stays on its row number, or is dropped when there are no rows.
+    pub fn refresh_settings(&mut self) {
+        let mut remotes: Vec<String> = self.cloud_rows().into_iter().map(|r| r.name).collect();
+        remotes.sort();
+        remotes.dedup();
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+        self.settings_view = crate::ui::settings::load(&self.config_path, &remotes, no_color);
+        let rows = self.settings_view.rows.len();
+        match self.settings_table.selected() {
+            _ if rows == 0 => self.settings_table.select(None),
+            Some(i) if i < rows => {}
+            _ => self.settings_table.select(Some(0)),
+        }
+    }
+
+    /// The edit form for the selected setting, or `None` when nothing is selected.
+    fn settings_form(&self) -> Option<Modal> {
+        let row = self.settings_table.selected().and_then(|i| self.settings_view.rows.get(i))?;
+        let pair = row.raw.len() > 1;
+        let description = if pair { "Fill both numbers, or leave both empty for the defaults." } else { "Leave empty to go back to the default." };
+        Some(Modal::Form {
+            title: row.label.clone(),
+            fields: crate::ui::settings::form_fields(row).into_iter().map(|(label, value)| FormField { label, value }).collect(),
+            focused: 0,
+            description: Some(description.to_string()),
+            kind: FormKind::Setting { setting: row.setting.clone() },
         })
     }
 
@@ -2029,6 +2066,19 @@ impl App {
             }
             KeyCode::Up if self.current_section() == Section::Alerts => {
                 self.alerts_view.scroll = self.alerts_view.scroll.saturating_sub(1);
+            }
+            KeyCode::Down if self.current_section() == Section::Settings => {
+                move_table_selection(&mut self.settings_table, self.settings_view.rows.len(), true);
+            }
+            KeyCode::Up if self.current_section() == Section::Settings => {
+                move_table_selection(&mut self.settings_table, self.settings_view.rows.len(), false);
+            }
+            KeyCode::Enter if self.current_section() == Section::Settings && self.modal.is_none() && self.picker.is_none() => {
+                if let Some(problem) = self.settings_view.problem.clone() {
+                    self.set_error(format!("{problem}: fix config.toml before editing here"));
+                } else if let Some(form) = self.settings_form() {
+                    self.modal = Some(form);
+                }
             }
             KeyCode::Down if self.current_section() == Section::Dashboard => {
                 let lines = self.dashboard().attention.len();

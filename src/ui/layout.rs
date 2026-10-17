@@ -188,6 +188,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Jobs => "Jobs",
                 Section::Cloud => "Cloud",
                 Section::Alerts => "Alerts",
+                Section::Settings => "Settings",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
                 Section::DatasetProperties => "Dataset Properties",
@@ -312,6 +313,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Jobs => draw_jobs(f, app, area),
         Section::Cloud => draw_cloud(f, app, area),
         Section::Alerts => draw_alerts(f, app, area),
+        Section::Settings => draw_settings(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl => {
             unreachable!("never in App::sections")
@@ -983,6 +985,12 @@ fn draw_cloud_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The Alerts section: the saved `[notify]` settings, the monitor's status, the recent health events.
+/// Placeholder until the real drawing lands (the next task).
+fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).border_style(app.theme.pane_border(true)).title("Settings");
+    f.render_widget(Paragraph::new(String::new()).block(block), area);
+}
+
 fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
     use crate::ui::alerts::{event_line, EVENTS_SHOWN};
     use crate::ui::jobs::DaemonState;

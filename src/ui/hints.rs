@@ -339,6 +339,13 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("C", "New cloud mirror", 3));
             v.push(h("r", "Refresh", 4));
         }
+        (Section::Settings, _) => {
+            if !app.settings_view.rows.is_empty() {
+                v.push(h("↑↓", "Move", 1));
+                v.push(h("Enter", "Edit", 1));
+            }
+            v.push(h("r", "Refresh", 4));
+        }
         (Section::Alerts, _) => {
             v.push(h("e", "Edit settings", 1));
             v.push(h("t", "Send test", 2));
