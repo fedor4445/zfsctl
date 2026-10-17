@@ -219,7 +219,7 @@ pub fn sample_host(runner: &dyn CommandRunner) -> Result<(HostSummary, PoolIo)> 
         .map(|(pool, frag)| {
             let facts = status.as_ref().and_then(|all| all.iter().find(|f| f.name == pool.name));
             let capacity = if pool.size == 0 { 0 } else { u8::try_from(u128::from(pool.allocated) * 100 / u128::from(pool.size)).unwrap_or(100).min(100) };
-            PoolProbe { name: pool.name.clone(), health: pool.health.clone(), capacity_percent: capacity, frag_percent: *frag, errors: facts.and_then(|f| f.errors), scan: facts.map(|f| f.scan.clone()) }
+            PoolProbe { name: pool.name.clone(), health: pool.health.clone(), capacity_percent: capacity, frag_percent: *frag, errors: facts.and_then(|f| f.errors), scan: facts.map(|f| f.scan.clone()), last_scrub: facts.and_then(|f| f.last_scrub.clone()) }
         })
         .collect();
     let pools: Vec<Pool> = rows.into_iter().map(|(p, _)| p).collect();

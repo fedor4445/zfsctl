@@ -275,7 +275,7 @@ mod tests {
     }
 
     fn pool(name: &str, cap: u8, scan: Option<ScanSummary>) -> PoolProbe {
-        PoolProbe { name: name.into(), health: PoolHealth::Online, capacity_percent: cap, frag_percent: Some(4), errors: Some(0), scan }
+        PoolProbe { name: name.into(), health: PoolHealth::Online, capacity_percent: cap, frag_percent: Some(4), errors: Some(0), scan, last_scrub: None }
     }
 
     fn job(id: &str, kind: &str, host: &str) -> Job {
