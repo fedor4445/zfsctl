@@ -71,6 +71,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "tee", features: &[Feature::Samba], kind: SMB_CONF },
     Entry { name: "restic", features: &[Feature::Restic], kind: ANY },
     Entry { name: "rclone", features: &[Feature::Rclone], kind: ANY },
+    Entry { name: "readlink", features: &[Feature::Restic], kind: ANY },
     Entry { name: "getent", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "uname", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "date", features: &[Feature::Core], kind: Kind::Unprivileged },
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn restic_is_privileged_only_when_selected() {
-        assert_eq!(names(privileged_for(&[Feature::Restic])), ["restic"]);
+        assert_eq!(names(privileged_for(&[Feature::Restic])), ["restic", "readlink"]);
         assert!(!names(privileged_for(&select(&[], &[]).unwrap())).contains(&"restic"));
     }
 
@@ -344,7 +345,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `rclone`";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone`";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);
