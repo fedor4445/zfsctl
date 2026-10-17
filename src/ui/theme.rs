@@ -78,6 +78,16 @@ impl Theme {
         }
     }
 
+    /// The same theme with the 16-color palette's bright variants and a lighter grey for muted text, for screens that
+    /// are read at a glance (the Dashboard). Terminals draw the plain ANSI green, yellow and dark grey dim on a dark
+    /// background. Other themes are returned unchanged: they chose their own colors.
+    pub fn bright(&self) -> Theme {
+        if self.name != ThemeName::Ansi {
+            return self.clone();
+        }
+        Theme { ok: fg(Color::LightGreen), warn: fg(Color::LightYellow), err: fg(Color::LightRed), muted: fg(Color::Gray), ..self.clone() }
+    }
+
     /// No colors at all: bold / dim / reverse and the glyphs carry everything.
     pub fn mono() -> Theme {
         let plain = Style::new();
@@ -517,5 +527,14 @@ mod tests {
         assert_eq!(text(&t.capacity_compact(150, 100)), "100%!");
         assert_eq!(text(&t.capacity_compact(0, 0)), "—");
         assert_eq!(t.capacity_compact(70, 100).spans[0].style, t.warn);
+    }
+
+    #[test]
+    fn bright_lifts_only_the_ansi_theme() {
+        assert_ne!(Theme::ansi().bright().ok, Theme::ansi().ok);
+        assert_ne!(Theme::ansi().bright().muted, Theme::ansi().muted);
+        for t in [Theme::mono(), Theme::from_name(ThemeName::SolarizedDark, true)] {
+            assert_eq!(t.bright(), t);
+        }
     }
 }

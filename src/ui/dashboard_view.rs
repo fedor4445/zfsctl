@@ -316,7 +316,7 @@ pub fn draw_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
     let selected = app.dashboard_table.selected().filter(|_| !d.attention.is_empty()).map(|s| s.min(d.attention.len() - 1));
     app.dashboard_table.select(selected);
     let now = chrono::Local::now().format("%a %d %b %H:%M").to_string();
-    let lines = screen_lines(&d, selected, usize::from(area.width), usize::from(area.height), &now, &app.theme);
+    let lines = screen_lines(&d, selected, usize::from(area.width), usize::from(area.height), &now, &app.theme.bright());
     f.render_widget(Paragraph::new(lines), area);
 }
 
