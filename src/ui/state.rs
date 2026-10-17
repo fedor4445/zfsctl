@@ -215,6 +215,9 @@ pub enum WorkerMsg {
     HostProbe(String, String, Result<()>),
     /// The latest health probe of the named host (the background probe, not the Add Host check above).
     HostHealth(String, crate::zfs::host_health::HostProbe),
+    /// The host's memory, CPU, load and swap from the probe just made (`None` when it could not be read), and its UTC
+    /// offset if this probe had to ask for it.
+    HostResources(String, Option<crate::zfs::host_resources::Resources>, Option<i32>),
     /// The outcome of a live account fetch for host index `usize`.
     Accounts(usize, Result<crate::zfs::accounts::HostAccounts>),
     /// The outcome of a live pool-name fetch for the job form's Pool picker.
@@ -245,6 +248,10 @@ pub struct HostProbeState {
     pub started_at: Option<Instant>,
     /// The detected host type, kept once seen: it cannot change while the host is up, so it is asked for once.
     pub kind: Option<crate::zfs::host_health::HostKind>,
+    /// The last two resource readings, oldest first: the CPU share is the difference between them.
+    pub resources: Vec<crate::zfs::host_resources::Resources>,
+    /// The host's offset from UTC in seconds, asked for once: it turns a scrub's local time into an age.
+    pub utc_offset_secs: Option<i32>,
 }
 
 /// The address shown for a host: the host part of its `ssh_target` as configured (no lookup), `local` for the hub.
@@ -822,11 +829,27 @@ impl App {
         state.in_flight = true;
         state.started_at = Some(Instant::now());
         let detect_kind = state.kind.is_none();
+        let want_offset = state.utc_offset_secs.is_none();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref(), detect_kind);
-            let _ = tx.send(WorkerMsg::HostHealth(name, probe));
+            let reached = matches!(probe, crate::zfs::host_health::HostProbe::Reached { .. });
+            let _ = tx.send(WorkerMsg::HostHealth(name.clone(), probe));
+            // The Dashboard's readings are TUI-only (the daemon's monitor probes without them) and only asked of a host that answered.
+            let (resources, offset) = if reached {
+                (crate::zfs::host_resources::probe_resources(runner.as_ref()), want_offset.then(|| crate::zfs::host_resources::utc_offset_secs(runner.as_ref())).flatten())
+            } else {
+                (None, None)
+            };
+            let _ = tx.send(WorkerMsg::HostResources(name, resources, offset));
         });
+    }
+
+    /// The newest resource reading of a host and the one before it, if it has them.
+    pub fn host_resources(&self, name: &str) -> Option<(&crate::zfs::host_resources::Resources, Option<&crate::zfs::host_resources::Resources>)> {
+        let all = &self.host_probes.get(name)?.resources;
+        let newest = all.last()?;
+        Some((newest, all.len().checked_sub(2).and_then(|i| all.get(i))))
     }
 
     /// The health of host `index` from its latest probe and from the Jobs data (an enabled job of this host

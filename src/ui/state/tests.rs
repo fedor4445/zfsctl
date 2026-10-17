@@ -7210,11 +7210,11 @@ fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result
     let mut app = probes_app();
     let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
     let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
-    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None });
+    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None, resources: vec![], utc_offset_secs: None });
     let a = app.host_assessment(1);
     assert_eq!(a.level, crate::zfs::host_health::Level::Warning);
     assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
-    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None });
+    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None, resources: vec![], utc_offset_secs: None });
     assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
 }
 
@@ -8101,4 +8101,80 @@ fn the_plan_caps_are_read_from_config_toml_each_time_the_remotes_are_asked() {
     std::fs::write(&app.config_path, "this is not toml [").unwrap();
     app.refresh_cloud();
     assert!(app.cloud_caps.is_empty(), "an unreadable config shows no caps rather than stale ones");
+}
+
+// ---- host resources (Dashboard) ----
+
+fn reading(free_gib: u64) -> crate::zfs::host_resources::Resources {
+    crate::zfs::host_resources::Resources { cores: 4, physical: 20 << 30, free: free_gib << 30, inactive: 0, arc: 0, load: None, cpu_ticks: None, swap: None }
+}
+
+#[test]
+fn the_last_two_readings_of_a_host_are_kept_newest_first_for_the_cpu_difference() {
+    let mut app = probes_app();
+    assert!(app.host_resources("fbsd16").is_none());
+    for free in [1, 2, 3] {
+        app.tx.send(WorkerMsg::HostResources("fbsd16".into(), Some(reading(free)), None)).unwrap();
+    }
+    app.drain_worker_messages();
+    let (now, before) = app.host_resources("fbsd16").expect("readings");
+    assert_eq!((now.free >> 30, before.map(|b| b.free >> 30)), (3, Some(2)), "only the last two are kept");
+    assert_eq!(app.host_probes["fbsd16"].resources.len(), 2);
+}
+
+#[test]
+fn the_utc_offset_is_kept_once_asked_and_a_reading_without_it_does_not_erase_it() {
+    let mut app = probes_app();
+    app.tx.send(WorkerMsg::HostResources("local".into(), Some(reading(1)), Some(7200))).unwrap();
+    app.tx.send(WorkerMsg::HostResources("local".into(), Some(reading(2)), None)).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.host_probes["local"].utc_offset_secs, Some(7200));
+}
+
+#[test]
+fn a_probe_that_did_not_reach_the_host_clears_its_readings_so_stale_numbers_do_not_stay() {
+    let mut app = probes_app();
+    app.tx.send(WorkerMsg::HostResources("fbsd16".into(), Some(reading(1)), None)).unwrap();
+    app.drain_worker_messages();
+    assert!(app.host_resources("fbsd16").is_some());
+    app.tx.send(WorkerMsg::HostHealth("fbsd16".into(), crate::zfs::host_health::HostProbe::Disconnected)).unwrap();
+    app.drain_worker_messages();
+    assert!(app.host_resources("fbsd16").is_none(), "an unreachable host has no current readings");
+    app.tx.send(WorkerMsg::HostResources("fbsd16".into(), Some(reading(1)), None)).unwrap();
+    app.tx.send(WorkerMsg::HostResources("fbsd16".into(), None, None)).unwrap();
+    app.drain_worker_messages();
+    assert!(app.host_resources("fbsd16").is_none(), "a failed reading clears too");
+    app.tx.send(WorkerMsg::HostResources("ghost".into(), Some(reading(1)), Some(0))).unwrap();
+    app.drain_worker_messages();
+    assert!(!app.host_probes.contains_key("ghost"), "a host that no longer exists is ignored");
+}
+
+#[test]
+fn a_probe_reads_the_resources_and_asks_for_the_utc_offset_only_until_it_is_known() {
+    const STATUS: &str = "  pool: scratch\n state: ONLINE\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tscratch  ONLINE  0  0  0\n";
+    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n";
+    let runner = std::sync::Arc::new(
+        FakeRunner::new("").route("zpool", "list", "scratch\t100\t10\t90\t1\tONLINE\n").route("zpool", "status", STATUS).route("sysctl", "-n", SYSCTL).route("date", "+%z", "+0200\n"),
+    );
+    let mut app = probes_app();
+    for round in 1..=2 {
+        app.start_host_probe(0, runner.clone());
+        wait_until(&mut app, |a| a.host_probes["local"].resources.len() == round);
+    }
+    assert_eq!(app.host_probes["local"].resources.len(), 2);
+    assert_eq!(app.host_probes["local"].utc_offset_secs, Some(7200));
+    let calls = runner.unprivileged_calls.lock().unwrap().clone();
+    let count = |cmd: &str| calls.iter().filter(|(c, _)| c == cmd).count();
+    assert_eq!(count("date"), 1, "the offset is read once per host, not every probe");
+    assert_eq!(count("swapinfo"), 2, "memory, CPU and swap are read on every probe");
+    assert_eq!(calls.iter().filter(|(c, a)| c == "sysctl" && a.contains(&"hw.ncpu".to_string())).count(), 2);
+}
+
+#[test]
+fn the_daemons_probe_makes_no_resource_calls() {
+    let runner = FakeRunner::new("").route("zpool", "list", "scratch\t100\t10\t90\t1\tONLINE\n");
+    let _ = crate::zfs::host_health::probe_host_guarded(&runner, false);
+    let calls = runner.unprivileged_calls.lock().unwrap().clone();
+    assert!(!calls.iter().any(|(c, _)| c == "swapinfo" || c == "date"), "{calls:?}");
+    assert!(!calls.iter().any(|(_, a)| a.contains(&"hw.ncpu".to_string())), "{calls:?}");
 }
