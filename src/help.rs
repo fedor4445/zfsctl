@@ -47,7 +47,7 @@ pub fn text() -> String {
     push_wrapped(
         &mut out,
         0,
-        &format!("zfsctl {}: manage ZFS pools, datasets, snapshots, shares, boot environments, scheduled jobs and backups, on this machine and on remote hosts.", env!("CARGO_PKG_VERSION")),
+        &format!("zfsctl {}: manage ZFS pools, datasets, snapshots, shares, boot environments, scheduled jobs, backups and cloud mirrors, on this machine and on remote hosts.", env!("CARGO_PKG_VERSION")),
     );
     out.push_str("\nUSAGE\n");
     for (form, what) in COMMANDS {

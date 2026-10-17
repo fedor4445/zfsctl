@@ -195,7 +195,7 @@ It copies the newest snapshot with a given prefix (typically the ones a snapshot
 | Key | What it does |
 |---|---|
 | `Up` / `Down` | select a job |
-| `n` / `N` / `R` / `B` | new scrub / snapshot / replication / backup job |
+| `n` / `N` / `R` / `B` / `C` | new scrub / snapshot / replication / backup / cloud mirror job |
 | `Enter` | edit the selected job (its history and enabled state are kept) |
 | `Space` | enable or disable it |
 | `c` | cancel a running replication or backup |
