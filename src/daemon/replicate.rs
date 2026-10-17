@@ -6,8 +6,9 @@ use super::progress::{self, ProgressWriter};
 use super::scrub::{event, finish, Context, Outcome, Slot};
 use super::transfer::pump;
 use crate::exec::CommandRunner;
-use crate::jobs::{effective_prefix, Job};
-use crate::zfs::replication::{list_snapshot_infos, list_snapshot_infos_or_empty, parse_send_size, plan, receive_args, resume_send_args, resume_token, send_args, Plan};
+use crate::error::AppError;
+use crate::jobs::{effective_prefix, valid_dataset, valid_snapshot_name, Job, DEST_FILE};
+use crate::zfs::replication::{list_snapshot_infos, list_snapshot_infos_or_empty, parse_send_size, plan, prune_selection, receive_args, resume_send_args, resume_token, send_args, Plan};
 use chrono::{DateTime, Utc};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -35,6 +36,64 @@ struct Chosen {
 /// send reports "signal received" whenever the receive stops first).
 pub(super) fn message_of(stderr: &str) -> String {
     stderr.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("warning:")).collect::<Vec<_>>().join(" ")
+}
+
+/// What `zfs destroy` says (as `zfs` 15 prints it) when a snapshot is held or has a clone: the
+/// snapshot is left for a later run, and that is not an error.
+const HELD: &str = "it's being held";
+const CLONED: &str = "dependent clones";
+
+struct Pruned {
+    destroyed: usize,
+    /// The job's own snapshots left on the destination (including any that could not be destroyed).
+    remaining: usize,
+    /// Refused because of a hold or a clone.
+    refused: usize,
+    failures: Vec<String>,
+}
+
+/// Destroys the job's own snapshots on the destination beyond the newest `keep`, one
+/// `zfs destroy dataset@snap` each, oldest first. `Err` means nothing was destroyed (the listing
+/// failed or could not be parsed, or a name did not validate).
+fn prune_destination(dst: &dyn CommandRunner, dest_ds: &str, prefix: &str, keep: u32) -> std::result::Result<Pruned, String> {
+    if !valid_dataset(dest_ds) {
+        return Err(format!("not a valid dataset name: {dest_ds}"));
+    }
+    let listing = list_snapshot_infos_or_empty(dst, dest_ds).map_err(|e| e.to_string())?;
+    let own = listing.iter().filter(|s| crate::daemon::snapshot::is_own(prefix, &s.name)).count();
+    let doomed = prune_selection(&listing, prefix, keep);
+    if let Some(bad) = doomed.iter().find(|n| !valid_snapshot_name(n)) {
+        return Err(format!("not a valid snapshot name: {bad}"));
+    }
+    let mut pruned = Pruned { destroyed: 0, remaining: own, refused: 0, failures: Vec::new() };
+    for name in &doomed {
+        let target = format!("{dest_ds}@{name}");
+        match crate::zfs::run_checked(dst, "zfs", &["destroy", &target], &format!("zfs destroy {target}")) {
+            Ok(_) => pruned.destroyed += 1,
+            Err(AppError::CommandFailed { stderr, .. }) if stderr.contains(HELD) || stderr.contains(CLONED) => pruned.refused += 1,
+            Err(e) => pruned.failures.push(format!("{name}: {e}")),
+        }
+    }
+    pruned.remaining -= pruned.destroyed;
+    Ok(pruned)
+}
+
+/// Runs the prune a finished (or up-to-date) run is due, and says how it went: the history suffix
+/// when it worked, the failure text when it did not.
+fn prune_after(dst: &dyn CommandRunner, job: &Job, dest_host: &str, dest_ds: &str, prefix: &str) -> std::result::Result<String, String> {
+    let Some(keep) = job.dest_keep.filter(|_| dest_host != DEST_FILE) else { return Ok(String::new()) };
+    match prune_destination(dst, dest_ds, prefix, keep) {
+        Err(e) => Err(format!("the transfer succeeded, but {dest_host} was not pruned: {e}")),
+        Ok(p) => {
+            let left = if p.refused == 0 { String::new() } else { format!(", {} held or cloned left alone", p.refused) };
+            let note = format!("; pruned {}, kept {} on {dest_host}{left}", p.destroyed, p.remaining);
+            if p.failures.is_empty() {
+                Ok(note)
+            } else {
+                Err(format!("the transfer succeeded{note}; could not destroy {}", p.failures.join("; ")))
+            }
+        }
+    }
 }
 
 pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
@@ -70,7 +129,12 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
         };
         match plan(&source, &destination, &prefix) {
             Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
-            Plan::UpToDate(name) => return skipped(format!("skipped: up to date ({name})")),
+            Plan::UpToDate(name) => {
+                return match prune_after(dst, job, &dest_host, &dest_ds, &prefix) {
+                    Ok(note) => skipped(format!("skipped: up to date ({name}){note}")),
+                    Err(e) => failed(format!("up to date ({name}); {e}")),
+                };
+            }
             Plan::Send { new, base } => Chosen {
                 send: send_args(&dataset, &new, base.as_deref(), false),
                 dry: send_args(&dataset, &new, base.as_deref(), true),
@@ -125,7 +189,15 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
         }
         return failed(message);
     }
-    finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{}, {}", chosen.label, progress::human_bytes(transfer.bytes)), slot)
+    // A resumed transfer completes an earlier slot's send; the next ordinary run prunes.
+    if chosen.resumed {
+        return finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{}, {}", chosen.label, progress::human_bytes(transfer.bytes)), slot);
+    }
+    let sent = format!("{}, {}", chosen.label, progress::human_bytes(transfer.bytes));
+    match prune_after(dst, job, &dest_host, &dest_ds, &prefix) {
+        Ok(note) => finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{sent}{note}"), slot),
+        Err(e) => failed(format!("{sent}; {e}")),
+    }
 }
 
 #[cfg(test)]
@@ -156,16 +228,24 @@ mod tests {
         size_output: String,
         send_script: String,
         recv_script: String,
+        /// Answers the second and later `zfs list` calls instead of `listing` (the prune's, after the plan's).
+        later_listing: Option<String>,
+        /// `(snapshot target, stderr)` pairs that `zfs destroy` refuses.
+        destroy_fails: Vec<(String, String)>,
         queries: Mutex<Vec<Vec<String>>>,
         commands: Mutex<Vec<Vec<String>>>,
     }
 
     impl Host {
         fn new(listing: &str) -> Self {
-            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
+            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
         }
         fn commands(&self) -> Vec<Vec<String>> {
             self.commands.lock().unwrap().clone()
+        }
+        /// Every `zfs destroy` query, as the arguments after `destroy`.
+        fn destroys(&self) -> Vec<Vec<String>> {
+            self.queries.lock().unwrap().iter().filter(|q| q[0] == "destroy").map(|q| q[1..].to_vec()).collect()
         }
     }
 
@@ -173,8 +253,17 @@ mod tests {
         fn run(&self, _cmd: &str, args: &[&str]) -> Result<CommandOutput> {
             self.queries.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
             let ok = |stdout: &str| Ok(CommandOutput { stdout: stdout.to_string(), stderr: String::new(), status: 0 });
+            let lists = self.queries.lock().unwrap().iter().filter(|q| q[0] == "list").count();
             match args.first().copied() {
+                Some("list") if lists > 1 && self.later_listing.is_some() => ok(self.later_listing.as_deref().unwrap()),
                 Some("list") => ok(&self.listing),
+                Some("destroy") => {
+                    let target = args.last().unwrap();
+                    match self.destroy_fails.iter().find(|(t, _)| t == target) {
+                        Some((_, stderr)) => Ok(CommandOutput { stdout: String::new(), stderr: stderr.clone(), status: 1 }),
+                        None => ok(""),
+                    }
+                }
                 Some("get") => ok(&self.token),
                 Some("send") => ok(&self.size_output),
                 other => panic!("unexpected query {other:?}"),
@@ -230,6 +319,132 @@ mod tests {
 
     fn job() -> Job {
         Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")
+    }
+
+    fn older(hour: u32) -> String {
+        format!("hourly-20261006T{hour:02}0000Z")
+    }
+
+    /// The destination's listing: five older own snapshots (hours 05-09, txg 1-5), the base `A`, and any extras.
+    fn target_with_history(extra: &str) -> String {
+        let older: String = (5..=9).map(|h| format!("backup/data@{}\t{}\t{}\n", older(h), 100 + h, h - 4)).collect();
+        format!("{older}backup/data@{A}\t1\t6\n{extra}")
+    }
+
+    fn keeping(n: u32) -> Job {
+        let mut j = job();
+        j.dest_keep = Some(n);
+        j
+    }
+
+    fn doomed(hours: &[u32]) -> Vec<Vec<String>> {
+        hours.iter().map(|h| vec![format!("backup/data@{}", older(*h))]).collect()
+    }
+
+    #[test]
+    fn a_dest_keep_prunes_the_destination_after_a_send_with_one_plain_destroy_per_snapshot() {
+        let rig = Rig::new();
+        let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        dst.later_listing = Some(target_with_history(&format!("backup/data@{B}\t2\t7\n")));
+        let (outcome, history) = rig.run(&src, &dst, &keeping(3));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(dst.destroys(), doomed(&[5, 6, 7, 8]), "oldest first, no -r, no --");
+        assert!(outcome.message.contains("pruned 4, kept 3 on fbsd16"), "{}", outcome.message);
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn it_also_prunes_after_an_up_to_date_skip() {
+        let rig = Rig::new();
+        let src = Host::new(&src_listing());
+        let dst = Host::new(&target_with_history(&format!("backup/data@{B}\t2\t7\n")));
+        let (outcome, _) = rig.run(&src, &dst, &keeping(3));
+        assert_eq!(outcome.result, RunResult::Skipped, "{}", outcome.message);
+        assert!(outcome.message.contains("up to date") && outcome.message.contains("pruned 4"), "{}", outcome.message);
+        assert_eq!(dst.destroys(), doomed(&[5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn nothing_is_pruned_after_a_failed_cancelled_or_resumed_transfer() {
+        let rig = Rig::new();
+        let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        dst.recv_script = "cat > /dev/null; echo boom >&2; exit 1".into();
+        let (outcome, _) = rig.run(&src, &dst, &keeping(1));
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(dst.destroys().is_empty());
+
+        let mut slow = Host::new(&src_listing());
+        slow.send_script = "sleep 60".into();
+        rig.cancel.store(true, Ordering::SeqCst);
+        let dst = Host::new(&target_with_history(""));
+        let (outcome, _) = rig.run(&slow, &dst, &keeping(1));
+        assert_eq!(outcome.result, RunResult::Cancelled);
+        assert!(dst.destroys().is_empty());
+        rig.cancel.store(false, Ordering::SeqCst);
+
+        let mut resumed = Host::new(&target_with_history(""));
+        resumed.token = "1-abc-def\n".into();
+        let (outcome, _) = rig.run(&Host::new(""), &resumed, &keeping(1));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(resumed.destroys().is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_listing_after_the_transfer_prunes_nothing_and_fails_the_run() {
+        let rig = Rig::new();
+        let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        dst.later_listing = Some("not a listing\n".into());
+        let (outcome, _) = rig.run(&src, &dst, &keeping(1));
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("transfer succeeded") && outcome.message.contains("not pruned"), "{}", outcome.message);
+        assert!(dst.destroys().is_empty());
+    }
+
+    #[test]
+    fn a_held_or_cloned_snapshot_is_left_alone_and_is_not_an_error() {
+        let rig = Rig::new();
+        let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        dst.destroy_fails = vec![
+            (format!("backup/data@{}", older(5)), "cannot destroy snapshot backup/data@x: it's being held. Run 'zfs holds -r backup/data@x' to see holders.".into()),
+            (format!("backup/data@{}", older(6)), "cannot destroy 'backup/data@y': snapshot has dependent clones\nuse '-R' to destroy the following datasets:\n".into()),
+        ];
+        let (outcome, _) = rig.run(&src, &dst, &keeping(3));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(dst.destroys().len(), 3, "all three were attempted");
+        assert!(outcome.message.contains("pruned 1") && outcome.message.contains("2 held or cloned"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn another_destroy_failure_fails_the_run_but_the_rest_are_still_pruned() {
+        let rig = Rig::new();
+        let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        dst.destroy_fails = vec![(format!("backup/data@{}", older(5)), "cannot destroy: permission denied".into())];
+        let (outcome, _) = rig.run(&src, &dst, &keeping(3));
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert_eq!(dst.destroys().len(), 3);
+        assert!(outcome.message.contains("transfer succeeded") && outcome.message.contains(&older(5)) && outcome.message.contains("permission denied"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn without_dest_keep_there_is_no_extra_listing_and_no_destroy() {
+        let rig = Rig::new();
+        let (src, dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        let (outcome, _) = rig.run(&src, &dst, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(dst.destroys().is_empty());
+        assert_eq!(dst.queries.lock().unwrap().iter().filter(|q| q[0] == "list").count(), 1);
+        assert!(!outcome.message.contains("pruned"));
+    }
+
+    #[test]
+    fn look_alike_names_on_the_target_are_never_destroyed() {
+        let rig = Rig::new();
+        let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        dst.later_listing = Some(target_with_history("backup/data@hourly-latest\t900\t1\nbackup/data@manual\t901\t1\nbackup/data@hourly-20261006T0900Z\t902\t1\n"));
+        rig.run(&src, &dst, &keeping(1));
+        let names: Vec<String> = dst.destroys().into_iter().map(|d| d[0].clone()).collect();
+        assert_eq!(names.len(), 5);
+        assert!(names.iter().all(|n| n.contains("hourly-2026") && !n.contains("0900Z")), "{names:?}");
     }
 
     #[test]
