@@ -136,8 +136,8 @@ impl Theme {
             accent: fg(blue),
             danger: fg(red).add_modifier(Modifier::BOLD),
             alt: fg(c((211, 54, 130), 125)),
-            // Solarized's own dark teal behind light grey-teal text, as Solarized terminals draw it (base02 / base1).
-            canvas: dark.then(|| Style::new().fg(c((147, 161, 161), 246)).bg(c((7, 54, 66), 23))),
+            // Solarized's own dark teal behind near-white text, as Solarized terminals draw it (base02 / base2).
+            canvas: dark.then(|| Style::new().fg(c((238, 232, 213), 255)).bg(c((7, 54, 66), 23))),
         }
     }
 

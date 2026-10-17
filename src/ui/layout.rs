@@ -84,6 +84,25 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(picker) = app.picker.clone() {
         draw_picker(f, &picker, &app.theme, area);
     }
+    paint_canvas(f, &app.theme);
+}
+
+/// Gives every cell still on the terminal's default colors the theme's canvas (Solarized dark's teal and light text), so
+/// the whole screen, popups included, has one background. Cells with their own colors keep them.
+fn paint_canvas(f: &mut Frame, theme: &Theme) {
+    let Some(canvas) = theme.canvas else { return };
+    for cell in &mut f.buffer_mut().content {
+        if cell.fg == ratatui::style::Color::Reset {
+            if let Some(fg) = canvas.fg {
+                cell.fg = fg;
+            }
+        }
+        if cell.bg == ratatui::style::Color::Reset {
+            if let Some(bg) = canvas.bg {
+                cell.bg = bg;
+            }
+        }
+    }
 }
 
 /// Builds the status line's text, style, and (while a resilver/scrub is

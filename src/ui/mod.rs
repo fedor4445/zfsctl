@@ -72,7 +72,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
 
             let host_names: Vec<String> = inventory.hosts.iter().map(|h| h.name.clone()).collect();
             let mut app = App::new(host_names);
-            app.theme = resolved.theme;
+            app.theme = resolved.theme.bright();
             app.config_path = config_path.to_path_buf();
             app.status_message = resolved.note;
             app.set_host_addresses(inventory.hosts.iter().map(|h| state::address_of(h.ssh_target.as_deref())).collect());
