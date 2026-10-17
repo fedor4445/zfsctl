@@ -104,7 +104,7 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 | Space | 80% | 90% |
 | Memory in use | 90% | 97% |
 | Swap in use | 50% | 90% |
-| CPU, over two probes | 95% | never |
+| CPU, last two probes | 95% | never |
 | Last scrub | 35 days, or never | 90 days |
 | Host does not answer | | unreachable |
 

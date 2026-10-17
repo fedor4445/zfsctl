@@ -8198,7 +8198,7 @@ fn dash_app() -> (App, tempfile::TempDir) {
 }
 
 fn reached_probe(capacity: u8) -> crate::zfs::host_health::HostProbe {
-    let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: capacity, frag_percent: None, errors: Some(0), scan: None, last_scrub: None };
+    let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: capacity, frag_percent: None, errors: Some(0), scan: Some(crate::zfs::host_health::ScanSummary::Never), last_scrub: None };
     crate::zfs::host_health::HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None }
 }
 
@@ -8220,7 +8220,7 @@ fn the_dashboard_is_built_from_the_probes_the_readings_and_the_thresholds_in_con
     assert_eq!(d.hosts.len(), 2, "every configured host has a row");
     assert_eq!(d.hosts[0].space.level, crate::ui::dashboard::Level::Watch);
     assert_eq!(d.hosts[1].state.level, crate::ui::dashboard::Level::Unknown, "fbsd16 has not answered yet");
-    assert_eq!(d.verdict.text, "checking...");
+    assert_eq!(d.verdict.text, "checking... 1 issue, 2 to watch", "known problems show while a host is still unanswered");
     assert_eq!(d.hosts[0].memory.level, crate::ui::dashboard::Level::Fine, "10 of 20 GiB free is fine with the defaults");
     std::fs::write(dir.path().join("config.toml"), "[dashboard]\nmemory_warn = 1\nmemory_crit = 2\n").unwrap();
     app.refresh_dashboard();

@@ -146,7 +146,12 @@ fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, no
         _ => {}
     }
     let Some(when) = pool.last_scrub.as_deref() else {
-        return (Level::Watch, "never".to_string(), i64::MAX, Some(format!("{} never scrubbed", pool.name)));
+        return match pool.scan {
+            None => (Level::Unknown, "?".to_string(), -1, None),
+            Some(ScanSummary::Never) => (Level::Watch, "never".to_string(), i64::MAX, Some(format!("{} never scrubbed", pool.name))),
+            // zpool status keeps only the latest scan, so a resilver or a cancelled scrub hides the date of the last good scrub.
+            Some(_) => (Level::Watch, "unknown".to_string(), i64::MAX - 1, Some(format!("{} has no finished scrub on record (the last scan was not one)", pool.name))),
+        };
     };
     let Some(days) = utc_offset_secs.and_then(|o| scrub_age_days(when, o, now)) else { return (Level::Unknown, "?".to_string(), -1, None) };
     let level = if days >= i64::from(t.scrub_days.1) {
@@ -156,7 +161,16 @@ fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, no
     } else {
         Level::Fine
     };
-    let note = (level != Level::Fine).then(|| format!("{} last scrub {days} d ago", pool.name));
+    let found = match pool.scan {
+        Some(ScanSummary::Finished { errors, .. }) if errors > 0 => Some(errors),
+        _ => None,
+    };
+    let level = if found.is_some() { level.max(Level::Watch) } else { level };
+    let note = match (found, level != Level::Fine) {
+        (Some(n), _) => Some(format!("{} last scrub found {n} error{}", pool.name, if n == 1 { "" } else { "s" })),
+        (None, true) => Some(format!("{} last scrub {days} d ago", pool.name)),
+        _ => None,
+    };
     (level, if days == 0 { "today".to_string() } else { format!("{days} d ago") }, days, note)
 }
 
@@ -215,9 +229,10 @@ pub fn host_row(input: &HostInput, t: &Thresholds, now: DateTime<Utc>) -> HostRo
         ),
         _ => (Cell::unknown(), Cell::unknown(), Cell::unknown(), Cell::unknown()),
     };
+    let reached = matches!(input.probe, Some(HostProbe::Reached { .. }));
     let (memory, cpu, load) = match input.resources {
-        Some((newest, _)) => (memory_cell(newest, t), cpu_cell(input.resources, t), load_cell(input.resources)),
-        None => (Cell::unknown(), Cell::unknown(), Cell::unknown()),
+        Some((newest, _)) if reached => (memory_cell(newest, t), cpu_cell(input.resources, t), load_cell(input.resources)),
+        _ => (Cell::unknown(), Cell::unknown(), Cell::unknown()),
     };
     let worst = [&space, &memory, &cpu, &scrub, &errors].into_iter().filter(|c| c.level >= Level::Watch).max_by_key(|c| c.level);
     let state = match worst {
@@ -403,13 +418,23 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     }
     attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
 
-    let verdict = if inputs.hosts.iter().any(|h| h.probe.is_none()) {
-        Line { level: Level::Unknown, text: "checking...".to_string() }
-    } else {
+    let checking = inputs.hosts.iter().any(|h| h.probe.is_none());
+    let verdict = {
         let issues = attention.iter().filter(|i| i.level == Level::Issue).count();
         let watches = attention.iter().filter(|i| i.level == Level::Watch).count();
         match (issues, watches) {
+            (0, 0) if checking => Line { level: Level::Unknown, text: "checking...".to_string() },
             (0, 0) => Line { level: Level::Fine, text: "all quiet".to_string() },
+            (i, w) if checking => {
+                let mut parts = Vec::new();
+                if i > 0 {
+                    parts.push(plural(i, "issue"));
+                }
+                if w > 0 {
+                    parts.push(format!("{w} to watch"));
+                }
+                Line { level: if i > 0 { Level::Issue } else { Level::Watch }, text: format!("checking... {}", parts.join(", ")) }
+            }
             (0, w) => Line { level: Level::Watch, text: format!("{w} to watch") },
             (i, 0) => Line { level: Level::Issue, text: plural(i, "issue") },
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
@@ -860,5 +885,23 @@ mod tests {
         let no_daemon = Fixture::new(JobsView::default()).build(vec![]);
         assert_eq!(no_daemon.verdict.level, Level::Issue, "nothing has ever run the daemon: that is the one problem");
         assert!(empty.hosts.is_empty() && empty.cloud.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_status_a_resilver_and_scrub_errors_are_not_misreported() {
+        let t = Thresholds::default();
+        let mut unreadable = pool("a", 10, 0, None);
+        unreadable.scan = None;
+        assert_eq!(pool_scrub(&unreadable, Some(0), &t, now()).0, Level::Unknown, "no zpool status is unknown, not 'never scrubbed'");
+        let mut resilvered = pool("b", 10, 0, None);
+        resilvered.scan = Some(ScanSummary::Finished { when: when(1), errors: 0 });
+        let (level, _, _, note) = pool_scrub(&resilvered, Some(0), &t, now());
+        assert_eq!(level, Level::Watch);
+        assert!(!note.unwrap().contains("never scrubbed"));
+        let mut bad = pool("c", 10, 0, Some(when(2)));
+        bad.scan = Some(ScanSummary::Finished { when: when(2), errors: 3 });
+        let (level, _, _, note) = pool_scrub(&bad, Some(0), &t, now());
+        assert_eq!(level, Level::Watch);
+        assert_eq!(note.unwrap(), "c last scrub found 3 errors");
     }
 }

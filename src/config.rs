@@ -67,7 +67,7 @@ pub struct Thresholds {
     pub memory: (u8, u8),
     /// Swap in use, percent: (watch, issue).
     pub swap: (u8, u8),
-    /// CPU busy, percent, over two probes in a row: watch only, never an issue.
+    /// CPU busy, percent, over the ~30 s between the last two probes: watch only, never an issue.
     pub cpu_warn: u8,
     /// Days since the last scrub: (watch, issue).
     pub scrub_days: (u32, u32),
