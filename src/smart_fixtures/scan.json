@@ -1,0 +1,16 @@
+{
+ "devices": [
+  {
+   "name": "/dev/ada0",
+   "info_name": "/dev/ada0",
+   "type": "sat",
+   "protocol": "ATA"
+  },
+  {
+   "name": "/dev/nvme0",
+   "info_name": "/dev/nvme0",
+   "type": "nvme",
+   "protocol": "NVMe"
+  }
+ ]
+}

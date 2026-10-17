@@ -1,0 +1,12 @@
+{
+ "device": {
+  "name": "/dev/da0",
+  "type": "sat"
+ },
+ "model_name": "FIXTURE",
+ "rotation_rate": 5400,
+ "smart_support": {
+  "available": false,
+  "enabled": true
+ }
+}
