@@ -318,7 +318,7 @@ mod tests {
             }
         }
         // If the scan stops finding the known commands, it has silently stopped guarding anything.
-        for known in ["zpool", "zfs", "getfacl", "setfacl", "geom", "bectl", "service", "smbpasswd", "smbstatus", "cat", "tee", "restic", "getent", "sysctl"] {
+        for known in ["zpool", "zfs", "getfacl", "setfacl", "geom", "bectl", "service", "smbpasswd", "smbstatus", "cat", "tee", "restic", "rclone", "getent", "sysctl"] {
             assert!(seen.contains(known), "the scan no longer finds '{known}': {seen:?}");
         }
     }

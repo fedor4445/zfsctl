@@ -99,7 +99,7 @@ fn machine_name(runner: &dyn CommandRunner, label: &str) -> String {
 /// `zfs destroy -r` (a pool-wide recursive snapshot may have given the clone snapshots of its own; the
 /// name is zfsctl's), retried a few times: after a cancel over SSH the remote restic can take a moment to
 /// let go of the files. A clone that is already gone is fine.
-fn destroy_clone(runner: &dyn CommandRunner, clock: &dyn super::scrub::Clock, clone: &str) -> std::result::Result<(), String> {
+pub(super) fn destroy_clone(runner: &dyn CommandRunner, clock: &dyn super::scrub::Clock, clone: &str) -> std::result::Result<(), String> {
     let mut last = String::new();
     for attempt in 0..5 {
         match zfs(runner, &["destroy", "-r", "--", clone]) {

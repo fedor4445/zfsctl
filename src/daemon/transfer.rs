@@ -220,9 +220,80 @@ pub fn run_lines(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(
     Ok(Lines { cancelled, code: status.code(), stderr: log.join().unwrap_or_default() })
 }
 
+/// Like `run_lines`, for a command that logs to stderr (rclone's `--use-json-log`): lines of stderr reach
+/// `on_line` as they arrive too, and the whole of stderr is still returned.
+pub fn run_lines_merged(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> std::io::Result<Lines> {
+    use std::io::BufRead;
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other("could not open the pipes"));
+    };
+    let (tx, rx) = channel::<(bool, String)>();
+    let out_tx = tx.clone();
+    let out = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
+            if out_tx.send((false, line)).is_err() {
+                break;
+            }
+        }
+    });
+    let err = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines().map_while(std::result::Result::ok) {
+            if tx.send((true, line)).is_err() {
+                break;
+            }
+        }
+    });
+    let (mut cancelled, mut log) = (false, String::new());
+    loop {
+        match rx.recv_timeout(TICK) {
+            Ok((from_stderr, line)) => {
+                if from_stderr {
+                    log.push_str(&line);
+                    log.push('\n');
+                }
+                on_line(&line);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if !cancelled && cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            let _ = child.kill();
+        }
+    }
+    let _ = (out.join(), err.join());
+    let status = child.wait()?;
+    Ok(Lines { cancelled, code: status.code(), stderr: log })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merged_lines_reach_the_callback_from_both_streams_and_stderr_is_returned() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo out1; echo err1 >&2; exit 3"]);
+        let mut seen = Vec::new();
+        let lines = run_lines_merged(cmd, &AtomicBool::new(false), |l| seen.push(l.to_string())).unwrap();
+        seen.sort();
+        assert_eq!(seen, ["err1", "out1"]);
+        assert_eq!((lines.code, lines.stderr.as_str(), lines.cancelled), (Some(3), "err1\n", false));
+    }
+
+    #[test]
+    fn merged_run_can_be_cancelled() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        let lines = run_lines_merged(cmd, &AtomicBool::new(true), |_| {}).unwrap();
+        assert!(lines.cancelled);
+    }
+
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
