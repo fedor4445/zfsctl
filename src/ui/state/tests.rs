@@ -8068,3 +8068,22 @@ fn big_c_in_cloud_opens_the_mirror_form_like_jobs_does() {
     app.handle_key(KeyCode::Char('C'));
     assert!(matches!(app.modal, Some(Modal::Form { kind: FormKind::MirrorJob { .. }, .. })), "{:?}", app.modal);
 }
+
+#[test]
+fn the_cloud_section_asks_for_its_remotes_when_first_opened_and_then_once_a_minute() {
+    let (mut app, _dir) = cloud_app(&[]);
+    let t0 = Instant::now();
+    app.refresh_cloud_if_stale(t0);
+    assert_eq!(app.pending_cloud.len(), 1, "opened for the first time: the hub is asked");
+    app.pending_cloud.clear();
+    app.tx.send(WorkerMsg::CloudRemotes("local".into(), Ok(vec![]))).unwrap();
+    app.drain_worker_messages();
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(30));
+    assert!(app.pending_cloud.is_empty(), "not again within a minute");
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(61));
+    assert_eq!(app.pending_cloud.len(), 1);
+    app.pending_cloud.clear();
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(200));
+    assert!(app.pending_cloud.is_empty(), "other sections do not ask");
+}

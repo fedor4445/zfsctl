@@ -564,12 +564,35 @@ mod tests {
         a
     }
 
+    fn cloud(with_mirror: bool) -> App {
+        let mut a = base();
+        go(&mut a, Section::Cloud);
+        let mut job = crate::jobs::Job::test_mirror("m", "tank/data", "hourly", "b2:bkt/p");
+        job.host = "local".into();
+        a.jobs_view.jobs = if with_mirror { vec![job] } else { vec![] };
+        a.cloud_known.insert("local".into(), vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into())]);
+        a.cloud_table.select(Some(0));
+        a
+    }
+
     fn alerts() -> App {
         let mut a = base();
         go(&mut a, Section::Alerts);
         let e = |n: usize| crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: format!("n{n}") };
         a.alerts_view.events = (0..4).map(e).collect();
         a
+    }
+
+    #[test]
+    fn the_cloud_section_offers_size_and_check_only_for_a_remote_that_has_a_mirror_job() {
+        let with = cloud(true);
+        let labels: Vec<(&str, &str)> = hints(&with).iter().map(|h| (h.key, h.label)).collect();
+        for want in [("↑↓", "Move"), ("s", "Bucket size"), ("F5", "Check"), ("C", "New cloud mirror"), ("r", "Refresh")] {
+            assert!(labels.contains(&want), "{labels:?}");
+        }
+        let without = cloud(false);
+        let keys: Vec<&str> = hints(&without).iter().map(|h| h.key).collect();
+        assert!(!keys.contains(&"s") && !keys.contains(&"F5") && keys.contains(&"C"), "{keys:?}");
     }
 
     #[test]
@@ -631,6 +654,8 @@ mod tests {
             ("boot envs, unavailable", boot_envs_unavailable()),
             ("jobs, one selected", jobs(true)),
             ("jobs, none selected", jobs(false)),
+            ("cloud, with a mirror job", cloud(true)),
+            ("cloud, no job", cloud(false)),
             ("alerts", alerts()),
         ]
     }
@@ -684,6 +709,7 @@ mod tests {
                 a.shares_table.selected(),
                 a.bootenvs_table.selected(),
                 a.jobs_table.selected(),
+                a.cloud_table.selected(),
                 a.vdevs_table.selected(),
                 a.pool_properties_table.selected(),
                 a.dataset_properties_table.selected(),
@@ -1101,6 +1127,7 @@ mod tests {
         a.shares.clear();
         a.bootenvs.clear();
         a.jobs_view.jobs.clear();
+        a.cloud_known.clear();
         a.alerts_view.events.clear();
     }
 

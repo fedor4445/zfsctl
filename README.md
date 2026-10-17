@@ -292,6 +292,16 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 - `Space`: enable or disable the selected job
 - `d`: delete the selected job (y/n; its past runs stay in the history until pruned)
 
+### Cloud
+
+The Cloud section lists the rclone remotes (`rclone listremotes --long`, names and types only, never keys) of the hub and of any host that has a cloud job, with the jobs that write to each (a cloud mirror, or a restic backup whose repository is `rclone:`), the latest result of any of them and, after `s`, the size of the bucket. It only reads. A remote whose latest run failed is red; a remote no job uses is dim. The bottom panel shows the selected remote's jobs and the failure reason, if any.
+
+- `Up` / `Down`: select a remote
+- `s`: measure the bucket: the size and file count of `current/` and `old/` for each of the remote's cloud mirror jobs (`rclone size`; it lists the bucket, which a cloud account may count as requests, so it only runs when asked and shows when it was measured)
+- `F5`: the form's read-only remote check, for the remote of its first cloud mirror job
+- `C`: new cloud mirror job
+- `r`: reload the jobs and ask the hosts again (otherwise the list is asked when the section opens and then once a minute while it is on screen)
+
 ## Scheduled jobs (`zfsctl daemon`)
 
 `zfsctl daemon` runs scheduled jobs on the hub, unattended. It must run as root, like the TUI, and reaches other hosts over the same SSH + sudo path, so it needs no new sudoers entries. There are five job kinds (the cloud mirror and the backup are described below). A **scrub** job runs `zpool scrub` on a pool of any configured host on a cron schedule, watches it to completion and records the result. A **snapshot** job takes a snapshot of one dataset on a cron schedule and keeps only the newest `keep` of the snapshots it made. A **replicate** job copies the newest snapshot with a given prefix from a dataset on one configured host to a dataset on another. Manage jobs from the **Jobs** section of the TUI (see its keys above, or `J` on a pool in Pools), or edit `jobs.toml` by hand: the daemon notices either within a second. The TUI only reads the state directory, so it must run on the hub (as root) to see the daemon's jobs.

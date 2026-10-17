@@ -296,6 +296,7 @@ pub struct App {
     /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
     pub state_dir: std::path::PathBuf,
     last_jobs_refresh: Option<Instant>,
+    last_cloud_refresh: Option<Instant>,
     /// `config.toml`, read and (for the alert settings) written by the Alerts screen.
     pub config_path: std::path::PathBuf,
     pub alerts_view: crate::ui::alerts::AlertsView,
@@ -489,6 +490,7 @@ impl App {
             cloud_busy: HashSet::new(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
             last_jobs_refresh: None,
+            last_cloud_refresh: None,
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
             last_alerts_refresh: None,
@@ -850,6 +852,15 @@ impl App {
         match selected.and_then(|id| self.jobs_view.jobs.iter().position(|j| j.id == id)) {
             Some(i) => self.jobs_table.select(Some(i)),
             None => clamp_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len()),
+        }
+    }
+
+    /// Asks for the rclone remotes when the Cloud section is on screen and they were last asked for a minute ago or
+    /// never (the first time it is opened). The remote list changes only when someone runs `rclone config`.
+    pub fn refresh_cloud_if_stale(&mut self, now: Instant) {
+        if self.current_section() == Section::Cloud && self.last_cloud_refresh.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(60)) {
+            self.last_cloud_refresh = Some(now);
+            self.refresh_cloud();
         }
     }
 

@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Cloud — 3 remotes, 2 jobs───────────────────────────────────────────────────────────┐
+│Hosts                 ││Remote                 Host       Type    Jobs  Last             In bucket          │
+│Pools                 ││b2:                    local      b2      1     ok 3m ago        1.1 MiB            │
+│Datasets              ││t1:                    local      sftp    0     -                -                  │
+│Snapshots             ││zfsctl-aws:            local      s3      1     ok 3m ago        -                  │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
+│Alerts                ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Remote — b2:────────────────────────────────────────────────────────────────────────┐
+│                      ││b2: (b2) on local                                                                   │
+│                      ││mirror-local-scratch-zt-cloud  scratch/zt-cloud → b2:zfsctl/cloudtest  49 * * * *   │
+│                      ││last ok 3m ago                                                                      │
+│                      ││    current/ 1.1 MiB (3 files)   no old/ yet   measured just now                    │
+│                      ││Check: OK, the remote opens.                                                        │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  s Bucket size  F5 Check  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

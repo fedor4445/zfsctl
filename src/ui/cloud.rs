@@ -99,7 +99,9 @@ pub fn measure(runner: &dyn CommandRunner, host: &str, remote: &str, now: DateTi
     let current = size_of(runner, host, remote, "current");
     let old = if current.is_ok() { size_of(runner, host, remote, "old") } else { Ok(None) };
     match (current, old) {
-        (Ok(current), Ok(old)) => Size { current, old, at: now, problem: None },
+        // A folder that is not there reads as empty on S3 and B2, and as an error on a local or sftp remote:
+        // either way there is no `old/` yet.
+        (Ok(current), Ok(old)) => Size { current, old: old.filter(|&(files, _)| files > 0), at: now, problem: None },
         (Err(p), _) | (_, Err(p)) => Size { current: None, old: None, at: now, problem: Some(p) },
     }
 }
@@ -353,6 +355,8 @@ mod tests {
         assert_eq!(measure(&both, "local", "b2:bkt/p", now), Size { current: Some((4, 2000)), old: Some((2, 30)), at: now, problem: None });
         let no_old = Rclone(vec![("b2:bkt/p/current", 0, "{\"count\":4,\"bytes\":2000,\"sizeless\":0}", ""), ("b2:bkt/p/old", 3, "", "directory not found")]);
         assert_eq!(measure(&no_old, "local", "b2:bkt/p", now), Size { current: Some((4, 2000)), old: None, at: now, problem: None });
+        let empty_old = Rclone(vec![("b2:bkt/p/current", 0, "{\"count\":4,\"bytes\":2000,\"sizeless\":0}", ""), ("b2:bkt/p/old", 0, "{\"count\":0,\"bytes\":0,\"sizeless\":0}", "")]);
+        assert_eq!(measure(&empty_old, "local", "b2:bkt/p", now).old, None, "cloud storage answers an absent folder with zero files");
         let nothing = Rclone(vec![("b2:bkt/p/current", 3, "", "directory not found"), ("b2:bkt/p/old", 3, "", "directory not found")]);
         let size = measure(&nothing, "local", "b2:bkt/p", now);
         assert_eq!((size.current, size.problem), (None, None), "a first run has not created current/ yet");

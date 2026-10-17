@@ -241,6 +241,7 @@ fn event_loop(
     loop {
         let refreshes = app.drain_worker_messages();
         app.refresh_jobs_if_stale(Instant::now());
+        app.refresh_cloud_if_stale(Instant::now());
         app.refresh_alerts_if_stale(Instant::now());
         apply_pending_new_hosts(app, inventory, config_path);
         apply_pending_account_fetches(app, inventory);
