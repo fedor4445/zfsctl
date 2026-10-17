@@ -31,7 +31,7 @@ pub fn apply(text: &str, changes: &[Change]) -> Result<String, String> {
     let mut doc: DocumentMut = text.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
     for change in changes {
         let (Change::Set(path, _) | Change::Remove(path)) = change;
-        if path.len() < 2 || !EDITABLE.contains(&path[0].as_str()) {
+        if path.len() < 2 || !path.first().is_some_and(|t| EDITABLE.contains(&t.as_str())) {
             return Err(format!("{} is not a setting this screen may change", path.join(".")));
         }
         match change {

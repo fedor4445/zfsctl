@@ -611,6 +611,26 @@ mod tests {
         a
     }
 
+    fn settings(rows: usize) -> App {
+        let mut a = base();
+        go(&mut a, Section::Settings);
+        let row = |n: usize| crate::ui::settings::Row { group: "Display", setting: crate::ui::settings::Setting::Cpu, label: format!("row{n}"), value: "1".into(), is_default: true, raw: vec![String::new()] };
+        a.settings_view = crate::ui::settings::SettingsView { loaded: true, problem: None, rows: (0..rows).map(row).collect() };
+        a.settings_table.select((rows > 0).then_some(0));
+        a
+    }
+
+    #[test]
+    fn the_settings_section_offers_move_and_edit_only_when_there_are_rows() {
+        let labels = |a: &App| hints(a).iter().map(|h| (h.key, h.label)).collect::<Vec<_>>();
+        let with = labels(&settings(2));
+        for want in [("↑↓", "Move"), ("Enter", "Edit"), ("r", "Refresh")] {
+            assert!(with.contains(&want), "{with:?}");
+        }
+        let without = labels(&settings(0));
+        assert!(without == [("r", "Refresh")] || without.iter().all(|(k, _)| *k != "Enter" && *k != "↑↓"), "{without:?}");
+    }
+
     #[test]
     fn the_dashboard_offers_move_always_go_only_with_a_selected_line_and_nothing_that_changes_anything() {
         let labels = |a: &App| hints(a).iter().map(|h| (h.key, h.label)).collect::<Vec<_>>();
@@ -704,6 +724,7 @@ mod tests {
             ("cloud, with a mirror job", cloud(true)),
             ("cloud, no job", cloud(false)),
             ("alerts", alerts()),
+            ("settings, two rows", settings(2)),
         ]
     }
 
@@ -758,6 +779,7 @@ mod tests {
                 a.jobs_table.selected(),
                 a.cloud_table.selected(),
                 a.dashboard_table.selected(),
+                a.settings_table.selected(),
                 a.vdevs_table.selected(),
                 a.pool_properties_table.selected(),
                 a.dataset_properties_table.selected(),
@@ -1179,6 +1201,7 @@ mod tests {
         a.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() });
         a.cloud_known.clear();
         a.alerts_view.events.clear();
+        a.settings_view.rows.clear();
     }
 
     #[test]
