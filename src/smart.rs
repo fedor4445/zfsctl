@@ -149,6 +149,12 @@ mod tests {
     }
 
     #[test]
+    fn real_smartctl_output_from_a_qemu_disk_is_healthy_and_says_nothing() {
+        // Taken from the test hub (smartmontools 7.x, `smartctl -j -H -A -i /dev/ada0`; serial and wwn removed).
+        assert_eq!(texts(&disk(include_str!("smart_fixtures/real_qemu_ata.json"))), []);
+    }
+
+    #[test]
     fn a_disk_without_smart_support_is_silent() {
         assert_eq!(judge("da0", include_str!("smart_fixtures/no_support.json")), None);
     }
