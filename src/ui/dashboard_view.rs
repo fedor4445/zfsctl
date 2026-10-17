@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
 };
 
-/// Lines of Needs attention shown at once; the rest are counted.
+/// Lines of Needs attention shown at once on a tall screen; the rest are counted. A short screen shows fewer.
 const ATTENTION_SHOWN: usize = 6;
 /// Cells of a gauge, including its two end caps.
 const GAUGE_WIDTH: u16 = 10;
@@ -83,7 +83,7 @@ fn header(d: &Dashboard, width: usize, now: &str, theme: &Theme) -> Line<'static
     }
 }
 
-fn attention_lines(d: &Dashboard, selected: Option<usize>, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+fn attention_lines(d: &Dashboard, selected: Option<usize>, width: usize, cap: usize, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![heading("NEEDS ATTENTION", width, theme)];
     if d.attention.is_empty() {
         let (text, level) = if d.verdict.level == Level::Unknown { ("checking...", Level::Unknown) } else { ("nothing needs attention", Level::Fine) };
@@ -91,9 +91,9 @@ fn attention_lines(d: &Dashboard, selected: Option<usize>, width: usize, theme: 
         lines.push(Line::styled(format!("   {glyph} {text}"), level_style(theme, level)));
         return lines;
     }
-    let start = selected.filter(|s| *s >= ATTENTION_SHOWN).map_or(0, |s| s + 1 - ATTENTION_SHOWN);
+    let start = selected.filter(|s| *s >= cap).map_or(0, |s| s + 1 - cap);
     let subject_w = d.attention.iter().map(|i| i.subject.chars().count()).max().unwrap_or(0).clamp(6, 16);
-    for (index, item) in d.attention.iter().enumerate().skip(start).take(ATTENTION_SHOWN) {
+    for (index, item) in d.attention.iter().enumerate().skip(start).take(cap) {
         let (glyph, word) = glyph_word(item.level);
         let marker = if selected == Some(index) { "▸" } else { " " };
         let prefix = format!(" {marker} ");
@@ -107,7 +107,7 @@ fn attention_lines(d: &Dashboard, selected: Option<usize>, width: usize, theme: 
         ]);
         lines.push(if selected == Some(index) { line.patch_style(theme.selected_row()) } else { line });
     }
-    let hidden = d.attention.len().saturating_sub(ATTENTION_SHOWN);
+    let hidden = d.attention.len().saturating_sub(cap);
     if hidden > 0 {
         lines.push(Line::styled(format!("     +{hidden} more"), theme.dim()));
     }
@@ -247,32 +247,59 @@ fn status_line(level: Level, label: &str, text: &str, width: usize, theme: &Them
     Line::styled(cut(&format!("   {glyph} {label}{text}"), width), level_style(theme, level))
 }
 
-/// Everything below the host table: the daemon and jobs, the cloud remotes and the alerts.
-fn component_lines(d: &Dashboard, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::raw(""), heading("DAEMON AND JOBS", width, theme)];
+/// Everything below the host table: the daemon and jobs, the cloud remotes and the alerts. `compact` drops the headings and
+/// blank lines (each line then says what it is) for a screen that is too short for the full layout.
+fn component_lines(d: &Dashboard, width: usize, compact: bool, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut section = |lines: &mut Vec<Line<'static>>, title: &str| {
+        if !compact {
+            lines.push(Line::raw(""));
+            lines.push(heading(title, width, theme));
+        }
+    };
+    let label = |full: &'static str, short: &'static str| if compact { short } else { full };
+    section(&mut lines, "DAEMON AND JOBS");
     lines.push(status_line(d.daemon.level, "daemon  ", &d.daemon.text, width, theme));
     lines.push(status_line(d.jobs.level, "jobs    ", &d.jobs.text, width, theme));
-    lines.push(Line::raw(""));
-    lines.push(heading("CLOUD", width, theme));
+    section(&mut lines, "CLOUD");
     if d.cloud.is_empty() {
-        lines.push(status_line(Level::Unknown, "", "no rclone remotes found", width, theme));
+        lines.push(status_line(Level::Unknown, label("", "cloud   "), "no rclone remotes found", width, theme));
     }
     for line in &d.cloud {
-        lines.push(status_line(line.level, "", &line.text, width, theme));
+        lines.push(status_line(line.level, label("", "cloud   "), &line.text, width, theme));
     }
-    lines.push(Line::raw(""));
-    lines.push(heading("ALERTS", width, theme));
-    lines.push(status_line(d.alerts.level, "", &d.alerts.text, width, theme));
+    section(&mut lines, "ALERTS");
+    lines.push(status_line(d.alerts.level, label("", "alerts  "), &d.alerts.text, width, theme));
     lines
 }
 
-/// The whole screen as lines, for a given width and the time to show.
-pub fn screen_lines(d: &Dashboard, selected: Option<usize>, width: usize, now: &str, theme: &Theme) -> Vec<Line<'static>> {
+/// The screen with a given attention cap, in the full or the compact layout.
+fn assemble(d: &Dashboard, selected: Option<usize>, width: usize, now: &str, theme: &Theme, cap: usize, compact: bool) -> Vec<Line<'static>> {
     let mut lines = vec![header(d, width, now, theme), Line::raw("")];
-    lines.extend(attention_lines(d, selected, width, theme));
+    lines.extend(attention_lines(d, selected, width, cap, theme));
     lines.push(Line::raw(""));
     lines.extend(host_lines(d, width, theme));
-    lines.extend(component_lines(d, width, theme));
+    lines.extend(component_lines(d, width, compact, theme));
+    lines
+}
+
+/// The whole screen as lines for a screen of `width` x `height`. Nothing is ever cut silently: a short screen first shows
+/// fewer Needs attention lines, then the compact layout, and only if that is still too tall does it cut the end and say how
+/// many lines are missing.
+pub fn screen_lines(d: &Dashboard, selected: Option<usize>, width: usize, height: usize, now: &str, theme: &Theme) -> Vec<Line<'static>> {
+    for (cap, compact) in [(ATTENTION_SHOWN, false), (4, false), (3, true), (2, true), (1, true)] {
+        let lines = assemble(d, selected, width, now, theme, cap, compact);
+        if lines.len() <= height {
+            return lines;
+        }
+    }
+    let mut lines = assemble(d, selected, width, now, theme, 1, true);
+    if height == 0 {
+        return Vec::new();
+    }
+    let missing = lines.len() - height + 1;
+    lines.truncate(height - 1);
+    lines.push(Line::styled(format!("  ▼ {missing} more lines below: make the window taller"), theme.dim()));
     lines
 }
 
@@ -282,7 +309,7 @@ pub fn draw_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
     let selected = app.dashboard_table.selected().filter(|_| !d.attention.is_empty()).map(|s| s.min(d.attention.len() - 1));
     app.dashboard_table.select(selected);
     let now = chrono::Local::now().format("%a %d %b %H:%M").to_string();
-    let lines = screen_lines(&d, selected, usize::from(area.width), &now, &app.theme);
+    let lines = screen_lines(&d, selected, usize::from(area.width), usize::from(area.height), &now, &app.theme);
     f.render_widget(Paragraph::new(lines), area);
 }
 
@@ -406,8 +433,9 @@ mod tests {
         }
         heartbeat(&mut app);
         let lines = render(&mut app, 120, 50);
-        let shown = lines.iter().filter(|l| l.contains("unreachable")).count();
-        assert!(shown >= 6, "{lines:#?}");
+        // Attention lines start with their glyph; host rows start with the host's name.
+        let attention = lines.iter().filter(|l| l.trim_start().starts_with("✖ issue") || l.trim_start().starts_with("▸ ✖ issue")).count();
+        assert_eq!(attention, 6, "exactly six attention lines: {lines:#?}");
         assert!(lines.iter().any(|l| l.contains("+3 more")), "9 hosts down, 6 listed: {lines:#?}");
     }
 
@@ -449,5 +477,49 @@ mod tests {
         app.cloud_known.insert("local".into(), vec![("b2".into(), "b2".into())]);
         let text = render(&mut app, 120, 50).join("\n");
         assert!(text.contains("b2 (b2)") && text.contains("no jobs"), "{text}");
+    }
+
+    /// Nine hosts down plus a fine one, the daemon running: nine Needs attention lines and a tall host table.
+    fn crowded_app() -> App {
+        let mut app = mixed_app();
+        for i in 1..=8 {
+            let name = format!("h{i}");
+            app.hosts.push(name.clone());
+            app.host_probes.insert(name, HostProbeState { last: Some(HostProbe::Disconnected), ..HostProbeState::default() });
+        }
+        app
+    }
+
+    #[test]
+    fn a_short_terminal_keeps_the_header_and_every_component_by_shrinking_the_attention_list_first() {
+        let mut app = mixed_app();
+        let lines = render(&mut app, 120, 24);
+        let text = lines.join("\n");
+        for want in ["Dashboard", "daemon", "jobs", "monitor off", "fbsd16t1"] {
+            assert!(text.contains(want), "missing {want:?} on a 24-row terminal:\n{text}");
+        }
+        assert!(!text.contains("more lines below"), "nothing needed cutting here:\n{text}");
+    }
+
+    #[test]
+    fn when_even_the_compact_screen_does_not_fit_it_says_how_much_is_cut_never_silently() {
+        let mut app = crowded_app();
+        for height in [24u16, 16, 12, 8] {
+            let lines = render(&mut app, 120, height);
+            let text = lines.join("\n");
+            assert!(lines[0].contains("Dashboard"), "{height}: the header always stays:\n{text}");
+            let shows_everything = text.contains("monitor off") && text.contains("daemon");
+            assert!(shows_everything || text.contains("more lines below"), "{height}: lines were cut without a word:\n{text}");
+        }
+        let tall = render(&mut app, 120, 60).join("\n");
+        assert!(!tall.contains("more lines below"), "{tall}");
+    }
+
+    #[test]
+    fn the_marker_replaces_the_last_line_so_the_screen_never_exceeds_its_height() {
+        let mut app = crowded_app();
+        let lines = render(&mut app, 120, 10);
+        assert_eq!(lines.len(), 10);
+        assert!(lines[9].contains("more lines below"), "{:?}", lines[9]);
     }
 }
