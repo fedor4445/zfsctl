@@ -1027,7 +1027,7 @@ impl App {
     fn confirm_job_save(&mut self, form: Modal, action: PendingAction) -> Option<PendingAction> {
         let MutationCall::SaveJob { job, .. } = &action.call else { return Some(action) };
         let old = match &form {
-            Modal::Form { kind: FormKind::SnapshotJob { existing, .. } | FormKind::ReplicateJob { existing, .. } | FormKind::BackupJob { existing, .. }, .. } => existing.as_deref(),
+            Modal::Form { kind: FormKind::SnapshotJob { existing, .. } | FormKind::ReplicateJob { existing, .. } | FormKind::BackupJob { existing, .. } | FormKind::MirrorJob { existing, .. }, .. } => existing.as_deref(),
             _ => None,
         };
         // The snapshot list is only known for the host on screen.
@@ -1803,6 +1803,9 @@ impl App {
                 self.backup_preflight = None;
                 self.modal = Some(self.backup_job_form(None));
             }
+            KeyCode::Char('C') if self.current_section() == Section::Jobs => {
+                self.modal = Some(self.mirror_job_form(None));
+            }
             KeyCode::Char('R') if self.current_section() == Section::Jobs => {
                 self.modal = Some(self.replicate_job_form(None));
             }
@@ -1829,6 +1832,7 @@ impl App {
                             self.backup_preflight = None;
                             self.backup_job_form(Some(job))
                         }
+                        crate::jobs::KIND_MIRROR => self.mirror_job_form(Some(job)),
                         _ => self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")),
                     });
                 }
@@ -2134,7 +2138,7 @@ impl App {
     fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str, snapshots_of: Option<String>) {
         let (hosts, mut what) = match kind {
             FormKind::Job { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Pools),
-            FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } | FormKind::BackupJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
+            FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } | FormKind::BackupJob { hosts, .. } | FormKind::MirrorJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
             _ => return,
         };
         if host_name.trim() == crate::jobs::DEST_FILE {
@@ -2195,11 +2199,34 @@ impl App {
         self.pending_preflight.push(PendingPreflight { host, host_name: host_name.to_string(), repository: repository.to_string(), password_file: password_file.to_string() });
     }
 
+    /// F5 in the cloud mirror form: queues one check of the remote on the form's host. It rides the backup form's
+    /// check (an empty `password_file` marks it as a remote check), so a result for edited values is dropped the same way.
+    pub(super) fn request_mirror_check(&mut self, host_name: &str, remote: &str) {
+        let Some(host) = self.hosts.iter().position(|h| h == host_name) else {
+            self.set_error(format!("Unknown host '{host_name}'. Configured hosts: {}", self.hosts.join(", ")));
+            return;
+        };
+        if !crate::rclone::valid_remote(remote) {
+            self.set_error("Check: enter the remote first, like aws:mybucket/photos (the name of an rclone remote, a colon and a path, with no keys in it)".to_string());
+            return;
+        }
+        let same = |c: &PreflightCheck| c.host == host && c.repository == remote && c.password_file.is_empty();
+        if self.backup_preflight.as_ref().is_some_and(|c| same(c) && c.result.is_none()) {
+            return;
+        }
+        self.backup_preflight = Some(PreflightCheck { host, repository: remote.to_string(), password_file: String::new(), result: None, file_note: None });
+        self.pending_preflight.push(PendingPreflight { host, host_name: host_name.to_string(), repository: remote.to_string(), password_file: String::new() });
+    }
+
     /// Runs one queued check on a worker thread and reports it as `WorkerMsg::Preflight`.
     pub fn run_backup_preflight(&mut self, runner: Arc<dyn CommandRunner>, pending: PendingPreflight) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let report = crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE);
+            let report = if pending.password_file.is_empty() {
+                crate::preflight::run_remote(runner, &pending.host_name, &pending.repository, crate::preflight::DEADLINE)
+            } else {
+                crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE)
+            };
             let _ = tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, report.result, report.file_note));
         });
     }
@@ -2682,7 +2709,7 @@ Global
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
   r                refresh the focused pane
   F2               in a form, on a field with known values (Permissions, Flags, Type, Recipient, Valid user, Root user mapping, a pool property with fixed values such as failmode or autoexpand, a from-disks Redundancy, a job's Host, Pool or Dataset, a replication's Destination host, and Schedule): open a picker (type filter, Enter OK, Esc cancel; Space toggles in multi-select ones)
-  F5               in the backup job form: check the repository and password file on the job's host (read-only; never blocks saving)
+  F5               in the backup job form: check the repository and password file on the job's host; in the cloud mirror form: check the remote (both read-only; never block saving)
   Esc              dismiss a status message, back out of a focused pane, or cancel a modal (in a y/n confirmation Esc selects No, then Enter)
   y / n, Enter     a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing. Forms that cannot be undone (create pool, add vdev, replace disk, revoke, shrinking a volume, pool features) end in one, showing the exact command
   ?                this Help screen
@@ -2757,6 +2784,7 @@ Jobs
   N                new snapshot job (or press J on a dataset in Datasets)
   R                new replication job
   B                new backup job (restic: back up a snapshot through a temporary clone)
+  C                new cloud mirror job (rclone: copy a snapshot clone to a cloud bucket as plain files)
   c                cancel the selected replication or backup while it is running
   Space            enable / disable the job
   d                delete the job (y/n; its past runs stay in the history)

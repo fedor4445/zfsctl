@@ -15,6 +15,8 @@ use std::path::Path;
 pub const KIND_SCRUB: &str = "scrub";
 pub const KIND_SNAPSHOT: &str = "snapshot";
 pub const KIND_REPLICATE: &str = "replicate";
+/// A cloud mirror: the dataset copied to an rclone remote as plain files.
+pub const KIND_MIRROR: &str = "rclone";
 pub const KIND_BACKUP: &str = "backup";
 /// `dest_host` value meaning "write stream files to `dest_dir` on the hub".
 pub const DEST_FILE: &str = "file";
@@ -70,6 +72,12 @@ pub struct Job {
     /// A backup job's restic password file: an absolute path on the job's host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_file: Option<String>,
+    /// A cloud mirror job's rclone remote such as `aws:bucket/photos`. It must not contain credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// A cloud mirror job's speed limit (`5M`, bytes per second); absent is unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bwlimit: Option<String>,
     /// A backup job's retention such as `7d 4w 12m 3y`; absent or blank keeps every backup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<String>,
@@ -241,9 +249,11 @@ fn check_replicate_fields(job: &Job) -> std::result::Result<(), String> {
     }
 }
 
-fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
+/// What a backup and a cloud mirror job share: the dataset, which snapshot is read, the folder inside it and the id
+/// (it becomes a dataset name and a mountpoint). `noun` is how a message names the job kind.
+fn check_source_fields(job: &Job, noun: &str) -> std::result::Result<(), String> {
     if !job.dataset.as_deref().is_some_and(valid_dataset) {
-        return Err("a backup job needs a dataset like tank/data".to_string());
+        return Err(format!("a {noun} job needs a dataset like tank/data"));
     }
     match job.source.as_deref() {
         None | Some(SOURCE_PREFIX) => {
@@ -253,7 +263,7 @@ fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
         }
         Some(SOURCE_NEW) => {
             if job.keep == Some(0) {
-                return Err("a backup job that takes its own snapshots needs keep of at least 1".to_string());
+                return Err(format!("a {noun} job that takes its own snapshots needs keep of at least 1"));
             }
         }
         Some(SOURCE_SNAPSHOT) => {
@@ -261,7 +271,7 @@ fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
                 return Err("the snapshot name may only use letters, digits, _ - . and :".to_string());
             }
         }
-        Some(other) => return Err(format!("unknown backup source '{other}'")),
+        Some(other) => return Err(format!("unknown {noun} source '{other}'")),
     }
     if let Some(path) = job.path.as_deref() {
         if !valid_subpath(path) {
@@ -270,8 +280,24 @@ fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
     }
     // The id becomes a dataset name, a mountpoint and restic tags.
     if !valid_prefix(&job.id) {
-        return Err("a backup job's id may only use letters, digits, _ - and .".to_string());
+        return Err(format!("a {noun} job's id may only use letters, digits, _ - and ."));
     }
+    Ok(())
+}
+
+fn check_mirror_fields(job: &Job) -> std::result::Result<(), String> {
+    check_source_fields(job, "cloud mirror")?;
+    if !job.remote.as_deref().is_some_and(crate::rclone::valid_remote) {
+        return Err("a cloud mirror job needs a remote like aws:mybucket/photos (a configured rclone remote name, a colon and a path, with no keys in it)".to_string());
+    }
+    if job.bwlimit.as_deref().is_some_and(|l| !crate::rclone::valid_bwlimit(l)) {
+        return Err("the speed limit is a number of bytes per second with an optional K, M or G, like 5M".to_string());
+    }
+    Ok(())
+}
+
+fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
+    check_source_fields(job, "backup")?;
     if !job.repository.as_deref().is_some_and(crate::restic::valid_repository) {
         return Err("a backup job needs a repository (restic -r) that does not start with '-'".to_string());
     }
@@ -286,7 +312,7 @@ fn check_backup_fields(job: &Job) -> std::result::Result<(), String> {
 
 /// Whether a running run of `job` can be cancelled from the TUI (it has a long-lived child process).
 pub fn is_cancellable(job: &Job) -> bool {
-    job.kind == KIND_REPLICATE || job.kind == KIND_BACKUP
+    job.kind == KIND_REPLICATE || job.kind == KIND_BACKUP || job.kind == KIND_MIRROR
 }
 
 fn check_snapshot_fields(job: &Job) -> std::result::Result<(), String> {
@@ -313,6 +339,7 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
         KIND_SNAPSHOT => check_snapshot_fields(job)?,
         KIND_REPLICATE => check_replicate_fields(job)?,
         KIND_BACKUP => check_backup_fields(job)?,
+        KIND_MIRROR => check_mirror_fields(job)?,
         other => return Err(format!("unsupported job kind '{other}'")),
     }
     if !known_hosts.iter().any(|h| h == &job.host) {
@@ -323,6 +350,9 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
     }
     if job.dest_keep.is_some() && !(job.kind == KIND_REPLICATE && job.dest_host.as_deref() != Some(DEST_FILE)) {
         return Err("dest_keep is only for a replication job to a host, not to a file".to_string());
+    }
+    if (job.remote.is_some() || job.bwlimit.is_some()) && job.kind != KIND_MIRROR {
+        return Err("remote and bwlimit are only for a cloud mirror job".to_string());
     }
     if job.kind == KIND_REPLICATE {
         match job.dest_host.as_deref() {
@@ -365,12 +395,33 @@ fn dest_clashes(a: &Job, b: &Job) -> bool {
     }
 }
 
+/// Whether two enabled, well-formed jobs on one host would write over each other in the cloud: two mirrors whose remote
+/// paths overlap, or a mirror and a restic backup whose `rclone:` repository overlaps the mirror's path (a sync would move
+/// the repository's files into `old/`). Remote names are per host, so jobs on other hosts never clash.
+fn remote_clashes(a: &Job, b: &Job) -> bool {
+    let mirror = |j: &Job| j.enabled && j.kind == KIND_MIRROR && check_mirror_fields(j).is_ok();
+    let restic = |j: &Job| j.enabled && j.kind == KIND_BACKUP && check_backup_fields(j).is_ok();
+    if a.host != b.host {
+        return false;
+    }
+    let repo = |j: &Job| j.repository.as_deref().and_then(|r| r.strip_prefix("rclone:")).unwrap_or("").to_string();
+    let remote = |j: &Job| j.remote.as_deref().unwrap_or("").to_string();
+    match (mirror(a), mirror(b), restic(a), restic(b)) {
+        (true, true, _, _) => crate::rclone::overlaps(&remote(a), &remote(b)),
+        (true, _, _, true) => !repo(b).is_empty() && crate::rclone::overlaps(&remote(a), &repo(b)),
+        (_, true, true, _) => !repo(a).is_empty() && crate::rclone::overlaps(&remote(b), &repo(a)),
+        _ => false,
+    }
+}
+
 /// Why `job` cannot run alongside the enabled `earlier` job, if it cannot.
 pub fn clash_reason(earlier: &Job, job: &Job) -> Option<String> {
     if clashes(earlier, job) {
         Some(format!("same host and prefix as job '{}' on an overlapping dataset: they would prune each other", earlier.id))
     } else if dest_clashes(earlier, job) {
         Some(format!("same destination as job '{}': their incrementals would corrupt each other", earlier.id))
+    } else if remote_clashes(earlier, job) {
+        Some(format!("its remote overlaps the one of job '{}' on this host: a sync would move the other job's files", earlier.id))
     } else {
         None
     }
@@ -400,15 +451,19 @@ pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<Strin
 #[cfg(test)]
 impl Job {
     pub fn test_snapshot(id: &str, dataset: &str, prefix: &str, keep: u32) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_backup(id: &str, dataset: &str, prefix: &str, repository: &str, password_file: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, source: None, snapshot: None, path: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, source: None, snapshot: None, path: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
+    }
+
+    pub fn test_mirror(id: &str, dataset: &str, prefix: &str, remote: &str) -> Job {
+        Job { remote: Some(remote.into()), kind: KIND_MIRROR.into(), password_file: None, repository: None, schedule: "30 3 * * *".into(), ..Job::test_backup(id, dataset, prefix, "x", "/p") }
     }
 
     pub fn test_replicate(id: &str, dataset: &str, prefix: &str, dest_host: &str, dest_dataset: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 }
 
@@ -472,7 +527,7 @@ mod tests {
             dest_dataset: None,
             dest_dir: None,
             dest_keep: None,
-            force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
+            remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         }
     }
 
@@ -765,7 +820,7 @@ mod tests {
         save(&path, &[repl.clone(), snap.clone()]).unwrap();
         assert_eq!(load(&path).unwrap(), vec![repl, snap.clone()]);
         let text = toml::to_string_pretty(&JobFile { jobs: vec![snap, scrub("x")] }).unwrap();
-        for absent in ["dest_host", "dest_dataset", "dest_dir", "dest_keep", "force"] {
+        for absent in ["dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force"] {
             assert!(!text.contains(absent), "{absent} leaked:\n{text}");
         }
     }
@@ -791,6 +846,102 @@ mod tests {
         assert!(bad(&|j| j.dest_dir = Some("/mnt/x".into())).contains("dest_dir"));
         assert!(bad(&|j| { j.host = "fbsd16".into(); j.dest_dataset = j.dataset.clone(); }).contains("same dataset"), "source and destination must differ");
         assert!(bad(&|j| j.schedule = "x".into()).contains("schedule"));
+    }
+
+    fn mirror() -> Job {
+        Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/photos")
+    }
+
+    #[test]
+    fn a_good_mirror_job_resolves() {
+        assert!(resolve(&mirror(), &hosts()).is_ok());
+        let mut limited = mirror();
+        limited.bwlimit = Some("5M".into());
+        assert!(resolve(&limited, &hosts()).is_ok());
+    }
+
+    #[test]
+    fn a_mirror_job_needs_a_dataset_and_a_valid_remote() {
+        let bad = |f: &dyn Fn(&mut Job)| {
+            let mut j = mirror();
+            f(&mut j);
+            resolve(&j, &hosts()).unwrap_err()
+        };
+        assert!(bad(&|j| j.dataset = None).contains("dataset"));
+        assert!(bad(&|j| j.remote = None).contains("remote"));
+        for evil in [":s3,access_key_id=X:b/p", "-x:b", "a,b:c", "nocolon", "aws:b\nx", ""] {
+            assert!(bad(&|j| j.remote = Some(evil.into())).contains("remote"), "{evil:?}");
+        }
+    }
+
+    #[test]
+    fn bwlimit_is_validated_and_optional() {
+        let mut j = mirror();
+        for evil in ["5MB", "-1", "1.5M", ""] {
+            j.bwlimit = Some(evil.into());
+            assert!(resolve(&j, &hosts()).unwrap_err().contains("speed limit"), "{evil:?}");
+        }
+    }
+
+    #[test]
+    fn the_source_rules_match_the_backup_job() {
+        let bad = |f: &dyn Fn(&mut Job)| {
+            let mut j = mirror();
+            f(&mut j);
+            resolve(&j, &hosts()).unwrap_err()
+        };
+        assert!(bad(&|j| { j.source = Some(SOURCE_NEW.into()); j.keep = Some(0); }).contains("keep"));
+        assert!(bad(&|j| j.source = Some(SOURCE_SNAPSHOT.into())).contains("snapshot name"));
+        assert!(bad(&|j| j.source = Some("weird".into())).contains("unknown cloud mirror source"));
+        assert!(bad(&|j| j.path = Some("../x".into())).contains("path"));
+        assert!(bad(&|j| j.id = "a b".into()).contains("id"));
+    }
+
+    #[test]
+    fn remote_and_bwlimit_are_rejected_on_other_kinds() {
+        for mut other in [Job::test_snapshot("s", "tank/data", "hourly", 3), scrub("x"), Job::test_backup("b", "tank/data", "hourly", "/r", "/p"), Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")] {
+            other.remote = Some("aws:b".into());
+            assert!(resolve(&other, &hosts()).unwrap_err().contains("only for a cloud mirror"), "{}", other.kind);
+            other.remote = None;
+            other.bwlimit = Some("5M".into());
+            assert!(resolve(&other, &hosts()).unwrap_err().contains("only for a cloud mirror"), "{}", other.kind);
+        }
+    }
+
+    #[test]
+    fn mirror_jobs_on_one_host_with_overlapping_remotes_clash() {
+        let a = Job::test_mirror("a", "tank/one", "hourly", "aws:bkt/p");
+        for (other, clashes) in [("aws:bkt/p", true), ("aws:bkt/p/q", true), ("aws:bkt", true), ("aws:bkt/pq", false), ("b2:bkt/p", false)] {
+            let b = Job::test_mirror("b", "tank/two", "hourly", other);
+            assert_eq!(clashing_job(std::slice::from_ref(&a), &b).is_some(), clashes, "{other}");
+        }
+        let mut elsewhere = Job::test_mirror("b", "tank/two", "hourly", "aws:bkt/p");
+        elsewhere.host = "fbsd16".into();
+        assert!(clashing_job(std::slice::from_ref(&a), &elsewhere).is_none(), "remote names are per host");
+        let mut off = a.clone();
+        off.enabled = false;
+        assert!(clashing_job(&[off], &Job::test_mirror("b", "tank/two", "hourly", "aws:bkt/p")).is_none(), "disabled jobs never clash");
+    }
+
+    #[test]
+    fn a_mirror_whose_remote_holds_a_restic_jobs_rclone_repository_clashes_both_ways() {
+        let restic = Job::test_backup("b", "tank/data", "hourly", "rclone:aws:bkt/x/current", "/pw");
+        let m = Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/x");
+        assert!(clashing_job(std::slice::from_ref(&restic), &m).is_some());
+        assert!(clashing_job(std::slice::from_ref(&m), &restic).is_some());
+        let apart = Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/y");
+        assert!(clashing_job(&[restic], &apart).is_none());
+    }
+
+    #[test]
+    fn mirror_is_cancellable_and_the_new_keys_round_trip() {
+        assert!(is_cancellable(&mirror()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        let mut m = mirror();
+        m.bwlimit = Some("5M".into());
+        save(&path, &[m.clone()]).unwrap();
+        assert_eq!(load(&path).unwrap(), vec![m]);
     }
 
     #[test]

@@ -193,6 +193,8 @@ pub(super) fn build_backup_job_action(kind: &FormKind, fields: &[FormField], sta
         dest_dataset: None,
         dest_dir: None,
         dest_keep: None,
+        remote: None,
+        bwlimit: None,
         force: false,
         repository: Some(repository.to_string()),
         password_file: Some(password_file.to_string()),
@@ -216,6 +218,121 @@ pub(super) fn build_backup_job_action(kind: &FormKind, fields: &[FormField], sta
         None => crate::jobs::Job { id: crate::ui::jobs::new_backup_job_id(host, dataset, &taken), ..base },
     };
     crate::jobs::resolve(&job, hosts)?;
+    Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
+}
+
+impl App {
+    pub(super) fn mirror_job_form(&self, existing: Option<crate::jobs::Job>) -> Modal {
+        let yn = |b: bool| if b { "y" } else { "n" }.to_string();
+        let (title, host, dataset, path, source, fresh_keep, remote, limit, schedule, catch_up) = match &existing {
+            Some(j) => (
+                format!("Edit cloud mirror job '{}'", j.id),
+                j.host.clone(),
+                j.dataset.clone().unwrap_or_default(),
+                j.path.clone().unwrap_or_default(),
+                crate::ui::jobs::source_text(j),
+                if crate::jobs::backup_source(j) == crate::jobs::BackupSource::Fresh { j.keep.map(|k| k.to_string()).unwrap_or_default() } else { String::new() },
+                j.remote.clone().unwrap_or_default(),
+                j.bwlimit.clone().unwrap_or_default(),
+                j.schedule.clone(),
+                j.catch_up,
+            ),
+            None => ("New cloud mirror job".to_string(), self.active_host_name().to_string(), String::new(), String::new(), crate::jobs::SOURCE_NEW.to_string(), String::new(), String::new(), String::new(), "30 3 * * *".to_string(), true),
+        };
+        Modal::Form {
+            title,
+            fields: vec![
+                FormField { label: "Host (where rclone runs)".to_string(), value: host },
+                FormField { label: "Dataset".to_string(), value: dataset },
+                FormField { label: "Path inside the dataset (blank = all of it)".to_string(), value: path },
+                FormField { label: "Source (F2 to pick: new, a prefix, or @snapshot)".to_string(), value: source },
+                FormField { label: format!("Snapshots to keep (Source new only; blank = {})", crate::jobs::DEFAULT_FRESH_KEEP), value: fresh_keep },
+                FormField { label: "Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in it)".to_string(), value: remote },
+                FormField { label: "Speed limit (bytes/s, e.g. 5M; blank = none)".to_string(), value: limit },
+                FormField { label: "Schedule".to_string(), value: schedule },
+                FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
+            ],
+            focused: 0,
+            description: Some("Copies a read-only clone of a snapshot to <remote>/current as plain files. What a run replaces or deletes is first moved to <remote>/old/<date and time>/; zfsctl never deletes anything in old/. Symlinks, devices and empty folders are not copied.".to_string()),
+            kind: FormKind::MirrorJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+        }
+    }
+}
+
+/// Turns a submitted cloud mirror form into a save, or says what is wrong. It refuses exactly what the daemon
+/// would refuse (`jobs::resolve`), plus a remote that overlaps another job's.
+pub(super) fn build_mirror_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+    let FormKind::MirrorJob { hosts, existing, jobs } = kind else { return Err("not a cloud mirror job form".to_string()) };
+    let host = field_value(fields, 0).trim();
+    if !hosts.iter().any(|h| h == host) {
+        return Err(format!("Unknown host '{host}'. Configured hosts: {}", hosts.join(", ")));
+    }
+    let dataset = field_value(fields, 1).trim();
+    let path = field_value(fields, 2).trim();
+    let (source, snapshot, prefix) = crate::ui::jobs::parse_source(field_value(fields, 3))?;
+    let fresh = source.as_deref() == Some(crate::jobs::SOURCE_NEW);
+    let fresh_keep = match field_value(fields, 4).trim() {
+        "" => None,
+        n if fresh => Some(n.parse::<u32>().ok().filter(|k| *k >= 1).ok_or_else(|| "Snapshots to keep must be a whole number, at least 1".to_string())?),
+        _ => None,
+    };
+    let remote = field_value(fields, 5).trim();
+    if !crate::rclone::valid_remote(remote) {
+        return Err("Remote must look like aws:mybucket/photos: the name of an rclone remote, a colon and a path, with no keys in it".to_string());
+    }
+    let limit = field_value(fields, 6).trim();
+    if !limit.is_empty() && !crate::rclone::valid_bwlimit(limit) {
+        return Err("Speed limit must be a number of bytes per second with an optional K, M or G, like 5M".to_string());
+    }
+    let schedule = field_value(fields, 7).trim();
+    crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
+    let catch_up = match field_value(fields, 8).trim().to_lowercase().as_str() {
+        "" | "y" | "yes" => true,
+        "n" | "no" => false,
+        other => return Err(format!("Catch up must be y or n, not '{other}'")),
+    };
+    let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+    let base = crate::jobs::Job {
+        id: String::new(),
+        host: host.to_string(),
+        kind: crate::jobs::KIND_MIRROR.to_string(),
+        pool: None,
+        dataset: Some(dataset.to_string()),
+        recursive: false,
+        prefix,
+        keep: fresh_keep,
+        dest_host: None,
+        dest_dataset: None,
+        dest_dir: None,
+        dest_keep: None,
+        remote: Some(remote.to_string()),
+        bwlimit: (!limit.is_empty()).then(|| limit.to_string()),
+        force: false,
+        repository: None,
+        password_file: None,
+        retention: None,
+        source,
+        snapshot,
+        path: (!path.is_empty()).then(|| path.to_string()),
+        schedule: schedule.to_string(),
+        catch_up,
+        enabled: true,
+        created_at: Some(now),
+    };
+    if let Some(old) = existing {
+        let old_pool = old.dataset.as_deref().and_then(|d| d.split('/').next()).unwrap_or("");
+        if old.host != host || old_pool != dataset.split('/').next().unwrap_or("") {
+            return Err("Changing the host or pool of a cloud mirror job would strand its clone; delete this job and create a new one.".to_string());
+        }
+    }
+    let job = match existing {
+        Some(old) => crate::jobs::Job { id: old.id.clone(), enabled: old.enabled, created_at: old.created_at, ..base },
+        None => crate::jobs::Job { id: crate::ui::jobs::new_mirror_job_id(host, dataset, &taken), ..base },
+    };
+    crate::jobs::resolve(&job, hosts)?;
+    if let Some(other) = crate::jobs::clashing_job(jobs, &job) {
+        return Err(format!("Job '{}' cannot run alongside this one: {}", other.id, crate::jobs::clash_reason(other, &job).unwrap_or_default()));
+    }
     Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })
 }
 
@@ -269,6 +386,8 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
         dest_dataset: (!to_file).then(|| dest.to_string()),
         dest_dir: to_file.then(|| dest.to_string()),
         dest_keep,
+        remote: None,
+        bwlimit: None,
         force,
         repository: None,
         password_file: None,
@@ -335,6 +454,8 @@ pub(super) fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], s
             dest_dataset: None,
             dest_dir: None,
             dest_keep: None,
+            remote: None,
+            bwlimit: None,
             force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
             schedule: schedule.to_string(),
             catch_up,
@@ -386,6 +507,8 @@ pub(super) fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir:
             dest_dataset: None,
             dest_dir: None,
             dest_keep: None,
+            remote: None,
+            bwlimit: None,
             force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         },
     };
@@ -507,7 +630,7 @@ pub(super) fn prune_prompt(dest_host: &str, dest_ds: &str, doomed: &[String], ke
 /// destroy snapshots, a backup job whose retention would forget backups. `snapshots` is the list for the job's
 /// host when it is known; without it a snapshot job cannot say how many it would destroy.
 pub(super) fn job_save_prompt(old: Option<&crate::jobs::Job>, new: &crate::jobs::Job, snapshots: Option<&[crate::zfs::snapshot::Snapshot]>) -> Option<String> {
-    use crate::jobs::{effective_prefix, KIND_BACKUP, KIND_REPLICATE, KIND_SNAPSHOT};
+    use crate::jobs::{effective_prefix, KIND_BACKUP, KIND_MIRROR, KIND_REPLICATE, KIND_SNAPSHOT};
     let dataset = new.dataset.as_deref().unwrap_or("?");
     match new.kind.as_str() {
         KIND_REPLICATE if new.force => {
@@ -567,6 +690,15 @@ pub(super) fn job_save_prompt(old: Option<&crate::jobs::Job>, new: &crate::jobs:
                 }
             }
             (!parts.is_empty()).then(|| format!("Backup job for {dataset}.\n{}\n\nSave this job? (y/n)", parts.join("\n")))
+        }
+        KIND_MIRROR => {
+            let (remote, name) = (new.remote.as_deref().unwrap_or("?"), new.remote.as_deref().and_then(|r| r.split(':').next()).unwrap_or("?"));
+            let changed = old.is_none_or(|o| o.remote != new.remote || o.dataset != new.dataset);
+            changed.then(|| {
+                format!(
+                    "Cloud mirror of {dataset} to {remote}.\nEvery run makes {remote}/current match the dataset, using the rclone '{name}' remote's keys on that host. Files a run replaces or deletes are first moved to {remote}/old/<date and time>/; zfsctl never deletes anything in old/.\n\nSave this job? (y/n)"
+                )
+            })
         }
         _ => None,
     }
@@ -764,7 +896,7 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::NotifySettings | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::NotifySettings | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
     }
 }
 

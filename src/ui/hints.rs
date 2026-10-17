@@ -97,7 +97,7 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
             if build_picker_state(kind, *focused, value).is_some() {
                 v.push(h("F2", "Pick", 1));
             }
-            if matches!(kind, crate::ui::modal::FormKind::BackupJob { .. }) {
+            if matches!(kind, crate::ui::modal::FormKind::BackupJob { .. } | crate::ui::modal::FormKind::MirrorJob { .. }) {
                 v.push(h("F5", "Check", 1));
             }
             v.push(h("Esc", "Cancel", 0));
@@ -309,6 +309,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("N", "New snapshot job", 3));
             v.push(h("R", "New replication job", 3));
             v.push(h("B", "New backup job", 3));
+            v.push(h("C", "New cloud mirror", 3));
             if let Some(job) = app.jobs_table.selected().and_then(|i| app.jobs_view.jobs.get(i)) {
                 if crate::jobs::is_cancellable(job) && app.jobs_view.is_running(&job.id) {
                     v.push(h("c", "Cancel transfer", 1).tone(Tone::Warn));
@@ -545,7 +546,7 @@ mod tests {
     fn jobs(with_selection: bool) -> App {
         let mut a = base();
         go(&mut a, Section::Jobs);
-        let job = |id: &str, enabled: bool| crate::jobs::Job { id: id.to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None };
+        let job = |id: &str, enabled: bool| crate::jobs::Job { id: id.to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None };
         a.jobs_view.jobs = vec![job("a", true), job("b", false)];
         a.jobs_table.select(if with_selection { Some(0) } else { None });
         a
@@ -1144,8 +1145,8 @@ mod tests {
         ];
         a.shares = vec![smb("tank/b"), smb("tank/c")];
         a.jobs_view.jobs = vec![
-            crate::jobs::Job { id: "a".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None },
-            crate::jobs::Job { id: "b".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: false, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None },
+            crate::jobs::Job { id: "a".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None },
+            crate::jobs::Job { id: "b".to_string(), host: "local".to_string(), kind: crate::jobs::KIND_SCRUB.to_string(), pool: Some("tank".to_string()), schedule: "0 3 * * 0".to_string(), catch_up: true, enabled: false, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None },
         ];
         a.vdevs = vec![
             VdevLine { depth: 0, name: "tank".to_string(), health: PoolHealth::Online },
@@ -1309,6 +1310,7 @@ mod tests {
         let a = jobs(true);
         let labels: Vec<(&str, &str)> = hints(&a).iter().map(|h| (h.key, h.label)).collect();
         assert!(labels.contains(&("B", "New backup job")), "{labels:?}");
+        assert!(labels.contains(&("C", "New cloud mirror")), "{labels:?}");
         assert!(!labels.iter().any(|(k, _)| *k == "c"), "nothing is running");
     }
 

@@ -5,6 +5,7 @@
 - Why snapshots and replication are not yet a backup, and what restic adds.
 - How to set up a repository and a backup job, and restore from it.
 - How to send backups to the cloud through rclone.
+- How to mirror a dataset to AWS S3 or Backblaze B2 as plain files you can browse, and how to set up the cloud account for it.
 
 ## Why another layer
 
@@ -261,6 +262,61 @@ The backed-up path inside is `/var/run/zfsctl/<job id>`, followed by the job's *
 On a host other than the hub, restic runs over ssh and `sudo`, so it needs restic installed and `/usr/local/bin/restic` added to that host's sudoers entry.
 
 > **Safety:** that entry is as powerful as `zfs` or `bectl`: restic running as root can read any file and write anywhere, so whoever holds the ssh key effectively has root on that host. Run `zfsctl print-sudoers` to see the entry, and decide.
+
+## Mirror to the cloud as plain files
+
+A restic repository is not something you can open in a web browser: it is encrypted blocks. Sometimes you want the opposite: **your photos and documents sitting in a bucket as ordinary files**, so you can open the cloud console, browse to a folder and download one picture. That is the **cloud mirror job** (`C` in Jobs). It uses [rclone](https://rclone.org), the same tool as above, but copies plain files instead of building a repository.
+
+The form asks for the same things as the backup job (host, dataset, an optional path inside it, which snapshot to read, how many fresh snapshots to keep), plus:
+
+- **Remote:** where to send it, written `name:path`, such as `aws:mybucket/photos` or `b2:mybucket/photos`. The name is a remote you created with `rclone config`; the keys live in root's rclone config on that host, never in zfsctl. A text with keys in it is refused.
+- **Speed limit:** optional, in bytes per second, such as `5M`, so a nightly upload does not use your whole connection. Schedule the job for the night if the connection matters; there is no time-of-day setting.
+
+Press `F5` in the form to check the remote before you save. It lists the remote read-only and tells you in plain words if the remote name is not set up, the bucket is missing or the keys are refused.
+
+### How the bucket looks
+
+```text
+mybucket/photos/current/                       <- always equals the dataset
+mybucket/photos/old/20261017T033000Z/...       <- what that run replaced or deleted
+mybucket/photos/old/20261018T033000Z/...
+```
+
+Each run makes `current` match the dataset. Before it replaces or deletes a file there, it **moves** the old copy into a folder named for the run's date and time (UTC). zfsctl never expires or deletes anything in `old/`: when the bucket gets big, you delete old folders yourself, in the cloud console or with `rclone purge`.
+
+> **Safety:** a run whose source has **no files** (an empty dataset, a wrong path, nothing but symlinks) stops with an error and changes nothing, so a broken clone can never look like "every file was deleted". zfsctl only runs `rclone sync` (with the `old/` folder) and read-only listings: never `delete`, `purge` or `cleanup`.
+
+> **Safety:** only regular files are copied. **Symlinks, sockets, devices and empty folders are not**, and file owners and permissions are not kept in a bucket. A run that skipped only such things still counts as OK and does not mention them. If you rely on symlinks, use the restic backup instead.
+
+### Set up the cloud account
+
+zfsctl has not been tried against real AWS or Backblaze accounts yet (it was verified end to end with a folder standing in for the cloud), so treat your first run as a test: mirror a small dataset first and look at the bucket.
+
+**AWS S3.** Create a bucket (any region; leave "block public access" on). In IAM create a user that can only use that bucket, with a policy like this (replace `mybucket`):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::mybucket" },
+    { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": "arn:aws:s3:::mybucket/*" }
+  ]
+}
+```
+
+Create an access key for that user. Optionally turn on **bucket versioning** in the bucket's properties: S3 then keeps every older version of every object on its own, a second safety net behind `old/`.
+
+**Backblaze B2.** Create a private bucket. Under *Application Keys* create a key restricted to that one bucket, allowing list, read, write and delete files. Note the key ID and the key (it is shown once). **A B2 bucket keeps every version of every file by default**, so a file moved into `old/` also leaves a hidden version behind in `current/` and you pay for both. Set the bucket's lifecycle to *Keep only the last version of the file* unless you want that second hidden history.
+
+> **Tip:** the key must be allowed to delete: moving a file into `old/` is a copy followed by a delete of the original. A key that cannot delete will make every run that replaces a file fail, which is annoying but safe.
+
+**Tell rclone.** On the host that runs the job, as root, run `rclone config`, choose *New remote*, give it a name (`aws` or `b2`), pick the provider (`s3` with provider *AWS*, or `b2`) and paste the key. The keys are saved in `/root/.config/rclone/rclone.conf`, which must be readable by root only (`chmod 600`; the `F5` check tells you if it is not). On a host other than the hub also run `zfsctl print-sudoers HOST --with rclone` and install the line it prints. Do not use an rclone `crypt` remote if you want to browse the files: it encrypts the names too.
+
+### Restoring
+
+There is nothing special to restore from: open the bucket and download. From a shell, `rclone copy aws:mybucket/photos/current /restore` copies everything back, and an older version of one file is in the `old/<date and time>/` folder of the run that replaced it.
+
+> **Safety:** two mirror jobs on one host cannot have overlapping remotes, and a mirror cannot contain or sit inside a restic job's `rclone:` repository: the sync would move the repository's files into `old/`. zfsctl refuses to save or enable such a job. It cannot tell that two remote names (`aws:` and `aws2:`) point to one bucket, so do not do that.
 
 ## Try it
 

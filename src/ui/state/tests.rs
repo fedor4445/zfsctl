@@ -5069,7 +5069,7 @@ fn app_with_jobs(jobs_list: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
 }
 
 fn scrub_job(id: &str) -> crate::jobs::Job {
-    crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
+    crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
 }
 
 #[test]
@@ -7403,7 +7403,7 @@ fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_wh
 fn snap_job(keep: Option<u32>) -> crate::jobs::Job {
     crate::jobs::Job {
         id: "snap-local-tank-data".into(), host: "local".into(), kind: crate::jobs::KIND_SNAPSHOT.into(), pool: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true,
-        created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false,
+        created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false,
         repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
     }
 }
@@ -7836,4 +7836,113 @@ fn a_forced_replication_with_a_selection_shows_both_warnings_and_one_confirm_sav
     assert!(prompt.contains("destroy 4 snapshots") && prompt.contains("zfs receive -F"), "{prompt}");
     app.handle_modal_key(KeyCode::Char('y'));
     assert!(app.handle_modal_key(KeyCode::Enter).is_some());
+}
+
+const MIRROR_GOOD: [&str; 9] = ["local", "tank/data", "", "hourly", "", "aws:bkt/photos", "", "30 3 * * *", "y"];
+
+fn mirror_kind(existing: Option<crate::jobs::Job>, jobs: Vec<crate::jobs::Job>) -> FormKind {
+    FormKind::MirrorJob { hosts: vec!["local".to_string(), "fbsd16".to_string()], existing: existing.map(Box::new), jobs }
+}
+
+fn mirror_fields(values: [&str; 9]) -> Vec<FormField> {
+    values.iter().map(|v| FormField { label: "x".to_string(), value: (*v).to_string() }).collect()
+}
+
+fn mirror_build(values: [&str; 9], jobs: Vec<crate::jobs::Job>) -> std::result::Result<PendingAction, String> {
+    build_mirror_job_action(&mirror_kind(None, jobs), &mirror_fields(values), std::path::Path::new("/state"), chrono::Utc::now())
+}
+
+#[test]
+fn big_c_in_jobs_opens_a_blank_cloud_mirror_form_with_defaults() {
+    let (mut app, _dir) = app_with_jobs(&[]);
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(form_values(&app), ["local", "", "", "new", "", "", "", "30 3 * * *", "y"]);
+}
+
+#[test]
+fn a_valid_mirror_form_builds_a_save_with_the_remote_and_the_speed_limit() {
+    let mut values = MIRROR_GOOD;
+    values[6] = "5M";
+    let action = mirror_build(values, vec![]).unwrap();
+    let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+    assert_eq!((job.kind.as_str(), job.remote.as_deref(), job.bwlimit.as_deref(), job.dataset.as_deref()), (crate::jobs::KIND_MIRROR, Some("aws:bkt/photos"), Some("5M"), Some("tank/data")));
+    assert_eq!(job.id, "mirror-local-tank-data");
+    let blank = mirror_build(MIRROR_GOOD, vec![]).unwrap();
+    let MutationCall::SaveJob { job, .. } = blank.call else { panic!() };
+    assert_eq!(job.bwlimit, None, "a blank limit saves none");
+}
+
+#[test]
+fn a_bad_remote_speed_limit_or_clash_is_refused_with_a_message_naming_the_field() {
+    for evil in ["", "nocolon", ":s3,access_key_id=X:b/p", "-x:b"] {
+        let mut values = MIRROR_GOOD;
+        values[5] = evil;
+        assert!(mirror_build(values, vec![]).unwrap_err().starts_with("Remote must look like"), "{evil:?}");
+    }
+    let mut values = MIRROR_GOOD;
+    values[6] = "5MB";
+    assert!(mirror_build(values, vec![]).unwrap_err().starts_with("Speed limit"));
+    let other = crate::jobs::Job::test_mirror("other", "tank/other", "hourly", "aws:bkt");
+    let err = mirror_build(MIRROR_GOOD, vec![other]).unwrap_err();
+    assert!(err.contains("'other'") && err.contains("remote overlaps"), "{err}");
+}
+
+#[test]
+fn enter_on_a_mirror_job_edits_it_in_the_mirror_form() {
+    let mut m = crate::jobs::Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/photos");
+    m.bwlimit = Some("5M".into());
+    let (mut app, _dir) = app_with_jobs(&[m]);
+    app.refresh_jobs();
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(form_values(&app), ["local", "tank/data", "", "hourly", "", "aws:bkt/photos", "5M", "30 3 * * *", "y"]);
+}
+
+#[test]
+fn saving_a_mirror_job_asks_first_naming_the_remote_and_saying_nothing_in_old_is_deleted() {
+    let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+    app.modal = Some(Modal::Form { title: "x".into(), fields: mirror_fields(MIRROR_GOOD), focused: 8, description: None, kind: mirror_kind(None, vec![]) });
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    let Some(Modal::Confirm { prompt, choice, .. }) = app.modal.clone() else { panic!("{:?}", app.modal) };
+    assert_eq!(choice, None);
+    assert!(prompt.contains("aws:bkt/photos/current") && prompt.contains("old/") && prompt.contains("never deletes"), "{prompt}");
+}
+
+#[test]
+fn f2_on_the_mirror_forms_source_lists_the_datasets_snapshots() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.modal = Some(Modal::Form { title: "x".into(), fields: mirror_fields(MIRROR_GOOD), focused: 3, description: None, kind: mirror_kind(None, vec![]) });
+    app.handle_modal_key(KeyCode::F(2));
+    assert!(app.picker.is_some(), "the Source field has a picker");
+}
+
+fn mirror_form_app(values: [&str; 9]) -> App {
+    let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+    app.modal = Some(Modal::Form { title: "x".into(), fields: mirror_fields(values), focused: 5, description: None, kind: mirror_kind(None, vec![]) });
+    app
+}
+
+#[test]
+fn f5_in_the_mirror_form_queues_one_check_of_the_remote_on_the_forms_host() {
+    let mut app = mirror_form_app(MIRROR_GOOD);
+    assert_eq!(app.handle_modal_key(KeyCode::F(5)), None);
+    assert_eq!(app.pending_preflight, vec![PendingPreflight { host: 0, host_name: "local".into(), repository: "aws:bkt/photos".into(), password_file: String::new() }]);
+    assert_eq!(app.backup_preflight, Some(PreflightCheck { host: 0, repository: "aws:bkt/photos".into(), password_file: String::new(), result: None, file_note: None }));
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "the form stays open");
+    app.handle_modal_key(KeyCode::F(5));
+    assert_eq!(app.pending_preflight.len(), 1, "a second press while checking queues nothing");
+}
+
+#[test]
+fn f5_in_the_mirror_form_runs_nothing_for_a_bad_remote_or_host_and_says_why() {
+    for (values, want) in [
+        (["nohost", "tank/data", "", "hourly", "", "aws:bkt", "", "30 3 * * *", "y"], "Unknown host 'nohost'"),
+        (["local", "tank/data", "", "hourly", "", "", "", "30 3 * * *", "y"], "enter the remote"),
+        (["local", "tank/data", "", "hourly", "", ":s3,access_key_id=X:b", "", "30 3 * * *", "y"], "enter the remote"),
+    ] {
+        let mut app = mirror_form_app(values);
+        app.handle_modal_key(KeyCode::F(5));
+        assert!(app.pending_preflight.is_empty() && app.backup_preflight.is_none(), "{values:?}");
+        assert!(app.status_message.clone().unwrap_or_default().contains(want), "{:?}", app.status_message);
+    }
 }

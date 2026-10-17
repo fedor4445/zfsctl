@@ -21,10 +21,16 @@ use std::fmt::Write;
 /// Where a job's clone is mounted: the same path every run, so restic finds its parent backup.
 pub const MOUNT_ROOT: &str = "/var/run/zfsctl";
 
+/// `<pool>/<prefix>-<job id>`: the clone a job of one kind reads from (`zit-restic` for a backup, `zit-mirror`
+/// for a cloud mirror, so the two kinds can never touch each other's clones).
+pub(super) fn clone_name_for(prefix: &str, dataset: &str, job_id: &str) -> String {
+    let pool = dataset.split('/').next().unwrap_or(dataset);
+    format!("{pool}/{prefix}-{job_id}")
+}
+
 /// `<pool>/zit-restic-<job id>`.
 pub fn clone_name(dataset: &str, job_id: &str) -> String {
-    let pool = dataset.split('/').next().unwrap_or(dataset);
-    format!("{pool}/zit-restic-{job_id}")
+    clone_name_for("zit-restic", dataset, job_id)
 }
 
 pub fn mountpoint(job_id: &str) -> String {
@@ -93,7 +99,7 @@ fn machine_name(runner: &dyn CommandRunner, label: &str) -> String {
 /// `zfs destroy -r` (a pool-wide recursive snapshot may have given the clone snapshots of its own; the
 /// name is zfsctl's), retried a few times: after a cancel over SSH the remote restic can take a moment to
 /// let go of the files. A clone that is already gone is fine.
-fn destroy_clone(runner: &dyn CommandRunner, clock: &dyn super::scrub::Clock, clone: &str) -> std::result::Result<(), String> {
+pub(super) fn destroy_clone(runner: &dyn CommandRunner, clock: &dyn super::scrub::Clock, clone: &str) -> std::result::Result<(), String> {
     let mut last = String::new();
     for attempt in 0..5 {
         match zfs(runner, &["destroy", "-r", "--", clone]) {
@@ -184,6 +190,66 @@ fn backup(env: &Env, runner: &dyn CommandRunner, job: &Job, machine: &str, repo:
     }
 }
 
+/// Why a run could not pick or prepare its source: a skip is quiet, a failure is an alert.
+pub(super) enum SourceEnd {
+    Skip(String),
+    Fail(String),
+}
+
+/// Removes a clone an earlier, crashed run left behind: it would pin its snapshot and block the new clone.
+pub(super) fn remove_stale_clone(runner: &dyn CommandRunner, clock: &dyn super::scrub::Clock, clone: &str) -> std::result::Result<(), String> {
+    if zfs(runner, &["list", "-H", "-o", "name", "--", clone]).is_ok() {
+        destroy_clone(runner, clock, clone).map_err(|e| format!("cannot remove the clone {clone} left by an earlier run: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The snapshot a run reads: a fresh one (after pruning the job's own old ones), the pinned one, or the newest
+/// `<prefix>-<timestamp>`. Returns its short name and the note about pruned fresh snapshots.
+pub(super) fn choose_snapshot(runner: &dyn CommandRunner, clock: &dyn super::scrub::Clock, job: &Job, dataset: &str) -> std::result::Result<(String, String), SourceEnd> {
+    let mut prune_note = String::new();
+    let snapshot = match backup_source(job) {
+        BackupSource::Fresh => {
+            let own = fresh_prefix(&job.id);
+            // Before taking the new one, so a run that fails later never leaves more than `keep` behind.
+            let keep = job.keep.unwrap_or(DEFAULT_FRESH_KEEP).max(1) as usize;
+            prune_fresh(runner, dataset, &own, keep, &mut prune_note);
+            let name = snapshot_name(&own, clock.now());
+            match create_snapshot_with(runner, dataset, &name, false) {
+                Ok(()) => {}
+                Err(AppError::CommandFailed { stderr, .. }) if stderr.contains("already exists") => return Err(SourceEnd::Skip(format!("skipped: {name} already exists"))),
+                Err(e) => return Err(SourceEnd::Fail(format!("cannot snapshot {dataset}: {e}"))),
+            }
+            name
+        }
+        BackupSource::Pinned(name) => match list_snapshot_infos(runner, dataset) {
+            Ok(all) if all.iter().any(|s| s.name == name) => name.to_string(),
+            Ok(_) => return Err(SourceEnd::Fail(format!("the snapshot {dataset}@{name} no longer exists"))),
+            Err(e) => return Err(SourceEnd::Fail(e.to_string())),
+        },
+        BackupSource::Prefix(prefix) => {
+            let all = list_snapshot_infos(runner, dataset).map_err(|e| SourceEnd::Fail(e.to_string()))?;
+            let Some(newest) = all.iter().filter(|s| is_own(prefix, &s.name)).max_by(|a, b| a.name.cmp(&b.name)) else {
+                return Err(SourceEnd::Skip(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")));
+            };
+            newest.name.clone()
+        }
+    };
+    Ok((snapshot, prune_note))
+}
+
+/// Clones `origin` (`dataset@snapshot`) read-only at `mount`.
+pub(super) fn make_clone(runner: &dyn CommandRunner, origin: &str, clone: &str, mount: &str) -> std::result::Result<(), String> {
+    zfs(runner, &["clone", "-o", &format!("mountpoint={mount}"), "-o", "readonly=on", "-o", "com.sun:auto-snapshot=false", "--", origin, clone])
+        .map(|_| ())
+        .map_err(|e| format!("cannot clone {origin}: {e}"))
+}
+
+/// What a run reads: the clone's root, or a directory inside it.
+pub(super) fn target_dir(job: &Job, mount: &str) -> String {
+    job.path.as_deref().map_or_else(|| mount.to_string(), |p| format!("{mount}/{}", p.trim_end_matches('/')))
+}
+
 pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
     let ctx = env.ctx;
     let dataset = job.dataset.clone().unwrap_or_default();
@@ -198,46 +264,16 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     let clone = clone_name(&dataset, &job.id);
     let mount = mountpoint(&job.id);
 
-    // A clone left by a crashed run would pin its snapshot and block the new clone.
-    if zfs(runner, &["list", "-H", "-o", "name", "--", &clone]).is_ok() {
-        if let Err(e) = destroy_clone(runner, ctx.clock, &clone) {
-            return failed(format!("cannot remove the clone {clone} left by an earlier run: {e}"));
-        }
+    if let Err(e) = remove_stale_clone(runner, ctx.clock, &clone) {
+        return failed(e);
     }
 
-    let mut prune_note = String::new();
-    let snapshot = match backup_source(job) {
-        BackupSource::Fresh => {
-            let own = fresh_prefix(&job.id);
-            // Before taking the new one, so a run that fails later never leaves more than `keep` behind.
-            let keep = job.keep.unwrap_or(DEFAULT_FRESH_KEEP).max(1) as usize;
-            prune_fresh(runner, &dataset, &own, keep, &mut prune_note);
-            let name = snapshot_name(&own, ctx.clock.now());
-            match create_snapshot_with(runner, &dataset, &name, false) {
-                Ok(()) => {}
-                Err(AppError::CommandFailed { stderr, .. }) if stderr.contains("already exists") => return skipped(format!("skipped: {name} already exists")),
-                Err(e) => return failed(format!("cannot snapshot {dataset}: {e}")),
-            }
-            name
-        }
-        BackupSource::Pinned(name) => match list_snapshot_infos(runner, &dataset) {
-            Ok(all) if all.iter().any(|s| s.name == name) => name.to_string(),
-            Ok(_) => return failed(format!("the snapshot {dataset}@{name} no longer exists")),
-            Err(e) => return failed(e.to_string()),
-        },
-        BackupSource::Prefix(prefix) => {
-            let all = match list_snapshot_infos(runner, &dataset) {
-                Ok(s) => s,
-                Err(e) => return failed(e.to_string()),
-            };
-            let Some(newest) = all.iter().filter(|s| is_own(prefix, &s.name)).max_by(|a, b| a.name.cmp(&b.name)) else {
-                return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}"));
-            };
-            newest.name.clone()
-        }
+    let (snapshot, prune_note) = match choose_snapshot(runner, ctx.clock, job, &dataset) {
+        Ok(chosen) => chosen,
+        Err(SourceEnd::Skip(msg)) => return skipped(msg),
+        Err(SourceEnd::Fail(msg)) => return failed(msg),
     };
-    // What restic reads: the clone's root, or a directory inside it.
-    let target = job.path.as_deref().map_or_else(|| mount.clone(), |p| format!("{mount}/{}", p.trim_end_matches('/')));
+    let target = target_dir(job, &mount);
 
     let machine = machine_name(runner, &job.host);
     match restic_query(runner, &repo, &restic::snapshots_args(&repo, &password_file, &machine, &job.id, &snapshot)).and_then(|json| restic::snapshot_count(&json)) {
@@ -248,8 +284,8 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
 
     let time = snapshot_time(runner, &dataset, &snapshot);
     let origin = format!("{dataset}@{snapshot}");
-    if let Err(e) = zfs(runner, &["clone", "-o", &format!("mountpoint={mount}"), "-o", "readonly=on", "-o", "com.sun:auto-snapshot=false", "--", &origin, &clone]) {
-        return failed(format!("cannot clone {origin}: {e}"));
+    if let Err(e) = make_clone(runner, &origin, &clone, &mount) {
+        return failed(e);
     }
 
     let mut started = event(job, run_id, EventKind::Started, ctx.clock.now());
@@ -503,6 +539,12 @@ mod tests {
         assert_eq!(clone_name("tank/data/sub", "backup-1"), "tank/zit-restic-backup-1");
         assert_eq!(clone_name("tank", "b"), "tank/zit-restic-b");
         assert_eq!(mountpoint("backup-1"), "/var/run/zfsctl/backup-1");
+    }
+
+    #[test]
+    fn clone_name_for_uses_the_given_prefix() {
+        assert_eq!(clone_name_for("zit-mirror", "tank/data", "j"), "tank/zit-mirror-j");
+        assert_eq!(clone_name("tank/data", "j"), "tank/zit-restic-j");
     }
 
     #[test]

@@ -207,6 +207,7 @@ pub fn build_picker_state(kind: &FormKind, field_index: usize, current_value: &s
         FormKind::SnapshotJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1], schedule_field: 5 }),
         FormKind::ReplicateJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0, 3], live_fields: &[1, 4], schedule_field: 6 }),
         FormKind::BackupJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1, 3], schedule_field: 8 }),
+        FormKind::MirrorJob { hosts, .. } => Some(JobPickers { hosts, host_fields: &[0], live_fields: &[1, 3], schedule_field: 7 }),
         _ => None,
     };
     if let Some(spec) = job_form {

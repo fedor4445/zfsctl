@@ -15,6 +15,7 @@ pub mod progress;
 pub mod replicate;
 pub mod replicate_file;
 pub mod backup;
+pub mod mirror;
 pub mod scrub;
 pub mod snapshot;
 pub mod transfer;
@@ -215,6 +216,15 @@ impl Shared {
         self.run_cancellable(ctx, due, run_id, |env| backup::run_backup(env, runner.as_ref(), job, due.scheduled_for, due.catch_up, run_id))
     }
 
+    fn mirror(&self, ctx: &Context, due: &scheduler::Due, run_id: &str) -> Outcome {
+        let job = &due.job;
+        let Some(runner) = self.runner(&job.host) else {
+            let slot = scrub::Slot { scheduled_for: Some(due.scheduled_for), catch_up: due.catch_up };
+            return scrub::finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("host '{}' is not configured", job.host), slot);
+        };
+        self.run_cancellable(ctx, due, run_id, |env| mirror::run_mirror(env, runner.as_ref(), job, due.scheduled_for, due.catch_up, run_id))
+    }
+
     /// Hands each pending cancel request to the run it names; a request for a job that is not
     /// running has nothing to cancel and is dropped.
     fn apply_cancel_requests(&self, dir: &Path) {
@@ -237,6 +247,7 @@ impl Shared {
                 let outcome = match due.job.kind.as_str() {
                     crate::jobs::KIND_REPLICATE => Some(self.replicate(&ctx, &due, &run_id)),
                     crate::jobs::KIND_BACKUP => Some(self.backup(&ctx, &due, &run_id)),
+                    crate::jobs::KIND_MIRROR => Some(self.mirror(&ctx, &due, &run_id)),
                     kind => {
                         let Some(runner) = self.runner(&due.job.host) else { return };
                         if kind == crate::jobs::KIND_SNAPSHOT {
@@ -492,7 +503,7 @@ mod tests {
     }
 
     fn job() -> Job {
-        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
+        Job { id: "scrub-tank".into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
     fn shared(dir: &tempfile::TempDir, runner: FakeRunner, notify: Option<String>) -> Shared {

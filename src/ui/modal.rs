@@ -325,6 +325,9 @@ pub enum FormKind {
     /// `source` is `new`, `@snapshot` or a prefix; `snapshots to keep` only matters for `new`. `keep` is blank
     /// (keep everything) or text like `7d 4w 12m 3y`. `jobs` is every current job.
     BackupJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
+    /// Fields: `[host, dataset, path, source, snapshots to keep, remote, speed limit, schedule, catch_up (y/n)]`.
+    /// The first five are the backup form's; `remote` is an rclone `name:path`; `speed limit` is blank or like `5M`.
+    MirrorJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
     /// Fields: `[name, ssh_target]` — both required. Unlike every
     /// other `FormKind`, submitting this one never produces a
     /// `PendingAction`: there's no existing host/runner to dispatch
@@ -378,7 +381,7 @@ mod tests {
     use crate::exec::test_support::FakeRunner;
 
     fn job(id: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
     #[test]

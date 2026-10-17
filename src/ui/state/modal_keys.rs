@@ -1,7 +1,7 @@
 //! Keys while a modal is open: the confirmations, and the forms with their submit paths.
 
 use super::forms::{
-    build_backup_job_action, build_bootenv_action, build_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
+    build_backup_job_action, build_bootenv_action, build_job_action, build_mirror_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
     irreversible_prompt,
 };
 use super::{App, Instant, Modal, MutationCall, PendingAction};
@@ -125,6 +125,10 @@ impl App {
                 }
                 self.reopen(form)
             }
+            KeyCode::F(5) if matches!(form.kind, FormKind::MirrorJob { .. }) => {
+                self.request_mirror_check(field_value(&form.fields, 0).trim(), field_value(&form.fields, 5).trim());
+                self.reopen(form)
+            }
             KeyCode::F(5) if matches!(form.kind, FormKind::BackupJob { .. }) => {
                 self.request_backup_preflight(field_value(&form.fields, 0).trim(), field_value(&form.fields, 5).trim(), field_value(&form.fields, 6).trim());
                 self.reopen(form)
@@ -148,7 +152,7 @@ impl App {
             // The destination dataset lists the *destination* host's datasets.
             let host_field = if matches!(kind, FormKind::ReplicateJob { .. }) && *focused == 4 { 3 } else { 0 };
             // The backup form's Source field lists the snapshots of the form's dataset.
-            let snapshots_of = (matches!(kind, FormKind::BackupJob { .. }) && *focused == 3).then(|| field_value(fields, 1).trim().to_string());
+            let snapshots_of = (matches!(kind, FormKind::BackupJob { .. } | FormKind::MirrorJob { .. }) && *focused == 3).then(|| field_value(fields, 1).trim().to_string());
             self.open_pool_picker(&mut picker, kind, field_value(fields, host_field), snapshots_of);
         }
         self.picker = Some(picker);
@@ -163,7 +167,7 @@ impl App {
         match form.kind {
             FormKind::NotifySettings => self.submit_notify_form(form),
             FormKind::AddHost => self.submit_add_host_form(form),
-            FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::BackupJob { .. } | FormKind::ReplicateJob { .. } => self.submit_job_form(form),
+            FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::ReplicateJob { .. } => self.submit_job_form(form),
             FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } => match build_bootenv_action(&form.kind, &form.fields) {
                 Ok(action) => {
                     if let MutationCall::RenameBootEnv { to, .. } = &action.call {
@@ -221,6 +225,7 @@ impl App {
             FormKind::Job { .. } => (build_job_action(&form.kind, &form.fields, &self.state_dir, now), false),
             FormKind::SnapshotJob { .. } => (build_snapshot_job_action(&form.kind, &form.fields, &self.state_dir, now), true),
             FormKind::BackupJob { .. } => (build_backup_job_action(&form.kind, &form.fields, &self.state_dir, now), true),
+            FormKind::MirrorJob { .. } => (build_mirror_job_action(&form.kind, &form.fields, &self.state_dir, now), true),
             _ => (build_replicate_job_action(&form.kind, &form.fields, &self.state_dir, now), true),
         };
         match built {

@@ -153,6 +153,10 @@ mod tests {
             dest_dataset: None,
             dest_dir: None,
             dest_keep: None,
+            remote: None,
+
+            bwlimit: None,
+
             force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         }
     }
