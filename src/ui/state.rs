@@ -35,6 +35,7 @@ pub enum Section {
     Shares,
     BootEnvs,
     Jobs,
+    Cloud,
     Alerts,
     Vdevs,
     PoolProperties,
@@ -134,6 +135,22 @@ pub struct PendingPreflight {
     pub password_file: String,
 }
 
+/// A Cloud section lookup waiting for the event loop to hand it its host's runner. Both only read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCloud {
+    pub host: usize,
+    pub host_name: String,
+    pub work: CloudWork,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudWork {
+    /// `rclone listremotes --long`.
+    Remotes,
+    /// `rclone size` of a cloud mirror job's `current/` and `old/`.
+    Size { job_id: String, remote: String },
+}
+
 /// A replication form whose save waits for the destination's snapshot list (to say what Keep on target
 /// would destroy). The form and the save are kept so either can go on once the list arrives.
 #[derive(Debug, Clone, PartialEq)]
@@ -168,6 +185,10 @@ pub enum WorkerMsg {
     Disks(usize, Result<Vec<DiskInfo>>),
     Shares(usize, Result<SharesSnapshot>),
     BootEnvs(usize, Result<Vec<crate::zfs::bootenv::BootEnv>>),
+    /// The host's name and the rclone remotes it has, or why they could not be listed.
+    CloudRemotes(String, std::result::Result<Vec<(String, String)>, String>),
+    /// A cloud mirror job's id and what was measured of its bucket folders.
+    CloudSize(String, crate::ui::cloud::Size),
     /// The `String` is the name of the pool this vdev refresh was for —
     /// needed so a slow result can be told apart from one for a
     /// different pool the user has since drilled into (see the
@@ -264,6 +285,14 @@ pub struct App {
     pub shares_table: TableState,
     pub jobs_view: crate::ui::jobs::JobsView,
     pub jobs_table: TableState,
+    pub cloud_table: TableState,
+    /// The rclone remotes each host reported (by host name), why a host could not, and what `s` measured (by job id).
+    pub cloud_known: crate::ui::cloud::Known,
+    pub cloud_errors: HashMap<String, String>,
+    pub cloud_sizes: HashMap<String, crate::ui::cloud::Size>,
+    pub pending_cloud: Vec<PendingCloud>,
+    /// Lookups that were started and have not answered: `remotes:<host>` or `size:<job id>`.
+    cloud_busy: HashSet<String>,
     /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
     pub state_dir: std::path::PathBuf,
     last_jobs_refresh: Option<Instant>,
@@ -426,7 +455,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let hosts_for_addr = hosts.clone();
         App {
-            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Alerts],
+            sections: vec![Section::Hosts, Section::Pools, Section::Datasets, Section::Snapshots, Section::Disks, Section::Shares, Section::BootEnvs, Section::Jobs, Section::Cloud, Section::Alerts],
             selected_section: 0,
             hosts,
             selected_host: 0,
@@ -452,6 +481,12 @@ impl App {
             host_probes: HashMap::new(),
             probe_epoch: Instant::now(),
             jobs_table: TableState::default(),
+            cloud_table: TableState::default(),
+            cloud_known: HashMap::new(),
+            cloud_errors: HashMap::new(),
+            cloud_sizes: HashMap::new(),
+            pending_cloud: Vec::new(),
+            cloud_busy: HashSet::new(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
             last_jobs_refresh: None,
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
@@ -683,6 +718,7 @@ impl App {
             Section::Shares => self.refresh_shares(runner),
             Section::BootEnvs => self.refresh_bootenvs(runner),
             Section::Jobs => self.refresh_jobs(),
+            Section::Cloud => self.refresh_cloud(),
             Section::Alerts => self.refresh_alerts(),
             _ => {}
         }
@@ -821,7 +857,7 @@ impl App {
     /// (so a run's result appears live), every 10 otherwise (so the failed-jobs indicator is
     /// right from any section). The first call always loads.
     pub fn refresh_jobs_if_stale(&mut self, now: Instant) {
-        let every = if self.current_section() == Section::Jobs { Duration::from_secs(2) } else { Duration::from_secs(10) };
+        let every = if matches!(self.current_section(), Section::Jobs | Section::Cloud) { Duration::from_secs(2) } else { Duration::from_secs(10) };
         if self.last_jobs_refresh.is_none_or(|t| now.duration_since(t) >= every) {
             self.last_jobs_refresh = Some(now);
             self.refresh_jobs();
@@ -1803,7 +1839,7 @@ impl App {
                 self.backup_preflight = None;
                 self.modal = Some(self.backup_job_form(None));
             }
-            KeyCode::Char('C') if self.current_section() == Section::Jobs => {
+            KeyCode::Char('C') if matches!(self.current_section(), Section::Jobs | Section::Cloud) => {
                 self.backup_preflight = None;
                 self.modal = Some(self.mirror_job_form(None));
             }
@@ -1893,6 +1929,16 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Alerts => {
                 self.alerts_view.scroll = self.alerts_view.scroll.saturating_sub(1);
             }
+            KeyCode::Down if self.current_section() == Section::Cloud => {
+                let rows = self.cloud_rows().len();
+                move_table_selection(&mut self.cloud_table, rows, true);
+            }
+            KeyCode::Up if self.current_section() == Section::Cloud => {
+                let rows = self.cloud_rows().len();
+                move_table_selection(&mut self.cloud_table, rows, false);
+            }
+            KeyCode::Char('s') if self.current_section() == Section::Cloud => self.request_cloud_sizes(),
+            KeyCode::F(5) if self.current_section() == Section::Cloud => self.request_cloud_check(),
             KeyCode::Down if self.current_section() == Section::Jobs => {
                 move_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len(), true);
             }
@@ -2178,6 +2224,88 @@ impl App {
             };
             let _ = tx.send(WorkerMsg::PoolNames(host, result));
         });
+    }
+
+    /// The Cloud table's rows: every rclone remote the hosts reported, plus every remote a job names.
+    pub fn cloud_rows(&self) -> Vec<crate::ui::cloud::Row> {
+        crate::ui::cloud::rows(&self.jobs_view.jobs, &self.cloud_known)
+    }
+
+    fn selected_cloud_row(&self) -> Option<crate::ui::cloud::Row> {
+        self.cloud_table.selected().and_then(|i| self.cloud_rows().into_iter().nth(i))
+    }
+
+    /// Reloads the jobs and asks the hub, and each host that has a job writing to a remote, which remotes it has.
+    /// Nothing is asked twice while an answer is awaited.
+    pub fn refresh_cloud(&mut self) {
+        self.refresh_jobs();
+        let mut hosts: Vec<usize> = self.hosts.iter().position(|h| h == "local").into_iter().collect();
+        for job in &self.jobs_view.jobs {
+            if crate::ui::cloud::remote_name(job).is_none() {
+                continue;
+            }
+            if let Some(i) = self.hosts.iter().position(|h| *h == job.host) {
+                if !hosts.contains(&i) {
+                    hosts.push(i);
+                }
+            }
+        }
+        for host in hosts {
+            let host_name = self.hosts[host].clone();
+            if self.cloud_busy.insert(format!("remotes:{host_name}")) {
+                self.pending_cloud.push(PendingCloud { host, host_name, work: CloudWork::Remotes });
+            }
+        }
+        let rows = self.cloud_rows().len();
+        clamp_table_selection(&mut self.cloud_table, rows);
+    }
+
+    /// `s` in Cloud: measures the bucket folders of the selected remote's cloud mirror jobs, one lookup each.
+    fn request_cloud_sizes(&mut self) {
+        let Some(row) = self.selected_cloud_row() else { return };
+        let mut asked = 0;
+        for job in self.jobs_view.jobs.iter().filter(|j| row.job_ids.contains(&j.id) && j.kind == crate::jobs::KIND_MIRROR) {
+            let (Some(remote), Some(host)) = (job.remote.clone(), self.hosts.iter().position(|h| *h == job.host)) else { continue };
+            if self.cloud_busy.insert(format!("size:{}", job.id)) {
+                self.pending_cloud.push(PendingCloud { host, host_name: job.host.clone(), work: CloudWork::Size { job_id: job.id.clone(), remote } });
+            }
+            asked += 1;
+        }
+        self.status_message = Some(if asked == 0 { "Nothing to measure: no cloud mirror job uses this remote".to_string() } else { "Measuring the bucket (it lists the files, which a cloud account may count as requests)...".to_string() });
+    }
+
+    /// F5 in Cloud: the form's remote check, for the first cloud mirror job of the selected remote.
+    fn request_cloud_check(&mut self) {
+        let Some(row) = self.selected_cloud_row() else { return };
+        let target = self.jobs_view.jobs.iter().find(|j| row.job_ids.contains(&j.id) && j.kind == crate::jobs::KIND_MIRROR).and_then(|j| j.remote.clone().map(|r| (j.host.clone(), r)));
+        match target {
+            Some((host, remote)) => self.request_mirror_check(&host, &remote),
+            None => self.status_message = Some("Nothing to check: F5 tries the remote of a cloud mirror job, and none uses this one".to_string()),
+        }
+    }
+
+    /// Runs one queued Cloud lookup on a worker thread and reports it as `WorkerMsg::CloudRemotes` / `CloudSize`.
+    pub fn run_cloud(&mut self, runner: Arc<dyn CommandRunner>, pending: PendingCloud) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || match pending.work {
+            CloudWork::Remotes => {
+                let result = crate::ui::cloud::list_remotes(runner.as_ref(), &pending.host_name);
+                let _ = tx.send(WorkerMsg::CloudRemotes(pending.host_name, result));
+            }
+            CloudWork::Size { job_id, remote } => {
+                let size = crate::ui::cloud::measure(runner.as_ref(), &pending.host_name, &remote, chrono::Utc::now());
+                let _ = tx.send(WorkerMsg::CloudSize(job_id, size));
+            }
+        });
+    }
+
+    /// Reports a lookup that could not start (the host index no longer resolves) through the same channel.
+    pub fn fail_cloud(&self, pending: PendingCloud, message: String) {
+        let now = chrono::Utc::now();
+        let _ = match pending.work {
+            CloudWork::Remotes => self.tx.send(WorkerMsg::CloudRemotes(pending.host_name, Err(message))),
+            CloudWork::Size { job_id, .. } => self.tx.send(WorkerMsg::CloudSize(job_id, crate::ui::cloud::Size { current: None, old: None, at: now, problem: Some(message) })),
+        };
     }
 
     /// F5 in the backup form: validates what the save would validate, then queues the check for the event loop.
@@ -2792,6 +2920,13 @@ Jobs
   c                cancel the selected replication or backup while it is running
   Space            enable / disable the job
   d                delete the job (y/n; its past runs stay in the history)
+
+Cloud
+  Up / Down        select an rclone remote (the hub's, and those of hosts that have a cloud job)
+  s                measure the bucket: the size of current/ and old/ of the remote's cloud mirror jobs (reads the file list, which a cloud account may count as requests)
+  F5               check the remote of its cloud mirror job (read-only)
+  C                new cloud mirror job
+  r                refresh the list of remotes and jobs
 
 Alerts
   e                edit the alert settings (saved into the [notify] section of config.toml only; y/n to confirm)

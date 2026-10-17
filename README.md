@@ -102,7 +102,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 
 ## Keys
 
-- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud, Alerts) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `'['` / `']'` (Datasets right pane only, once focused with `Right`): cycle between the Properties, Permissions, and ACL sub-tabs.
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row

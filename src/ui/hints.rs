@@ -317,6 +317,18 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("r", "Refresh", 4));
         }
+        (Section::Cloud, _) => {
+            let row = app.cloud_table.selected().and_then(|i| app.cloud_rows().into_iter().nth(i));
+            if !app.cloud_rows().is_empty() {
+                v.push(h("↑↓", "Move", 1));
+            }
+            if row.as_ref().is_some_and(|r| r.job_ids.iter().any(|id| app.jobs_view.jobs.iter().any(|j| &j.id == id && j.kind == crate::jobs::KIND_MIRROR))) {
+                v.push(h("s", "Bucket size", 1));
+                v.push(h("F5", "Check", 2));
+            }
+            v.push(h("C", "New cloud mirror", 3));
+            v.push(h("r", "Refresh", 4));
+        }
         (Section::Alerts, _) => {
             v.push(h("e", "Edit settings", 1));
             v.push(h("t", "Send test", 2));

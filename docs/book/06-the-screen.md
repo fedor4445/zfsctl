@@ -49,7 +49,7 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 ↑↓ Move  → Properties  n New pool  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
-- **The sidebar** (left) lists the sections: Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs and Alerts. The highlighted one is where you are.
+- **The sidebar** (left) lists the sections: Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud and Alerts. The highlighted one is where you are.
 - **The list** (top right) shows the items of that section: hosts, pools, datasets and so on. In Pools and Datasets a second pane on the right shows the selected item's properties.
 - **The panel** (bottom right) shows live details of whatever is selected: space, health, counts, and two graphs of read and write activity. It disappears on a very short terminal so that the list keeps room.
 - **The hint bar** is the last line of the screen. It lists exactly the keys that work right now, and it changes as you move: a key that would do nothing is not shown. When there is a message for you (a result, an error), it appears on the line just above.

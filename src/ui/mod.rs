@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod cloud;
 pub mod hints;
 pub mod jobs;
 pub mod layout;
@@ -168,6 +169,18 @@ fn apply_pending_preflights(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued Cloud lookup (remote list, bucket size) its host's runner.
+fn apply_pending_cloud(app: &mut App, inventory: &HostInventory) {
+    for pending in std::mem::take(&mut app.pending_cloud) {
+        if let Some(h) = inventory.hosts.get(pending.host) {
+            app.run_cloud(h.runner.clone(), pending);
+        } else {
+            let message = format!("unknown host '{}'", pending.host_name);
+            app.fail_cloud(pending, message);
+        }
+    }
+}
+
 /// Hands each queued destination listing (a replication form's Keep on target check) its host's runner.
 fn apply_pending_prune_checks(app: &mut App, inventory: &HostInventory) {
     for pending in std::mem::take(&mut app.pending_prune_check) {
@@ -233,6 +246,7 @@ fn event_loop(
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
         apply_pending_preflights(app, inventory);
+        apply_pending_cloud(app, inventory);
         apply_pending_prune_checks(app, inventory);
         poll_host_probes(app, inventory);
         app.clear_stale_scan_status();
@@ -259,6 +273,7 @@ fn event_loop(
                     Section::Shares => app.refresh_shares(host.runner.clone()),
                     Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
                     Section::Jobs => app.refresh_jobs(),
+                    Section::Cloud => app.refresh_cloud(),
                     Section::Alerts => app.refresh_alerts(),
                     Section::Vdevs => {
                         if let Some(pool) = app.drilled_pool.clone() {
@@ -350,6 +365,7 @@ fn event_loop(
                                     Section::Shares => app.refresh_shares(host.runner.clone()),
                                     Section::BootEnvs => app.refresh_bootenvs(host.runner.clone()),
                                     Section::Jobs => app.refresh_jobs(),
+                                    Section::Cloud => app.refresh_cloud(),
                                     Section::Alerts => app.refresh_alerts(),
                                     Section::Hosts
                                     | Section::Vdevs
