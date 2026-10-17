@@ -1,19 +1,19 @@
 //! Reading `smartctl -j` output: which disks of a host have a problem. Pure: the daemon runs the commands, the
 //! Dashboard and the daily report show what this finds.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Severity {
     Watch,
     Issue,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Problem {
     pub severity: Severity,
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Disk {
     pub dev: String,
     pub problems: Vec<Problem>,

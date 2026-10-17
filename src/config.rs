@@ -10,7 +10,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
     vec![
         "name", "ssh_target", "tag",
         "theme", "auto_refresh_secs",
-        "notify_command",
+        "notify_command", "smart_check",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
         "memory_warn", "memory_crit", "swap_warn", "swap_crit", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
@@ -164,11 +164,27 @@ pub struct DaemonConfig {
     /// and `ZFSCTL_MESSAGE`; never on the command line.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub notify_command: Option<String>,
+    /// When the daemon checks the disks with `smartctl`, once a day: `"HH:MM"` (hub local time), or `"off"`. Unset is
+    /// `03:30`. Read when the daemon starts.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub smart_check: Option<String>,
 }
+
+pub const DEFAULT_SMART_CHECK: &str = "03:30";
 
 impl DaemonConfig {
     fn is_default(&self) -> bool {
-        self.notify_command.is_none()
+        self.notify_command.is_none() && self.smart_check.is_none()
+    }
+
+    /// The time of the daily disk check, `None` when it is switched off; an error says what is wrong with the value.
+    pub fn smart_time(&self) -> std::result::Result<Option<chrono::NaiveTime>, String> {
+        let text = self.smart_check.as_deref().unwrap_or(DEFAULT_SMART_CHECK).trim();
+        if text == "off" {
+            return Ok(None);
+        }
+        let well_formed = text.len() == 5 && text.as_bytes().get(2) == Some(&b':');
+        chrono::NaiveTime::parse_from_str(text, "%H:%M").ok().filter(|_| well_formed).map(Some).ok_or_else(|| format!("smart_check '{text}' is not HH:MM or \"off\""))
     }
 }
 
@@ -615,10 +631,21 @@ impl Config {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn smart_check_accepts_off_and_hh_mm_and_rejects_the_rest() {
+        let time = |v: Option<&str>| DaemonConfig { smart_check: v.map(str::to_string), ..DaemonConfig::default() }.smart_time();
+        assert_eq!(time(None), Ok(chrono::NaiveTime::from_hms_opt(3, 30, 0)), "the default is 03:30");
+        assert_eq!(time(Some("off")), Ok(None));
+        assert_eq!(time(Some("05:15")), Ok(chrono::NaiveTime::from_hms_opt(5, 15, 0)));
+        for bad in ["", "25:00", "3pm", "03:30:00", "on"] {
+            assert!(time(Some(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn documented_keys_match_the_serialised_fields() {
         let host = HostConfig { name: "n".into(), ssh_target: Some("u@h".into()), tag: Some("t".into()) };
         let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
-        let daemon = DaemonConfig { notify_command: Some("true".into()) };
+        let daemon = DaemonConfig { notify_command: Some("true".into()), smart_check: Some("03:30".into()) };
         let cloud = CloudConfig { caps: [("b2".to_string(), "10G".to_string())].into() };
         let dashboard = DashboardConfig {
             memory_warn: Some(90),

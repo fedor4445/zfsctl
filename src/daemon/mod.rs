@@ -17,6 +17,7 @@ pub mod replicate_file;
 pub mod backup;
 pub mod mirror;
 pub mod scrub;
+pub mod smart_check;
 pub mod snapshot;
 pub mod transfer;
 
@@ -377,6 +378,39 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
     }
 }
 
+/// Checks the disks of every host with `smartctl` once a day, at `at` (the hub's local time), and also at start when
+/// the last run is missing or over a day old. Nothing here depends on the health monitor being on.
+fn smart_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, at: Option<chrono::NaiveTime>) {
+    let Some(at) = at else {
+        log("disk health check is off");
+        return;
+    };
+    log(&format!("disk health check daily at {}", at.format("%H:%M")));
+    let path = state_dir.join("smart.json");
+    while !stop.load(Ordering::SeqCst) {
+        guarded("the disk health check", || {
+            let previous = smart_check::SmartFile::load(&path);
+            let last = previous.last_run().map(|t| t.with_timezone(&chrono::Local).naive_local());
+            if !smart_check::due(chrono::Local::now().naive_local(), Some(at), last) {
+                return;
+            }
+            let hosts = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
+            let fresh = smart_check::run_all(&hosts, Utc::now(), &previous, smart_check::HOST_DEADLINE);
+            let problems = fresh.hosts.values().flat_map(|h| &h.disks).filter(|d| !d.problems.is_empty()).count();
+            match fresh.save(&path) {
+                Ok(()) => log(&format!("disk health checked on {} of {} hosts, {problems} disk(s) with a problem", fresh.hosts.len(), hosts.len())),
+                Err(e) => log(&format!("cannot write {}: {e}", path.display())),
+            }
+        });
+        for _ in 0..300 {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+}
+
 fn dispatch(shared: &Arc<Shared>, work: Vec<Work>) {
     for item in work {
         let shared = Arc::clone(shared);
@@ -433,6 +467,16 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         if let Err(e) = std::thread::Builder::new().name("health".to_string()).spawn(move || monitor_loop(&shared, &state_dir, &stop)) {
             log(&format!("could not start the health monitor: {e}"));
         }
+    }
+
+    match Config::load(config_path).map_err(|e| e.to_string()).and_then(|c| c.daemon.smart_time()) {
+        Ok(at) => {
+            let (shared, state_dir, stop) = (Arc::clone(&shared), state_dir.clone(), Arc::clone(stop));
+            if let Err(e) = std::thread::Builder::new().name("smart".to_string()).spawn(move || smart_loop(&shared, &state_dir, &stop, at)) {
+                log(&format!("could not start the disk health check: {e}"));
+            }
+        }
+        Err(problem) => log(&format!("config.toml [daemon] problem, the disk health check is off: {problem}")),
     }
 
     let mut last_problem: Option<String> = None;
