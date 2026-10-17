@@ -23,6 +23,7 @@ A new job kind (`kind = "rclone"`; the TUI calls it a cloud mirror job) that, on
 - zfsctl never expires or deletes anything in `old/`. The user deletes old versions themselves.
 - A per-job optional speed limit field (rclone `--bwlimit`). No time-of-day limits: the schedule covers that.
 - A check button (F5) in the form, like the backup form's.
+- **Items rclone cannot mirror are skipped quietly** (user decision 2026-10-17, against the recommendation to report them): symlinks, sockets, devices and fifos are not copied, and empty directories, owners and permissions are not kept on bucket remotes. A run that skips only such items is OK and its message and the F5 check do not mention them. Regular files that cannot be read still fail the run. The book states the limitation plainly (what is and is not copied) so it is written down even though the run does not say it; do not use `--links`.
 - Starting providers: AWS S3 and Backblaze B2, via rclone remotes. Any other rclone remote may work but is untested.
 - Data safety is the user's anti-goal: **losing data in the bucket would be the failure**, even if everything else works.
 
