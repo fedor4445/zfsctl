@@ -349,10 +349,11 @@ fn cloud_label(row: &cloud::Row) -> String {
 
 fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs) -> Line {
     let cells = cloud::cells(row, view, inputs.cloud_sizes, inputs.cloud_caps, inputs.now);
-    let name = cloud_label(row);
+    // The provider's name comes first (padded so the remotes line up), then the remote.
+    let name = format!("{:<16} {}", cloud::provider_name(row.kind.as_deref()), cloud_label(row));
     let name = name.as_str();
     if row.job_ids.is_empty() {
-        return Line { level: Level::Unknown, text: format!("{name} ({})  no jobs", cells[2]) };
+        return Line { level: Level::Unknown, text: format!("{name}  no jobs") };
     }
     let bucket = if cells[5] == "-" { String::new() } else { format!("  {}", cells[5]) };
     let level = if cloud::failed(row, view) {
@@ -364,7 +365,7 @@ fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs) -> Line {
             _ => Level::Fine,
         }
     };
-    Line { level, text: format!("{name} ({})  {} job{}  last {}{bucket}", cells[2], cells[3], if cells[3] == "1" { "" } else { "s" }, cells[4]) }
+    Line { level, text: format!("{name}  {} job{}  last {}{bucket}", cells[3], if cells[3] == "1" { "" } else { "s" }, cells[4]) }
 }
 
 fn alerts_line(alerts: &AlertsView, daemon_running: bool, now: DateTime<Utc>) -> Line {
@@ -848,6 +849,22 @@ mod tests {
         let d = fx.build(vec![]);
         assert_eq!(d.cloud[0].level, Level::Watch);
         assert!(d.attention.iter().any(|i| i.level == Level::Watch && i.subject == "b2" && i.goto == Section::Cloud), "{:?}", d.attention);
+    }
+
+    #[test]
+    fn a_cloud_line_starts_with_the_providers_name_and_then_the_remote() {
+        let jobs = vec![mirror("m1", "b2:zfsctl/photos")];
+        let mut known = crate::ui::cloud::Known::new();
+        known.insert("local".into(), vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into())]);
+        known.insert("fbsd16".into(), vec![("aws".into(), "s3".into())]);
+        let mut fx = Fixture::new(view(jobs.clone(), &[("m1", RunResult::Ok, "ok")], beat(1)));
+        fx.cloud_rows = crate::ui::cloud::rows(&jobs, &known);
+        let d = fx.build(vec![]);
+        let texts: Vec<&str> = d.cloud.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts[0].starts_with("Backblaze B2     b2  1 job  last ok"), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with("SFTP             t1  no jobs")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with("Amazon S3 (etc.) fbsd16:aws  no jobs")), "{texts:?}");
+        assert!(texts.iter().all(|t| !t.contains("(b2)") && !t.contains("(sftp)")), "the raw type in parentheses is gone: {texts:?}");
     }
 
     #[test]

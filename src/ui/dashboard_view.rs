@@ -483,7 +483,7 @@ mod tests {
         let mut app = mixed_app();
         app.cloud_known.insert("local".into(), vec![("b2".into(), "b2".into())]);
         let text = render(&mut app, 120, 50).join("\n");
-        assert!(text.contains("b2 (b2)") && text.contains("no jobs"), "{text}");
+        assert!(text.contains("Backblaze B2") && text.contains("b2") && text.contains("no jobs"), "{text}");
     }
 
     /// Nine hosts down plus a fine one, the daemon running: nine Needs attention lines and a tall host table.
