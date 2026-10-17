@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod book_check;
 mod preflight;
+mod rclone;
 mod restic;
 mod acl;
 mod config;
