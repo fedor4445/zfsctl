@@ -31,7 +31,7 @@ Prints the sudoers entry for a managed host, built from the programs it finds th
 
 ### `zfsctl print-sudoers HOST --with FEATURE --without FEATURE`
 
-`--with restic` adds backup support and `--with rclone` adds cloud mirror support; `--without acl`, `disks`, `bootenvs`, `shares` or `samba` leaves a feature out. The options may be repeated.
+`--with restic` adds backup support, `--with rclone` adds cloud mirror support and `--with smart` the daily disk health check (needs `smartmontools`); `--without acl`, `disks`, `bootenvs`, `shares` or `samba` leaves a feature out. The options may be repeated.
 
 ### `zfsctl check-host HOST`
 
@@ -69,6 +69,7 @@ On a managed host the unprivileged account may run these programs as root throug
 | `restic` | backup jobs (`--with restic`) | any arguments |
 | `readlink` | backup jobs with a path (`--with restic`) | any arguments (it only reads where a symlink points) |
 | `rclone` | cloud mirror jobs (`--with rclone`) | any arguments |
+| `smartctl` | the daily disk health check (`--with smart`) | only `--scan -j` and `-j -H -A -i /dev/*` (the `*` also matches spaces, so an extra flag is not stopped; zfsctl sends only read-only flags) |
 
 Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat`, `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.
 

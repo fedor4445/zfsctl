@@ -111,6 +111,9 @@ pub fn render(host: &str, user: &str, features: &[Feature], resolved: &[Resolved
         let (verb, pronoun) = if powerful.len() == 1 { ("is", "it") } else { ("are", "them") };
         let _ = writeln!(text, "# {} {verb} as powerful as root: grant {pronoun} only to hosts you trust zfsctl with.", powerful.join(", "));
     }
+    if resolved.iter().any(|r| r.entry.name == "smartctl") {
+        text.push_str("# smartctl: the /dev/* form cannot stop an extra flag (sudo's * also matches spaces); zfsctl only ever sends read-only flags,\n# and this account already holds zfs and zpool, which are as powerful as root.\n");
+    }
     text.push_str("# Install as /usr/local/etc/sudoers.d/zfsctl (owner root, mode 0440) after checking it:\n#   visudo -c -f /usr/local/etc/sudoers.d/zfsctl\n");
     let unprivileged: Vec<&str> = privilege::unprivileged_for(features).iter().map(|e| e.name).collect();
     if !unprivileged.is_empty() {
@@ -244,6 +247,7 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) 
         // Each pinned form, with the extra arguments sudo must refuse after it: a different argument in its
         // place, and one appended (a wildcard such as `smb4.conf*` refuses the first and allows the second).
         let forms: Vec<(&[&str], Vec<Vec<&str>>)> = match &r.entry.kind {
+            Kind::Privileged { pinned, probe } if !pinned.is_empty() && probe.is_empty() => pinned.iter().map(|args| (*args, Vec::new())).collect(),
             Kind::Privileged { pinned, probe } if !pinned.is_empty() => {
                 pinned.iter().map(|args| (*args, vec![vec![*probe], args.iter().copied().chain([*probe]).collect()])).collect()
             }
@@ -719,6 +723,35 @@ mod tests {
         let report = check_host(&runner, "h", &[Feature::Core]).unwrap();
         assert_eq!(statuses(&report), [("zpool", Status::Ok), ("zfs", Status::Missing)]);
         assert!(report.lines[1].detail.contains("/sbin/zfs") && report.lines[1].detail.contains("/usr/local/sbin/zfs"), "{}", report.lines[1].detail);
+    }
+
+    const SMART_PATHS: &[(&str, &str)] = &[("smartctl", "/usr/local/sbin/smartctl")];
+    const SMART_ALLOWED: &[&str] = &["/usr/local/sbin/smartctl --scan -j", "/usr/local/sbin/smartctl -j -H -A -i /dev/*"];
+
+    #[test]
+    fn smart_is_opt_in_like_restic_and_rclone() {
+        assert!(!select(&[], &[]).unwrap().contains(&Feature::Smart));
+        assert!(select(&["smart".to_string()], &[]).unwrap().contains(&Feature::Smart));
+    }
+
+    #[test]
+    fn print_sudoers_with_smart_pins_the_two_forms_and_says_the_wildcard_is_not_a_barrier() {
+        let text = print_sudoers(&host_with(SMART_PATHS), "h", "fbsd@h", &[Feature::Smart], "d").unwrap();
+        assert!(text.contains("/usr/local/sbin/smartctl --scan -j") && text.contains("/usr/local/sbin/smartctl -j -H -A -i /dev/*"), "{text}");
+        assert!(text.contains("# smartctl: the /dev/* form cannot stop an extra flag"), "{text}");
+    }
+
+    #[test]
+    fn check_host_does_not_flag_the_device_wildcard_as_too_broad() {
+        let report = check_host(&sudo_host(SMART_ALLOWED, SMART_PATHS), "h", &[Feature::Smart]).unwrap();
+        assert_eq!(statuses(&report), [("smartctl", Status::Ok), ("smartctl", Status::Ok)], "{}", report.render());
+    }
+
+    #[test]
+    fn check_host_reports_smartctl_missing_when_sudo_refuses_it() {
+        let report = check_host(&sudo_host(&[], SMART_PATHS), "h", &[Feature::Smart]).unwrap();
+        assert_eq!(statuses(&report), [("smartctl", Status::Missing), ("smartctl", Status::Missing)], "{}", report.render());
+        assert_eq!(report.exit_code(), 1);
     }
 
     #[test]

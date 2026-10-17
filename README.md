@@ -82,6 +82,8 @@ A twelfth binary, `/usr/local/bin/restic`, is needed only on a host that runs ba
 
 A thirteenth binary, `/usr/local/bin/rclone`, is needed only on a host that runs cloud mirror jobs (jobs on the hub itself run as root and need nothing): add it with `zfsctl print-sudoers HOST --with rclone`. It is as broad as `restic`: rclone as root can read any file and write to any remote its `rclone.conf` names.
 
+A fourteenth binary, `/usr/local/sbin/smartctl` (from `pkg install smartmontools`), is needed only for the daily disk health check (`zfsctl print-sudoers HOST --with smart`). Its entry is pinned to two forms, `smartctl --scan -j` and `smartctl -j -H -A -i /dev/*`; sudo's `*` also matches spaces, so the second cannot stop an extra flag, but the account already holds `zfs` and `zpool`, which are as powerful as root, and zfsctl only ever sends the read-only flags.
+
 ```sh
 which zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee
 ```
