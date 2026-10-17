@@ -8,6 +8,7 @@ pub mod layout;
 pub mod metrics;
 pub mod modal;
 pub mod picker;
+pub mod settings;
 pub mod shell;
 pub mod state;
 pub mod theme;
