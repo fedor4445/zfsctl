@@ -136,9 +136,9 @@ impl Theme {
             accent: fg(blue),
             danger: fg(red).add_modifier(Modifier::BOLD),
             alt: fg(c((211, 54, 130), 125)),
-            // Solarized's own dark teal behind white text on Solarized base02.
+            // Solarized's own dark teal behind white text on a green-leaning dark teal.
             // The background is always RGB: the nearest 256-color teal (#005f5f) is far lighter and washes the text out.
-            canvas: dark.then(|| Style::new().fg(c((255, 255, 255), 231)).bg(Color::Rgb(7, 54, 66))),
+            canvas: dark.then(|| Style::new().fg(c((255, 255, 255), 231)).bg(Color::Rgb(6, 60, 56))),
         }
     }
 
