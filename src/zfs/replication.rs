@@ -88,7 +88,21 @@ pub fn plan(source: &[SnapInfo], dest: &[SnapInfo], prefix: &str) -> Plan {
     Plan::Send { new: newest.name.clone(), base }
 }
 
-/// `zfs send [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size.
+/// What the next run would destroy if it first adds one more own snapshot to the destination (a send
+/// does): the preview a form shows, so a save that makes the next run destroy an existing snapshot is
+/// never described as harmless. It is an upper bound: a run that finds nothing to send destroys less.
+pub fn prune_preview(listing: &[SnapInfo], prefix: &str, keep: u32) -> Vec<String> {
+    match keep {
+        0 => Vec::new(),
+        1 => {
+            let mut own: Vec<&SnapInfo> = listing.iter().filter(|s| is_own(prefix, &s.name)).collect();
+            own.sort_by(|a, b| (a.createtxg, &a.name).cmp(&(b.createtxg, &b.name)));
+            own.iter().map(|s| s.name.clone()).collect()
+        }
+        n => prune_selection(listing, prefix, n - 1),
+    }
+}
+
 /// The names (after `@`) of the job's own snapshots on the destination to destroy, oldest first: all
 /// but the newest `keep` by `createtxg`. Anything not exactly `<prefix>-<timestamp>` is never listed,
 /// and `keep` of 0 selects nothing rather than everything.
@@ -102,6 +116,7 @@ pub fn prune_selection(listing: &[SnapInfo], prefix: &str, keep: u32) -> Vec<Str
     own[..excess].iter().map(|s| s.name.clone()).collect()
 }
 
+/// `zfs send [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size.
 pub fn send_args(dataset: &str, new: &str, base: Option<&str>, dry: bool) -> Vec<String> {
     let mut args = vec!["send".to_string()];
     if dry {
@@ -178,6 +193,15 @@ mod tests {
         assert!(prune_selection(&three[..1], "hourly", 1).is_empty());
         assert!(prune_selection(&three, "hourly", 3).is_empty());
         assert_eq!(prune_selection(&three, "hourly", 2), vec![T1]);
+    }
+
+    #[test]
+    fn the_preview_counts_the_snapshot_the_next_send_adds() {
+        let three = vec![info(T1, 1, 10), info(T2, 2, 20), info(T3, 3, 30)];
+        assert_eq!(prune_preview(&three, "hourly", 3), vec![T1], "three exist, keep 3: the run adds a fourth, so the oldest goes");
+        assert_eq!(prune_preview(&three, "hourly", 1), vec![T1, T2, T3], "keep 1: the new one is the only survivor");
+        assert!(prune_preview(&three, "hourly", 4).is_empty());
+        assert!(prune_preview(&three, "hourly", 0).is_empty());
     }
 
     #[test]

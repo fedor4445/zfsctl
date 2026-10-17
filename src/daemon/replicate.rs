@@ -30,6 +30,9 @@ struct Chosen {
     resumed: bool,
     /// Sent from a base snapshot, so `force` has a base to roll the destination back to.
     incremental: bool,
+    /// Destination snapshots the prune must not destroy whatever their age: the base of this transfer and
+    /// the snapshot it brings (or, when up to date, the one both sides share).
+    protect: Vec<String>,
 }
 
 /// A command's stderr as one line: its lines joined, without the sender's `warning:` noise (the
@@ -55,13 +58,14 @@ struct Pruned {
 /// Destroys the job's own snapshots on the destination beyond the newest `keep`, one
 /// `zfs destroy dataset@snap` each, oldest first. `Err` means nothing was destroyed (the listing
 /// failed or could not be parsed, or a name did not validate).
-fn prune_destination(dst: &dyn CommandRunner, dest_ds: &str, prefix: &str, keep: u32) -> std::result::Result<Pruned, String> {
+fn prune_destination(dst: &dyn CommandRunner, dest_ds: &str, prefix: &str, keep: u32, protect: &[String]) -> std::result::Result<Pruned, String> {
     if !valid_dataset(dest_ds) {
         return Err(format!("not a valid dataset name: {dest_ds}"));
     }
     let listing = list_snapshot_infos_or_empty(dst, dest_ds).map_err(|e| e.to_string())?;
     let own = listing.iter().filter(|s| crate::daemon::snapshot::is_own(prefix, &s.name)).count();
-    let doomed = prune_selection(&listing, prefix, keep);
+    // The newest by txg is not always the base: after a rollback on the source the shared snapshot can be older.
+    let doomed: Vec<String> = prune_selection(&listing, prefix, keep).into_iter().filter(|n| !protect.contains(n)).collect();
     if let Some(bad) = doomed.iter().find(|n| !valid_snapshot_name(n)) {
         return Err(format!("not a valid snapshot name: {bad}"));
     }
@@ -80,17 +84,17 @@ fn prune_destination(dst: &dyn CommandRunner, dest_ds: &str, prefix: &str, keep:
 
 /// Runs the prune a finished (or up-to-date) run is due, and says how it went: the history suffix
 /// when it worked, the failure text when it did not.
-fn prune_after(dst: &dyn CommandRunner, job: &Job, dest_host: &str, dest_ds: &str, prefix: &str) -> std::result::Result<String, String> {
+fn prune_after(dst: &dyn CommandRunner, job: &Job, dest_host: &str, dest_ds: &str, prefix: &str, protect: &[String], sent: bool) -> std::result::Result<String, String> {
     let Some(keep) = job.dest_keep.filter(|_| dest_host != DEST_FILE) else { return Ok(String::new()) };
-    match prune_destination(dst, dest_ds, prefix, keep) {
-        Err(e) => Err(format!("the transfer succeeded, but {dest_host} was not pruned: {e}")),
+    match prune_destination(dst, dest_ds, prefix, keep, protect) {
+        Err(e) => Err(format!("{}{dest_host} was not pruned: {e}", if sent { "the transfer succeeded, but " } else { "" })),
         Ok(p) => {
             let left = if p.refused == 0 { String::new() } else { format!(", {} held or cloned left alone", p.refused) };
             let note = format!("; pruned {}, kept {} on {dest_host}{left}", p.destroyed, p.remaining);
             if p.failures.is_empty() {
                 Ok(note)
             } else {
-                Err(format!("the transfer succeeded{note}; could not destroy {}", p.failures.join("; ")))
+                Err(format!("{}{note}; could not destroy {}", if sent { "the transfer succeeded" } else { "nothing needed sending" }, p.failures.join("; ")))
             }
         }
     }
@@ -117,7 +121,7 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
         Err(e) => return failed(e.to_string()),
     };
     let chosen = if let Some(token) = token {
-        Chosen { send: resume_send_args(&token, false), dry: resume_send_args(&token, true), label: "resumed an interrupted transfer".to_string(), resumed: true, incremental: false }
+        Chosen { send: resume_send_args(&token, false), dry: resume_send_args(&token, true), label: "resumed an interrupted transfer".to_string(), resumed: true, incremental: false, protect: Vec::new() }
     } else {
         let source = match list_snapshot_infos(src, &dataset) {
             Ok(s) => s,
@@ -130,7 +134,7 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
         match plan(&source, &destination, &prefix) {
             Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
             Plan::UpToDate(name) => {
-                return match prune_after(dst, job, &dest_host, &dest_ds, &prefix) {
+                return match prune_after(dst, job, &dest_host, &dest_ds, &prefix, &[name.clone()], false) {
                     Ok(note) => skipped(format!("skipped: up to date ({name}){note}")),
                     Err(e) => failed(format!("up to date ({name}); {e}")),
                 };
@@ -144,6 +148,7 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
                 },
                 resumed: false,
                 incremental: base.is_some(),
+                protect: base.iter().cloned().chain([new.clone()]).collect(),
             },
         }
     };
@@ -194,7 +199,7 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
         return finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{}, {}", chosen.label, progress::human_bytes(transfer.bytes)), slot);
     }
     let sent = format!("{}, {}", chosen.label, progress::human_bytes(transfer.bytes));
-    match prune_after(dst, job, &dest_host, &dest_ds, &prefix) {
+    match prune_after(dst, job, &dest_host, &dest_ds, &prefix, &chosen.protect, true) {
         Ok(note) => finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{sent}{note}"), slot),
         Err(e) => failed(format!("{sent}; {e}")),
     }
@@ -423,6 +428,21 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Failed);
         assert_eq!(dst.destroys().len(), 3);
         assert!(outcome.message.contains("transfer succeeded") && outcome.message.contains(&older(5)) && outcome.message.contains("permission denied"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn the_snapshot_both_sides_share_is_never_pruned_even_when_it_is_not_the_newest_on_the_target() {
+        // The source was rolled back to A; the target still has a newer snapshot that no longer exists on the source.
+        let rig = Rig::new();
+        let src = Host::new(&format!("tank/data@{A}\t1\t10\n"));
+        let dst = Host::new(&target_with_history("backup/data@hourly-20261006T120000Z\t500\t99\n"));
+        let (outcome, _) = rig.run(&src, &dst, &keeping(1));
+        assert_eq!(outcome.result, RunResult::Skipped, "{}", outcome.message);
+        let names: Vec<String> = dst.destroys().into_iter().map(|d| d[0].clone()).collect();
+        assert!(!names.contains(&format!("backup/data@{A}")), "the shared snapshot is the next incremental's base: {names:?}");
+        assert!(!names.iter().any(|n| n.contains("120000Z")), "the newest is kept: {names:?}");
+        assert_eq!(names.len(), 5, "{names:?}");
+        assert!(!outcome.message.contains("transfer succeeded"), "{}", outcome.message);
     }
 
     #[test]

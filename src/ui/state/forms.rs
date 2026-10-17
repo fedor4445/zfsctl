@@ -252,6 +252,9 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
         },
     };
     let to_file = dest_host == crate::jobs::DEST_FILE;
+    if to_file && dest_keep.is_some() {
+        return Err("Keep on target is only for a destination host, not for a file: stream files form chains and are never pruned".to_string());
+    }
     let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     let base = crate::jobs::Job {
         id: String::new(),
@@ -496,7 +499,7 @@ pub(super) fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> O
 pub(super) fn prune_prompt(dest_host: &str, dest_ds: &str, doomed: &[String], kept: usize) -> String {
     let (oldest, newest) = (doomed.first().map_or("?", String::as_str), doomed.last().map_or("?", String::as_str));
     let noun = if doomed.len() == 1 { "snapshot" } else { "snapshots" };
-    format!("This will destroy {} {noun} on {dest_host} {dest_ds}: oldest {oldest} ... newest destroyed {newest}; {kept} kept.\nOnly this job's own snapshots are destroyed, and they cannot be brought back.", doomed.len())
+    format!("This will destroy {} {noun} on {dest_host} {dest_ds}: oldest {oldest} ... newest destroyed {newest}; {kept} kept (counting the one the next run adds).\nOnly this job's own snapshots are destroyed, and they cannot be brought back.", doomed.len())
 }
 
 /// The confirmation for saving a job that, from its next run on, destroys data the previous version of the job

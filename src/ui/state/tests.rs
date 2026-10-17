@@ -7740,7 +7740,7 @@ fn keep_on_target_on_a_file_destination_is_refused() {
     fields[4].value = "/mnt/usb/streams".into();
     assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
     assert!(app.pending_prune_check.is_empty());
-    assert!(app.status_message.clone().unwrap_or_default().contains("dest_keep"));
+    assert!(app.status_message.clone().unwrap_or_default().contains("Keep on target"));
 }
 
 #[test]
@@ -7763,7 +7763,7 @@ fn a_keep_on_target_holds_the_save_and_queues_a_listing_of_the_destination() {
 
 #[test]
 fn nothing_to_destroy_goes_on_to_the_usual_save_path() {
-    let mut app = keep_form_app("3");
+    let mut app = keep_form_app("4");
     app.handle_modal_key(KeyCode::Enter);
     answer_prune_check(&mut app, Ok(target_snaps(3)));
     assert!(app.modal.is_none(), "no destroy confirmation: {:?}", app.modal);
@@ -7777,8 +7777,8 @@ fn a_selection_opens_a_confirm_naming_count_oldest_newest_and_kept_and_declining
     answer_prune_check(&mut app, Ok(target_snaps(6)));
     let Some(Modal::Confirm { prompt, choice, .. }) = app.modal.clone() else { panic!("{:?}", app.modal) };
     assert_eq!(choice, None, "a second keystroke is needed");
-    assert!(prompt.contains("destroy 3 snapshots on fbsd16 backup/data"), "{prompt}");
-    assert!(prompt.contains("oldest hourly-20261006T010000Z") && prompt.contains("newest destroyed hourly-20261006T030000Z") && prompt.contains("3 kept"), "{prompt}");
+    assert!(prompt.contains("destroy 4 snapshots on fbsd16 backup/data"), "{prompt}");
+    assert!(prompt.contains("oldest hourly-20261006T010000Z") && prompt.contains("newest destroyed hourly-20261006T040000Z") && prompt.contains("3 kept"), "{prompt}");
     app.handle_modal_key(KeyCode::Char('n'));
     app.handle_modal_key(KeyCode::Enter);
     let Some(Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
@@ -7814,4 +7814,26 @@ fn an_answer_for_another_dataset_is_dropped() {
     app.tx.send(WorkerMsg::PrunePreview(1, "other/data".into(), Ok(target_snaps(6)))).unwrap();
     app.drain_worker_messages();
     assert!(app.prune_check.is_some() && app.modal.is_none());
+}
+
+#[test]
+fn a_target_that_is_exactly_full_still_asks_because_the_next_run_adds_one_and_destroys_the_oldest() {
+    let mut app = keep_form_app("3");
+    app.handle_modal_key(KeyCode::Enter);
+    answer_prune_check(&mut app, Ok(target_snaps(3)));
+    let Some(Modal::Confirm { prompt, .. }) = app.modal.clone() else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("destroy 1 snapshot on fbsd16") && prompt.contains("oldest hourly-20261006T010000Z"), "{prompt}");
+}
+
+#[test]
+fn a_forced_replication_with_a_selection_shows_both_warnings_and_one_confirm_saves() {
+    let mut app = keep_form_app("3");
+    let Some(Modal::Form { fields, .. }) = app.modal.as_mut() else { panic!() };
+    fields[5].value = "y".into();
+    app.handle_modal_key(KeyCode::Enter);
+    answer_prune_check(&mut app, Ok(target_snaps(6)));
+    let Some(Modal::Confirm { prompt, .. }) = app.modal.clone() else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("destroy 4 snapshots") && prompt.contains("zfs receive -F"), "{prompt}");
+    app.handle_modal_key(KeyCode::Char('y'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_some());
 }

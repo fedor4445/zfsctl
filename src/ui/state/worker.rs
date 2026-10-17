@@ -404,7 +404,7 @@ impl App {
                 return;
             }
         };
-        let doomed = crate::zfs::replication::prune_selection(&listing, &check.prefix, check.keep);
+        let doomed = crate::zfs::replication::prune_preview(&listing, &check.prefix, check.keep);
         let crate::ui::modal::MutationCall::SaveJob { job, .. } = &check.action.call else { return };
         if doomed.is_empty() {
             if let Some(action) = self.confirm_job_save(check.form, check.action) {
@@ -418,7 +418,7 @@ impl App {
             _ => None,
         };
         let tail = super::forms::job_save_prompt(old, job, None).unwrap_or_else(|| "Save this job? (y/n)".to_string());
-        let prompt = format!("{}\n\n{tail}", super::forms::prune_prompt(&check.host_name, &check.dest_dataset, &doomed, own - doomed.len()));
+        let prompt = format!("{}\n\n{tail}", super::forms::prune_prompt(&check.host_name, &check.dest_dataset, &doomed, own + 1 - doomed.len()));
         self.confirm_restore = Some((prompt.clone(), check.form));
         self.modal = Some(Modal::Confirm { choice: None, prompt, action: check.action });
     }
