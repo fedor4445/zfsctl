@@ -5,6 +5,7 @@ mod rclone;
 mod restic;
 mod acl;
 mod config;
+mod config_edit;
 mod daemon;
 mod error;
 mod exec;
