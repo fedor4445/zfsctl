@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 16748)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                ┌New cloud mirror job────────────────────────────────────────────┐0-18 03:00 ok 6d ago │
+│Datasets             │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
+│Snapshots            │plain files. What a run replaces or deletes is first moved to   │                     │
+│Disks                │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Shares               │old/. Symlinks, devices and empty folders are not copied.       │                     │
+│Boot Envs            │                                                                │                     │
+│Jobs                 │  Host (where rclone runs): local                               │                     │
+│Alerts               │  Dataset: scratch/zt-mir-b2                                    │                     │
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+│                     │> Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│                     │
+│                     │it): b2:zfsctl/photos                                           │─────────────────────┘
+│                     │  Speed limit (bytes/s, e.g. 5M; blank = none):                 │─────────────────────┐
+│                     │  Schedule: 30 3 * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Sun 2026-10-18 03:30, Mon 2026-10-19 03:30, Tue 2026-10-20│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │Check: OK, the remote opens.                                    │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F5 Check  Esc Cancel

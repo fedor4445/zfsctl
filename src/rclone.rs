@@ -165,6 +165,8 @@ pub fn classify_check(status: i32, stdout: &str, stderr: &str, remote: &str, hos
         format!("rclone is not installed on {host}")
     } else if has("didn't find section in config file") {
         format!("rclone remote '{name}' is not in root's rclone config on {host} (create it as root with `rclone config`)")
+    } else if has("you must use bucket") {
+        "this key is limited to other bucket(s): use the bucket the key was made for (the name in the remote after the colon)".to_string()
     } else if has("accessdenied") || has("access denied") || has("forbidden") || has("invalidaccesskey") || has("signaturedoesnotmatch") || has("unauthorized") || has("403") || has("401") {
         "the cloud refused the keys (access denied): check the key's permissions for this bucket".to_string()
     } else if has("nosuchbucket") || has("directory not found") || has("bucket not found") || has("container not found") || has("not found") {
@@ -278,6 +280,7 @@ mod tests {
         assert!(problem(1, "", UNKNOWN_REMOTE).contains("remote 'nosuchremote' is not in root's rclone config on fbsd16"));
         assert!(problem(3, "", MISSING_DIR).contains("bucket or folder was not found"));
         assert!(problem(1, "", "403 Forbidden: AccessDenied").contains("refused the keys"));
+        assert!(problem(1, "", "you must use bucket(s) [{\"7ef2\" \"zfsctl\"}] with this application key").contains("limited to other bucket"));
         assert!(problem(1, "", "sudo: a password is required").contains("print-sudoers fbsd16 --with rclone"));
         assert!(problem(1, "", "exec: \"rclone\": executable file not found in $PATH").contains("not installed"));
         assert_eq!(problem(1, "", "weird nosuchremote:bkt failure"), "weird <remote> failure");

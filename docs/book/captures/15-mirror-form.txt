@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 16748)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 6d ago │
+│Datasets             ┌New cloud mirror job────────────────────────────────────────────┐                     │
+│Snapshots            │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
+│Disks                │plain files. What a run replaces or deletes is first moved to   │                     │
+│Shares               │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Boot Envs            │old/. Symlinks, devices and empty folders are not copied.       │                     │
+│Jobs                 │                                                                │                     │
+│Alerts               │  Host (where rclone runs): local                               │                     │
+│                     │> Dataset:                                                      │                     │
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+│                     │  Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│─────────────────────┘
+│                     │it):                                                            │─────────────────────┐
+│                     │  Speed limit (bytes/s, e.g. 5M; blank = none):                 │                     │
+│                     │  Schedule: 30 3 * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Sun 2026-10-18 03:30, Mon 2026-10-19 03:30, Tue 2026-10-20│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel

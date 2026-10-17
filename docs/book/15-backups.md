@@ -267,12 +267,80 @@ On a host other than the hub, restic runs over ssh and `sudo`, so it needs resti
 
 A restic repository is not something you can open in a web browser: it is encrypted blocks. Sometimes you want the opposite: **your photos and documents sitting in a bucket as ordinary files**, so you can open the cloud console, browse to a folder and download one picture. That is the **cloud mirror job** (`C` in Jobs). It uses [rclone](https://rclone.org), the same tool as above, but copies plain files instead of building a repository.
 
+Press `C` in Jobs:
+
+```screen
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 16748)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 6d ago │
+│Datasets             ┌New cloud mirror job────────────────────────────────────────────┐                     │
+│Snapshots            │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
+│Disks                │plain files. What a run replaces or deletes is first moved to   │                     │
+│Shares               │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Boot Envs            │old/. Symlinks, devices and empty folders are not copied.       │                     │
+│Jobs                 │                                                                │                     │
+│Alerts               │  Host (where rclone runs): local                               │                     │
+│                     │> Dataset:                                                      │                     │
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+│                     │  Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│─────────────────────┘
+│                     │it):                                                            │─────────────────────┐
+│                     │  Speed limit (bytes/s, e.g. 5M; blank = none):                 │                     │
+│                     │  Schedule: 30 3 * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Sun 2026-10-18 03:30, Mon 2026-10-19 03:30, Tue 2026-10-20│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
+```
+
 The form asks for the same things as the backup job (host, dataset, an optional path inside it, which snapshot to read, how many fresh snapshots to keep), plus:
 
 - **Remote:** where to send it, written `name:path`, such as `aws:mybucket/photos` or `b2:mybucket/photos`. The name is a remote you created with `rclone config`; the keys live in root's rclone config on that host, never in zfsctl. A text with keys in it is refused.
 - **Speed limit:** optional, in bytes per second, such as `5M`, so a nightly upload does not use your whole connection. Schedule the job for the night if the connection matters; there is no time-of-day setting.
 
 Press `F5` in the form to check the remote before you save. It lists the remote read-only and tells you in plain words if the remote name is not set up, the bucket is missing or the keys are refused.
+
+```screen
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 16748)───────────────────────────────────────────────────┐
+│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
+│Pools                ┌New cloud mirror job────────────────────────────────────────────┐0-18 03:00 ok 6d ago │
+│Datasets             │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
+│Snapshots            │plain files. What a run replaces or deletes is first moved to   │                     │
+│Disks                │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Shares               │old/. Symlinks, devices and empty folders are not copied.       │                     │
+│Boot Envs            │                                                                │                     │
+│Jobs                 │  Host (where rclone runs): local                               │                     │
+│Alerts               │  Dataset: scratch/zt-mir-b2                                    │                     │
+│                     │  Path inside the dataset (blank = all of it):                  │                     │
+│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+│                     │> Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│                     │
+│                     │it): b2:zfsctl/photos                                           │─────────────────────┘
+│                     │  Speed limit (bytes/s, e.g. 5M; blank = none):                 │─────────────────────┐
+│                     │  Schedule: 30 3 * * *                                          │                     │
+│                     │  Catch up (y/n): y                                             │                     │
+│                     │                                                                │                     │
+│                     │custom schedule                                                 │                     │
+│                     │Next: Sun 2026-10-18 03:30, Mon 2026-10-19 03:30, Tue 2026-10-20│                     │
+│                     │03:30                                                           │                     │
+│                     │                                                                │                     │
+│                     │Check: OK, the remote opens.                                    │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Next  Tab Next field  Shift+Tab Prev field  F5 Check  Esc Cancel
+```
 
 ### How the bucket looks
 
@@ -290,7 +358,7 @@ Each run makes `current` match the dataset. Before it replaces or deletes a file
 
 ### Set up the cloud account
 
-zfsctl has not been tried against real AWS or Backblaze accounts yet (it was verified end to end with a folder standing in for the cloud), so treat your first run as a test: mirror a small dataset first and look at the bucket.
+zfsctl has been tried end to end against a real Backblaze B2 bucket (first copy, a later run that replaced and deleted files, cancelling, the check and the refusals) but not yet against AWS S3, so on AWS treat your first run as a test. On either, mirror a small dataset first and look at the bucket.
 
 **AWS S3.** Create a bucket (any region; leave "block public access" on). In IAM create a user that can only use that bucket, with a policy like this (replace `mybucket`):
 
