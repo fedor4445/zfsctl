@@ -89,7 +89,7 @@ impl Theme {
             return self.clone();
         }
         // Fixed 256-color indexes, not the 16 ANSI names: a terminal theme may draw its "bright" colors as dull as the plain ones.
-        Theme { ok: fg(Color::Indexed(112)), warn: fg(Color::Indexed(221)), err: fg(Color::Indexed(210)), muted: fg(Color::Indexed(250)), ..self.clone() }
+        Theme { ok: fg(Color::Indexed(118)), warn: fg(Color::Indexed(221)), err: fg(Color::Indexed(210)), muted: fg(Color::Indexed(250)), ..self.clone() }
     }
 
     /// No colors at all: bold / dim / reverse and the glyphs carry everything.
@@ -136,8 +136,8 @@ impl Theme {
             accent: fg(blue),
             danger: fg(red).add_modifier(Modifier::BOLD),
             alt: fg(c((211, 54, 130), 125)),
-            // Solarized's own dark teal behind near-white text, as Solarized terminals draw it (base02 / base2).
-            canvas: dark.then(|| Style::new().fg(c((238, 232, 213), 255)).bg(c((7, 54, 66), 23))),
+            // Solarized's own dark teal behind white text on Solarized base02.
+            canvas: dark.then(|| Style::new().fg(c((255, 255, 255), 231)).bg(c((7, 54, 66), 23))),
         }
     }
 
