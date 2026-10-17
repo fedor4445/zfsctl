@@ -178,6 +178,46 @@ pub fn row_fill(row: &Row, sizes: &HashMap<String, Size>, caps: &Caps) -> Option
     }
 }
 
+/// The provider behind an rclone remote type, as people say it. `rclone listremotes --long` gives only the type (reading the
+/// remote's settings would mean reading its keys, which zfsctl never does), so an `s3` remote may be Amazon or any
+/// S3-compatible service. A type not listed here is shown as rclone names it.
+pub fn provider_name(kind: Option<&str>) -> String {
+    let Some(kind) = kind else { return "?".to_string() };
+    match kind {
+        "b2" => "Backblaze B2",
+        "s3" => "Amazon S3 (etc.)",
+        "drive" => "Google Drive",
+        "gcs" => "Google Cloud",
+        "azureblob" => "Azure Blob",
+        "onedrive" => "OneDrive",
+        "dropbox" => "Dropbox",
+        "box" => "Box",
+        "mega" => "MEGA",
+        "pcloud" => "pCloud",
+        "jottacloud" => "Jottacloud",
+        "koofr" => "Koofr",
+        "storj" => "Storj",
+        "swift" => "OpenStack Swift",
+        "crypt" => "Encrypted",
+        "sftp" => "SFTP",
+        "ftp" => "FTP",
+        "webdav" => "WebDAV",
+        "http" => "HTTP",
+        "local" => "Local disk",
+        "alias" => "Alias",
+        "union" => "Union",
+        other => return other.to_string(),
+    }
+    .to_string()
+}
+
+/// The Cloud table's cells: Provider, Remote, Host, Jobs, Last, In bucket. The provider's name replaces the raw rclone type,
+/// which it shows as it is for a type it does not know.
+pub fn table_cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: DateTime<Utc>) -> Vec<String> {
+    let [name, host, _kind, jobs, last, bucket]: [String; 6] = cells(row, view, sizes, caps, now).try_into().expect("cells has six entries");
+    vec![provider_name(row.kind.as_deref()), name, host, jobs, last, bucket]
+}
+
 /// The table's cells for a row: Remote, Host, Type, Jobs, Last, In bucket.
 pub fn cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: DateTime<Utc>) -> Vec<String> {
     let last = if row.job_ids.is_empty() { "-".to_string() } else { last_result_text(last_run(row, view), now) };
@@ -345,6 +385,17 @@ mod tests {
         assert_eq!(cells(&row, &view, &sizes, &Caps::new(), now)[5], "2.9 MiB");
         let idle = rows(&jobs, &known()).remove(1);
         assert_eq!(cells(&idle, &view, &sizes, &Caps::new(), now), ["t1:", "local", "sftp", "0", "-", "-"], "a remote nobody uses");
+        assert_eq!(table_cells(&row, &view, &HashMap::new(), &Caps::new(), now), ["Backblaze B2", "b2:", "local", "2", "ok 2h ago", "-"]);
+        assert_eq!(table_cells(&idle, &view, &sizes, &Caps::new(), now)[0], "SFTP");
+    }
+
+    #[test]
+    fn a_remote_type_is_shown_with_its_providers_name() {
+        for (kind, name) in [("b2", "Backblaze B2"), ("s3", "Amazon S3 (etc.)"), ("drive", "Google Drive"), ("gcs", "Google Cloud"), ("azureblob", "Azure Blob"), ("onedrive", "OneDrive"), ("dropbox", "Dropbox"), ("crypt", "Encrypted"), ("sftp", "SFTP"), ("local", "Local disk")] {
+            assert_eq!(provider_name(Some(kind)), name, "{kind}");
+        }
+        assert_eq!(provider_name(Some("somenewthing")), "somenewthing", "a type this list does not know is shown as rclone calls it");
+        assert_eq!(provider_name(None), "?");
     }
 
     #[test]

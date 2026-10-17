@@ -898,7 +898,7 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
 
 /// The Cloud section: every rclone remote the hub (and any host with a cloud job) knows, with its jobs.
 fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
-    use crate::ui::cloud::{cells, failed, row_fill, Fill};
+    use crate::ui::cloud::{failed, row_fill, table_cells, Fill};
     let theme = app.theme.clone();
     let now = chrono::Utc::now();
     let rows = app.cloud_rows();
@@ -931,11 +931,11 @@ fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 Style::default()
             };
-            Row::new(cells(r, &app.jobs_view, &app.cloud_sizes, &app.cloud_caps, now)).style(style)
+            Row::new(table_cells(r, &app.jobs_view, &app.cloud_sizes, &app.cloud_caps, now)).style(style)
         })
         .collect();
-    let widths = [Constraint::Length(18), Constraint::Length(8), Constraint::Length(6), Constraint::Length(4), Constraint::Length(14), Constraint::Min(10)];
-    let table = Table::new(table_rows, widths).header(Row::new(vec!["Remote", "Host", "Type", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
+    let widths = [Constraint::Length(16), Constraint::Length(14), Constraint::Length(8), Constraint::Length(4), Constraint::Length(12), Constraint::Min(10)];
+    let table = Table::new(table_rows, widths).header(Row::new(vec!["Provider", "Remote", "Host", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.cloud_table);
 }
 
@@ -2000,12 +2000,25 @@ mod tests {
         app.cloud_table.select(Some(0));
         app.cloud_sizes.insert("mirror-local-tank-photos".into(), crate::ui::cloud::Size { current: Some((412, 1_992_294)), old: Some((3, 24_576)), at: chrono::Utc::now(), problem: None });
         let text = render(&mut app, 130, 40).join("\n");
-        for want in ["Cloud — 3 remotes, 1 job", "Remote", "In bucket", "b2:", "zfsctl-aws:", "t1:", "sftp", "1.9 MiB", "Remote — b2:", "mirror-local-tank-photos", "current/ 1.9 MiB (412 files)", "old/ 24.0 KiB (3 files)"] {
+        for want in ["Cloud — 3 remotes, 1 job", "Remote", "In bucket", "b2:", "zfsctl-aws:", "t1:", "SFTP", "1.9 MiB", "Remote — b2:", "mirror-local-tank-photos", "current/ 1.9 MiB (412 files)", "old/ 24.0 KiB (3 files)"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
         app.cloud_table.select(Some(1));
         let idle = render(&mut app, 130, 40).join("\n");
         assert!(idle.contains("Remote — t1:") && idle.contains("No job uses this remote"), "{idle}");
+    }
+
+    #[test]
+    fn the_cloud_table_starts_with_the_providers_name() {
+        let mut app = cloud_app();
+        app.cloud_table.select(Some(0));
+        let lines = render(&mut app, 130, 40);
+        let header = lines.iter().find(|l| l.contains("Provider")).expect("a Provider header");
+        assert!(header.find("Provider").unwrap() < header.find("Remote").unwrap(), "{header}");
+        let text = lines.join("\n");
+        for want in ["Backblaze B2", "SFTP", "Amazon S3 (etc.)"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
     }
 
     #[test]
