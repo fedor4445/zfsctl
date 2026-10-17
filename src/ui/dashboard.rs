@@ -2,9 +2,16 @@
 //! runs a command, so every rule and every boundary is a plain unit test.
 
 use crate::config::Thresholds;
+use crate::daemon::history::RunResult;
+use crate::jobs;
+use crate::ui::alerts::AlertsView;
+use crate::ui::cloud::{self, Caps, Fill, Size};
+use crate::ui::jobs::{age_text, DaemonState, JobsView};
+use crate::ui::state::Section;
 use crate::zfs::host_health::{scrub_age_days, used_cell, Assessment, HostProbe, Level as HealthLevel, PoolProbe, ScanSummary};
 use crate::zfs::host_resources::{cpu_percent_between, memory_used_percent, swap_used_percent, Resources};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 /// How worried to be about one reading. `Unknown` means the zfsctl does not know (no answer yet, nothing to compare with): it is
 /// never shown as fine. The order is the order of concern, so the worst of several is simply the maximum.
@@ -237,6 +244,181 @@ pub fn host_attention(row: &HostRow) -> Vec<(Level, String)> {
     items
 }
 
+/// One line of a component's status.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Line {
+    pub level: Level,
+    pub text: String,
+}
+
+/// One entry of Needs attention: what is wrong, where, and which section owns it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub level: Level,
+    pub subject: String,
+    pub what: String,
+    pub goto: Section,
+}
+
+/// The whole screen, ready to draw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dashboard {
+    pub verdict: Line,
+    pub attention: Vec<Item>,
+    pub hosts: Vec<HostRow>,
+    pub daemon: Line,
+    pub jobs: Line,
+    /// Ids of the enabled jobs whose latest run failed.
+    pub failed_jobs: Vec<String>,
+    pub cloud: Vec<Line>,
+    pub alerts: Line,
+}
+
+/// Everything the Dashboard is built from. All of it is already in memory: building it asks nobody anything.
+pub struct Inputs<'a> {
+    pub hosts: Vec<HostInput<'a>>,
+    pub jobs: &'a JobsView,
+    pub cloud_rows: Vec<cloud::Row>,
+    pub cloud_sizes: &'a HashMap<String, Size>,
+    pub cloud_caps: &'a Caps,
+    pub alerts: &'a AlertsView,
+    pub thresholds: &'a Thresholds,
+    pub now: DateTime<Utc>,
+}
+
+fn daemon_line(view: &JobsView, now: DateTime<Utc>) -> Line {
+    match view.daemon(now) {
+        DaemonState::Running { pid } => {
+            let age = view.heartbeat.as_ref().map_or(0, |h| (now - h.last_tick).num_seconds().max(0));
+            Line { level: Level::Fine, text: format!("running (pid {pid}), heartbeat {age}s ago") }
+        }
+        DaemonState::NotRunning => Line { level: Level::Issue, text: "not running: jobs will not fire and no alerts are sent".to_string() },
+    }
+}
+
+const KIND_LABELS: [(&str, &str); 5] = [(jobs::KIND_SCRUB, "scrub"), (jobs::KIND_SNAPSHOT, "snapshot"), (jobs::KIND_REPLICATE, "replicate"), (jobs::KIND_BACKUP, "backup"), (jobs::KIND_MIRROR, "cloud")];
+
+fn is_failed(view: &JobsView, job: &jobs::Job) -> bool {
+    view.last_run(&job.id).is_some_and(|r| r.result == Some(RunResult::Failed))
+}
+
+/// `scrub 1/1 ok  backup 0/1 FAILED`: enabled jobs by kind, how many are not failed, and the failed ones' ids.
+fn jobs_line(view: &JobsView) -> (Line, Vec<String>) {
+    let enabled: Vec<&jobs::Job> = view.jobs.iter().filter(|j| j.enabled).collect();
+    if enabled.is_empty() {
+        return (Line { level: Level::Unknown, text: "no jobs scheduled".to_string() }, vec![]);
+    }
+    let mut parts = Vec::new();
+    for (kind, label) in KIND_LABELS {
+        let of_kind: Vec<&&jobs::Job> = enabled.iter().filter(|j| j.kind == kind).collect();
+        if of_kind.is_empty() {
+            continue;
+        }
+        let failed = of_kind.iter().filter(|j| is_failed(view, j)).count();
+        let total = of_kind.len();
+        parts.push(if failed > 0 { format!("{label} {}/{total} FAILED", total - failed) } else { format!("{label} {total}/{total} ok") });
+    }
+    let failed_jobs: Vec<String> = enabled.iter().filter(|j| is_failed(view, j)).map(|j| j.id.clone()).collect();
+    let level = if failed_jobs.is_empty() { Level::Fine } else { Level::Issue };
+    (Line { level, text: parts.join("  ") }, failed_jobs)
+}
+
+fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs) -> Line {
+    let cells = cloud::cells(row, view, inputs.cloud_sizes, inputs.cloud_caps, inputs.now);
+    let name = row.name.as_str();
+    if row.job_ids.is_empty() {
+        return Line { level: Level::Unknown, text: format!("{name} ({})  no jobs", cells[2]) };
+    }
+    let bucket = if cells[5] == "-" { String::new() } else { format!("  {}", cells[5]) };
+    let level = if cloud::failed(row, view) {
+        Level::Issue
+    } else {
+        match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
+            Some(Fill::Full) => Level::Issue,
+            Some(Fill::Warn) => Level::Watch,
+            _ => Level::Fine,
+        }
+    };
+    Line { level, text: format!("{name} ({})  {} job{}  last {}{bucket}", cells[2], cells[3], if cells[3] == "1" { "" } else { "s" }, cells[4]) }
+}
+
+fn alerts_line(alerts: &AlertsView, daemon_running: bool, now: DateTime<Utc>) -> Line {
+    if let Some(problem) = &alerts.problem {
+        return Line { level: Level::Watch, text: format!("alert settings: {problem}") };
+    }
+    if !alerts.monitor_on() {
+        return Line { level: Level::Unknown, text: "monitor off: no email address is set".to_string() };
+    }
+    if !daemon_running {
+        return Line { level: Level::Watch, text: "monitor configured but the daemon is not running: no alerts will be sent".to_string() };
+    }
+    let mut text = "monitor on".to_string();
+    if let Some(e) = alerts.events.iter().find(|e| e.kind == "alert") {
+        text.push_str(&format!(" · last alert {} {} ({})", e.host, e.text, age_text(now, e.at)));
+    }
+    if let Some(report) = &alerts.last_report {
+        text.push_str(&format!(" · report {report}"));
+    }
+    Line { level: Level::Fine, text }
+}
+
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Builds the whole Dashboard. The verdict says `checking...` until every host has answered its first probe, so a screen that
+/// does not know yet never claims everything is quiet.
+pub fn build(inputs: &Inputs) -> Dashboard {
+    let now = inputs.now;
+    let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
+    let daemon = daemon_line(inputs.jobs, now);
+    let (jobs, failed_jobs) = jobs_line(inputs.jobs);
+    let cloud: Vec<Line> = inputs.cloud_rows.iter().map(|r| cloud_line(r, inputs.jobs, inputs)).collect();
+    let alerts = alerts_line(inputs.alerts, daemon.level == Level::Fine, now);
+
+    let mut attention: Vec<Item> = Vec::new();
+    for row in &hosts {
+        attention.extend(host_attention(row).into_iter().map(|(level, what)| Item { level, subject: row.name.clone(), what, goto: Section::Hosts }));
+    }
+    if daemon.level == Level::Issue {
+        attention.push(Item { level: Level::Issue, subject: "daemon".to_string(), what: daemon.text.clone(), goto: Section::Jobs });
+    }
+    for job in inputs.jobs.jobs.iter().filter(|j| j.enabled && is_failed(inputs.jobs, j)) {
+        let Some(run) = inputs.jobs.last_run(&job.id) else { continue };
+        let age = age_text(now, run.finished_at.unwrap_or(run.started_at));
+        let why = run.message.lines().next().unwrap_or("").trim();
+        let what = if why.is_empty() { format!("failed {age}") } else { format!("failed {age}: {why}") };
+        attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs });
+    }
+    for row in &inputs.cloud_rows {
+        let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
+            Some(Fill::Full) => Level::Issue,
+            Some(Fill::Warn) => Level::Watch,
+            _ => continue,
+        };
+        attention.push(Item { level, subject: row.name.clone(), what: format!("plan {}", cloud::in_bucket(row, inputs.cloud_sizes, inputs.cloud_caps)), goto: Section::Cloud });
+    }
+    if let Some(problem) = &inputs.alerts.problem {
+        attention.push(Item { level: Level::Watch, subject: "alerts".to_string(), what: problem.clone(), goto: Section::Alerts });
+    }
+    attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
+
+    let verdict = if inputs.hosts.iter().any(|h| h.probe.is_none()) {
+        Line { level: Level::Unknown, text: "checking...".to_string() }
+    } else {
+        let issues = attention.iter().filter(|i| i.level == Level::Issue).count();
+        let watches = attention.iter().filter(|i| i.level == Level::Watch).count();
+        match (issues, watches) {
+            (0, 0) => Line { level: Level::Fine, text: "all quiet".to_string() },
+            (0, w) => Line { level: Level::Watch, text: format!("{w} to watch") },
+            (i, 0) => Line { level: Level::Issue, text: plural(i, "issue") },
+            (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
+        }
+    };
+    Dashboard { verdict, attention, hosts, daemon, jobs, failed_jobs, cloud, alerts }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +646,222 @@ mod tests {
         assert!(host_attention(&default_row(&reached(vec![pool("tank", 10, 0, Some(when(1)))]), Some(&reading(10, 0, 0, 100)))).is_empty());
         let unreachable = default_row(&HostProbe::Disconnected, None);
         assert_eq!(host_attention(&unreachable), vec![(Level::Issue, "unreachable".to_string())], "unknown cells are not items of their own");
+    }
+
+    // ---- the other components, attention and the verdict ----
+
+    use crate::daemon::heartbeat::Heartbeat;
+    use crate::daemon::history::{Event, EventKind, History, RunResult};
+    use crate::jobs::Job;
+    use crate::ui::jobs::JobsView;
+    use crate::ui::state::Section;
+    use std::collections::HashMap;
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    fn mirror(id: &str, remote: &str) -> Job {
+        Job::test_mirror(id, "tank/data", "hourly", remote)
+    }
+
+    fn scrub_job(id: &str) -> Job {
+        let mut j = Job::test_snapshot(id, "tank/data", "hourly", 3);
+        j.kind = crate::jobs::KIND_SCRUB.into();
+        j.pool = Some("tank".into());
+        j
+    }
+
+    /// A jobs view with these jobs and these finished runs `(job, result, message)`, all two hours before `now()`.
+    fn view(jobs: Vec<Job>, runs: &[(&str, RunResult, &str)], heartbeat: Option<Heartbeat>) -> JobsView {
+        let dir = tempfile::tempdir().unwrap();
+        let history = History::new(dir.path().join("history.jsonl"));
+        for (i, (job, result, message)) in runs.iter().enumerate() {
+            let when = now() - Duration::hours(2);
+            let ev = |kind, result| Event { job_id: (*job).into(), run_id: format!("{job}-{i}"), event: kind, at: when, scheduled_for: None, result, message: (*message).into(), catch_up: false, summary: None };
+            history.append(&ev(EventKind::Started, None)).unwrap();
+            history.append(&ev(EventKind::Finished, Some(*result))).unwrap();
+        }
+        JobsView { jobs, runs: crate::daemon::history::runs(&history.read()), heartbeat, loaded: true, ..JobsView::default() }
+    }
+
+    fn beat(seconds_ago: i64) -> Option<Heartbeat> {
+        Some(Heartbeat { pid: 4242, started_at: now() - Duration::days(1), last_tick: now() - Duration::seconds(seconds_ago) })
+    }
+
+    fn alerts(mail: bool) -> crate::ui::alerts::AlertsView {
+        let mut a = crate::ui::alerts::AlertsView { loaded: true, ..Default::default() };
+        if mail {
+            let cfg = crate::config::NotifyConfig { mail_to: Some("me@example.com".into()), ..Default::default() };
+            a.saved = cfg.clone();
+            a.settings = cfg.resolve().ok();
+        }
+        a
+    }
+
+    struct Fixture {
+        view: JobsView,
+        alerts: crate::ui::alerts::AlertsView,
+        cloud_rows: Vec<crate::ui::cloud::Row>,
+        sizes: HashMap<String, crate::ui::cloud::Size>,
+        caps: crate::ui::cloud::Caps,
+        thresholds: Thresholds,
+    }
+
+    impl Fixture {
+        fn new(view: JobsView) -> Fixture {
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default() }
+        }
+
+        fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, now: now() })
+        }
+    }
+
+    fn fine_host<'a>(name: &'a str, probe: &'a HostProbe, r: &'a Resources, before: &'a Resources) -> HostInput<'a> {
+        HostInput { name, assessment: assess(Some(probe), false), probe: Some(probe), resources: Some((r, Some(before))), utc_offset_secs: Some(0) }
+    }
+
+    #[test]
+    fn the_daemon_line_says_running_with_the_heartbeat_age_or_that_nothing_will_fire() {
+        let on = Fixture::new(view(vec![], &[], beat(3))).build(vec![]);
+        assert_eq!((on.daemon.level, on.daemon.text.as_str()), (Level::Fine, "running (pid 4242), heartbeat 3s ago"));
+        for heartbeat in [None, beat(600)] {
+            let off = Fixture::new(view(vec![], &[], heartbeat)).build(vec![]);
+            assert_eq!(off.daemon.level, Level::Issue);
+            assert!(off.daemon.text.contains("not running"), "{}", off.daemon.text);
+            assert!(off.attention.iter().any(|i| i.level == Level::Issue && i.subject == "daemon" && i.goto == Section::Jobs), "{:?}", off.attention);
+        }
+    }
+
+    #[test]
+    fn the_jobs_line_counts_enabled_jobs_by_kind_and_names_the_failed_ones() {
+        let mut disabled = scrub_job("old-scrub");
+        disabled.enabled = false;
+        let jobs = vec![scrub_job("scrub-a"), disabled, Job::test_backup("backup-a", "tank/data", "hourly", "/r", "/pw"), mirror("mirror-a", "b2:bkt/p")];
+        let runs = [("scrub-a", RunResult::Ok, "ok"), ("backup-a", RunResult::Failed, "password file not readable\nmore"), ("old-scrub", RunResult::Failed, "ignored: disabled")];
+        let d = Fixture::new(view(jobs, &runs, beat(1))).build(vec![]);
+        assert_eq!(d.jobs.level, Level::Issue);
+        assert!(d.jobs.text.contains("scrub 1/1 ok") && d.jobs.text.contains("backup 0/1 FAILED") && d.jobs.text.contains("cloud 1/1 ok"), "{}", d.jobs.text);
+        assert_eq!(d.failed_jobs, ["backup-a"], "a disabled job is left out");
+        let item = d.attention.iter().find(|i| i.subject == "backup-a").expect("the failed job is in Needs attention");
+        assert_eq!((item.level, item.goto), (Level::Issue, Section::Jobs));
+        assert!(item.what.contains("failed 2h ago") && item.what.contains("password file not readable") && !item.what.contains("more"), "{}", item.what);
+    }
+
+    #[test]
+    fn no_jobs_at_all_is_unknown_not_fine() {
+        let d = Fixture::new(view(vec![], &[], beat(1))).build(vec![]);
+        assert_eq!((d.jobs.level, d.jobs.text.as_str()), (Level::Unknown, "no jobs scheduled"));
+        assert!(d.failed_jobs.is_empty());
+    }
+
+    #[test]
+    fn cloud_lines_follow_the_cloud_screen_and_never_trigger_a_measurement() {
+        let jobs = vec![mirror("m1", "b2:zfsctl/photos")];
+        let mut known = crate::ui::cloud::Known::new();
+        known.insert("local".into(), vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into())]);
+        let mut fx = Fixture::new(view(jobs.clone(), &[("m1", RunResult::Ok, "mirrored")], beat(1)));
+        fx.cloud_rows = crate::ui::cloud::rows(&jobs, &known);
+        let d = fx.build(vec![]);
+        assert_eq!(d.cloud.len(), 2);
+        assert_eq!(d.cloud[0].level, Level::Fine);
+        assert!(d.cloud[0].text.contains("b2") && d.cloud[0].text.contains("last ok 2h ago") && !d.cloud[0].text.contains("MiB"), "{}", d.cloud[0].text);
+        assert_eq!((d.cloud[1].level, d.cloud[1].text.contains("no jobs")), (Level::Unknown, true), "a remote nobody uses");
+        // measured this session: the size shows, with the cap when there is one.
+        fx.sizes.insert("m1".into(), crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: now(), problem: None });
+        fx.caps.insert("b2".into(), Ok(10_000_000_000));
+        assert!(fx.build(vec![]).cloud[0].text.contains("1.9 MiB of 10 GB (0.02%)"));
+        // a plan at 85% is a Watch line and an item that goes to Cloud.
+        fx.caps.insert("b2".into(), Ok(2_300_000));
+        let d = fx.build(vec![]);
+        assert_eq!(d.cloud[0].level, Level::Watch);
+        assert!(d.attention.iter().any(|i| i.level == Level::Watch && i.subject == "b2" && i.goto == Section::Cloud), "{:?}", d.attention);
+    }
+
+    #[test]
+    fn a_failed_cloud_job_is_one_item_not_two_and_its_cloud_line_is_red() {
+        let jobs = vec![mirror("m1", "b2:zfsctl/photos")];
+        let mut known = crate::ui::cloud::Known::new();
+        known.insert("local".into(), vec![("b2".into(), "b2".into())]);
+        let mut fx = Fixture::new(view(jobs.clone(), &[("m1", RunResult::Failed, "the keys were refused")], beat(1)));
+        fx.cloud_rows = crate::ui::cloud::rows(&jobs, &known);
+        let d = fx.build(vec![]);
+        assert_eq!(d.cloud[0].level, Level::Issue);
+        assert_eq!(d.attention.iter().filter(|i| i.subject == "m1" || i.subject == "b2").count(), 1, "{:?}", d.attention);
+    }
+
+    #[test]
+    fn the_alerts_line_says_whether_mail_can_go_out_and_when_the_last_one_did() {
+        let on = Fixture::new(view(vec![], &[], beat(1)));
+        let d = on.build(vec![]);
+        assert_eq!(d.alerts.level, Level::Fine);
+        assert!(d.alerts.text.contains("monitor on"), "{}", d.alerts.text);
+        let mut with_report = Fixture::new(view(vec![], &[], beat(1)));
+        with_report.alerts.last_report = Some("2026-10-17".into());
+        with_report.alerts.events = vec![crate::daemon::health_text::HealthEvent { at: now() - Duration::hours(3), host: "fbsd16".into(), kind: "alert".into(), text: "zroot 86% full".into() }];
+        let text = with_report.build(vec![]).alerts.text;
+        assert!(text.contains("last alert") && text.contains("fbsd16") && text.contains("report 2026-10-17"), "{text}");
+        // configured but the daemon is down: a watch.
+        let down = Fixture::new(view(vec![], &[], None)).build(vec![]).alerts;
+        assert_eq!(down.level, Level::Watch);
+        assert!(down.text.contains("daemon"), "{}", down.text);
+        // not configured: unknown, with a hint; an unusable section: watch, with the reason.
+        let mut off = Fixture::new(view(vec![], &[], beat(1)));
+        off.alerts = alerts(false);
+        assert_eq!(off.build(vec![]).alerts.level, Level::Unknown);
+        off.alerts.problem = Some("[notify] check_interval_minutes must be at least 1".into());
+        let bad = off.build(vec![]).alerts;
+        assert_eq!(bad.level, Level::Watch);
+        assert!(bad.text.contains("check_interval_minutes"), "{}", bad.text);
+    }
+
+    #[test]
+    fn the_verdict_says_checking_until_every_host_has_answered_then_counts_issues_and_watches() {
+        let fx = Fixture::new(view(vec![scrub_job("s")], &[("s", RunResult::Ok, "ok")], beat(1)));
+        let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
+        let (r, before) = (reading(10, 0, 10, 1100), reading(10, 0, 0, 1000)); // about 9% busy
+        let unanswered = HostInput { name: "fbsd16", assessment: assess(None, false), probe: None, resources: None, utc_offset_secs: None };
+        let checking = fx.build(vec![fine_host("local", &probe, &r, &before), unanswered]).verdict;
+        assert_eq!((checking.level, checking.text.as_str()), (Level::Unknown, "checking..."));
+        let quiet = fx.build(vec![fine_host("local", &probe, &r, &before)]);
+        assert_eq!((quiet.verdict.level, quiet.verdict.text.as_str()), (Level::Fine, "all quiet"));
+        assert!(quiet.attention.is_empty());
+        // one watch (pool 85% full) and one issue (daemon down).
+        let busy = reached(vec![pool("tank", 85, 0, Some(when(1)))]);
+        let mixed = Fixture::new(view(vec![scrub_job("s")], &[("s", RunResult::Ok, "ok")], None)).build(vec![fine_host("local", &busy, &r, &before)]);
+        assert_eq!((mixed.verdict.level, mixed.verdict.text.as_str()), (Level::Issue, "1 issue, 1 to watch"));
+        let only_watch = fx.build(vec![fine_host("local", &busy, &r, &before)]).verdict;
+        assert_eq!((only_watch.level, only_watch.text.as_str()), (Level::Watch, "1 to watch"));
+    }
+
+    #[test]
+    fn a_host_that_is_unreachable_is_an_issue_and_one_that_cannot_be_inspected_a_watch() {
+        let fx = Fixture::new(view(vec![scrub_job("s")], &[("s", RunResult::Ok, "ok")], beat(1)));
+        let down = HostProbe::Disconnected;
+        let denied = HostProbe::Unavailable { reason: "sudo: a password is required".into() };
+        let input = |name, probe: &'static HostProbe| HostInput { name, assessment: assess(Some(probe), false), probe: Some(probe), resources: None, utc_offset_secs: None };
+        let down: &'static HostProbe = Box::leak(Box::new(down));
+        let denied: &'static HostProbe = Box::leak(Box::new(denied));
+        let d = fx.build(vec![input("fbsd16", down), input("fbsd16t1", denied)]);
+        let level_of = |subject: &str| d.attention.iter().find(|i| i.subject == subject).map(|i| i.level);
+        assert_eq!((level_of("fbsd16"), level_of("fbsd16t1")), (Some(Level::Issue), Some(Level::Watch)));
+        assert_eq!(d.verdict.text, "1 issue, 1 to watch");
+    }
+
+    #[test]
+    fn attention_is_sorted_worst_first_then_by_subject_and_everything_builds_with_nothing() {
+        let jobs = vec![scrub_job("zz-scrub"), scrub_job("aa-scrub")];
+        let runs = [("zz-scrub", RunResult::Failed, "boom"), ("aa-scrub", RunResult::Failed, "bang")];
+        let busy = reached(vec![pool("tank", 85, 0, Some(when(1)))]);
+        let (r, before) = (reading(10, 0, 0, 1000), reading(10, 0, 0, 1000));
+        let d = Fixture::new(view(jobs, &runs, beat(1))).build(vec![fine_host("local", &busy, &r, &before)]);
+        let order: Vec<(Level, &str)> = d.attention.iter().map(|i| (i.level, i.subject.as_str())).collect();
+        assert_eq!(order, [(Level::Issue, "aa-scrub"), (Level::Issue, "zz-scrub"), (Level::Watch, "local")]);
+        let empty = Fixture::new(view(vec![], &[], beat(1))).build(vec![]);
+        assert_eq!(empty.verdict.level, Level::Fine, "no hosts to doubt");
+        let no_daemon = Fixture::new(JobsView::default()).build(vec![]);
+        assert_eq!(no_daemon.verdict.level, Level::Issue, "nothing has ever run the daemon: that is the one problem");
+        assert!(empty.hosts.is_empty() && empty.cloud.is_empty());
     }
 }
