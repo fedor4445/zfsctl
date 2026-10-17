@@ -11,6 +11,9 @@ use std::time::Duration;
 
 /// How long one host may take: a scan and a read of each disk.
 pub const HOST_DEADLINE: Duration = Duration::from_mins(2);
+/// How long `check_host` keeps asking disks before it marks the rest "not checked in time", so a slow host still
+/// reports what it did learn inside `HOST_DEADLINE`.
+pub const HOST_BUDGET: Duration = Duration::from_secs(100);
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HostResult {
@@ -43,9 +46,14 @@ impl SmartFile {
         std::fs::rename(&tmp, path)
     }
 
-    /// When the daily check last ran: the recorded run, else the newest host check.
+    /// When the daily check last ran: the recorded run, else the newest host check. Only for deciding when to run again.
     pub fn last_run(&self) -> Option<DateTime<Utc>> {
-        self.ran_at.or_else(|| self.hosts.values().map(|h| h.checked_at).max())
+        self.ran_at.or_else(|| self.newest_check())
+    }
+
+    /// When any host last gave an answer. A run that learns nothing does not move this, so it shows a broken check.
+    pub fn newest_check(&self) -> Option<DateTime<Utc>> {
+        self.hosts.values().map(|h| h.checked_at).max()
     }
 }
 
@@ -61,20 +69,34 @@ pub enum Outcome {
 /// Asks one host: the device list, then each device. Only the read-only flags are ever sent. A scan that comes back
 /// empty (no `smartctl`, sudo says no, nothing listed) is silent, because that is how a host that was never set up
 /// answers; only a host that could not be reached at all is a failure.
-pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
+pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>, previous: Option<&HostResult>, budget: Duration) -> Outcome {
     let unreachable = |out: &crate::exec::CommandOutput| Outcome::Failed(out.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("could not reach the host").trim().to_string());
     let scan = match runner.run("smartctl", &["--scan", "-j"]) {
         Ok(out) if out.status == 255 => return unreachable(&out),
         Ok(out) => out,
         Err(e) => return Outcome::Failed(e.to_string()),
     };
+    let unreadable = |dev: &str, why: String| Disk { dev: dev.to_string(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: format!("SMART unreadable ({why})") }] };
     let mut disks = Vec::new();
-    for dev in crate::smart::parse_scan(&scan.stdout) {
+    let started = std::time::Instant::now();
+    for (asked, dev) in crate::smart::parse_scan(&scan.stdout).into_iter().enumerate() {
+        if asked > 0 && started.elapsed() >= budget {
+            disks.push(unreadable(&dev, "not checked in time".to_string()));
+            continue;
+        }
         let path = format!("/dev/{dev}");
         // smartctl's exit status is a bit mask of what it found, so only 255 (ssh) says the run itself failed.
         match runner.run("smartctl", &["-j", "-H", "-A", "-i", &path]) {
             Ok(out) if out.status == 255 => return unreachable(&out),
-            Ok(out) => disks.extend(crate::smart::judge(&dev, &out.stdout)),
+            Ok(out) => match crate::smart::judge(&dev, &out.stdout) {
+                Some(disk) => disks.push(disk),
+                // A disk that had a problem yesterday and says nothing today has not got better: do not let it vanish.
+                None => {
+                    if let Some(was) = previous.and_then(|p| p.disks.iter().find(|d| d.dev == dev)).and_then(|d| d.problems.first()) {
+                        disks.push(unreadable(&dev, format!("was: {}", was.text)));
+                    }
+                }
+            },
             Err(e) => return Outcome::Failed(e.to_string()),
         }
     }
@@ -91,9 +113,10 @@ pub fn run_all(hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, p
     let (tx, rx) = std::sync::mpsc::channel();
     for (name, runner) in hosts {
         let (tx, name, runner) = (tx.clone(), name.clone(), Arc::clone(runner));
+        let before = previous.hosts.get(&name).cloned();
         // A thread that outlives the deadline is left to finish by itself, as the health probe's are.
         std::thread::spawn(move || {
-            let _ = tx.send((name, check_host(runner.as_ref(), now)));
+            let _ = tx.send((name, check_host(runner.as_ref(), now, before.as_ref(), HOST_BUDGET.min(deadline))));
         });
     }
     drop(tx);
@@ -215,7 +238,7 @@ mod tests {
 
     #[test]
     fn a_host_with_a_failing_disk_gets_an_entry_with_its_problem() {
-        let result = checked(check_host(&host(FAILING, HEALTHY), at("2026-10-17T03:30:00Z")));
+        let result = checked(check_host(&host(FAILING, HEALTHY), at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)));
         assert_eq!(result.checked_at, at("2026-10-17T03:30:00Z"));
         assert_eq!(result.error, None);
         assert_eq!(result.disks.len(), 2, "the healthy disk is kept too");
@@ -226,21 +249,21 @@ mod tests {
     #[test]
     fn a_host_without_smartctl_or_with_sudo_denied_or_no_reporting_disk_is_silent() {
         let denied = Script(Box::new(|_, _| Ok(CommandOutput { stdout: String::new(), stderr: "sudo: a password is required".into(), status: 1 })));
-        assert_eq!(check_host(&denied, at("2026-10-17T03:30:00Z")), Outcome::Silent);
+        assert_eq!(check_host(&denied, at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)), Outcome::Silent);
         let missing = Script(Box::new(|_, _| Ok(CommandOutput { stdout: String::new(), stderr: "sudo: smartctl: command not found".into(), status: 1 })));
-        assert_eq!(check_host(&missing, at("2026-10-17T03:30:00Z")), Outcome::Silent);
-        assert_eq!(check_host(&host(NO_SUPPORT, NO_SUPPORT), at("2026-10-17T03:30:00Z")), Outcome::Silent, "virtual disks report nothing");
+        assert_eq!(check_host(&missing, at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)), Outcome::Silent);
+        assert_eq!(check_host(&host(NO_SUPPORT, NO_SUPPORT), at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)), Outcome::Silent, "virtual disks report nothing");
         let empty = Script(Box::new(|_, _| out("{\"devices\":[]}", 0)));
-        assert_eq!(check_host(&empty, at("2026-10-17T03:30:00Z")), Outcome::Silent);
+        assert_eq!(check_host(&empty, at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)), Outcome::Silent);
     }
 
     #[test]
     fn a_host_that_cannot_be_asked_is_failed_with_the_reason() {
         let down = Script(Box::new(|_, _| Err(AppError::Config("ssh: connect to host h port 22: No route to host".into()))));
-        let Outcome::Failed(why) = check_host(&down, at("2026-10-17T03:30:00Z")) else { panic!("expected a failure") };
+        let Outcome::Failed(why) = check_host(&down, at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)) else { panic!("expected a failure") };
         assert!(why.contains("No route"), "{why}");
         let ssh_255 = Script(Box::new(|_, _| Ok(CommandOutput { stdout: String::new(), stderr: "ssh: Connection timed out".into(), status: 255 })));
-        assert!(matches!(check_host(&ssh_255, at("2026-10-17T03:30:00Z")), Outcome::Failed(_)));
+        assert!(matches!(check_host(&ssh_255, at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)), Outcome::Failed(_)));
     }
 
     fn runners(list: Vec<(&str, Script)>) -> Vec<(String, Arc<dyn CommandRunner>)> {
@@ -293,6 +316,36 @@ mod tests {
         assert_eq!((found[0].host.as_str(), found[0].severity), ("a", Severity::Issue));
         assert_eq!(found[0].disks, "ada0 reallocated sectors 8, temperature 63 C; ada2 SMART health FAILED");
         assert_eq!(found[0].checked_at, at("2026-10-17T03:30:00Z"));
+    }
+
+    #[test]
+    fn a_disk_that_had_a_problem_and_now_answers_nothing_becomes_unreadable_instead_of_vanishing() {
+        use crate::smart::Problem;
+        let previous = HostResult { checked_at: at("2026-10-16T03:30:00Z"), disks: vec![Disk { dev: "ada0".into(), problems: vec![Problem { severity: Severity::Watch, text: "pending sectors 8".into() }] }, Disk { dev: "gone".into(), problems: vec![Problem { severity: Severity::Watch, text: "x".into() }] }], error: None };
+        // today ada0 (scanned) answers with no SMART block at all, and nvme0 is healthy; `gone` is no longer scanned
+        let result = checked(check_host(&host(r#"{"smartctl":{"exit_status":2}}"#, HEALTHY), at("2026-10-17T03:30:00Z"), Some(&previous), Duration::from_secs(60)));
+        let ada0 = result.disks.iter().find(|d| d.dev == "ada0").expect("ada0 must not vanish");
+        assert_eq!(ada0.problems[0].severity, Severity::Watch);
+        assert!(ada0.problems[0].text.starts_with("SMART unreadable"), "{:?}", ada0.problems);
+        assert!(result.disks.iter().all(|d| d.dev != "gone"), "a disk that is gone from the scan is dropped");
+    }
+
+    #[test]
+    fn a_slow_host_keeps_the_disks_it_did_answer_and_marks_the_rest_unreadable() {
+        let slow = Script(Box::new(|_cmd, args| {
+            if args[0] == "--scan" {
+                return out(SCAN, 0);
+            }
+            if args[4] == "/dev/nvme0" {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            out(if args[4] == "/dev/ada0" { FAILING } else { HEALTHY }, 0)
+        }));
+        // The budget is spent after the first disk: the second is not asked.
+        let result = checked(check_host(&slow, at("2026-10-17T03:30:00Z"), None, Duration::from_millis(0)));
+        assert_eq!(result.disks.len(), 2, "{result:?}");
+        assert_eq!(result.disks[0].problems[0].text, "SMART health FAILED", "the disk that was answered keeps its verdict");
+        assert!(result.disks[1].problems[0].text.contains("not checked in time"), "{:?}", result.disks[1]);
     }
 
     #[test]

@@ -410,7 +410,7 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
         let what = format!("{}   (checked {})", found.disks, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Disks, target: Some(found.host) });
     }
-    if let (true, Some(last)) = (daemon_running && !inputs.smart.hosts.is_empty(), inputs.smart.last_run()) {
+    if let (true, Some(last)) = (daemon_running && !inputs.smart.hosts.is_empty(), inputs.smart.newest_check()) {
         let days = (inputs.now - last).num_days();
         if days >= SMART_STALE_DAYS {
             items.push(Item { level: Level::Watch, subject: "disks".to_string(), what: format!("disk check is {days} days old"), goto: Section::Jobs, target: None });
@@ -937,8 +937,12 @@ mod tests {
         let stale: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "disks").collect();
         assert_eq!(stale.len(), 1);
         assert_eq!((stale[0].level, stale[0].what.as_str()), (Level::Watch, "disk check is 4 days old"));
-        fx.smart.ran_at = Some(now() - Duration::hours(24));
-        assert!(disk_items(&fx, &["h"]).iter().all(|i| i.subject != "disks"), "a run yesterday is fine even if a host answered earlier");
+        fx.smart.ran_at = Some(now() - Duration::hours(1));
+        let still: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "disks").collect();
+        assert_eq!(still.len(), 1, "the daemon ran an hour ago but no host has answered for 4 days: the check is broken, not fine");
+        fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::hours(24);
+        assert!(disk_items(&fx, &["h"]).iter().all(|i| i.subject != "disks"), "a host answered yesterday");
+        fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::days(4);
         fx.smart.ran_at = Some(now() - Duration::days(5));
         let mut off = Fixture::new(view(vec![], &[], None));
         off.smart = fx.smart.clone();

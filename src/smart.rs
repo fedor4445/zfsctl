@@ -49,7 +49,10 @@ pub fn judge(dev: &str, json: &str) -> Option<Disk> {
         add(Severity::Watch, "SMART unreadable".to_string());
         return Some(Disk { dev: dev.to_string(), problems });
     }
-    if status == Some(false) {
+    // For NVMe smartctl says "not passed" whenever any critical-warning bit is set, a low spare or a hot moment
+    // included; only "reliability degraded" (0x04) and "read-only" (0x08) are the drive giving up.
+    let warning = nvme.and_then(|log| log.get("critical_warning")?.as_u64()).unwrap_or(0);
+    if status == Some(false) && (nvme.is_none() || warning == 0 || warning & 0x0c != 0) {
         add(Severity::Issue, "SMART health FAILED".to_string());
     }
     let mut wear: Option<u64> = None;
@@ -61,20 +64,36 @@ pub fn judge(dev: &str, json: &str) -> Option<Disk> {
                 add(Severity::Watch, format!("{what} {n}"));
             }
         }
-        // 177, 231 and 233 count down from 100 as the flash wears out.
-        wear = [177, 231, 233].into_iter().filter_map(|id| attribute(id)?.get("value")?.as_u64()).filter(|v| *v <= 100).map(|v| 100 - v).max();
+        // These count down from 100 as the flash wears out. The ids are reused by other things (233 is often a write
+        // counter, 231 a temperature), so only attributes with a wear name count.
+        const REMAINING: [&str; 4] = ["wear_leveling_count", "media_wearout_indicator", "ssd_life_left", "percent_lifetime_remain"];
+        wear = table
+            .iter()
+            .filter(|a| a.get("name").and_then(|n| n.as_str()).is_some_and(|n| REMAINING.contains(&n.to_ascii_lowercase().as_str())))
+            .filter_map(|a| a.get("value")?.as_u64())
+            .filter(|v| *v <= 100)
+            .map(|v| 100 - v)
+            .max();
     }
     if let Some(log) = nvme {
         let number = |key: &str| log.get(key).and_then(|n| n.as_u64());
-        if let Some(w) = number("critical_warning").filter(|w| *w != 0) {
-            add(Severity::Watch, format!("critical warning 0x{w:02x}"));
-        }
+        let mut spare_said = false;
         if let (Some(spare), Some(threshold)) = (number("available_spare"), number("available_spare_threshold")) {
             if spare < threshold {
                 add(Severity::Watch, format!("spare capacity {spare}%"));
+                spare_said = true;
             }
         }
+        // Bit 0 is that spare warning (said above), 0x04 and 0x08 are the red verdict; any other bit is a note.
+        let other = warning & !(if spare_said { 0x01 } else { 0 } | 0x0c);
+        if other != 0 {
+            add(Severity::Watch, format!("critical warning 0x{other:02x}"));
+        }
         wear = wear.max(number("percentage_used"));
+    }
+    // smartctl 7.5 reports the endurance used for ATA, SCSI and NVMe alike; it beats guessing from attributes.
+    if let Some(used) = value.pointer("/endurance_used/current_percent").and_then(|u| u.as_u64()) {
+        wear = Some(used);
     }
     if let Some(w) = wear.filter(|w| *w >= WEAR_WATCH) {
         add(Severity::Watch, format!("SSD wear {w}%"));
@@ -144,6 +163,46 @@ mod tests {
         for json in [include_str!("smart_fixtures/truncated.json"), include_str!("smart_fixtures/empty.json"), include_str!("smart_fixtures/braces.json"), "smartctl: unrecognized option -j", "[1,2,3]", "null"] {
             assert_eq!(judge("d", json), None, "{json}");
         }
+    }
+
+    fn ata_with(extra: serde_json::Value) -> String {
+        let mut base: serde_json::Value = serde_json::from_str(include_str!("smart_fixtures/hdd_ok.json")).unwrap();
+        let table = base["ata_smart_attributes"]["table"].as_array_mut().unwrap();
+        table.push(extra);
+        base.to_string()
+    }
+
+    #[test]
+    fn ssd_wear_is_read_by_attribute_name_so_counters_and_temperatures_are_not_wear() {
+        let attr = |id: u64, name: &str, value: u64| serde_json::json!({"id": id, "name": name, "value": value, "worst": value, "thresh": 0, "raw": {"value": 0, "string": "0"}});
+        // 233 as a write counter and 231 as a controller temperature say nothing about wear.
+        assert_eq!(texts(&disk(&ata_with(attr(233, "Total_LBAs_Written", 1)))), []);
+        assert_eq!(texts(&disk(&ata_with(attr(231, "Controller_Temperature", 15)))), []);
+        assert_eq!(texts(&disk(&ata_with(attr(202, "Percent_Lifetime_Remain", 10)))), [(Severity::Watch, "SSD wear 90%")]);
+        assert_eq!(texts(&disk(&ata_with(attr(233, "Media_Wearout_Indicator", 5)))), [(Severity::Watch, "SSD wear 95%")]);
+    }
+
+    #[test]
+    fn smartctl_75_endurance_used_is_preferred_when_present() {
+        let mut v: serde_json::Value = serde_json::from_str(include_str!("smart_fixtures/hdd_ok.json")).unwrap();
+        v["endurance_used"] = serde_json::json!({"current_percent": 92});
+        assert_eq!(texts(&disk(&v.to_string())), [(Severity::Watch, "SSD wear 92%")]);
+    }
+
+    #[test]
+    fn an_nvme_critical_warning_is_red_only_for_reliability_or_read_only_and_never_twice() {
+        let nvme = |warning: u64, spare: u64| {
+            let mut v: serde_json::Value = serde_json::from_str(include_str!("smart_fixtures/nvme_ok.json")).unwrap();
+            v["smart_status"]["passed"] = serde_json::json!(warning == 0);
+            v["nvme_smart_health_information_log"]["critical_warning"] = serde_json::json!(warning);
+            v["nvme_smart_health_information_log"]["available_spare"] = serde_json::json!(spare);
+            v.to_string()
+        };
+        // smartctl reports "not passed" whenever any warning bit is set; a real low spare also sets bit 0.
+        assert_eq!(texts(&disk(&nvme(0x01, 8))), [(Severity::Watch, "spare capacity 8%")]);
+        assert_eq!(texts(&disk(&nvme(0x02, 100))), [(Severity::Watch, "critical warning 0x02")]);
+        assert_eq!(texts(&disk(&nvme(0x04, 100))), [(Severity::Issue, "SMART health FAILED")]);
+        assert_eq!(texts(&disk(&nvme(0x08, 100))), [(Severity::Issue, "SMART health FAILED")]);
     }
 
     #[test]
