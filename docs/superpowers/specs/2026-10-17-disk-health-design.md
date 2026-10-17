@@ -1,4 +1,4 @@
-# Disk health (SMART) on the Dashboard: design
+# Disk health on the Dashboard (SMART, and a resilver in progress): design
 
 Date: 2026-10-17. Status: draft for approval.
 
@@ -73,6 +73,17 @@ disk health on the Dashboard, with these limits (their words, paraphrased): no f
   watch") like every other line.
 - **`smart_check` is read when the daemon starts**; changing it needs a daemon restart, and the Settings screen
   does not edit it in v1.
+
+## Part 2: a resilver in progress (added at the user's suggestion)
+
+While a pool resilvers (a replaced disk, or one that came back), its redundancy is reduced, so the Dashboard says
+so: a yellow Needs attention line per pool, `fbsd16   tank resilvering 42%`, which disappears when it finishes.
+It uses the pool status the host probe already reads every 30 seconds (no new command, no sudo, no daemon part).
+The probe's `ScanSummary::Running` has to say whether the scan is a scrub or a resilver; a running scrub is not
+flagged (the Scrub column already shows it). A paused resilver is shown as `resilver paused`. A pool that is
+DEGRADED keeps its own red/yellow line from the pool health; the resilver line is additional, not a replacement.
+Enter goes to the Pools section of that host. Tests: a status with a resilver in progress, a scrub in progress
+(no line), paused, and finished.
 
 ## Not in scope
 
