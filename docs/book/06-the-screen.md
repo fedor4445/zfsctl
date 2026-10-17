@@ -120,6 +120,31 @@ These defaults can be changed under `[dashboard]` in `config.toml` (see the conf
 
 The last section of the sidebar edits the parts of `config.toml` that no other screen has: the **theme** and the **auto-refresh** interval (`[ui]`), the **Dashboard thresholds** (`[dashboard]`: memory, swap, CPU, scrub age, and the pools the Dashboard does not judge by scrub age) and the **cloud caps** (`[cloud.caps]`, one row per rclone remote). Up and Down select a row and `Enter` opens a small form for it; a blank field goes back to the default, and a dimmed `(default)` marks every setting you have not set. A pair such as *Memory warn / crit* needs both numbers (or both empty), with warn above 0 and below crit. A save asks for the usual two-key confirmation, then writes only that key into `config.toml`: comments, hosts and every other section stay as they were, and the old file is kept as `config.toml.bak`. The change shows at once, with no restart: the theme repaints, the Dashboard uses the new thresholds and the Cloud screen the new caps. The email and report settings stay on the Alerts screen, and the hook command is edited in the file.
 
+```screen
+┌zfsctl────────────────┐┌Settings — config.toml────────────────────────────────────────────────────┐
+│Dashboard             ││Display                                                                   │
+│Hosts                 ││  Theme                    solarized-dark                                 │
+│Pools                 ││  Auto-refresh             10 s   (default)                               │
+│Datasets              ││                                                                          │
+│Snapshots             ││Dashboard thresholds                                                      │
+│Disks                 ││  Memory warn / crit       90 / 97 %   (default)                          │
+│Shares                ││  Swap warn / crit         50 / 90 %   (default)                          │
+│Boot Envs             ││  CPU warn                 95 %   (default)                               │
+│Jobs                  ││  Scrub warn / crit        35 / 90 days   (default)                       │
+│Cloud                 ││  Scrub ignore             (none)   (default)                             │
+│Alerts                ││                                                                          │
+│Settings              ││Cloud caps                                                                │
+│                      ││  Cap of b2                10G                                            │
+│                      ││  Cap of t1                (no cap)   (default)                           │
+│                      ││  Cap of zfsctl-aws        (no cap)   (default)                           │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+│                      ││                                                                          │
+└──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Edit  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+```
+
 ## Moving around
 
 | Key | What it does |
