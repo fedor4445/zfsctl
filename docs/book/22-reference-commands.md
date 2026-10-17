@@ -31,7 +31,7 @@ Prints the sudoers entry for a managed host, built from the programs it finds th
 
 ### `zfsctl print-sudoers HOST --with FEATURE --without FEATURE`
 
-`--with restic` adds backup support; `--without acl`, `disks`, `bootenvs`, `shares` or `samba` leaves a feature out. The options may be repeated.
+`--with restic` adds backup support and `--with rclone` adds cloud mirror support; `--without acl`, `disks`, `bootenvs`, `shares` or `samba` leaves a feature out. The options may be repeated.
 
 ### `zfsctl check-host HOST`
 
@@ -67,10 +67,11 @@ On a managed host the unprivileged account may run these programs as root throug
 | `cat` | Samba shares | only on `/usr/local/etc/smb4.conf` |
 | `tee` | Samba shares | only on `/usr/local/etc/smb4.conf` |
 | `restic` | backup jobs (`--with restic`) | any arguments |
+| `rclone` | cloud mirror jobs (`--with rclone`) | any arguments |
 
 Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat`, `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.
 
-> **Safety:** `zfs`, `zpool`, `bectl` and `restic` are powerful: whoever holds the account's ssh key effectively has root on that host. That is the price of managing it remotely; keep the key safe and the account locked to key logins.
+> **Safety:** `zfs`, `zpool`, `bectl`, `restic` and `rclone` are powerful: whoever holds the account's ssh key effectively has root on that host. That is the price of managing it remotely; keep the key safe and the account locked to key logins.
 
 ## Try it
 

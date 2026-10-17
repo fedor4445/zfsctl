@@ -12,10 +12,11 @@ pub enum Feature {
     Shares,
     Samba,
     Restic,
+    Rclone,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 7] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic];
+    pub const ALL: [Feature; 8] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -26,6 +27,7 @@ impl Feature {
             Feature::Shares => "shares",
             Feature::Samba => "samba",
             Feature::Restic => "restic",
+            Feature::Rclone => "rclone",
         }
     }
 
@@ -68,6 +70,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "cat", features: &[Feature::Samba], kind: SMB_CONF },
     Entry { name: "tee", features: &[Feature::Samba], kind: SMB_CONF },
     Entry { name: "restic", features: &[Feature::Restic], kind: ANY },
+    Entry { name: "rclone", features: &[Feature::Rclone], kind: ANY },
     Entry { name: "getent", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "uname", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "date", features: &[Feature::Core], kind: Kind::Unprivileged },
@@ -129,7 +132,7 @@ pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     if let Some(f) = added.iter().find(|f| removed.contains(f)) {
         return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
     }
-    Ok(Feature::ALL.into_iter().filter(|f| (*f != Feature::Restic || added.contains(f)) && !removed.contains(f)).collect())
+    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
 fn serving(entry: &Entry, features: &[Feature]) -> bool {
@@ -193,6 +196,16 @@ mod tests {
         let n = names(privileged_for(&[Feature::Shares, Feature::Samba]));
         assert_eq!(n.iter().filter(|x| **x == "service").count(), 1, "{n:?}");
         assert_eq!(names(privileged_for(&[Feature::Shares])), ["service"]);
+    }
+
+    #[test]
+    fn rclone_is_opt_in_like_restic() {
+        let default = select(&[], &[]).unwrap();
+        assert!(!default.contains(&Feature::Rclone) && !names(privileged_for(&default)).contains(&"rclone"));
+        let with = select(&["rclone".to_string()], &["samba".to_string()]).unwrap();
+        assert!(with.contains(&Feature::Rclone) && !with.contains(&Feature::Restic) && !with.contains(&Feature::Samba));
+        assert_eq!(names(privileged_for(&[Feature::Rclone])), ["rclone"]);
+        assert_eq!(Feature::parse("rclone"), Some(Feature::Rclone));
     }
 
     #[test]
@@ -331,7 +344,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic`";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `rclone`";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);

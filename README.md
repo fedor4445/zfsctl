@@ -70,7 +70,7 @@ The `!` shell is deliberately the plain unprivileged login: it adds no sudoers r
 
 ```sh
 zfsctl print-sudoers fbsd16              # the exact sudoers line for that host, paths resolved on the host
-zfsctl print-sudoers fbsd16 --with restic --without samba
+zfsctl print-sudoers fbsd16 --with restic --with rclone --without samba
 zfsctl check-host fbsd16                 # ok / MISSING / TOO BROAD per entry; exit 0 only if all ok (2 = unreachable)
 ```
 
@@ -79,6 +79,8 @@ Both connect with the host's normal unprivileged `ssh_target` and only read: the
 `zfsctl` shells out to eleven privileged binaries in total (confirmed by grepping every `run`/`run_checked`/`run_with_stdin` call site, not just the obvious `zpool`/`zfs` ones — `getfacl`/`setfacl` back the ACL tab, `geom` backs the Disks section, `bectl` backs the Boot Envs section, `service` backs the Shares section's NFS/SMB availability check and the Samba reload, `smbpasswd` sets a managed SMB share's Samba password, `cat`/`tee` read and write `smb4.conf`, and `smbstatus -S` lists the clients connected to an SMB share for the metrics panel; all eleven need the sudoers entry, or whichever feature uses the missing one fails with "a password is required" the first time you touch it). Replication needs no `sh` entry either: the hub runs the two `zfs` commands itself and pipes them together. On each remote host, as root, find the exact paths (typically `/sbin/zpool`, `/sbin/zfs`, `/bin/getfacl`, `/bin/setfacl`, `/sbin/geom`, `/sbin/bectl`, `/usr/sbin/service`, `/usr/local/bin/smbpasswd`, `/usr/local/bin/smbstatus`, `/bin/cat`, `/usr/bin/tee` on FreeBSD, but confirm on your actual install rather than assume):
 
 A twelfth binary, `/usr/local/bin/restic`, is needed only on a host that runs backup jobs (jobs on the hub itself run as root and need nothing): add it to that host's sudoers entry. It is as broad as `zfs` and `bectl`, since restic as root can read any file and write anywhere.
+
+A thirteenth binary, `/usr/local/bin/rclone`, is needed only on a host that runs cloud mirror jobs (jobs on the hub itself run as root and need nothing): add it with `zfsctl print-sudoers HOST --with rclone`. It is as broad as `restic`: rclone as root can read any file and write to any remote its `rclone.conf` names.
 
 ```sh
 which zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee

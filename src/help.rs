@@ -59,7 +59,7 @@ pub fn text() -> String {
     out.push_str("\nFEATURES (for --with and --without)\n  ");
     out.push_str(&Feature::ALL.map(Feature::name).join(", "));
     out.push('\n');
-    push_wrapped(&mut out, 2, "`restic` is left out unless you add it with --with restic; --without removes a feature from the entry.");
+    push_wrapped(&mut out, 2, "`restic` and `rclone` are left out unless you add them with --with restic or --with rclone; --without removes a feature from the entry.");
     out.push_str("\nFILES\n  ");
     out.push_str(crate::config::DEFAULT_CONFIG_PATH);
     out.push_str("   hosts, theme, notifications\n  ");
