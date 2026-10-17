@@ -395,15 +395,14 @@ fn dest_clashes(a: &Job, b: &Job) -> bool {
     }
 }
 
-/// Whether two enabled, well-formed jobs on one host would write over each other in the cloud: two mirrors whose remote
-/// paths overlap, or a mirror and a restic backup whose `rclone:` repository overlaps the mirror's path (a sync would move
-/// the repository's files into `old/`). Remote names are per host, so jobs on other hosts never clash.
+/// Whether two enabled, well-formed jobs would write over each other in the cloud: two mirrors whose remote paths
+/// overlap, or a mirror and a restic backup whose `rclone:` repository overlaps the mirror's path (a sync would move
+/// the repository's files into `old/`). Remote names are compared across ALL hosts: the guide has people create the
+/// same `aws` remote everywhere, so the same name and path on two hosts is taken to be one bucket. (A false alarm,
+/// two accounts under one name, is cured by naming the remotes differently; the opposite mistake loses history.)
 fn remote_clashes(a: &Job, b: &Job) -> bool {
     let mirror = |j: &Job| j.enabled && j.kind == KIND_MIRROR && check_mirror_fields(j).is_ok();
     let restic = |j: &Job| j.enabled && j.kind == KIND_BACKUP && check_backup_fields(j).is_ok();
-    if a.host != b.host {
-        return false;
-    }
     let repo = |j: &Job| j.repository.as_deref().and_then(|r| r.strip_prefix("rclone:")).unwrap_or("").to_string();
     let remote = |j: &Job| j.remote.as_deref().unwrap_or("").to_string();
     match (mirror(a), mirror(b), restic(a), restic(b)) {
@@ -421,7 +420,7 @@ pub fn clash_reason(earlier: &Job, job: &Job) -> Option<String> {
     } else if dest_clashes(earlier, job) {
         Some(format!("same destination as job '{}': their incrementals would corrupt each other", earlier.id))
     } else if remote_clashes(earlier, job) {
-        Some(format!("its remote overlaps the one of job '{}' on this host: a sync would move the other job's files", earlier.id))
+        Some(format!("its remote overlaps the one of job '{}' (remote names count as the same place on every host): a sync would move the other job's files", earlier.id))
     } else {
         None
     }
@@ -909,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn mirror_jobs_on_one_host_with_overlapping_remotes_clash() {
+    fn mirror_jobs_with_overlapping_remotes_clash_on_any_host() {
         let a = Job::test_mirror("a", "tank/one", "hourly", "aws:bkt/p");
         for (other, clashes) in [("aws:bkt/p", true), ("aws:bkt/p/q", true), ("aws:bkt", true), ("aws:bkt/pq", false), ("b2:bkt/p", false)] {
             let b = Job::test_mirror("b", "tank/two", "hourly", other);
@@ -917,7 +916,9 @@ mod tests {
         }
         let mut elsewhere = Job::test_mirror("b", "tank/two", "hourly", "aws:bkt/p");
         elsewhere.host = "fbsd16".into();
-        assert!(clashing_job(std::slice::from_ref(&a), &elsewhere).is_none(), "remote names are per host");
+        assert!(clashing_job(std::slice::from_ref(&a), &elsewhere).is_some(), "the same remote name and path on another host is the same bucket");
+        elsewhere.remote = Some("aws2:bkt/p".into());
+        assert!(clashing_job(std::slice::from_ref(&a), &elsewhere).is_none(), "a different remote name is a different place");
         let mut off = a.clone();
         off.enabled = false;
         assert!(clashing_job(&[off], &Job::test_mirror("b", "tank/two", "hourly", "aws:bkt/p")).is_none(), "disabled jobs never clash");
@@ -930,7 +931,10 @@ mod tests {
         assert!(clashing_job(std::slice::from_ref(&restic), &m).is_some());
         assert!(clashing_job(std::slice::from_ref(&m), &restic).is_some());
         let apart = Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/y");
-        assert!(clashing_job(&[restic], &apart).is_none());
+        assert!(clashing_job(std::slice::from_ref(&restic), &apart).is_none());
+        let mut elsewhere = m.clone();
+        elsewhere.host = "fbsd16".into();
+        assert!(clashing_job(&[restic], &elsewhere).is_some(), "a restic repository on another host counts too");
     }
 
     #[test]
