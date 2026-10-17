@@ -29,6 +29,7 @@ const EDITABLE: [&str; 3] = ["ui", "dashboard", "cloud"];
 pub fn apply(text: &str, changes: &[Change]) -> Result<String, String> {
     use toml_edit::{DocumentMut, Item, Table, TableLike};
     let mut doc: DocumentMut = text.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
+    let trailing = doc.trailing().as_str().unwrap_or("").to_string();
     for change in changes {
         let (Change::Set(path, _) | Change::Remove(path)) = change;
         if path.len() < 2 || !path.first().is_some_and(|t| EDITABLE.contains(&t.as_str())) {
@@ -60,7 +61,15 @@ pub fn apply(text: &str, changes: &[Change]) -> Result<String, String> {
             }
         }
     }
-    let result = doc.to_string();
+    let mut result = doc.to_string();
+    // A table added after the last one is written before the comments that end the file, which would leave them
+    // under the new header (an uncommented key would then land in the wrong table): put them back above it.
+    if !trailing.is_empty() {
+        let (before, after) = (&text[..text.len() - trailing.len().min(text.len())], &result[..result.len().saturating_sub(trailing.len())]);
+        if text.ends_with(&trailing) && result.ends_with(&trailing) && after.starts_with(before) && after.len() > before.len() {
+            result = format!("{before}{trailing}{}", &after[before.len()..]);
+        }
+    }
     let new: toml::Table = result.parse().map_err(|e| format!("config.toml would no longer parse: {e}"))?;
     toml::from_str::<crate::config::Config>(&result).map_err(|e| format!("config.toml would no longer parse: {e}"))?;
     let old: toml::Table = text.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
@@ -174,6 +183,16 @@ mod tests {
     fn a_file_that_does_not_parse_is_refused_with_the_reason() {
         let err = apply("[dashboard\ncpu_warn = 1", &[Change::set(&["dashboard", "cpu_warn"], 80)]).unwrap_err();
         assert!(err.contains("parse"), "{err}");
+    }
+
+    #[test]
+    fn a_comment_at_the_end_of_the_file_stays_above_a_table_added_after_it() {
+        let old = "[daemon]\nnotify_command = \"true\"\n# notify_command = \"/usr/local/bin/hook\"\n";
+        let new = apply(old, &[Change::set(&["cloud", "caps", "b2"], "10G")]).unwrap();
+        let (comment, header) = (new.find("# notify_command").unwrap(), new.find("[cloud.caps]").unwrap());
+        assert!(comment < header, "{new}");
+        assert!(new.starts_with(old), "{new}");
+        assert_eq!(parsed(&new).cloud.caps.get("b2").map(String::as_str), Some("10G"));
     }
 
     #[test]

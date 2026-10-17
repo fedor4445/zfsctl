@@ -8493,3 +8493,17 @@ fn saving_thresholds_and_caps_reaches_the_dashboard_and_cloud_at_once() {
     app.refresh_settings();
     assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "b2").unwrap().value, "10G");
 }
+
+#[test]
+fn the_saved_note_is_not_wiped_by_applying_the_settings() {
+    let (mut app, dir) = settings_app("");
+    app.done_note = Some("Saved to config.toml".to_string());
+    saved_settings(&mut app, &dir, "[dashboard]\ncpu_warn = 80\n");
+    assert_eq!(app.status_message.as_deref(), Some("Saved to config.toml"));
+}
+
+#[test]
+fn help_has_a_settings_section() {
+    let text = help_text();
+    assert!(text.contains("\nSettings\n") && text.contains("edit the setting in a form"), "{text}");
+}

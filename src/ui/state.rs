@@ -2438,7 +2438,10 @@ impl App {
         match crate::ui::theme::resolve(config.ui.theme.as_deref(), env) {
             Ok(resolved) => {
                 self.theme = resolved.theme.bright();
-                self.status_message = resolved.note;
+                // The "Saved" note of the save that got us here stays unless there is something more to say.
+                if resolved.note.is_some() {
+                    self.status_message = resolved.note;
+                }
             }
             Err(e) => self.set_error(e.to_string()),
         }
@@ -3149,6 +3152,11 @@ Alerts
   t                send a test message through the saved settings (a real message; asks first)
   p                preview the daily report as it would be sent now (sends nothing)
   Up / Down        scroll the recent events
+
+Settings
+  Up / Down        select a setting (theme, auto-refresh, Dashboard thresholds, cloud caps)
+  Enter            edit the setting in a form (blank = default; saved into config.toml after a y/n confirmation)
+  r                reload the settings from config.toml
 
 Press any key to close."
         .to_string()
