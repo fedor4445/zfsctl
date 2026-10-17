@@ -141,8 +141,8 @@ fn errors_cell(pools: &[PoolProbe]) -> Cell {
 /// How one pool's last scrub reads: its level, the cell text, how many days (to pick the worst) and the attention note.
 fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, now: DateTime<Utc>) -> (Level, String, i64, Option<String>) {
     match pool.scan {
-        Some(ScanSummary::Running { percent }) => return (Level::Fine, percent.map_or_else(|| "running".to_string(), |p| format!("running {p}%")), -1, None),
-        Some(ScanSummary::Paused) => return (Level::Fine, "paused".to_string(), -1, None),
+        Some(ScanSummary::Running { percent, .. }) => return (Level::Fine, percent.map_or_else(|| "running".to_string(), |p| format!("running {p}%")), -1, None),
+        Some(ScanSummary::Paused { .. }) => return (Level::Fine, "paused".to_string(), -1, None),
         _ => {}
     }
     let Some(when) = pool.last_scrub.as_deref() else {
@@ -403,6 +403,17 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     for row in &hosts {
         attention.extend(host_attention(row).into_iter().map(|(level, what)| Item { level, subject: row.name.clone(), what, goto: Section::Hosts, target: Some(row.name.clone()) }));
     }
+    for host in &inputs.hosts {
+        let Some(HostProbe::Reached { pools, .. }) = host.probe else { continue };
+        for pool in pools {
+            let what = match &pool.scan {
+                Some(ScanSummary::Running { percent, resilver: true }) => percent.map_or_else(|| format!("{} resilvering", pool.name), |p| format!("{} resilvering {p}%", pool.name)),
+                Some(ScanSummary::Paused { resilver: true }) => format!("{} resilver paused", pool.name),
+                _ => continue,
+            };
+            attention.push(Item { level: Level::Watch, subject: host.name.to_string(), what, goto: Section::Pools, target: Some(host.name.to_string()) });
+        }
+    }
     if daemon.level == Level::Issue {
         attention.push(Item { level: Level::Issue, subject: "daemon".to_string(), what: daemon.text.clone(), goto: Section::Jobs, target: None });
     }
@@ -590,7 +601,7 @@ mod tests {
 
     #[test]
     fn a_running_or_paused_scan_is_not_judged_and_no_utc_offset_means_unknown_age() {
-        let running = PoolProbe { scan: Some(ScanSummary::Running { percent: Some(34) }), ..pool("tank", 10, 0, None) };
+        let running = PoolProbe { scan: Some(ScanSummary::Running { percent: Some(34), resilver: false }), ..pool("tank", 10, 0, None) };
         let r = default_row(&reached(vec![running]), Some(&reading(10, 0, 0, 100))).scrub;
         assert_eq!((r.level, r.text.as_str()), (Level::Fine, "running 34%"));
         let probe = reached(vec![pool("tank", 10, 0, Some(when(50)))]);
@@ -819,6 +830,25 @@ mod tests {
         let d = fx.build(vec![]);
         assert_eq!(d.cloud[0].level, Level::Issue);
         assert_eq!(d.attention.iter().filter(|i| i.subject == "m1" || i.subject == "b2").count(), 1, "{:?}", d.attention);
+    }
+
+    #[test]
+    fn a_resilvering_pool_is_one_yellow_line_and_a_scrub_or_a_finished_resilver_is_none() {
+        let fx = Fixture::new(view(vec![], &[], beat(1)));
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let items = |scan: ScanSummary, health: PoolHealth| {
+            let probe = reached(vec![PoolProbe { scan: Some(scan), health, last_scrub: Some(when(1)), ..pool("tank", 10, 0, Some(when(1))) }]);
+            fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("resilver")).collect::<Vec<_>>()
+        };
+        let one = items(ScanSummary::Running { percent: Some(42), resilver: true }, PoolHealth::Online);
+        assert_eq!(one.len(), 1, "{one:?}");
+        assert_eq!((one[0].level, one[0].subject.as_str(), one[0].what.as_str(), one[0].goto, one[0].target.as_deref()), (Level::Watch, "h", "tank resilvering 42%", Section::Pools, Some("h")));
+        assert_eq!(items(ScanSummary::Running { percent: None, resilver: true }, PoolHealth::Online)[0].what, "tank resilvering");
+        assert_eq!(items(ScanSummary::Paused { resilver: true }, PoolHealth::Online)[0].what, "tank resilver paused");
+        assert!(items(ScanSummary::Running { percent: Some(42), resilver: false }, PoolHealth::Online).is_empty(), "a scrub gets no line");
+        assert!(items(ScanSummary::Finished { when: when(1), errors: 0 }, PoolHealth::Online).is_empty(), "a finished resilver gets no line");
+        let degraded = items(ScanSummary::Running { percent: Some(5), resilver: true }, PoolHealth::Degraded);
+        assert_eq!(degraded.len(), 1, "the resilver line shows once next to the pool's own health line");
     }
 
     #[test]

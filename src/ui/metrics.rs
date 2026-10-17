@@ -382,10 +382,10 @@ fn scan_text(scan: Option<&ScanSummary>) -> (String, bool) {
     match scan {
         None => ("-".to_string(), false),
         Some(ScanSummary::Never) => ("never".to_string(), false),
-        Some(ScanSummary::Running { percent: Some(p) }) => (format!("running {p}%"), false),
-        Some(ScanSummary::Running { percent: None }) => ("running".to_string(), false),
+        Some(ScanSummary::Running { percent: Some(p), .. }) => (format!("running {p}%"), false),
+        Some(ScanSummary::Running { percent: None, .. }) => ("running".to_string(), false),
         Some(ScanSummary::Canceled) => ("canceled".to_string(), false),
-        Some(ScanSummary::Paused) => ("paused".to_string(), false),
+        Some(ScanSummary::Paused { .. }) => ("paused".to_string(), false),
         Some(ScanSummary::Finished { when, errors: 0 }) => (short_time(when), false),
         Some(ScanSummary::Finished { when, errors }) => (format!("{}, found {errors} errors", short_time(when)), true),
     }
@@ -772,7 +772,7 @@ pub(crate) mod tests_support {
             ],
             pool_rows: vec![
                 PoolProbe { name: "scratch".into(), health: PoolHealth::Online, capacity_percent: 42, frag_percent: Some(39), errors: Some(0), scan: Some(ScanSummary::Finished { when: "Thu Oct  8 19:48:07 2026".into(), errors: 0 }), last_scrub: Some("Thu Oct  8 19:48:07 2026".into()) },
-                PoolProbe { name: "tank".into(), health: PoolHealth::Degraded, capacity_percent: 91, frag_percent: None, errors: Some(3), scan: Some(ScanSummary::Running { percent: Some(34) }), last_scrub: None },
+                PoolProbe { name: "tank".into(), health: PoolHealth::Degraded, capacity_percent: 91, frag_percent: None, errors: Some(3), scan: Some(ScanSummary::Running { percent: Some(34), resilver: false }), last_scrub: None },
                 PoolProbe { name: "zroot".into(), health: PoolHealth::Online, capacity_percent: 24, frag_percent: Some(33), errors: Some(0), scan: Some(ScanSummary::Never), last_scrub: None },
             ],
         }

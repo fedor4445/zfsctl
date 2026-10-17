@@ -8536,3 +8536,21 @@ fn the_theme_note_is_repeated_only_when_the_theme_changes() {
     app.apply_saved_settings_with(&no_truecolor);
     assert_eq!(app.status_message.as_deref(), Some("Saved to config.toml"), "the same theme again: keep the saved note");
 }
+
+#[test]
+fn enter_on_a_resilver_line_selects_that_host_in_pools() {
+    let (mut app, _dir) = dash_app();
+    let mut probe = reached_probe(10);
+    if let crate::zfs::host_health::HostProbe::Reached { pools, .. } = &mut probe {
+        pools[0].scan = Some(crate::zfs::host_health::ScanSummary::Running { percent: Some(42), resilver: true });
+    }
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(probe), ..HostProbeState::default() });
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.what.contains("resilvering 42%")).expect("a resilver line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Pools);
+    assert_eq!(app.selected_host, 1);
+}

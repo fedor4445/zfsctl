@@ -2110,7 +2110,7 @@ impl App {
                         self.pane_focus = PaneFocus::Middle;
                     }
                     match (item.goto, item.target) {
-                        (Section::Hosts, Some(name)) => {
+                        (Section::Hosts | Section::Pools | Section::Disks, Some(name)) => {
                             if let Some(index) = self.hosts.iter().position(|h| *h == name) {
                                 self.selected_host = index;
                             }

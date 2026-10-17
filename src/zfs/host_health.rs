@@ -9,9 +9,10 @@ use std::time::Instant;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanSummary {
     Never,
-    Running { percent: Option<u8> },
-    /// `zpool scrub -p`: neither running nor finished.
-    Paused,
+    /// `resilver` is true when it is a resilver (a replaced or returned disk catching up), not a scrub.
+    Running { percent: Option<u8>, resilver: bool },
+    /// `zpool scrub -p` (or a paused resilver): neither running nor finished.
+    Paused { resilver: bool },
     /// The last scrub or resilver; `when` is as `zpool status` prints it (no time zone, so no age).
     Finished { when: String, errors: u64 },
     Canceled,
@@ -140,10 +141,10 @@ fn count_token(token: &str) -> u64 {
 pub(crate) fn scan_summary(block: &str) -> ScanSummary {
     match parse_pool_scan_status(block) {
         None => ScanSummary::Never,
-        Some(ScanStatus::InProgress { percent_done, .. }) => ScanSummary::Running { percent: percent_done.map(|p| p.clamp(0.0, 100.0) as u8) },
+        Some(ScanStatus::InProgress { summary, percent_done, .. }) => ScanSummary::Running { percent: percent_done.map(|p| p.clamp(0.0, 100.0) as u8), resilver: summary.starts_with("resilver") },
         Some(ScanStatus::Completed { summary, errors }) => {
             if summary.starts_with("scrub paused") || summary.starts_with("resilver paused") {
-                return ScanSummary::Paused;
+                return ScanSummary::Paused { resilver: summary.starts_with("resilver") };
             }
             if summary.contains("canceled") {
                 return ScanSummary::Canceled;
@@ -292,12 +293,12 @@ pub fn scan_cell(pools: &[PoolProbe]) -> String {
         return "-".to_string();
     }
     if let Some(running) = scans.iter().find_map(|s| match s {
-        ScanSummary::Running { percent } => Some(*percent),
+        ScanSummary::Running { percent, .. } => Some(*percent),
         _ => None,
     }) {
         return running.map_or_else(|| "running".to_string(), |p| format!("running {p}%"));
     }
-    if scans.iter().any(|s| matches!(s, ScanSummary::Paused)) {
+    if scans.iter().any(|s| matches!(s, ScanSummary::Paused { .. })) {
         return "paused".to_string();
     }
     if scans.iter().any(|s| matches!(s, ScanSummary::Never)) {
@@ -412,7 +413,7 @@ mod tests {
         let status = "  pool: a\n state: DEGRADED\n  scan: scrub in progress since Thu Oct  8 19:00:00 2026\n\t1G scanned at 100M/s, 500M issued at 50M/s, 2G total\n\t0B repaired, 24.40% done, 00:00:30 to go\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\ta     DEGRADED  3  0  1.2K\n\n  pool: ab\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 4 errors on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tab    ONLINE  0  0  0\n\n  pool: c\n state: ONLINE\n  scan: scrub canceled on Thu Oct  8 19:48:07 2026\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tc     ONLINE  0  0  0\n";
         let facts = parse_status_all(status);
         assert_eq!(facts.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["a", "ab", "c"], "a pool whose name is a prefix of another stays separate");
-        assert!(matches!(facts[0].scan, ScanSummary::Running { percent: Some(24) }), "{:?}", facts[0].scan);
+        assert!(matches!(facts[0].scan, ScanSummary::Running { percent: Some(24), resilver: false }), "{:?}", facts[0].scan);
         assert_eq!(facts[0].errors, Some(3 + 1200), "READ 3 plus a CKSUM of 1.2K");
         assert_eq!(facts[1].scan, ScanSummary::Finished { when: "Thu Oct  8 19:48:07 2026".to_string(), errors: 4 });
         assert_eq!(facts[2].scan, ScanSummary::Canceled);
@@ -490,9 +491,9 @@ mod tests {
     #[test]
     fn scrub_prefers_running_then_paused_then_never_then_the_oldest_date() {
         let fin = |w: &str| Some(ScanSummary::Finished { when: w.to_string(), errors: 0 });
-        let run = Some(ScanSummary::Running { percent: Some(34) });
+        let run = Some(ScanSummary::Running { percent: Some(34), resilver: false });
         assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, run)]), "running 34%");
-        assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, Some(ScanSummary::Paused))]), "paused");
+        assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, Some(ScanSummary::Paused { resilver: false }))]), "paused");
         assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, Some(ScanSummary::Never))]), "never");
         assert_eq!(scan_cell(&[pp("a", 1, fin("Thu Oct  8 19:48:07 2026")), pp("b", 1, fin("Sat Sep 26 13:15:14 2026"))]), "Sep 26 2026");
         assert_eq!(scan_cell(&[pp("a", 1, None)]), "-");
@@ -570,9 +571,20 @@ mod tests {
     }
 
     #[test]
+    fn a_resilver_is_told_from_a_scrub_and_pauses_the_same_way() {
+        let block = |scan: &str| format!("  pool: a\n state: ONLINE\n  scan: {scan}\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\ta     ONLINE  0  0  0\n");
+        let resilver = block("resilver in progress since Sat Oct 17 10:00:00 2026\n\t5G scanned at 100M/s, 1G issued at 50M/s, 5G total\n\t1G resilvered, 42.00% done, 00:00:30 to go");
+        assert_eq!(parse_status_all(&resilver)[0].scan, ScanSummary::Running { percent: Some(42), resilver: true });
+        let scrub = block("scrub in progress since Sat Oct 17 10:00:00 2026\n\t5G scanned at 100M/s, 1G issued at 50M/s, 5G total\n\t0B repaired, 24.00% done, 00:00:30 to go");
+        assert_eq!(parse_status_all(&scrub)[0].scan, ScanSummary::Running { percent: Some(24), resilver: false });
+        let paused = block("resilver paused since Sat Oct 17 10:00:00 2026\n\t1G resilvered, 50.00% done");
+        assert_eq!(parse_status_all(&paused)[0].scan, ScanSummary::Paused { resilver: true });
+    }
+
+    #[test]
     fn a_paused_scrub_is_paused_not_finished() {
         let status = "  pool: a\n state: ONLINE\n  scan: scrub paused since Thu Oct  8 19:00:00 2026\n\tscrub started on Thu Oct  8 18:00:00 2026\n\t1G scanned, 50.00% done\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\ta     ONLINE  0  0  0\n";
-        assert_eq!(parse_status_all(status)[0].scan, ScanSummary::Paused);
+        assert_eq!(parse_status_all(status)[0].scan, ScanSummary::Paused { resilver: false });
     }
 
     #[test]
