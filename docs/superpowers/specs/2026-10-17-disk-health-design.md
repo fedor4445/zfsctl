@@ -40,8 +40,8 @@ disk health on the Dashboard, with these limits (their words, paraphrased): no f
 
 ## Rules
 
-- `smartctl` is only ever run read-only (`--scan`, `-H`, `-A`, `-i`, `-j`); never `-t` (no self-tests started),
-  never a write to a disk. The daemon sends nothing to a disk beyond SMART reads, once a day per disk.
+- The daemon runs `smartctl` only read-only (`--scan`, `-H`, `-A`, `-i`, `-j`); it never starts a self-test (`-t`)
+  or writes to a disk. The daemon sends nothing to a disk beyond SMART reads, once a day per disk.
 - A host failing or hanging does not delay the others or the rest of the daemon: each host has its own deadline
   and the check runs off the scheduler's critical path. Bad or partial output never panics the daemon.
 - `smart.json` is written atomically (like `notify.json`); the Dashboard shows nothing if it is missing or
@@ -65,8 +65,12 @@ disk health on the Dashboard, with these limits (their words, paraphrased): no f
   problem vanish. A host that has never answered has no entry. The "disk check is N days old" line uses the newest
   `checked_at` of the whole file.
 - **Sudoers:** the daemon asks for the device list with `smartctl --scan -j` and then runs
-  `smartctl -j -H -A -i /dev/<dev>`; the sudoers entry pins the flags and allows only a `/dev/` path as the last
-  argument, so `-t` or any other flag cannot be run through it and nothing needs regenerating when disks change.
+  `smartctl -j -H -A -i /dev/<dev>`. The entry pins the flags and ends in `/dev/*`, so nothing needs regenerating
+  when disks change. Honest limit (found while planning): sudo's `*` also matches spaces, so it cannot forbid an
+  extra flag such as `-t`. The unprivileged account already holds `zfs` and `zpool` with any arguments (root
+  equivalent, as `print-sudoers` already warns), so this widens nothing in practice; `print-sudoers` says so in its
+  comment and `check-host` does not report the wildcard as "too broad" for this entry. The daemon itself only ever
+  sends the read-only flags.
 - **Enter on a line** selects that host and the Disks section (the existing Dashboard Enter behaviour); it does
   not focus a disk. For an unreachable host the line is not shown at all (the Hosts row says so).
 - **Counts:** SMART lines are ordinary Needs attention items, so they count in the verdict ("2 issues, 1 to
