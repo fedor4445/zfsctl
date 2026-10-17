@@ -124,6 +124,30 @@ pub fn run_all(hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, p
     file
 }
 
+/// One host's problems in a form both the Dashboard and the daily report can print.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostProblems {
+    pub host: String,
+    /// The worst of the host's problems.
+    pub severity: crate::smart::Severity,
+    /// `ada0 reallocated sectors 8, temperature 63 C; ada2 SMART health FAILED`
+    pub disks: String,
+    pub checked_at: DateTime<Utc>,
+}
+
+/// The hosts that have at least one disk with a problem, by host name; a host with only healthy disks is left out.
+pub fn problems(file: &SmartFile) -> Vec<HostProblems> {
+    file.hosts
+        .iter()
+        .filter_map(|(host, result)| {
+            let bad: Vec<&Disk> = result.disks.iter().filter(|d| !d.problems.is_empty()).collect();
+            let severity = bad.iter().flat_map(|d| &d.problems).map(|p| p.severity).max()?;
+            let disks = bad.iter().map(|d| format!("{} {}", d.dev, d.problems.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join("; ");
+            Some(HostProblems { host: host.clone(), severity, disks, checked_at: result.checked_at })
+        })
+        .collect()
+}
+
 /// Whether the daily check is due: it is switched on (`at`), and either it never ran or is more than a day old, or
 /// the local time has passed `at` on a day the last check did not happen.
 pub fn due(now_local: NaiveDateTime, at: Option<NaiveTime>, last_local: Option<NaiveDateTime>) -> bool {
@@ -254,6 +278,21 @@ mod tests {
         assert!(file.hosts.is_empty());
         assert_eq!(file.ran_at, Some(at("2026-10-17T03:30:00Z")));
         assert_eq!(file.last_run(), Some(at("2026-10-17T03:30:00Z")));
+    }
+
+    #[test]
+    fn problems_groups_a_hosts_disks_in_one_entry_and_skips_healthy_hosts() {
+        use crate::smart::Problem;
+        let disk = |dev: &str, problems: &[(Severity, &str)]| Disk { dev: dev.into(), problems: problems.iter().map(|(s, t)| Problem { severity: *s, text: (*t).into() }).collect() };
+        let mut file = SmartFile::default();
+        let entry = |disks| HostResult { checked_at: at("2026-10-17T03:30:00Z"), disks, error: None };
+        file.hosts.insert("a".into(), entry(vec![disk("ada0", &[(Severity::Watch, "reallocated sectors 8"), (Severity::Watch, "temperature 63 C")]), disk("ada1", &[]), disk("ada2", &[(Severity::Issue, "SMART health FAILED")])]));
+        file.hosts.insert("ok".into(), entry(vec![disk("ada0", &[])]));
+        let found = problems(&file);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].host.as_str(), found[0].severity), ("a", Severity::Issue));
+        assert_eq!(found[0].disks, "ada0 reallocated sectors 8, temperature 63 C; ada2 SMART health FAILED");
+        assert_eq!(found[0].checked_at, at("2026-10-17T03:30:00Z"));
     }
 
     #[test]

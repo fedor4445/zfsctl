@@ -181,7 +181,13 @@ fn cut_list(mut lines: Vec<String>) -> Vec<String> {
 
 /// The daily report. `bad_since` says when an open alert began; `since` starts the events window.
 #[allow(clippy::too_many_arguments)]
-pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent]) -> Message {
+/// The daily report's lines for disks with a problem, from the daemon's `smart.json`: `fbsd16: da1 reallocated sectors 8 (checked ... UTC)`.
+pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile) -> Vec<String> {
+    crate::daemon::smart_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.disks, utc(p.checked_at))).collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String]) -> Message {
     let count = |want: &[Level]| rows.iter().filter(|r| want.contains(&r.level)).count();
     let (ok, warning, critical) = (count(&[Level::Ok]), count(&[Level::Warning]), count(&[Level::Critical, Level::Disconnected]));
     let mut parts = vec![format!("{ok} ok")];
@@ -200,7 +206,7 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
         body.push('\n');
     }
     body.push_str("\nNEEDS ATTENTION\n");
-    let attention: Vec<String> = rows
+    let mut attention: Vec<String> = rows
         .iter()
         .filter(|r| !matches!(r.level, Level::Ok | Level::Probing))
         .map(|r| match bad_since(&r.name) {
@@ -208,6 +214,7 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
             None => format!("  {}: {}", r.name, r.reason),
         })
         .collect();
+    attention.extend(disks.iter().map(|d| format!("  {d}")));
     if attention.is_empty() {
         body.push_str("  Nothing needs attention.\n");
     } else {
@@ -324,6 +331,18 @@ mod tests {
     }
 
     #[test]
+    fn the_daily_report_lists_the_disk_problems_under_needs_attention() {
+        let mut file = crate::daemon::smart_check::SmartFile::default();
+        file.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "reallocated sectors 8".into() }] }], error: None });
+        let lines = disk_lines(&file);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("fbsd16: da1 reallocated sectors 8 (checked "), "{}", lines[0]);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
+        assert!(m.body.contains("  fbsd16: da1 reallocated sectors 8") && !m.body.contains("Nothing needs attention"), "{}", m.body);
+        assert!(disk_lines(&crate::daemon::smart_check::SmartFile::default()).is_empty());
+    }
+
+    #[test]
     fn a_host_name_with_a_newline_cannot_break_the_subject() {
         let r = row("bad\nname", Level::Critical, "x");
         let a = Alert { host: "bad\nname".into(), kind: AlertKind::Alert, severity: Severity::Critical, reason: "x\r\ny".into(), bad_for: None };
@@ -334,7 +353,7 @@ mod tests {
     #[test]
     fn the_report_has_a_summary_a_table_and_what_needs_attention() {
         let rows = vec![row("hub", Level::Ok, "ok"), row("fbsd16", Level::Critical, "tank DEGRADED"), row("t1", Level::Warning, "tank 85% full"), row("t2", Level::Disconnected, "unreachable")];
-        let m = report_message(t(60 * 7), "2026-10-11 07:00", "hub", &rows, &|h| (h == "fbsd16").then(|| t(60 * 2)), t(0), &[], &[], &[]);
+        let m = report_message(t(60 * 7), "2026-10-11 07:00", "hub", &rows, &|h| (h == "fbsd16").then(|| t(60 * 2)), t(0), &[], &[], &[], &[]);
         assert_eq!(m.subject, "[zfsctl] daily report: 1 ok, 1 warning, 2 critical");
         assert_eq!((m.kind.as_str(), m.host.as_str()), ("health-report", "hub"));
         for want in ["4 hosts: 1 ok, 1 warning, 2 critical", "HOST", "ADDRESS", "STATE", "USED", "SCRUB", "JOBS", "fbsd16", "NEEDS ATTENTION", "fbsd16: tank DEGRADED (since 2026-10-11 02:00 UTC)", "t2: unreachable"] {
@@ -347,7 +366,7 @@ mod tests {
     #[test]
     fn an_all_green_report_says_so_in_the_subject_and_still_has_a_body() {
         let rows = vec![row("hub", Level::Ok, "ok"), row("t1", Level::Ok, "ok")];
-        let m = report_message(t(0), "2026-10-11 07:00", "hub", &rows, &|_| None, t(-60 * 24), &[], &[], &[]);
+        let m = report_message(t(0), "2026-10-11 07:00", "hub", &rows, &|_| None, t(-60 * 24), &[], &[], &[], &[]);
         assert_eq!(m.subject, "[zfsctl] daily report: all 2 hosts ok");
         assert!(m.body.contains("Nothing needs attention") && m.body.contains("EVENTS since"), "{}", m.body);
     }
@@ -363,7 +382,7 @@ mod tests {
             run("scrub-t", None, "", t(40)),
         ];
         let events = vec![HealthEvent { at: t(15), host: "fbsd16".into(), kind: "alert".into(), text: "tank DEGRADED".into() }, HealthEvent { at: t(-9000), host: "t1".into(), kind: "alert".into(), text: "old".into() }];
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &events);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &events, &[]);
         for want in ["backup: 2 runs, 1 failed", "scrub: 1 run, 0 failed", "failed: backup-a on fbsd16", "restic exited 3", "fbsd16 alert: tank DEGRADED"] {
             assert!(m.body.contains(want), "{want:?} in\n{}", m.body);
         }
@@ -373,7 +392,7 @@ mod tests {
     #[test]
     fn runs_of_a_removed_job_are_still_counted_and_listed_without_a_question_mark() {
         let runs = vec![run("gone", Some(RunResult::Failed), "boom", t(10))];
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &[], &[]);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &[], &[], &[]);
         assert!(m.body.contains("removed jobs: 1 run, 1 failed") && m.body.contains("failed: gone at 00:10: boom"), "{}", m.body);
         assert!(!m.body.contains('?'), "{}", m.body);
     }
@@ -382,9 +401,9 @@ mod tests {
     fn long_event_lists_are_cut_with_a_count_and_empty_ones_say_none() {
         let jobs = vec![job("j", "snapshot", "hub")];
         let runs: Vec<Run> = (0..60).map(|i| run("j", Some(RunResult::Failed), &format!("boom {i}"), t(i))).collect();
-        let m = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &[]);
+        let m = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &[], &[]);
         assert!(m.body.contains("(+20 more)"), "{}", m.body);
-        let quiet = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[]);
+        let quiet = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[]);
         assert_eq!(quiet.body.matches("  none").count(), 3, "{}", quiet.body);
     }
 

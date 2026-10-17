@@ -76,7 +76,7 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
     let events = EventLog::new(state_dir.join("health-events.jsonl")).read();
     let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
     let local = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-    let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events);
+    let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json"))));
     format!("Subject: {}\n\n{}", msg.subject, msg.body)
 }
 

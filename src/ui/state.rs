@@ -318,6 +318,8 @@ pub struct App {
     /// The Settings section: the rest of `config.toml` that can be edited here.
     pub settings_view: crate::ui::settings::SettingsView,
     pub settings_table: TableState,
+    /// What the daemon's daily disk check found (`smart.json`), reloaded with the Dashboard.
+    pub smart: crate::daemon::smart_check::SmartFile,
     /// How often the list on screen reloads by itself; `None` is off. Set from `[ui]` at start and after a save in Settings.
     pub auto_refresh_interval: Option<Duration>,
     last_alerts_refresh: Option<Instant>,
@@ -520,6 +522,7 @@ impl App {
             alerts_view: crate::ui::alerts::AlertsView::default(),
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
+            smart: crate::daemon::smart_check::SmartFile::default(),
             auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
             done_note: None,
@@ -916,6 +919,7 @@ impl App {
     /// `[dashboard]` thresholds (an unreadable `config.toml` means the defaults). Probes arrive on their own every 30 s.
     pub fn refresh_dashboard(&mut self) {
         self.dashboard_thresholds = crate::config::Config::load(&self.config_path).map(|c| c.dashboard.resolve()).unwrap_or_default();
+        self.smart = crate::daemon::smart_check::SmartFile::load(&self.state_dir.join("smart.json"));
         self.refresh_alerts();
         self.refresh_cloud();
     }
@@ -947,6 +951,7 @@ impl App {
             cloud_caps: &self.cloud_caps,
             alerts: &self.alerts_view,
             thresholds: &self.dashboard_thresholds,
+            smart: &self.smart,
             now: chrono::Utc::now(),
         })
     }

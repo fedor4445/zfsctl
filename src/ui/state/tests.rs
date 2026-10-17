@@ -8554,3 +8554,28 @@ fn enter_on_a_resilver_line_selects_that_host_in_pools() {
     assert_eq!(app.current_section(), Section::Pools);
     assert_eq!(app.selected_host, 1);
 }
+
+#[test]
+fn the_dashboard_reads_smart_json_and_enter_on_its_line_selects_that_host_in_disks() {
+    let (mut app, dir) = dash_app();
+    let mut file = crate::daemon::smart_check::SmartFile::default();
+    file.hosts.insert(
+        "fbsd16".into(),
+        crate::daemon::smart_check::HostResult {
+            checked_at: chrono::Utc::now() - chrono::Duration::hours(2),
+            disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "reallocated sectors 8".into() }] }],
+            error: None,
+        },
+    );
+    file.save(&dir.path().join("smart.json")).unwrap();
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
+    app.refresh_dashboard();
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.what.contains("da1 reallocated sectors 8")).expect("a disk line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Disks);
+    assert_eq!(app.selected_host, 1);
+}
