@@ -384,6 +384,54 @@ The policy does not allow creating buckets, and zfsctl does not ask for it: the 
 
 **Tell rclone.** On the host that runs the job, as root, run `rclone config`, choose *New remote*, give it a name (`aws` or `b2`), pick the provider (`s3` with provider *AWS*, or `b2`) and paste the key. The keys are saved in `/root/.config/rclone/rclone.conf`, which must be readable by root only (`chmod 600`; the `F5` check tells you if it is not). On a host other than the hub also run `zfsctl print-sudoers HOST --with rclone` and install the line it prints. Do not use an rclone `crypt` remote if you want to browse the files: it encrypts the names too.
 
+### Seeing your cloud copies: the Cloud screen
+
+You should not have to remember which buckets you have set up. The **Cloud** section (between Jobs and Alerts in the sidebar) lists every rclone remote on the hub, plus the remote of any job on another host, with the jobs that write to it:
+
+```screen
+┌zfsctl────────────────┐┌Cloud — 3 remotes, 2 jobs───────────────────────────────────────────────────────────┐
+│Hosts                 ││Remote                 Host       Type    Jobs  Last             In bucket          │
+│Pools                 ││b2:                    local      b2      1     ok 3m ago        1.1 MiB            │
+│Datasets              ││t1:                    local      sftp    0     -                -                  │
+│Snapshots             ││zfsctl-aws:            local      s3      1     ok 3m ago        -                  │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
+│Alerts                ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Remote — b2:────────────────────────────────────────────────────────────────────────┐
+│                      ││b2: (b2) on local                                                                   │
+│                      ││mirror-local-scratch-zt-cloud  scratch/zt-cloud → b2:zfsctl/cloudtest  49 * * * *   │
+│                      ││last ok 3m ago                                                                      │
+│                      ││    current/ 1.1 MiB (3 files)   no old/ yet   measured just now                    │
+│                      ││Check: OK, the remote opens.                                                        │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  s Bucket size  F5 Check  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+```
+
+- **Remote, Host, Type:** the name you gave in `rclone config`, the host whose rclone config has it, and rclone's type for it (`b2`, `s3`, `sftp`...). Only names and types are read (`rclone listremotes --long`): no key is ever read into the screen.
+- **Jobs and Last:** how many cloud mirror jobs (and restic jobs that use an `rclone:` repository) write to the remote, and how the latest run of any of them ended. A remote whose latest run failed turns red, and the panel below says why. A remote nobody uses is dim: it is set up but unused.
+- **In bucket:** blank (`-`) until you press `s`. It then adds up the size of the `current/` folders of that remote's mirror jobs.
+- **The panel:** the selected remote's jobs, and after `s` the size of `current/` and of `old/` for each, so you can see when `old/` is getting big. `F5` runs the same read-only check as in the form.
+
+> **Tip:** `s` is on demand because measuring a bucket means listing every file in it, which a cloud account may count as requests, and on a free account those are limited. The screen never does it by itself, and says how long ago it was measured.
+
+> **Safety:** the Cloud screen only reads. It cannot create, change or delete a remote or anything in a bucket.
+
+A host other than the hub is asked only if it has a cloud job, and only if it has the `rclone` sudoers line (`zfsctl print-sudoers HOST --with rclone`); otherwise its row says why in the title instead of failing quietly.
+
 ### Restoring
 
 There is nothing special to restore from: open the bucket and download. From a shell, `rclone copy aws:mybucket/photos/current /restore` copies everything back, and an older version of one file is in the `old/<date and time>/` folder of the run that replaced it.

@@ -102,7 +102,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 
 ## Keys
 
-- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
+- `Tab` / `Shift+Tab`: switch sections (Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs, Cloud, Alerts) — this is now the *only* way to cycle sections; `Left`/`Right` have a different meaning (see below).
 - `'['` / `']'` (Datasets right pane only, once focused with `Right`): cycle between the Properties, Permissions, and ACL sub-tabs.
 - `Up` / `Down` (in Hosts section): select the active host
 - `Up` / `Down` (in Pools/Datasets/Snapshots, or a properties pane): select a row
@@ -291,6 +291,16 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 - `Enter`: edit the selected job (its id, creation time and enabled flag are kept)
 - `Space`: enable or disable the selected job
 - `d`: delete the selected job (y/n; its past runs stay in the history until pruned)
+
+### Cloud
+
+The Cloud section lists the rclone remotes (`rclone listremotes --long`, names and types only, never keys) of the hub and of any host that has a cloud job, with the jobs that write to each (a cloud mirror, or a restic backup whose repository is `rclone:`), the latest result of any of them and, after `s`, the size of the bucket. It only reads. A remote whose latest run failed is red; a remote no job uses is dim. The bottom panel shows the selected remote's jobs and the failure reason, if any.
+
+- `Up` / `Down`: select a remote
+- `s`: measure the bucket: the size and file count of `current/` and `old/` for each of the remote's cloud mirror jobs (`rclone size`; it lists the bucket, which a cloud account may count as requests, so it only runs when asked and shows when it was measured)
+- `F5`: the form's read-only remote check, for the remote of its first cloud mirror job
+- `C`: new cloud mirror job
+- `r`: reload the jobs and ask the hosts again (otherwise the list is asked when the section opens and then once a minute while it is on screen)
 
 ## Scheduled jobs (`zfsctl daemon`)
 

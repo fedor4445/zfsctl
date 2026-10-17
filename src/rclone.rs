@@ -65,6 +65,34 @@ pub fn size_args(path: &str) -> Vec<String> {
     vec!["size".to_string(), "--json".to_string(), path.to_string()]
 }
 
+/// `(file count, bytes)` from `rclone size --json`.
+pub fn parse_size(json: &str) -> Result<(u64, u64), String> {
+    let value: serde_json::Value = serde_json::from_str(json.trim()).map_err(|e| format!("cannot read rclone size output: {e}"))?;
+    let count = value.get("count").and_then(serde_json::Value::as_u64).ok_or_else(|| "rclone size output has no file count".to_string())?;
+    let bytes = value.get("bytes").and_then(serde_json::Value::as_u64).ok_or_else(|| "rclone size output has no byte count".to_string())?;
+    Ok((count, bytes))
+}
+
+/// `rclone listremotes --long`: the configured remotes with their type, one `name: type` per line. It prints no keys.
+pub fn listremotes_args() -> Vec<String> {
+    ["listremotes", "--long"].map(String::from).to_vec()
+}
+
+/// `(name, type)` per line of `listremotes --long`; the colon after the name is dropped. Lines that do not fit are skipped.
+pub fn parse_listremotes(stdout: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = stdout
+        .lines()
+        .filter_map(|line| {
+            let (name, kind) = line.split_once(':')?;
+            let (name, kind) = (name.trim(), kind.trim());
+            (!name.is_empty() && !name.contains(char::is_whitespace) && !kind.is_empty()).then(|| (name.to_string(), kind.to_string()))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub fn parse_size_count(json: &str) -> Result<u64, String> {
     let value: serde_json::Value = serde_json::from_str(json.trim()).map_err(|e| format!("cannot read rclone size output: {e}"))?;
     value.get("count").and_then(serde_json::Value::as_u64).ok_or_else(|| "rclone size output has no file count".to_string())
@@ -220,6 +248,21 @@ mod tests {
         for bad in [":s3,access_key_id=X:b/p", "-x:b", "a,b:c", "nocolon", "aws:b\nx", "", ":", "a b:c", " aws:b", "aws:b ", "aws:", "aws:/", "aws://", "aws:bkt/..", "aws:bkt/./p", "aws:../x", "aws:."] {
             assert!(!valid_remote(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_size_has_a_count_and_bytes() {
+        assert_eq!(parse_size("{\"count\":4,\"bytes\":2000006,\"sizeless\":0}\n"), Ok((4, 2_000_006)));
+        assert!(parse_size("{\"count\":4}").is_err());
+        assert!(parse_size("not json").is_err());
+    }
+
+    #[test]
+    fn listremotes_long_gives_names_and_types_sorted_without_the_colon() {
+        assert_eq!(listremotes_args(), ["listremotes", "--long"]);
+        let out = "t1:         sftp\nb2:         b2\nzfsctl-aws: s3\n\nweird line\n: s3\nx:\n";
+        assert_eq!(parse_listremotes(out), [("b2".to_string(), "b2".to_string()), ("t1".to_string(), "sftp".to_string()), ("zfsctl-aws".to_string(), "s3".to_string())]);
+        assert!(parse_listremotes("").is_empty());
     }
 
     #[test]

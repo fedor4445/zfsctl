@@ -39,7 +39,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .areas(body_area);
     // Every list section and a drilled pool give the bottom half of the center
     // column to a metrics panel; the sidebar keeps its full height.
-    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares | Section::Jobs);
+    let wants_metrics = app.drilled_pool.is_some() || matches!(app.current_section(), Section::Hosts | Section::Pools | Section::Datasets | Section::Snapshots | Section::Disks | Section::Shares | Section::Jobs | Section::Cloud);
     let (main_area, metrics_area) = if wants_metrics && body_area.height >= crate::ui::metrics::MIN_BODY_HEIGHT {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
@@ -54,6 +54,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_main(f, app, main_area);
     if let (Some(area), true) = (metrics_area, app.drilled_pool.is_none() && app.current_section() == Section::Jobs) {
         draw_jobs_panel(f, app, area);
+    } else if let (Some(area), true) = (metrics_area, app.drilled_pool.is_none() && app.current_section() == Section::Cloud) {
+        draw_cloud_panel(f, app, area);
     } else if let Some(area) = metrics_area {
         let health = app.metrics.target().and_then(|t| app.pools.iter().find(|p| Some(p.name.as_str()) == t.pool())).map(|p| p.health.clone());
         let disk = match app.metrics.target() {
@@ -164,6 +166,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Section::Shares => "Shares",
                 Section::BootEnvs => "Boot Envs",
                 Section::Jobs => "Jobs",
+                Section::Cloud => "Cloud",
                 Section::Alerts => "Alerts",
                 Section::Vdevs => "Vdevs",
                 Section::PoolProperties => "Pool Properties",
@@ -286,6 +289,7 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
         Section::Shares => draw_shares(f, app, area),
         Section::BootEnvs => draw_bootenvs(f, app, area),
         Section::Jobs => draw_jobs(f, app, area),
+        Section::Cloud => draw_cloud(f, app, area),
         Section::Alerts => draw_alerts(f, app, area),
         Section::Pools | Section::Datasets => unreachable!("handled above"),
         Section::Vdevs | Section::PoolProperties | Section::DatasetProperties | Section::DatasetPermissions | Section::DatasetAcl => {
@@ -867,6 +871,82 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), right);
+}
+
+/// The Cloud section: every rclone remote the hub (and any host with a cloud job) knows, with its jobs.
+fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
+    use crate::ui::cloud::{cells, failed};
+    let theme = app.theme.clone();
+    let now = chrono::Utc::now();
+    let rows = app.cloud_rows();
+    let jobs: usize = rows.iter().map(|r| r.job_ids.len()).sum();
+    let mut title = vec![Span::raw(format!("Cloud — {} remote{}, {} job{}", rows.len(), if rows.len() == 1 { "" } else { "s" }, jobs, if jobs == 1 { "" } else { "s" }))];
+    let mut problems: Vec<_> = app.cloud_errors.iter().collect();
+    problems.sort();
+    for (host, why) in problems {
+        title.push(Span::styled(format!(" — {host}: {why}"), theme.err));
+    }
+    let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(Line::from(title));
+    if rows.is_empty() {
+        let text = if app.cloud_known.is_empty() && app.cloud_errors.is_empty() {
+            "Looking for rclone remotes..."
+        } else {
+            "No rclone remotes found. Create one as root with `rclone config` (see the book, chapter 15), then press 'r'. 'C' makes a cloud mirror job."
+        };
+        f.render_widget(Paragraph::new(text).style(theme.dim()).wrap(Wrap { trim: false }).block(block), area);
+        return;
+    }
+    let table_rows: Vec<Row> = rows
+        .iter()
+        .map(|r| {
+            let style = if failed(r, &app.jobs_view) {
+                theme.err
+            } else if r.job_ids.is_empty() {
+                theme.dim()
+            } else {
+                Style::default()
+            };
+            Row::new(cells(r, &app.jobs_view, &app.cloud_sizes, now)).style(style)
+        })
+        .collect();
+    let widths = [Constraint::Length(22), Constraint::Length(10), Constraint::Length(7), Constraint::Length(5), Constraint::Length(16), Constraint::Min(10)];
+    let table = Table::new(table_rows, widths).header(Row::new(vec!["Remote", "Host", "Type", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
+    f.render_stateful_widget(table, area, &mut app.cloud_table);
+}
+
+/// The Cloud section's detail panel: the selected remote's jobs, what `s` measured, and the F5 check.
+fn draw_cloud_panel(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let row = app.cloud_table.selected().and_then(|i| app.cloud_rows().into_iter().nth(i));
+    let title = row.as_ref().map_or_else(|| "Remote".to_string(), |r| format!("Remote — {}:", r.name));
+    let block = Block::default().borders(Borders::ALL).border_style(theme.pane_border(false)).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let Some(row) = row else {
+        f.render_widget(Paragraph::new("nothing selected").style(theme.dim()), inner);
+        return;
+    };
+    let mut lines: Vec<Line> = crate::ui::cloud::detail(&row, &app.jobs_view, &app.cloud_sizes, chrono::Utc::now())
+        .into_iter()
+        .enumerate()
+        .map(|(i, (text, bad))| Line::styled(text, if bad { theme.err } else if i == 0 { theme.dim() } else { Style::default() }))
+        .collect();
+    if let Some(why) = app.cloud_errors.get(&row.host) {
+        lines.push(Line::styled(format!("rclone on {}: {why}", row.host), theme.err));
+    }
+    let mirror_remote = app.jobs_view.jobs.iter().find(|j| row.job_ids.contains(&j.id) && j.kind == crate::jobs::KIND_MIRROR).and_then(|j| j.remote.clone());
+    let check = app.backup_preflight.as_ref().filter(|c| c.password_file.is_empty() && app.hosts.get(c.host) == Some(&row.host) && Some(&c.repository) == mirror_remote.as_ref());
+    if let Some(check) = check {
+        lines.push(match &check.result {
+            None => Line::styled("Check: checking the remote...".to_string(), theme.dim()),
+            Some(crate::restic::Preflight::Ok) => Line::from("Check: OK, the remote opens.".to_string()),
+            Some(crate::restic::Preflight::Problem(m)) => Line::styled(format!("Check: {m}"), theme.err),
+        });
+        if let Some(note) = check.file_note.as_deref() {
+            lines.push(Line::styled(format!("Note: {note}"), theme.dim()));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// The Alerts section: the saved `[notify]` settings, the monitor's status, the recent health events.
@@ -1814,6 +1894,53 @@ mod tests {
         for want in ["Metrics — tank/data@b", "Snapshot  b", "Reclaim   2.0K", "Holds     1", "(blocks destroy)", "2 snaps", "25%"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    fn cloud_app() -> App {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Cloud).unwrap();
+        app.jobs_view = crate::ui::jobs::JobsView { jobs: vec![crate::jobs::Job::test_mirror("mirror-local-tank-photos", "tank/photos", "hourly", "b2:zfsctl/photos")], loaded: true, ..Default::default() };
+        app.cloud_known.insert("local".into(), vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into()), ("zfsctl-aws".into(), "s3".into())]);
+        app
+    }
+
+    #[test]
+    fn the_cloud_section_lists_every_remote_with_its_jobs_and_the_selected_ones_detail() {
+        let mut app = cloud_app();
+        app.cloud_table.select(Some(0));
+        app.cloud_sizes.insert("mirror-local-tank-photos".into(), crate::ui::cloud::Size { current: Some((412, 1_992_294)), old: Some((3, 24_576)), at: chrono::Utc::now(), problem: None });
+        let text = render(&mut app, 130, 40).join("\n");
+        for want in ["Cloud — 3 remotes, 1 job", "Remote", "In bucket", "b2:", "zfsctl-aws:", "t1:", "sftp", "1.9 MiB", "Remote — b2:", "mirror-local-tank-photos", "current/ 1.9 MiB (412 files)", "old/ 24.0 KiB (3 files)"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        app.cloud_table.select(Some(1));
+        let idle = render(&mut app, 130, 40).join("\n");
+        assert!(idle.contains("Remote — t1:") && idle.contains("No job uses this remote"), "{idle}");
+    }
+
+    #[test]
+    fn the_cloud_section_says_why_a_host_could_not_be_asked_and_what_to_do_when_there_are_no_remotes() {
+        let mut app = cloud_app();
+        app.cloud_errors.insert("local".into(), "rclone is not installed on local".into());
+        let text = render(&mut app, 130, 40).join("\n");
+        assert!(text.contains("local: rclone is not installed on local"), "{text}");
+        let mut empty = App::new(vec!["local".to_string()]);
+        empty.selected_section = empty.sections.iter().position(|s| *s == Section::Cloud).unwrap();
+        assert!(render(&mut empty, 130, 40).join("\n").contains("Looking for rclone remotes"));
+        empty.cloud_known.insert("local".into(), vec![]);
+        assert!(render(&mut empty, 130, 40).join("\n").contains("No rclone remotes found"));
+    }
+
+    #[test]
+    fn the_cloud_section_shows_the_f5_check_for_the_selected_remote_and_survives_a_small_screen() {
+        let mut app = cloud_app();
+        app.cloud_table.select(Some(0));
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 0, repository: "b2:zfsctl/photos".into(), password_file: String::new(), result: Some(crate::restic::Preflight::Ok), file_note: None });
+        assert!(render(&mut app, 130, 40).join("\n").contains("Check: OK, the remote opens."));
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 0, repository: "other:x".into(), password_file: String::new(), result: Some(crate::restic::Preflight::Ok), file_note: None });
+        assert!(!render(&mut app, 130, 40).join("\n").contains("Check:"), "a check of another remote is not shown here");
+        let tiny = render(&mut app, 60, 12).join("\n");
+        assert!(tiny.contains("Cloud"), "{tiny}");
     }
 
     #[test]

@@ -33,6 +33,8 @@ impl App {
                 WorkerMsg::DatasetPermissions(host, dataset, result) => self.on_dataset_permissions(host, dataset, result, &mut refreshes_needed),
                 WorkerMsg::DatasetAcl(host, path, result) => self.on_dataset_acl(host, path, result, &mut refreshes_needed),
                 WorkerMsg::Accounts(host, result) => self.on_accounts(host, result),
+                WorkerMsg::CloudRemotes(host, result) => self.on_cloud_remotes(host, result),
+                WorkerMsg::CloudSize(job_id, size) => self.on_cloud_size(job_id, size),
                 WorkerMsg::Preflight(host, repository, password_file, result, file_note) => self.on_preflight(host, &repository, &password_file, result, file_note),
                 WorkerMsg::PrunePreview(host, dataset, result) => self.on_prune_preview(host, &dataset, result),
                 WorkerMsg::PoolNames(host, result) => self.on_pool_names(host, result),
@@ -373,6 +375,29 @@ impl App {
                     p.load = crate::ui::picker::PickerLoad::Failed(e.to_string());
                 }
             }
+        }
+    }
+
+    fn on_cloud_remotes(&mut self, host: String, result: std::result::Result<Vec<(String, String)>, String>) {
+        self.cloud_busy.remove(&format!("remotes:{host}"));
+        match result {
+            Ok(list) => {
+                self.cloud_errors.remove(&host);
+                self.cloud_known.insert(host, list);
+            }
+            Err(problem) => {
+                self.cloud_errors.insert(host, problem);
+            }
+        }
+        let rows = self.cloud_rows().len();
+        clamp_table_selection(&mut self.cloud_table, rows);
+    }
+
+    fn on_cloud_size(&mut self, job_id: String, size: crate::ui::cloud::Size) {
+        self.cloud_busy.remove(&format!("size:{job_id}"));
+        self.cloud_sizes.insert(job_id, size);
+        if self.status_message.as_deref().is_some_and(|m| m.starts_with("Measuring the bucket")) && !self.cloud_busy.iter().any(|k| k.starts_with("size:")) {
+            self.status_message = None;
         }
     }
 

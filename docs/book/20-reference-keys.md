@@ -132,6 +132,16 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `Space` | enable / disable the job |
 | `d` | delete the job (y/n; its past runs stay in the history) |
 
+## Cloud
+
+| Key | What it does |
+|---|---|
+| `Up / Down` | select an rclone remote (the hub's, and those of hosts that have a cloud job) |
+| `s` | measure the bucket: the size of `current/` and `old/` of the remote's cloud mirror jobs (reads the file list, which a cloud account may count as requests) |
+| `F5` | check the remote of its cloud mirror job (read-only) |
+| `C` | new cloud mirror job |
+| `r` | refresh the list of remotes and jobs |
+
 ## Alerts
 
 | Key | What it does |

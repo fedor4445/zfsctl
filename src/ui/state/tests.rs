@@ -4006,10 +4006,11 @@ fn alerts_app(config: &str) -> (App, tempfile::TempDir) {
 }
 
 #[test]
-fn alerts_is_the_last_sidebar_section_after_jobs() {
+fn alerts_is_the_last_sidebar_section_after_jobs_and_cloud() {
     let app = App::new(vec!["local".to_string()]);
     assert_eq!(app.sections.last(), Some(&Section::Alerts));
-    assert_eq!(app.sections[app.sections.len() - 2], Section::Jobs);
+    assert_eq!(app.sections[app.sections.len() - 2], Section::Cloud);
+    assert_eq!(app.sections[app.sections.len() - 3], Section::Jobs);
 }
 
 #[test]
@@ -5073,12 +5074,14 @@ fn scrub_job(id: &str) -> crate::jobs::Job {
 }
 
 #[test]
-fn jobs_is_the_last_section_and_tab_cycles_into_and_out_of_it() {
+fn tab_cycles_through_jobs_cloud_and_alerts_and_wraps_to_hosts() {
     let mut app = App::new(vec!["local".to_string()]);
     assert_eq!(app.sections.last(), Some(&Section::Alerts));
     app.selected_section = app.sections.iter().position(|s| *s == Section::BootEnvs).unwrap();
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_section(), Section::Jobs);
+    app.handle_key(KeyCode::Tab);
+    assert_eq!(app.current_section(), Section::Cloud);
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_section(), Section::Alerts);
     app.handle_key(KeyCode::Tab);
@@ -7979,4 +7982,108 @@ fn f5_in_the_mirror_form_runs_nothing_for_a_bad_remote_or_host_and_says_why() {
         assert!(app.pending_preflight.is_empty() && app.backup_preflight.is_none(), "{values:?}");
         assert!(app.status_message.clone().unwrap_or_default().contains(want), "{:?}", app.status_message);
     }
+}
+
+// ---- Cloud ----
+
+fn cloud_mirror(id: &str, host: &str, remote: &str) -> crate::jobs::Job {
+    let mut j = crate::jobs::Job::test_mirror(id, "tank/data", "hourly", remote);
+    j.host = host.into();
+    j
+}
+
+fn cloud_app(jobs: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = app_with_jobs(jobs);
+    app.hosts = vec!["local".to_string(), "fbsd16".to_string()];
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Cloud).unwrap();
+    (app, dir)
+}
+
+#[test]
+fn refreshing_cloud_asks_the_hub_and_each_host_with_a_cloud_job_once() {
+    let (mut app, _dir) = cloud_app(&[cloud_mirror("m1", "fbsd16", "aws:bkt/p"), cloud_mirror("m2", "fbsd16", "aws:bkt/q"), scrub_job("s")]);
+    app.refresh_cloud();
+    let asked: Vec<(usize, String)> = app.pending_cloud.iter().map(|p| (p.host, p.host_name.clone())).collect();
+    assert_eq!(asked, [(0, "local".to_string()), (1, "fbsd16".to_string())]);
+    assert!(app.pending_cloud.iter().all(|p| p.work == CloudWork::Remotes));
+    app.refresh_cloud();
+    assert_eq!(app.pending_cloud.len(), 2, "an answer still awaited is not asked for again");
+}
+
+#[test]
+fn the_answer_for_a_host_fills_the_table_and_a_failure_is_kept_as_its_reason() {
+    let (mut app, _dir) = cloud_app(&[cloud_mirror("m1", "local", "b2:zfsctl/photos")]);
+    app.refresh_cloud();
+    app.tx.send(WorkerMsg::CloudRemotes("local".into(), Ok(vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into())]))).unwrap();
+    app.drain_worker_messages();
+    let rows = app.cloud_rows();
+    assert_eq!(rows.iter().map(|r| (r.name.as_str(), r.job_ids.len())).collect::<Vec<_>>(), [("b2", 1), ("t1", 0)]);
+    app.refresh_cloud();
+    assert_eq!(app.pending_cloud.len(), 2, "the first ask was answered, so the host can be asked again");
+    app.tx.send(WorkerMsg::CloudRemotes("local".into(), Err("rclone is not installed on local".into()))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.cloud_errors.get("local").map(String::as_str), Some("rclone is not installed on local"));
+    assert_eq!(app.cloud_rows().len(), 2, "the last good list stays on screen");
+}
+
+#[test]
+fn arrow_keys_move_through_the_remotes_and_s_measures_only_mirror_jobs_of_the_selected_one() {
+    let (mut app, _dir) = cloud_app(&[cloud_mirror("m1", "local", "b2:zfsctl/photos"), crate::jobs::Job::test_backup("b1", "tank/data", "hourly", "rclone:zfsctl-aws:bkt/x", "/pw")]);
+    app.cloud_known.insert("local".into(), vec![("b2".into(), "b2".into()), ("zfsctl-aws".into(), "s3".into())]);
+    app.refresh_jobs();
+    app.pending_cloud.clear();
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.cloud_table.selected(), Some(0));
+    app.handle_key(KeyCode::Char('s'));
+    assert_eq!(app.pending_cloud, vec![PendingCloud { host: 0, host_name: "local".into(), work: CloudWork::Size { job_id: "m1".into(), remote: "b2:zfsctl/photos".into() } }]);
+    app.handle_key(KeyCode::Char('s'));
+    assert_eq!(app.pending_cloud.len(), 1, "a measurement still running is not started twice");
+    app.handle_key(KeyCode::Down);
+    app.pending_cloud.clear();
+    app.handle_key(KeyCode::Char('s'));
+    assert!(app.pending_cloud.is_empty(), "a restic repository is not measured");
+    assert!(app.status_message.as_deref().unwrap_or("").contains("Nothing to measure"), "{:?}", app.status_message);
+    app.tx.send(WorkerMsg::CloudSize("m1".into(), crate::ui::cloud::Size { current: Some((4, 2000)), old: None, at: chrono::Utc::now(), problem: None })).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.cloud_sizes.get("m1").and_then(|s| s.current), Some((4, 2000)));
+}
+
+#[test]
+fn f5_in_cloud_checks_the_remote_of_the_selected_remotes_mirror_job() {
+    let (mut app, _dir) = cloud_app(&[cloud_mirror("m1", "local", "b2:zfsctl/photos")]);
+    app.cloud_known.insert("local".into(), vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into())]);
+    app.refresh_jobs();
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::F(5));
+    assert_eq!(app.pending_preflight, vec![PendingPreflight { host: 0, host_name: "local".into(), repository: "b2:zfsctl/photos".into(), password_file: String::new() }]);
+    app.pending_preflight.clear();
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::F(5));
+    assert!(app.pending_preflight.is_empty() && app.status_message.as_deref().unwrap_or("").contains("Nothing to check"), "{:?}", app.status_message);
+}
+
+#[test]
+fn big_c_in_cloud_opens_the_mirror_form_like_jobs_does() {
+    let (mut app, _dir) = cloud_app(&[]);
+    app.handle_key(KeyCode::Char('C'));
+    assert!(matches!(app.modal, Some(Modal::Form { kind: FormKind::MirrorJob { .. }, .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn the_cloud_section_asks_for_its_remotes_when_first_opened_and_then_once_a_minute() {
+    let (mut app, _dir) = cloud_app(&[]);
+    let t0 = Instant::now();
+    app.refresh_cloud_if_stale(t0);
+    assert_eq!(app.pending_cloud.len(), 1, "opened for the first time: the hub is asked");
+    app.pending_cloud.clear();
+    app.tx.send(WorkerMsg::CloudRemotes("local".into(), Ok(vec![]))).unwrap();
+    app.drain_worker_messages();
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(30));
+    assert!(app.pending_cloud.is_empty(), "not again within a minute");
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(61));
+    assert_eq!(app.pending_cloud.len(), 1);
+    app.pending_cloud.clear();
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+    app.refresh_cloud_if_stale(t0 + Duration::from_secs(200));
+    assert!(app.pending_cloud.is_empty(), "other sections do not ask");
 }
