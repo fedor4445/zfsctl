@@ -7915,3 +7915,34 @@ fn f2_on_the_mirror_forms_source_lists_the_datasets_snapshots() {
     app.handle_modal_key(KeyCode::F(2));
     assert!(app.picker.is_some(), "the Source field has a picker");
 }
+
+fn mirror_form_app(values: [&str; 9]) -> App {
+    let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+    app.modal = Some(Modal::Form { title: "x".into(), fields: mirror_fields(values), focused: 5, description: None, kind: mirror_kind(None, vec![]) });
+    app
+}
+
+#[test]
+fn f5_in_the_mirror_form_queues_one_check_of_the_remote_on_the_forms_host() {
+    let mut app = mirror_form_app(MIRROR_GOOD);
+    assert_eq!(app.handle_modal_key(KeyCode::F(5)), None);
+    assert_eq!(app.pending_preflight, vec![PendingPreflight { host: 0, host_name: "local".into(), repository: "aws:bkt/photos".into(), password_file: String::new() }]);
+    assert_eq!(app.backup_preflight, Some(PreflightCheck { host: 0, repository: "aws:bkt/photos".into(), password_file: String::new(), result: None, file_note: None }));
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "the form stays open");
+    app.handle_modal_key(KeyCode::F(5));
+    assert_eq!(app.pending_preflight.len(), 1, "a second press while checking queues nothing");
+}
+
+#[test]
+fn f5_in_the_mirror_form_runs_nothing_for_a_bad_remote_or_host_and_says_why() {
+    for (values, want) in [
+        (["nohost", "tank/data", "", "hourly", "", "aws:bkt", "", "30 3 * * *", "y"], "Unknown host 'nohost'"),
+        (["local", "tank/data", "", "hourly", "", "", "", "30 3 * * *", "y"], "enter the remote"),
+        (["local", "tank/data", "", "hourly", "", ":s3,access_key_id=X:b", "", "30 3 * * *", "y"], "enter the remote"),
+    ] {
+        let mut app = mirror_form_app(values);
+        app.handle_modal_key(KeyCode::F(5));
+        assert!(app.pending_preflight.is_empty() && app.backup_preflight.is_none(), "{values:?}");
+        assert!(app.status_message.clone().unwrap_or_default().contains(want), "{:?}", app.status_message);
+    }
+}

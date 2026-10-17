@@ -97,7 +97,7 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
             if build_picker_state(kind, *focused, value).is_some() {
                 v.push(h("F2", "Pick", 1));
             }
-            if matches!(kind, crate::ui::modal::FormKind::BackupJob { .. }) {
+            if matches!(kind, crate::ui::modal::FormKind::BackupJob { .. } | crate::ui::modal::FormKind::MirrorJob { .. }) {
                 v.push(h("F5", "Check", 1));
             }
             v.push(h("Esc", "Cancel", 0));

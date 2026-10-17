@@ -2199,11 +2199,34 @@ impl App {
         self.pending_preflight.push(PendingPreflight { host, host_name: host_name.to_string(), repository: repository.to_string(), password_file: password_file.to_string() });
     }
 
+    /// F5 in the cloud mirror form: queues one check of the remote on the form's host. It rides the backup form's
+    /// check (an empty `password_file` marks it as a remote check), so a result for edited values is dropped the same way.
+    pub(super) fn request_mirror_check(&mut self, host_name: &str, remote: &str) {
+        let Some(host) = self.hosts.iter().position(|h| h == host_name) else {
+            self.set_error(format!("Unknown host '{host_name}'. Configured hosts: {}", self.hosts.join(", ")));
+            return;
+        };
+        if !crate::rclone::valid_remote(remote) {
+            self.set_error("Check: enter the remote first, like aws:mybucket/photos (the name of an rclone remote, a colon and a path, with no keys in it)".to_string());
+            return;
+        }
+        let same = |c: &PreflightCheck| c.host == host && c.repository == remote && c.password_file.is_empty();
+        if self.backup_preflight.as_ref().is_some_and(|c| same(c) && c.result.is_none()) {
+            return;
+        }
+        self.backup_preflight = Some(PreflightCheck { host, repository: remote.to_string(), password_file: String::new(), result: None, file_note: None });
+        self.pending_preflight.push(PendingPreflight { host, host_name: host_name.to_string(), repository: remote.to_string(), password_file: String::new() });
+    }
+
     /// Runs one queued check on a worker thread and reports it as `WorkerMsg::Preflight`.
     pub fn run_backup_preflight(&mut self, runner: Arc<dyn CommandRunner>, pending: PendingPreflight) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let report = crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE);
+            let report = if pending.password_file.is_empty() {
+                crate::preflight::run_remote(runner, &pending.host_name, &pending.repository, crate::preflight::DEADLINE)
+            } else {
+                crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE)
+            };
             let _ = tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, report.result, report.file_note));
         });
     }

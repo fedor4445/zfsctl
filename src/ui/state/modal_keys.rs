@@ -125,6 +125,10 @@ impl App {
                 }
                 self.reopen(form)
             }
+            KeyCode::F(5) if matches!(form.kind, FormKind::MirrorJob { .. }) => {
+                self.request_mirror_check(field_value(&form.fields, 0).trim(), field_value(&form.fields, 5).trim());
+                self.reopen(form)
+            }
             KeyCode::F(5) if matches!(form.kind, FormKind::BackupJob { .. }) => {
                 self.request_backup_preflight(field_value(&form.fields, 0).trim(), field_value(&form.fields, 5).trim(), field_value(&form.fields, 6).trim());
                 self.reopen(form)

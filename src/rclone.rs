@@ -110,6 +110,38 @@ pub fn failure_text(fatal: Option<&str>, stderr: &str, remote: &str) -> String {
     }
 }
 
+/// `rclone config file`: prints where root's rclone configuration (the cloud keys) lives.
+pub fn config_file_args() -> Vec<String> {
+    vec!["config".to_string(), "file".to_string()]
+}
+
+/// The path out of `rclone config file`'s output ("Configuration file is stored at:" and then the path).
+pub fn parse_config_file(out: &str) -> Option<String> {
+    let path = out.lines().map(str::trim).rev().find(|l| !l.is_empty())?;
+    (path.starts_with('/') && !path.contains(' ')).then(|| path.to_string())
+}
+
+/// Advice about the rclone configuration file's mode and owner: it holds the cloud keys. `None` when only root has access.
+pub fn config_permission_note(path: &str, mode: u32, owner: &str) -> Option<String> {
+    let mut problems = Vec::new();
+    if mode & 0o077 != 0 {
+        problems.push(format!("the rclone configuration holds your cloud keys and can be read or changed by other users (mode {:03o}): run `chmod 600 {path}`", mode & 0o777));
+    }
+    if owner != "root" {
+        problems.push(format!("the rclone configuration is owned by {owner}, not root: run `chown root {path}`"));
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+/// Said when the remote opens but the configuration file's permissions could not be read from here.
+pub const CONFIG_UNCHECKED: &str = "the rclone configuration's permissions could not be checked from here: make sure only root can read it";
+
+/// A warning when the remote path ends in one of the folders a mirror creates itself.
+pub fn own_folder_warning(remote: &str) -> Option<String> {
+    let last = remote.split(':').nth(1)?.trim_end_matches('/').rsplit('/').next()?;
+    matches!(last, "current" | "old").then(|| format!("this path ends in '{last}', which a mirror creates itself below the path you give: use the parent as the remote"))
+}
+
 /// What the form's remote check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Check {
@@ -249,6 +281,24 @@ mod tests {
         assert!(problem(1, "", "sudo: a password is required").contains("print-sudoers fbsd16 --with rclone"));
         assert!(problem(1, "", "exec: \"rclone\": executable file not found in $PATH").contains("not installed"));
         assert_eq!(problem(1, "", "weird nosuchremote:bkt failure"), "weird <remote> failure");
+    }
+
+    #[test]
+    fn the_config_file_path_and_its_permissions_are_read() {
+        assert_eq!(parse_config_file("Configuration file is stored at:\n/root/.config/rclone/rclone.conf\n"), Some("/root/.config/rclone/rclone.conf".to_string()));
+        assert_eq!(parse_config_file("Configuration file doesn't exist, but rclone will use this path:\n/root/x y/rclone.conf\n"), None);
+        assert_eq!(parse_config_file(""), None);
+        assert_eq!(config_permission_note("/root/rc.conf", 0o600, "root"), None);
+        let note = config_permission_note("/root/rc.conf", 0o644, "fb").unwrap();
+        assert!(note.contains("chmod 600 /root/rc.conf") && note.contains("chown root"), "{note}");
+    }
+
+    #[test]
+    fn a_remote_ending_in_current_or_old_is_warned_about() {
+        assert!(own_folder_warning("aws:bkt/photos/current").unwrap().contains("'current'"));
+        assert!(own_folder_warning("aws:bkt/old/").unwrap().contains("'old'"));
+        assert_eq!(own_folder_warning("aws:bkt/photos"), None);
+        assert_eq!(own_folder_warning("aws:"), None);
     }
 
     #[test]

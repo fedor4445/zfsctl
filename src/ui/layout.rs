@@ -1084,19 +1084,22 @@ fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::F
 
 /// The F5 check that still describes what is on screen: editing the host, repository or password file hides it.
 fn current_check<'a>(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField], check: Option<&'a crate::ui::state::PreflightCheck>) -> Option<&'a crate::ui::state::PreflightCheck> {
-    let crate::ui::modal::FormKind::BackupJob { hosts, .. } = kind else { return None };
+    let (crate::ui::modal::FormKind::BackupJob { hosts, .. } | crate::ui::modal::FormKind::MirrorJob { hosts, .. }) = kind else { return None };
     let check = check?;
     let value = |i: usize| fields.get(i).map_or("", |f| f.value.as_str()).trim();
-    (hosts.get(check.host).map(String::as_str) == Some(value(0)) && check.repository == value(5) && check.password_file == value(6)).then_some(check)
+    // A cloud mirror form has no password file: its check carries an empty one.
+    let password_file = if matches!(kind, crate::ui::modal::FormKind::MirrorJob { .. }) { "" } else { value(6) };
+    (hosts.get(check.host).map(String::as_str) == Some(value(0)) && check.repository == value(5) && check.password_file == password_file).then_some(check)
 }
 
 /// The backup form's F5 result as one line, and whether it is a problem. Shown only while the check still
 /// describes what is on screen.
 fn preflight_status(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField], check: Option<&crate::ui::state::PreflightCheck>) -> Option<(String, bool)> {
     let check = current_check(kind, fields, check)?;
+    let what = if matches!(kind, crate::ui::modal::FormKind::MirrorJob { .. }) { "remote" } else { "repository" };
     Some(match &check.result {
-        None => ("Check: checking the repository...".to_string(), false),
-        Some(crate::restic::Preflight::Ok) => ("Check: OK, the repository opens.".to_string(), false),
+        None => (format!("Check: checking the {what}..."), false),
+        Some(crate::restic::Preflight::Ok) => (format!("Check: OK, the {what} opens."), false),
         Some(crate::restic::Preflight::Problem(m)) => (format!("Check: {m}"), true),
     })
 }
@@ -2408,6 +2411,23 @@ mod tests {
         app.handle_key(crossterm::event::KeyCode::Char('N'));
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("New snapshot job") && text.contains("Hourly") && text.contains("Next:"), "the default 0 * * * * is the Hourly preset:\n{text}");
+    }
+
+    #[test]
+    fn the_mirror_forms_check_result_reads_remote_not_repository() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Form {
+            title: "x".into(),
+            fields: ["local", "tank/data", "", "hourly", "", "aws:bkt", "", "30 3 * * *", "y"].iter().map(|v| crate::ui::modal::FormField { label: "x".into(), value: (*v).into() }).collect(),
+            focused: 5,
+            description: None,
+            kind: crate::ui::modal::FormKind::MirrorJob { hosts: vec!["local".into()], existing: None, jobs: vec![] },
+        });
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 0, repository: "aws:bkt".into(), password_file: String::new(), result: Some(crate::restic::Preflight::Ok), file_note: Some("chmod it".into()) });
+        let text = render(&mut app, 120, 40).join("\n");
+        assert!(text.contains("Check: OK, the remote opens.") && text.contains("Note: chmod it"), "{text}");
+        app.backup_preflight = Some(crate::ui::state::PreflightCheck { host: 0, repository: "aws:other".into(), password_file: String::new(), result: Some(crate::restic::Preflight::Ok), file_note: None });
+        assert!(!render(&mut app, 120, 40).join("\n").contains("Check:"), "an edited remote hides the old answer");
     }
 
     #[test]
