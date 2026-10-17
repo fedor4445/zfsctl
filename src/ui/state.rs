@@ -318,6 +318,8 @@ pub struct App {
     /// The Settings section: the rest of `config.toml` that can be edited here.
     pub settings_view: crate::ui::settings::SettingsView,
     pub settings_table: TableState,
+    /// How often the list on screen reloads by itself; `None` is off. Set from `[ui]` at start and after a save in Settings.
+    pub auto_refresh_interval: Option<Duration>,
     last_alerts_refresh: Option<Instant>,
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
@@ -518,6 +520,7 @@ impl App {
             alerts_view: crate::ui::alerts::AlertsView::default(),
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
+            auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
             done_note: None,
             alerts_preview_busy: false,
@@ -2419,9 +2422,34 @@ impl App {
 
     /// Reloads the jobs and asks the hub, and each host that has a job writing to a remote, which remotes it has.
     /// Nothing is asked twice while an answer is awaited.
+    /// Reads `[cloud.caps]` from `config.toml` again (an unreadable file means no caps).
+    fn reload_cloud_caps(&mut self) {
+        self.cloud_caps = crate::config::Config::load(&self.config_path).map(|c| c.cloud.caps).unwrap_or_default().into_iter().map(|(name, text)| (name, crate::config::parse_cap(&text).ok_or(text))).collect();
+    }
+
+    /// After a save in Settings: the theme, the auto-refresh interval, the Dashboard thresholds and the cloud caps
+    /// follow `config.toml` without a restart. A theme name that does not resolve changes nothing and says why.
+    pub fn apply_saved_settings(&mut self) {
+        self.apply_saved_settings_with(&crate::ui::theme::ThemeEnv::from_process());
+    }
+
+    pub fn apply_saved_settings_with(&mut self, env: &crate::ui::theme::ThemeEnv) {
+        let Ok(config) = crate::config::Config::load(&self.config_path) else { return };
+        match crate::ui::theme::resolve(config.ui.theme.as_deref(), env) {
+            Ok(resolved) => {
+                self.theme = resolved.theme.bright();
+                self.status_message = resolved.note;
+            }
+            Err(e) => self.set_error(e.to_string()),
+        }
+        self.auto_refresh_interval = config.ui.auto_refresh_interval();
+        self.dashboard_thresholds = config.dashboard.resolve();
+        self.reload_cloud_caps();
+    }
+
     pub fn refresh_cloud(&mut self) {
         self.refresh_jobs();
-        self.cloud_caps = crate::config::Config::load(&self.config_path).map(|c| c.cloud.caps).unwrap_or_default().into_iter().map(|(name, text)| (name, crate::config::parse_cap(&text).ok_or(text))).collect();
+        self.reload_cloud_caps();
         let mut hosts: Vec<usize> = self.hosts.iter().position(|h| h == "local").into_iter().collect();
         for job in &self.jobs_view.jobs {
             if crate::ui::cloud::remote_name(job).is_none() {

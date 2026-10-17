@@ -545,6 +545,9 @@ impl App {
         match result {
             Ok(()) => {
                 self.status_message = note;
+                if section == Section::Settings {
+                    self.apply_saved_settings();
+                }
                 refreshes_needed.push(section);
                 if section == Section::Vdevs {
                     // A disk going offline/online/being replaced

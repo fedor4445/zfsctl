@@ -8445,3 +8445,51 @@ fn a_cap_is_set_and_cleared_from_its_row() {
     run_save(&submit_setting(&mut app).unwrap());
     assert!(!std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("cloud"));
 }
+
+fn saved_settings(app: &mut App, dir: &tempfile::TempDir, config: &str) {
+    std::fs::write(dir.path().join("config.toml"), config).unwrap();
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Settings, Ok(()))).unwrap();
+    app.drain_worker_messages();
+}
+
+#[test]
+fn saving_the_theme_changes_the_apps_theme_at_once() {
+    let (mut app, dir) = settings_app("");
+    saved_settings(&mut app, &dir, "[ui]\ntheme = \"mono\"\n");
+    assert_eq!(app.theme.name, crate::ui::theme::ThemeName::Mono);
+    saved_settings(&mut app, &dir, "[ui]\ntheme = \"nord\"\n");
+    assert!(app.status_error.clone().unwrap_or_default().contains("nord"), "{:?}", app.status_error);
+    assert_eq!(app.theme.name, crate::ui::theme::ThemeName::Mono, "an unknown theme changes nothing");
+}
+
+#[test]
+fn a_solarized_theme_without_truecolor_says_so_as_at_startup() {
+    let (mut app, _dir) = settings_app("[ui]\ntheme = \"solarized-dark\"\n");
+    app.apply_saved_settings_with(&crate::ui::theme::ThemeEnv { no_color: None, colorterm: None });
+    assert_eq!(app.theme.name, crate::ui::theme::ThemeName::SolarizedDark);
+    assert!(app.status_message.is_some());
+    app.status_message = None;
+    app.apply_saved_settings_with(&crate::ui::theme::ThemeEnv { no_color: None, colorterm: Some("truecolor".into()) });
+    assert_eq!(app.status_message, None);
+}
+
+#[test]
+fn saving_the_auto_refresh_changes_the_interval_and_zero_turns_it_off() {
+    let (mut app, dir) = settings_app("");
+    saved_settings(&mut app, &dir, "[ui]\nauto_refresh_secs = 5\n");
+    assert_eq!(app.auto_refresh_interval, Some(Duration::from_secs(5)));
+    saved_settings(&mut app, &dir, "[ui]\nauto_refresh_secs = 0\n");
+    assert_eq!(app.auto_refresh_interval, None);
+    saved_settings(&mut app, &dir, "");
+    assert_eq!(app.auto_refresh_interval, Some(Duration::from_secs(crate::config::DEFAULT_AUTO_REFRESH_SECS)));
+}
+
+#[test]
+fn saving_thresholds_and_caps_reaches_the_dashboard_and_cloud_at_once() {
+    let (mut app, dir) = settings_app("");
+    saved_settings(&mut app, &dir, "[dashboard]\nmemory_warn = 85\nmemory_crit = 95\n[cloud.caps]\nb2 = \"10G\"\n");
+    assert_eq!(app.dashboard_thresholds.memory, (85, 95));
+    assert_eq!(app.cloud_caps.get("b2"), Some(&Ok(10_000_000_000)));
+    app.refresh_settings();
+    assert_eq!(app.settings_view.rows.iter().find(|r| r.label == "b2").unwrap().value, "10G");
+}
