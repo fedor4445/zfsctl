@@ -6052,7 +6052,7 @@ const GOOD: [&str; 8] = ["local", "tank/data", "hourly", "fbsd16", "backup/data"
 fn big_r_in_jobs_opens_a_blank_replication_form_with_defaults() {
     let (mut app, _dir) = app_with_jobs(&[]);
     app.handle_key(KeyCode::Char('R'));
-    assert_eq!(form_values(&app), ["local", "", "auto", "", "", "n", "30 * * * *", "y"]);
+    assert_eq!(form_values(&app), ["local", "", "auto", "", "", "n", "30 * * * *", "y", ""]);
 }
 
 #[test]
@@ -6107,7 +6107,7 @@ fn enter_on_a_replicate_job_edits_it_in_the_replication_form() {
     app.refresh_jobs();
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Enter);
-    assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y"]);
+    assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y", ""]);
 }
 
 #[test]
@@ -7702,4 +7702,116 @@ fn opening_a_backup_form_forgets_an_earlier_check() {
     app.handle_key(KeyCode::Char('B'));
     assert!(matches!(app.modal, Some(Modal::Form { .. })));
     assert!(app.backup_preflight.is_none());
+}
+
+fn keep_form_app(keep: &str) -> App {
+    let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+    let mut values: Vec<&str> = GOOD.to_vec();
+    values.push(keep);
+    let fields = values.iter().map(|v| FormField { label: String::new(), value: (*v).to_string() }).collect();
+    app.modal = Some(Modal::Form { title: "x".into(), fields, focused: 8, description: None, kind: repl_kind(None, vec![]) });
+    app
+}
+
+fn target_snaps(n: u64) -> Vec<crate::zfs::replication::SnapInfo> {
+    (1..=n).map(|i| crate::zfs::replication::SnapInfo { name: format!("hourly-20261006T{i:02}0000Z"), guid: 100 + i, createtxg: i }).collect()
+}
+
+fn answer_prune_check(app: &mut App, listing: crate::error::Result<Vec<crate::zfs::replication::SnapInfo>>) {
+    app.tx.send(WorkerMsg::PrunePreview(1, "backup/data".into(), listing)).unwrap();
+    app.drain_worker_messages();
+}
+
+#[test]
+fn keep_on_target_must_be_a_whole_number_of_at_least_one() {
+    for bad in ["0", "x", "-1", "2.5"] {
+        let mut fields = repl_fields(GOOD).into_iter().collect::<Vec<_>>();
+        fields.push(FormField { label: String::new(), value: bad.into() });
+        let err = build_replicate_job_action(&repl_kind(None, vec![]), &fields, std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("Keep on target"), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn keep_on_target_on_a_file_destination_is_refused() {
+    let mut app = keep_form_app("3");
+    let Some(Modal::Form { fields, .. }) = app.modal.as_mut() else { panic!() };
+    fields[3].value = "file".into();
+    fields[4].value = "/mnt/usb/streams".into();
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    assert!(app.pending_prune_check.is_empty());
+    assert!(app.status_message.clone().unwrap_or_default().contains("dest_keep"));
+}
+
+#[test]
+fn a_blank_keep_on_target_saves_at_once_with_no_check() {
+    let mut app = keep_form_app("");
+    let action = app.handle_modal_key(KeyCode::Enter).expect("saved at once, as before");
+    assert!(app.pending_prune_check.is_empty() && app.prune_check.is_none());
+    let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+    assert_eq!(job.dest_keep, None);
+}
+
+#[test]
+fn a_keep_on_target_holds_the_save_and_queues_a_listing_of_the_destination() {
+    let mut app = keep_form_app("3");
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    assert_eq!(app.pending_prune_check, vec![PendingPruneCheck { host: 1, host_name: "fbsd16".into(), dest_dataset: "backup/data".into() }]);
+    assert!(app.modal.is_none() && app.prune_check.is_some());
+    assert!(app.status_message.clone().unwrap_or_default().contains("fbsd16"));
+}
+
+#[test]
+fn nothing_to_destroy_goes_on_to_the_usual_save_path() {
+    let mut app = keep_form_app("3");
+    app.handle_modal_key(KeyCode::Enter);
+    answer_prune_check(&mut app, Ok(target_snaps(3)));
+    assert!(app.modal.is_none(), "no destroy confirmation: {:?}", app.modal);
+    assert_eq!(app.pending_mutations.len(), 1, "the save goes through");
+}
+
+#[test]
+fn a_selection_opens_a_confirm_naming_count_oldest_newest_and_kept_and_declining_returns_the_form() {
+    let mut app = keep_form_app("3");
+    app.handle_modal_key(KeyCode::Enter);
+    answer_prune_check(&mut app, Ok(target_snaps(6)));
+    let Some(Modal::Confirm { prompt, choice, .. }) = app.modal.clone() else { panic!("{:?}", app.modal) };
+    assert_eq!(choice, None, "a second keystroke is needed");
+    assert!(prompt.contains("destroy 3 snapshots on fbsd16 backup/data"), "{prompt}");
+    assert!(prompt.contains("oldest hourly-20261006T010000Z") && prompt.contains("newest destroyed hourly-20261006T030000Z") && prompt.contains("3 kept"), "{prompt}");
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    let Some(Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[8].value, "3", "the form comes back with its values");
+    assert!(app.pending_mutations.is_empty());
+}
+
+#[test]
+fn confirming_the_selection_saves_the_job_with_its_dest_keep() {
+    let mut app = keep_form_app("3");
+    app.handle_modal_key(KeyCode::Enter);
+    answer_prune_check(&mut app, Ok(target_snaps(6)));
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("saved");
+    let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
+    assert_eq!(job.dest_keep, Some(3));
+}
+
+#[test]
+fn a_failed_listing_refuses_the_save_with_the_reason_and_keeps_the_form() {
+    let mut app = keep_form_app("3");
+    app.handle_modal_key(KeyCode::Enter);
+    answer_prune_check(&mut app, Err(crate::error::AppError::Parse("boom".into())));
+    assert!(matches!(app.modal, Some(Modal::Form { .. })));
+    assert!(app.pending_mutations.is_empty());
+    assert!(app.status_message.clone().unwrap_or_default().contains("boom"));
+}
+
+#[test]
+fn an_answer_for_another_dataset_is_dropped() {
+    let mut app = keep_form_app("3");
+    app.handle_modal_key(KeyCode::Enter);
+    app.tx.send(WorkerMsg::PrunePreview(1, "other/data".into(), Ok(target_snaps(6)))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.prune_check.is_some() && app.modal.is_none());
 }

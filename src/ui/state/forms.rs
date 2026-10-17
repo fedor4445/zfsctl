@@ -75,7 +75,7 @@ impl App {
 impl App {
     pub(super) fn replicate_job_form(&self, existing: Option<crate::jobs::Job>) -> Modal {
         let yn = |b: bool| if b { "y" } else { "n" }.to_string();
-        let (title, host, dataset, prefix, dest_host, dest, force, schedule, catch_up) = match &existing {
+        let (title, host, dataset, prefix, dest_host, dest, force, schedule, catch_up, dest_keep) = match &existing {
             Some(j) => (
                 format!("Edit replication job '{}'", j.id),
                 j.host.clone(),
@@ -86,8 +86,9 @@ impl App {
                 j.force,
                 j.schedule.clone(),
                 j.catch_up,
+                j.dest_keep.map(|k| k.to_string()).unwrap_or_default(),
             ),
-            None => ("New replication job".to_string(), self.active_host_name().to_string(), String::new(), crate::jobs::DEFAULT_PREFIX.to_string(), String::new(), String::new(), false, "30 * * * *".to_string(), true),
+            None => ("New replication job".to_string(), self.active_host_name().to_string(), String::new(), crate::jobs::DEFAULT_PREFIX.to_string(), String::new(), String::new(), false, "30 * * * *".to_string(), true, String::new()),
         };
         Modal::Form {
             title,
@@ -100,9 +101,10 @@ impl App {
                 FormField { label: "Force: roll back the destination (y/n)".to_string(), value: yn(force) },
                 FormField { label: "Schedule".to_string(), value: schedule },
                 FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
+                FormField { label: "Keep on target (blank = keep everything)".to_string(), value: dest_keep },
             ],
             focused: 0,
-            description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally. The destination is received unmounted and rolled back only if Force is y.".to_string()),
+            description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally. The destination is received unmounted and rolled back only if Force is y. Keep on target destroys this job's older snapshots on a host destination after each run.".to_string()),
             kind: FormKind::ReplicateJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
@@ -242,6 +244,13 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
     let schedule = field_value(fields, 6).trim();
     crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
     let catch_up = yes_no("Catch up", field_value(fields, 7), true)?;
+    let dest_keep = match field_value(fields, 8).trim() {
+        "" => None,
+        raw => match raw.parse::<u32>() {
+            Ok(n) if n >= 1 => Some(n),
+            _ => return Err(format!("Keep on target must be a whole number of at least 1, or blank to keep everything, not '{raw}'")),
+        },
+    };
     let to_file = dest_host == crate::jobs::DEST_FILE;
     let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     let base = crate::jobs::Job {
@@ -256,7 +265,7 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
         dest_host: Some(dest_host.to_string()),
         dest_dataset: (!to_file).then(|| dest.to_string()),
         dest_dir: to_file.then(|| dest.to_string()),
-        dest_keep: None,
+        dest_keep,
         force,
         repository: None,
         password_file: None,
@@ -480,6 +489,14 @@ pub(super) fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> O
         ),
         _ => None,
     }
+}
+
+/// The confirmation shown before saving a replication job whose Keep on target would destroy snapshots on the
+/// destination now: how many, which (oldest and newest of them) and how many stay. `doomed` is oldest first.
+pub(super) fn prune_prompt(dest_host: &str, dest_ds: &str, doomed: &[String], kept: usize) -> String {
+    let (oldest, newest) = (doomed.first().map_or("?", String::as_str), doomed.last().map_or("?", String::as_str));
+    let noun = if doomed.len() == 1 { "snapshot" } else { "snapshots" };
+    format!("This will destroy {} {noun} on {dest_host} {dest_ds}: oldest {oldest} ... newest destroyed {newest}; {kept} kept.\nOnly this job's own snapshots are destroyed, and they cannot be brought back.", doomed.len())
 }
 
 /// The confirmation for saving a job that, from its next run on, destroys data the previous version of the job

@@ -34,6 +34,7 @@ impl App {
                 WorkerMsg::DatasetAcl(host, path, result) => self.on_dataset_acl(host, path, result, &mut refreshes_needed),
                 WorkerMsg::Accounts(host, result) => self.on_accounts(host, result),
                 WorkerMsg::Preflight(host, repository, password_file, result, file_note) => self.on_preflight(host, &repository, &password_file, result, file_note),
+                WorkerMsg::PrunePreview(host, dataset, result) => self.on_prune_preview(host, &dataset, result),
                 WorkerMsg::PoolNames(host, result) => self.on_pool_names(host, result),
                 WorkerMsg::HostHealth(name, probe) => self.on_host_health(name, probe),
                 WorkerMsg::HostProbe(name, target, result) => self.on_host_probe(name, target, result),
@@ -381,6 +382,45 @@ impl App {
             check.result = Some(result);
             check.file_note = file_note;
         }
+    }
+
+    /// The destination's snapshots for a held replication save: nothing to destroy goes on to the usual save
+    /// confirmation, otherwise the confirmation names what would go; a failed listing hands the form back.
+    fn on_prune_preview(&mut self, host: usize, dataset: &str, result: Result<Vec<crate::zfs::replication::SnapInfo>>) {
+        if !self.prune_check.as_ref().is_some_and(|c| c.host == host && c.dest_dataset == dataset) {
+            return;
+        }
+        let Some(check) = self.prune_check.take() else { return };
+        self.status_message = None;
+        if self.modal.is_some() {
+            self.set_error("The replication job was not saved: another dialog was opened while its destination was checked".to_string());
+            return;
+        }
+        let listing = match result {
+            Ok(l) => l,
+            Err(e) => {
+                self.set_error(format!("Cannot save: the snapshots on {} could not be listed: {e}", check.host_name));
+                self.modal = Some(check.form);
+                return;
+            }
+        };
+        let doomed = crate::zfs::replication::prune_selection(&listing, &check.prefix, check.keep);
+        let crate::ui::modal::MutationCall::SaveJob { job, .. } = &check.action.call else { return };
+        if doomed.is_empty() {
+            if let Some(action) = self.confirm_job_save(check.form, check.action) {
+                self.pending_mutations.push(action);
+            }
+            return;
+        }
+        let own = listing.iter().filter(|s| crate::daemon::snapshot::is_own(&check.prefix, &s.name)).count();
+        let old = match &check.form {
+            Modal::Form { kind: crate::ui::modal::FormKind::ReplicateJob { existing, .. }, .. } => existing.as_deref(),
+            _ => None,
+        };
+        let tail = super::forms::job_save_prompt(old, job, None).unwrap_or_else(|| "Save this job? (y/n)".to_string());
+        let prompt = format!("{}\n\n{tail}", super::forms::prune_prompt(&check.host_name, &check.dest_dataset, &doomed, own - doomed.len()));
+        self.confirm_restore = Some((prompt.clone(), check.form));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action: check.action });
     }
 
     fn on_pool_names(&mut self, host: usize, result: Result<Vec<String>>) {

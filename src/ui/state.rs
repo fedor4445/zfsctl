@@ -134,6 +134,27 @@ pub struct PendingPreflight {
     pub password_file: String,
 }
 
+/// A replication form whose save waits for the destination's snapshot list (to say what Keep on target
+/// would destroy). The form and the save are kept so either can go on once the list arrives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PruneCheck {
+    pub host: usize,
+    pub host_name: String,
+    pub dest_dataset: String,
+    pub prefix: String,
+    pub keep: u32,
+    pub form: Modal,
+    pub action: PendingAction,
+}
+
+/// A destination listing waiting for the event loop to hand it the destination host's runner.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingPruneCheck {
+    pub host: usize,
+    pub host_name: String,
+    pub dest_dataset: String,
+}
+
 /// Each variant carries the index (into `App::hosts`) of the host the
 /// result is *about*, so a slow result for a host the user has since
 /// navigated away from can be told apart from a fresh one instead of
@@ -180,6 +201,8 @@ pub enum WorkerMsg {
     /// The outcome of the backup form's F5 check: the host index, the repository and password file it was asked
     /// about (so a result for values since edited is dropped), and what it found.
     Preflight(usize, String, String, crate::restic::Preflight, Option<String>),
+    /// The destination's snapshots for a replication form's Keep on target check: the host index, the dataset, the listing.
+    PrunePreview(usize, String, Result<Vec<crate::zfs::replication::SnapInfo>>),
 }
 
 pub const ACCOUNT_CACHE_TTL: Duration = Duration::from_mins(1);
@@ -372,6 +395,8 @@ pub struct App {
     pub pending_pool_fetch: Vec<(usize, crate::ui::picker::LiveNames)>,
     pub backup_preflight: Option<PreflightCheck>,
     pub pending_preflight: Vec<PendingPreflight>,
+    pub prune_check: Option<PruneCheck>,
+    pub pending_prune_check: Vec<PendingPruneCheck>,
     /// Lowercased names currently being probed (submitted, not yet
     /// resolved) -- checked alongside `self.hosts` so a second
     /// submission of the same name while the first is still
@@ -482,6 +507,8 @@ impl App {
             pending_pool_fetch: Vec::new(),
             backup_preflight: None,
             pending_preflight: Vec::new(),
+            prune_check: None,
+            pending_prune_check: Vec::new(),
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
@@ -2175,6 +2202,36 @@ impl App {
             let report = crate::preflight::run(runner, &pending.host_name, &pending.repository, &pending.password_file, crate::preflight::DEADLINE);
             let _ = tx.send(WorkerMsg::Preflight(pending.host, pending.repository, pending.password_file, report.result, report.file_note));
         });
+    }
+
+    /// Holds a replication form's save while the destination's snapshots are listed, so the confirmation can
+    /// name what Keep on target would destroy. The listing runs once the event loop supplies the runner.
+    pub(super) fn request_prune_check(&mut self, form: Modal, action: PendingAction) {
+        let MutationCall::SaveJob { job, .. } = &action.call else { return };
+        let (dest_host, dest_dataset) = (job.dest_host.clone().unwrap_or_default(), job.dest_dataset.clone().unwrap_or_default());
+        let Some(host) = self.hosts.iter().position(|h| *h == dest_host) else {
+            self.set_error(format!("Unknown destination host '{dest_host}'"));
+            self.modal = Some(form);
+            return;
+        };
+        self.status_message = Some(format!("Checking the snapshots on {dest_host}..."));
+        self.pending_prune_check.push(PendingPruneCheck { host, host_name: dest_host.clone(), dest_dataset: dest_dataset.clone() });
+        let (prefix, keep) = (crate::jobs::effective_prefix(job).to_string(), job.dest_keep.unwrap_or(1));
+        self.prune_check = Some(PruneCheck { host, host_name: dest_host, dest_dataset, prefix, keep, form, action });
+    }
+
+    /// Lists the destination on a worker thread and reports it as `WorkerMsg::PrunePreview`.
+    pub fn run_prune_check(&mut self, runner: Arc<dyn CommandRunner>, pending: PendingPruneCheck) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::replication::list_snapshot_infos_or_empty(&*runner, &pending.dest_dataset);
+            let _ = tx.send(WorkerMsg::PrunePreview(pending.host, pending.dest_dataset, result));
+        });
+    }
+
+    /// Reports a listing that could not start (the host index no longer resolves) through the same channel.
+    pub fn fail_prune_check(&self, pending: PendingPruneCheck, message: String) {
+        let _ = self.tx.send(WorkerMsg::PrunePreview(pending.host, pending.dest_dataset, Err(crate::error::AppError::Parse(message))));
     }
 
     /// Reports a check that could not start (the host index no longer resolves) through the same channel.

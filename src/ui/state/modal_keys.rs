@@ -226,7 +226,11 @@ impl App {
         match built {
             Ok(mut action) => {
                 action.host = self.selected_host;
-                if confirm {
+                let to_prune = matches!(&action.call, MutationCall::SaveJob { job, .. } if job.dest_keep.is_some());
+                if to_prune {
+                    self.request_prune_check(form.into_modal(), action);
+                    None
+                } else if confirm {
                     self.confirm_job_save(form.into_modal(), action)
                 } else {
                     Some(action)

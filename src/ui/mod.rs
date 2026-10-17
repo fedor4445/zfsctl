@@ -168,6 +168,18 @@ fn apply_pending_preflights(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued destination listing (a replication form's Keep on target check) its host's runner.
+fn apply_pending_prune_checks(app: &mut App, inventory: &HostInventory) {
+    for pending in std::mem::take(&mut app.pending_prune_check) {
+        if let Some(h) = inventory.hosts.get(pending.host) {
+            app.run_prune_check(h.runner.clone(), pending);
+        } else {
+            let message = format!("unknown host '{}'", pending.host_name);
+            app.fail_prune_check(pending, message);
+        }
+    }
+}
+
 /// Same split as `apply_pending_account_fetches`, for the job forms' Pool and Dataset pickers.
 fn apply_pending_pool_fetches(app: &mut App, inventory: &HostInventory) {
     for (host, what) in std::mem::take(&mut app.pending_pool_fetch) {
@@ -221,6 +233,7 @@ fn event_loop(
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
         apply_pending_preflights(app, inventory);
+        apply_pending_prune_checks(app, inventory);
         poll_host_probes(app, inventory);
         app.clear_stale_scan_status();
 
@@ -543,6 +556,45 @@ mod tests {
         assert_eq!(app.picker.as_ref().unwrap().values, vec!["tank/data"]);
     }
 
+
+    fn held_save(host: usize) -> crate::ui::state::PruneCheck {
+        let mut job = crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "local", "backup/data");
+        job.dest_keep = Some(3);
+        let action = crate::ui::modal::PendingAction { host: 0, section: crate::ui::state::Section::Jobs, call: crate::ui::modal::MutationCall::SaveJob { state_dir: "/x".into(), job: Box::new(job) } };
+        let form = crate::ui::modal::Modal::Form { title: "x".into(), fields: vec![], focused: 0, description: None, kind: crate::ui::modal::FormKind::AddHost };
+        crate::ui::state::PruneCheck { host, host_name: "local".into(), dest_dataset: "backup/data".into(), prefix: "hourly".into(), keep: 3, form, action }
+    }
+
+    #[test]
+    fn apply_pending_prune_checks_lists_the_destination_on_its_hosts_runner_and_carries_on_with_the_save() {
+        use crate::exec::test_support::FakeRunner;
+        use crate::hosts::Host;
+        use std::sync::Arc;
+        let mut app = App::new(vec!["local".to_string()]);
+        let inventory = HostInventory { hosts: vec![Host { name: "local".into(), runner: Arc::new(FakeRunner::new("backup/data@hourly-20261006T010000Z\t1\t1\n")), ssh_target: None, tag: None }] };
+        app.prune_check = Some(held_save(0));
+        app.pending_prune_check = vec![crate::ui::state::PendingPruneCheck { host: 0, host_name: "local".into(), dest_dataset: "backup/data".into() }];
+        apply_pending_prune_checks(&mut app, &inventory);
+        assert!(app.pending_prune_check.is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.pending_mutations.is_empty() && std::time::Instant::now() < deadline {
+            app.drain_worker_messages();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(app.pending_mutations.len(), 1, "one own snapshot, keep 3: nothing to destroy, so it is saved");
+    }
+
+    #[test]
+    fn a_prune_check_for_an_unknown_host_index_hands_the_form_back_with_a_reason() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let inventory = HostInventory { hosts: vec![] };
+        app.prune_check = Some(held_save(3));
+        app.pending_prune_check = vec![crate::ui::state::PendingPruneCheck { host: 3, host_name: "gone".into(), dest_dataset: "backup/data".into() }];
+        apply_pending_prune_checks(&mut app, &inventory);
+        app.drain_worker_messages();
+        assert!(app.modal.is_some() && app.pending_mutations.is_empty());
+        assert!(app.status_message.clone().unwrap_or_default().contains("unknown host 'gone'"));
+    }
 
     #[test]
     fn apply_pending_preflights_runs_the_check_on_the_hosts_runner_and_reports_it() {
