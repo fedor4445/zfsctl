@@ -845,6 +845,9 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
             None => String::new(),
         };
         info.push(Line::from(format!("to {dest}  prefix {}{}", crate::jobs::effective_prefix(job), if job.force { "  force" } else { "" })));
+        if let Some(keep) = job.dest_keep {
+            info.push(Line::from(format!("keep {keep} on target")));
+        }
         if let Some(p) = app.jobs_view.progress_of(&job.id) {
             info.push(Line::from(crate::daemon::progress::progress_line(p)));
         }
@@ -2397,6 +2400,20 @@ mod tests {
         app.handle_key(crossterm::event::KeyCode::Char('N'));
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("New snapshot job") && text.contains("Hourly") && text.contains("Next:"), "the default 0 * * * * is the Hourly preset:\n{text}");
+    }
+
+    #[test]
+    fn a_replicate_job_with_dest_keep_says_how_many_it_keeps_on_the_target() {
+        let mut repl = crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "local", "backup/data");
+        repl.dest_keep = Some(7);
+        let (mut app, _dir) = jobs_app(&[repl]);
+        app.handle_key(crossterm::event::KeyCode::Down);
+        let text = render(&mut app, 130, 34).join("\n");
+        assert!(text.contains("keep 7 on target"), "{text}");
+        let plain = crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "local", "backup/data");
+        let (mut app, _dir) = jobs_app(&[plain]);
+        app.handle_key(crossterm::event::KeyCode::Down);
+        assert!(!render(&mut app, 130, 34).join("\n").contains("on target"));
     }
 
     #[test]
