@@ -1,4 +1,4 @@
-┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 13:09                                                                                  ▲ 4 to watch
+┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 13:59                                                                                  ▲ 4 to watch
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ▲ watch fbsd16    zroot never scrubbed
@@ -8,13 +8,13 @@
 │Shares                │
 │Boot Envs             │ HOSTS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Jobs                  │  Host      State                        Pools  Space             Memory             CPU              Load  Scrub     Errors
-│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ▕███░░░░░▏ 42%    ▕█░░░░░░░▏ 14%     ▕░░░░░░░░▏ 0%    0.96  41 d ago  0
-│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ▕█████░░░▏ 61%    ▕█░░░░░░░▏ 18%     ▕░░░░░░░░▏ 1%    0.01  never     0
-│                      │  fbsd16t1  ▲ zroot never scrubbed       2      ▕████░░░░▏ 52%    ▕████░░░░▏ 44%     ▕░░░░░░░░▏ 2%    0.32  never     0
-│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ▕██████░░▏ 73%    ▕████░░░░▏ 44%     ▕░░░░░░░░▏ 1%    0.57  never     0
+│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ━━━━╌╌╌╌╌╌ 42%    ━╌╌╌╌╌╌╌╌╌ 14%     ╌╌╌╌╌╌╌╌╌╌ 0%    0.64  41 d ago  0
+│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ━━━━━━╌╌╌╌ 61%    ━━╌╌╌╌╌╌╌╌ 18%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.35  never     0
+│                      │  fbsd16t1  ▲ zroot never scrubbed       2      ━━━━━╌╌╌╌╌ 52%    ━━━━╌╌╌╌╌╌ 44%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.47  never     0
+│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ━━━━━━━╌╌╌ 73%    ━━━━╌╌╌╌╌╌ 44%     ╌╌╌╌╌╌╌╌╌╌ 2%    0.35  never     0
 │                      │
 │                      │ DAEMON AND JOBS ────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 14735), heartbeat 1s ago
+│                      │   ● daemon  running (pid 15572), heartbeat 1s ago
 │                      │   ● jobs    scrub 1/1 ok
 │                      │
 │                      │ CLOUD ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -23,6 +23,6 @@
 │                      │   ○ zfsctl-aws (s3)  no jobs
 │                      │
 │                      │ ALERTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert fbsd16 zroot 86% full (5d ago) · report 2026-10-17
+│                      │   ● monitor on · last alert fbsd16 zroot 86% full (6d ago) · report 2026-10-17
 └──────────────────────┘
 ↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

@@ -27,11 +27,12 @@ pub fn glyph_word(level: Level) -> (&'static str, &'static str) {
     }
 }
 
-/// `▕███░░░░░▏`: exactly `width` cells, filled in proportion to `percent` (over 100 is full).
+/// `━━━╌╌╌╌╌╌╌`: exactly `width` cells, filled in proportion to `percent` (over 100 is full). Thin line glyphs, not
+/// block glyphs: blocks fill the whole line height and run together between rows in many fonts.
 pub fn gauge(percent: u8, width: u16) -> String {
-    let inner = usize::from(width).saturating_sub(2);
-    let filled = (usize::from(percent.min(100)) * inner + 50) / 100;
-    format!("▕{}{}▏", "█".repeat(filled), "░".repeat(inner - filled))
+    let width = usize::from(width);
+    let filled = (usize::from(percent.min(100)) * width + 50) / 100;
+    format!("{}{}", "━".repeat(filled), "╌".repeat(width - filled))
 }
 
 fn level_style(theme: &Theme, level: Level) -> Style {
@@ -367,10 +368,10 @@ mod tests {
 
     #[test]
     fn a_gauge_is_exactly_as_wide_as_asked_and_clamped() {
-        assert_eq!(gauge(43, 10), "▕███░░░░░▏");
-        assert_eq!(gauge(0, 10), "▕░░░░░░░░▏");
-        assert_eq!(gauge(100, 10), "▕████████▏");
-        assert_eq!(gauge(250, 10), "▕████████▏", "over 100 is full");
+        assert_eq!(gauge(43, 10), "━━━━╌╌╌╌╌╌");
+        assert_eq!(gauge(0, 10), "╌╌╌╌╌╌╌╌╌╌");
+        assert_eq!(gauge(100, 10), "━━━━━━━━━━");
+        assert_eq!(gauge(250, 10), "━━━━━━━━━━", "over 100 is full");
         for w in [3, 5, 12, 20] {
             assert_eq!(gauge(50, w).chars().count(), usize::from(w));
         }
@@ -392,7 +393,7 @@ mod tests {
     fn wide_it_shows_every_section_the_gauges_and_a_glyph_for_each_level() {
         let mut app = mixed_app();
         let text = render(&mut app, 130, 40).join("\n");
-        for want in ["Dashboard", "NEEDS ATTENTION", "HOSTS", "DAEMON", "JOBS", "CLOUD", "ALERTS", "local", "fbsd16", "fbsd16t1", "▕", "●", "▲", "✖", "tank 85% full", "unreachable", "running (pid 4242)"] {
+        for want in ["Dashboard", "NEEDS ATTENTION", "HOSTS", "DAEMON", "JOBS", "CLOUD", "ALERTS", "local", "fbsd16", "fbsd16t1", "━", "●", "▲", "✖", "tank 85% full", "unreachable", "running (pid 4242)"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
         assert!(text.contains("2 to watch") || text.contains("1 issue"), "the verdict counts what needs attention:\n{text}");
@@ -402,7 +403,7 @@ mod tests {
     fn at_80_columns_the_gauges_are_gone_and_the_numbers_stay() {
         let mut app = mixed_app();
         let text = render(&mut app, 80, 40).join("\n");
-        assert!(!text.contains('▕'), "{text}");
+        assert!(!text.contains('━'), "{text}");
         for want in ["local", "fbsd16", "85%", "unreachable"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }

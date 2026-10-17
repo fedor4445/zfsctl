@@ -63,7 +63,7 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 13:09                                                                                  ▲ 4 to watch
+┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 13:59                                                                                  ▲ 4 to watch
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ▲ watch fbsd16    zroot never scrubbed
@@ -73,13 +73,13 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │Shares                │
 │Boot Envs             │ HOSTS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Jobs                  │  Host      State                        Pools  Space             Memory             CPU              Load  Scrub     Errors
-│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ▕███░░░░░▏ 42%    ▕█░░░░░░░▏ 14%     ▕░░░░░░░░▏ 0%    0.96  41 d ago  0
-│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ▕█████░░░▏ 61%    ▕█░░░░░░░▏ 18%     ▕░░░░░░░░▏ 1%    0.01  never     0
-│                      │  fbsd16t1  ▲ zroot never scrubbed       2      ▕████░░░░▏ 52%    ▕████░░░░▏ 44%     ▕░░░░░░░░▏ 2%    0.32  never     0
-│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ▕██████░░▏ 73%    ▕████░░░░▏ 44%     ▕░░░░░░░░▏ 1%    0.57  never     0
+│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ━━━━╌╌╌╌╌╌ 42%    ━╌╌╌╌╌╌╌╌╌ 14%     ╌╌╌╌╌╌╌╌╌╌ 0%    0.64  41 d ago  0
+│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ━━━━━━╌╌╌╌ 61%    ━━╌╌╌╌╌╌╌╌ 18%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.35  never     0
+│                      │  fbsd16t1  ▲ zroot never scrubbed       2      ━━━━━╌╌╌╌╌ 52%    ━━━━╌╌╌╌╌╌ 44%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.47  never     0
+│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ━━━━━━━╌╌╌ 73%    ━━━━╌╌╌╌╌╌ 44%     ╌╌╌╌╌╌╌╌╌╌ 2%    0.35  never     0
 │                      │
 │                      │ DAEMON AND JOBS ────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 14735), heartbeat 1s ago
+│                      │   ● daemon  running (pid 15572), heartbeat 1s ago
 │                      │   ● jobs    scrub 1/1 ok
 │                      │
 │                      │ CLOUD ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │                      │   ○ zfsctl-aws (s3)  no jobs
 │                      │
 │                      │ ALERTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert fbsd16 zroot 86% full (5d ago) · report 2026-10-17
+│                      │   ● monitor on · last alert fbsd16 zroot 86% full (6d ago) · report 2026-10-17
 └──────────────────────┘
 ↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
@@ -112,7 +112,7 @@ These defaults can be changed under `[dashboard]` in `config.toml` (see the conf
 
 > **Safety:** the Dashboard only displays. `Up` / `Down` select a line of Needs attention and `Enter` takes you to the section that owns it; that is all. To fix something, go there: scrub a pool in Pools, look at a failed job in Jobs.
 
-> **Tip:** gauges (`▕███░░░░░▏`) appear when the terminal is wide enough. On a narrower one they go first, then the least useful columns; the host's name and state always stay. It stays readable at 80 columns.
+> **Tip:** gauges (`━━━━╌╌╌╌╌╌`) appear when the terminal is wide enough. On a narrower one they go first, then the least useful columns; the host's name and state always stay. It stays readable at 80 columns.
 
 > **Not built yet:** NFS and Samba availability, disk wear (SMART) and predictions such as "this pool fills in 40 days". The first needs a privileged check per host on every probe, the second needs smartmontools on each host, the third needs a history of samples that zfsctl does not keep.
 

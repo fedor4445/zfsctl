@@ -85,7 +85,7 @@ pleasure, and every pretty element must carry information and degrade gracefully
 - A header line with the verdict on the right, then sections each introduced by a dim capitalised heading with a thin rule
   (`HOSTS ───────`). No boxes, no side borders.
 - Status marker per line: the TUI's existing glyphs (`●` ok, `▲` warning, `✖` critical, `○` off or unknown) plus a word.
-- Percentages (space, memory, CPU) get a thin inline gauge where the terminal is wide enough, e.g. `▕████░░░░░░▏ 43%`,
+- Percentages (space, memory, CPU) get a thin inline gauge where the terminal is wide enough, e.g. `━━━━╌╌╌╌╌╌ 43%`,
   coloured by level. Below a width threshold the gauges go and the number stays; below another, columns drop in a fixed order
   (the Hosts table already does this; follow its approach). It must stay usable at 80 columns and not break at 60.
 - Needs attention is capped (say 6 lines, then "+3 more") so the screen never scrolls; the Hosts table is the only part that
