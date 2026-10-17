@@ -1,10 +1,10 @@
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 16748)───────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                ┌New cloud mirror job────────────────────────────────────────────┐0-18 03:00 ok 6d ago │
-│Datasets             │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
-│Snapshots            │plain files. What a run replaces or deletes is first moved to   │                     │
-│Disks                │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
-│Shares               │old/. Symlinks, devices and empty folders are not copied.       │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 25913)───────────────────────────────────────────────────┐
+│Hosts                ┌New cloud mirror job────────────────────────────────────────────┐run        Last      │
+│Pools                │Copies a read-only clone of a snapshot to <remote>/current as   │0-18 03:00 ok 6d ago │
+│Datasets             │plain files. What a run replaces or deletes is first moved to   │                     │
+│Snapshots            │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Disks                │old/. Symlinks, devices, empty folders and child datasets are   │                     │
+│Shares               │not copied.                                                     │                     │
 │Boot Envs            │                                                                │                     │
 │Jobs                 │  Host (where rclone runs): local                               │                     │
 │Alerts               │  Dataset: scratch/zt-mir-b2                                    │                     │

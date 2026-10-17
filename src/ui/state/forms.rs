@@ -253,7 +253,7 @@ impl App {
                 FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
             ],
             focused: 0,
-            description: Some("Copies a read-only clone of a snapshot to <remote>/current as plain files. What a run replaces or deletes is first moved to <remote>/old/<date and time>/; zfsctl never deletes anything in old/. Symlinks, devices and empty folders are not copied.".to_string()),
+            description: Some("Copies a read-only clone of a snapshot to <remote>/current as plain files. What a run replaces or deletes is first moved to <remote>/old/<date and time>/; zfsctl never deletes anything in old/. Symlinks, devices, empty folders and child datasets are not copied.".to_string()),
             kind: FormKind::MirrorJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
@@ -278,7 +278,7 @@ pub(super) fn build_mirror_job_action(kind: &FormKind, fields: &[FormField], sta
     };
     let remote = field_value(fields, 5).trim();
     if !crate::rclone::valid_remote(remote) {
-        return Err("Remote must look like aws:mybucket/photos: the name of an rclone remote, a colon and a path, with no keys in it".to_string());
+        return Err("Remote must look like aws:mybucket/photos: the name of an rclone remote, a colon and a bucket or folder (no . or .. parts), with no keys in it".to_string());
     }
     let limit = field_value(fields, 6).trim();
     if !limit.is_empty() && !crate::rclone::valid_bwlimit(limit) {
@@ -693,10 +693,15 @@ pub(super) fn job_save_prompt(old: Option<&crate::jobs::Job>, new: &crate::jobs:
         }
         KIND_MIRROR => {
             let (remote, name) = (new.remote.as_deref().unwrap_or("?"), new.remote.as_deref().and_then(|r| r.split(':').next()).unwrap_or("?"));
-            let changed = old.is_none_or(|o| o.remote != new.remote || o.dataset != new.dataset);
+            let changed = old.is_none_or(|o| o.remote != new.remote || o.dataset != new.dataset || o.path != new.path || o.source != new.source);
             changed.then(|| {
+                let moved = if old.is_some_and(|o| o.path != new.path || o.source != new.source) {
+                    "\nThe folder or snapshot it reads changed: files only the previous one had are moved to old/ on the next run."
+                } else {
+                    ""
+                };
                 format!(
-                    "Cloud mirror of {dataset} to {remote}.\nEvery run makes {remote}/current match the dataset, using the rclone '{name}' remote's keys on that host. Files a run replaces or deletes are first moved to {remote}/old/<date and time>/; zfsctl never deletes anything in old/.\n\nSave this job? (y/n)"
+                    "Cloud mirror of {dataset} to {remote}.\nEvery run makes {remote}/current match the dataset, using the rclone '{name}' remote's keys on that host. Files a run replaces or deletes are first moved to {remote}/old/<date and time>/; zfsctl never deletes anything in old/.{moved}\n\nSave this job? (y/n)"
                 )
             })
         }

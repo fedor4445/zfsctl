@@ -288,7 +288,7 @@ fn check_source_fields(job: &Job, noun: &str) -> std::result::Result<(), String>
 fn check_mirror_fields(job: &Job) -> std::result::Result<(), String> {
     check_source_fields(job, "cloud mirror")?;
     if !job.remote.as_deref().is_some_and(crate::rclone::valid_remote) {
-        return Err("a cloud mirror job needs a remote like aws:mybucket/photos (a configured rclone remote name, a colon and a path, with no keys in it)".to_string());
+        return Err("a cloud mirror job needs a remote like aws:mybucket/photos (a configured rclone remote name, a colon and a bucket or folder, with no keys in it and no . or .. parts)".to_string());
     }
     if job.bwlimit.as_deref().is_some_and(|l| !crate::rclone::valid_bwlimit(l)) {
         return Err("the speed limit is a number of bytes per second with an optional K, M or G, like 5M".to_string());
@@ -869,7 +869,7 @@ mod tests {
         };
         assert!(bad(&|j| j.dataset = None).contains("dataset"));
         assert!(bad(&|j| j.remote = None).contains("remote"));
-        for evil in [":s3,access_key_id=X:b/p", "-x:b", "a,b:c", "nocolon", "aws:b\nx", ""] {
+        for evil in [":s3,access_key_id=X:b/p", "-x:b", "a,b:c", "nocolon", "aws:b\nx", "", "aws:", "aws:b/../c"] {
             assert!(bad(&|j| j.remote = Some(evil.into())).contains("remote"), "{evil:?}");
         }
     }

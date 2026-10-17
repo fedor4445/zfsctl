@@ -32,7 +32,41 @@ fn rclone_query(runner: &dyn CommandRunner, remote: &str, args: &[String]) -> st
     }
 }
 
-fn sync(env: &Env, runner: &dyn CommandRunner, job: &Job, remote: &str, target: &str, run_id: &str) -> End {
+/// Every part of the job's `path` must be a real folder inside the clone. rclone runs as root and follows a
+/// symlink given as its source, so `docs -> /` would otherwise upload the host's own files. A listing does not
+/// show symlinks, so a part missing from its parent's listing is a symlink (or not a folder) and ends the run.
+fn path_stays_inside(runner: &dyn CommandRunner, remote: &str, mount: &str, path: &str) -> std::result::Result<(), String> {
+    let mut parent = mount.to_string();
+    for part in path.split('/').filter(|p| !p.is_empty() && *p != ".") {
+        let listing = rclone_query(runner, remote, &rclone::lsf_dirs_args(&parent))?;
+        if !listing.lines().any(|l| l.strip_suffix('/') == Some(part)) {
+            return Err(format!("the path '{path}' is not a plain folder inside the snapshot ('{part}' is a symlink, a file or missing); nothing was changed"));
+        }
+        parent = format!("{parent}/{part}");
+    }
+    Ok(())
+}
+
+/// `<remote>/old/<stamp>` must not exist yet: a second run with the same stamp (two hosts in one second, the
+/// clock stepping back) would overwrite the first run's old versions. Missing is the normal answer.
+fn stamp_is_free(runner: &dyn CommandRunner, remote: &str, stamp: &str) -> std::result::Result<(), String> {
+    let args = rclone::lsf_args(&rclone::join(&rclone::join(remote, "old"), stamp));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match runner.run("rclone", &refs) {
+        Ok(out) if out.success() && out.stdout.trim().is_empty() => Ok(()),
+        Ok(out) if out.success() => Err(format!("old/{stamp} already exists in the bucket; nothing was changed, the next run uses a new name")),
+        Ok(out) if out.status == 3 => Ok(()),
+        Ok(out) => Err(rclone::failure_text(None, &out.stderr, remote)),
+        Err(e) => Err(rclone::redact(&e.to_string(), remote)),
+    }
+}
+
+fn sync(env: &Env, runner: &dyn CommandRunner, job: &Job, remote: &str, mount: &str, target: &str, run_id: &str) -> End {
+    if let Some(path) = job.path.as_deref() {
+        if let Err(e) = path_stays_inside(runner, remote, mount, path) {
+            return End::Failed(e);
+        }
+    }
     // A tree with no files (an empty dataset, only symlinks, a wrong `path`) must never look like "everything was
     // deleted": refuse before the sync can move anything.
     match rclone_query(runner, remote, &rclone::size_args(target)).and_then(|json| rclone::parse_size_count(&json)) {
@@ -41,7 +75,11 @@ fn sync(env: &Env, runner: &dyn CommandRunner, job: &Job, remote: &str, target: 
         Err(e) => return End::Failed(e),
     }
     let clock = env.ctx.clock;
-    let args = rclone::sync_args(target, remote, &rclone::run_stamp(clock.now()), job.bwlimit.as_deref());
+    let stamp = rclone::run_stamp(clock.now());
+    if let Err(e) = stamp_is_free(runner, remote, &stamp) {
+        return End::Failed(e);
+    }
+    let args = rclone::sync_args(target, remote, &stamp, job.bwlimit.as_deref());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let cmd = match runner.command("rclone", &refs) {
         Ok(c) => c,
@@ -98,6 +136,8 @@ pub fn run_mirror(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     };
     let target = target_dir(job, &mount);
     if let Err(e) = make_clone(runner, &format!("{dataset}@{snapshot}"), &clone, &mount) {
+        // The clone can exist without being mounted: do not leave it pinning the snapshot.
+        let _ = remove_stale_clone(runner, ctx.clock, &clone);
         return failed(e);
     }
 
@@ -106,7 +146,7 @@ pub fn run_mirror(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     started.catch_up = catch_up;
     let _ = ctx.history.append(&started);
 
-    let end = sync(env, runner, job, &remote, &target, run_id);
+    let end = sync(env, runner, job, &remote, &mount, &target, run_id);
     // Always, whatever happened: the clone pins the snapshot and holds a mountpoint.
     let leftover = match super::backup::destroy_clone(runner, ctx.clock, &clone) {
         Ok(()) => String::new(),
@@ -156,7 +196,12 @@ mod tests {
         size_json: String,
         sync_script: String,
         clone_fails: bool,
+        clone_made_but_unmounted: bool,
         rclone_missing: bool,
+        /// Folders (full paths) that exist for real; any other name inside a listed parent is a symlink.
+        real_dirs: Vec<String>,
+        /// What `rclone lsf <remote>/old/<stamp>` answers: None = no such folder (exit 3).
+        old_stamp_listing: Option<String>,
         clone_exists: Mutex<bool>,
         calls: Mutex<Vec<String>>,
         sync_args: Mutex<Vec<Vec<String>>>,
@@ -164,7 +209,7 @@ mod tests {
 
     impl Host {
         fn new() -> Self {
-            Host { size_json: "{\"count\":3,\"bytes\":30,\"sizeless\":0}".into(), sync_script: format!("{STATS}; exit 0"), clone_fails: false, rclone_missing: false, clone_exists: Mutex::new(false), calls: Mutex::new(vec![]), sync_args: Mutex::new(vec![]) }
+            Host { size_json: "{\"count\":3,\"bytes\":30,\"sizeless\":0}".into(), sync_script: format!("{STATS}; exit 0"), clone_fails: false, clone_made_but_unmounted: false, rclone_missing: false, real_dirs: vec![], old_stamp_listing: None, clone_exists: Mutex::new(false), calls: Mutex::new(vec![]), sync_args: Mutex::new(vec![]) }
         }
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
@@ -185,6 +230,10 @@ mod tests {
                     if self.clone_exists() { ok("tank/zit-mirror-job\n") } else { fail("dataset does not exist") }
                 }
                 ("zfs", Some("clone")) => {
+                    if self.clone_made_but_unmounted {
+                        *self.clone_exists.lock().unwrap() = true;
+                        return fail("cannot mount: failed to create mountpoint");
+                    }
                     if self.clone_fails {
                         return fail("cannot mount: failed to create mountpoint");
                     }
@@ -199,6 +248,15 @@ mod tests {
                 ("rclone", Some("size")) => {
                     if self.rclone_missing { fail("sudo: a password is required") } else { ok(&self.size_json) }
                 }
+                ("rclone", Some("lsf")) if args.contains(&"--dirs-only") => {
+                    let parent = args.last().unwrap();
+                    let names: String = self.real_dirs.iter().filter_map(|d| d.strip_prefix(&format!("{parent}/"))).filter(|n| !n.contains('/')).map(|n| format!("{n}/\n")).collect();
+                    ok(&names)
+                }
+                ("rclone", Some("lsf")) => match &self.old_stamp_listing {
+                    Some(listing) => ok(listing),
+                    None => Ok(CommandOutput { stdout: String::new(), stderr: "directory not found".into(), status: 3 }),
+                },
                 other => panic!("unexpected call {other:?}"),
             }
         }
@@ -273,7 +331,8 @@ mod tests {
     #[test]
     fn a_remote_and_path_with_spaces_stay_single_arguments() {
         let rig = Rig::new();
-        let host = Host::new();
+        let mut host = Host::new();
+        host.real_dirs = vec!["/var/run/zfsctl/job/my photos".into()];
         let mut j = job();
         j.path = Some("my photos".into());
         let (outcome, _) = rig.run(&host, &j);
@@ -281,6 +340,59 @@ mod tests {
         let sync = host.sync_args.lock().unwrap()[0].clone();
         assert_eq!(sync[1], "/var/run/zfsctl/job/my photos");
         assert_eq!(sync[2], "aws:my bkt/p/current");
+    }
+
+    #[test]
+    fn a_path_through_a_symlink_is_refused_before_anything_is_read_or_synced() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        // `docs` is listed, `docs/out` is not: it is a symlink (to `/`, say), which rclone would follow as root.
+        host.real_dirs = vec!["/var/run/zfsctl/job/docs".into()];
+        let mut j = job();
+        j.path = Some("docs/out".into());
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("not a plain folder") && outcome.message.contains("'out'") && outcome.message.contains("nothing was changed"), "{}", outcome.message);
+        assert!(host.sync_args.lock().unwrap().is_empty());
+        assert!(!host.calls().iter().any(|c| c.starts_with("rclone size")), "{:?}", host.calls());
+        assert!(!host.clone_exists(), "the clone is destroyed");
+    }
+
+    #[test]
+    fn a_path_of_real_folders_is_accepted_part_by_part() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.real_dirs = vec!["/var/run/zfsctl/job/docs".into(), "/var/run/zfsctl/job/docs/2026".into()];
+        let mut j = job();
+        j.path = Some("docs/2026/".into());
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        let lists: Vec<String> = host.calls().into_iter().filter(|c| c.contains("--dirs-only")).collect();
+        assert_eq!(lists, ["rclone lsf --dirs-only --max-depth 1 /var/run/zfsctl/job", "rclone lsf --dirs-only --max-depth 1 /var/run/zfsctl/job/docs"]);
+    }
+
+    #[test]
+    fn an_old_folder_that_already_exists_is_never_written_into() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.old_stamp_listing = Some("docs/\na.txt\n".into());
+        let (outcome, _) = rig.run(&host, &job());
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("old/20261008T233000Z already exists") && outcome.message.contains("nothing was changed"), "{}", outcome.message);
+        assert!(host.sync_args.lock().unwrap().is_empty());
+        assert!(!host.clone_exists());
+        assert!(host.calls().iter().any(|c| c.starts_with("rclone lsf") && c.contains("aws:my bkt/p/old/20261008T233000Z")), "{:?}", host.calls());
+    }
+
+    #[test]
+    fn a_clone_that_was_made_but_not_mounted_is_destroyed() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.clone_made_but_unmounted = true;
+        let (outcome, _) = rig.run(&host, &job());
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(!host.clone_exists(), "{:?}", host.calls());
+        assert!(!host.calls().iter().any(|c| c.starts_with("rclone")));
     }
 
     #[test]

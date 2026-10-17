@@ -270,22 +270,23 @@ A restic repository is not something you can open in a web browser: it is encryp
 Press `C` in Jobs:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 16748)───────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 25913)───────────────────────────────────────────────────┐
 │Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
 │Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 6d ago │
 │Datasets             ┌New cloud mirror job────────────────────────────────────────────┐                     │
 │Snapshots            │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
 │Disks                │plain files. What a run replaces or deletes is first moved to   │                     │
 │Shares               │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
-│Boot Envs            │old/. Symlinks, devices and empty folders are not copied.       │                     │
-│Jobs                 │                                                                │                     │
-│Alerts               │  Host (where rclone runs): local                               │                     │
+│Boot Envs            │old/. Symlinks, devices, empty folders and child datasets are   │                     │
+│Jobs                 │not copied.                                                     │                     │
+│Alerts               │                                                                │                     │
+│                     │  Host (where rclone runs): local                               │                     │
 │                     │> Dataset:                                                      │                     │
 │                     │  Path inside the dataset (blank = all of it):                  │                     │
 │                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
-│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
-│                     │  Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│─────────────────────┘
-│                     │it):                                                            │─────────────────────┐
+│                     │  Snapshots to keep (Source new only; blank = 3):               │─────────────────────┘
+│                     │  Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│─────────────────────┐
+│                     │it):                                                            │                     │
 │                     │  Speed limit (bytes/s, e.g. 5M; blank = none):                 │                     │
 │                     │  Schedule: 30 3 * * *                                          │                     │
 │                     │  Catch up (y/n): y                                             │                     │
@@ -297,26 +298,25 @@ Press `C` in Jobs:
 │                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
 │                      ││                                                                                    │
-│                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
 Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 ```
 
 The form asks for the same things as the backup job (host, dataset, an optional path inside it, which snapshot to read, how many fresh snapshots to keep), plus:
 
-- **Remote:** where to send it, written `name:path`, such as `aws:mybucket/photos` or `b2:mybucket/photos`. The name is a remote you created with `rclone config`; the keys live in root's rclone config on that host, never in zfsctl. A text with keys in it is refused.
+- **Remote:** where to send it, written `name:path`, such as `aws:mybucket/photos` or `b2:mybucket/photos`. The name is a remote you created with `rclone config`; the keys live in root's rclone config on that host, never in zfsctl. A text with keys in it is refused. The part after the colon must name the bucket (or a folder on the remote): a bare `aws:` is refused, and so is a `.` or `..` part.
 - **Speed limit:** optional, in bytes per second, such as `5M`, so a nightly upload does not use your whole connection. Schedule the job for the night if the connection matters; there is no time-of-day setting.
 
 Press `F5` in the form to check the remote before you save. It lists the remote read-only and tells you in plain words if the remote name is not set up, the bucket is missing or the keys are refused.
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 16748)───────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                ┌New cloud mirror job────────────────────────────────────────────┐0-18 03:00 ok 6d ago │
-│Datasets             │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
-│Snapshots            │plain files. What a run replaces or deletes is first moved to   │                     │
-│Disks                │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
-│Shares               │old/. Symlinks, devices and empty folders are not copied.       │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 25913)───────────────────────────────────────────────────┐
+│Hosts                ┌New cloud mirror job────────────────────────────────────────────┐run        Last      │
+│Pools                │Copies a read-only clone of a snapshot to <remote>/current as   │0-18 03:00 ok 6d ago │
+│Datasets             │plain files. What a run replaces or deletes is first moved to   │                     │
+│Snapshots            │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Disks                │old/. Symlinks, devices, empty folders and child datasets are   │                     │
+│Shares               │not copied.                                                     │                     │
 │Boot Envs            │                                                                │                     │
 │Jobs                 │  Host (where rclone runs): local                               │                     │
 │Alerts               │  Dataset: scratch/zt-mir-b2                                    │                     │
@@ -350,9 +350,11 @@ mybucket/photos/old/20261017T033000Z/...       <- what that run replaced or dele
 mybucket/photos/old/20261018T033000Z/...
 ```
 
-Each run makes `current` match the dataset. Before it replaces or deletes a file there, it **moves** the old copy into a folder named for the run's date and time (UTC). zfsctl never expires or deletes anything in `old/`: when the bucket gets big, you delete old folders yourself, in the cloud console or with `rclone purge`.
+Each run makes `current` match the dataset. A run never writes into an `old/` folder that already exists: if two runs ever got the same date and time, the second stops with an error and tries again with a new name next time. Before it replaces or deletes a file there, it **moves** the old copy into a folder named for the run's date and time (UTC). zfsctl never expires or deletes anything in `old/`: when the bucket gets big, you delete old folders yourself, in the cloud console or with `rclone purge`.
 
 > **Safety:** a run whose source has **no files** (an empty dataset, a wrong path, nothing but symlinks) stops with an error and changes nothing, so a broken clone can never look like "every file was deleted". zfsctl only runs `rclone sync` (with the `old/` folder) and read-only listings: never `delete`, `purge` or `cleanup`.
+
+> **Safety:** a mirror copies **one dataset**: its **child datasets are not included** (`tank/data/photos` is a different dataset from `tank/data`, and the run still reports OK). Make one mirror job per dataset you want in the bucket, each with its own remote folder. A *Path inside the dataset* must be made of real folders: if any part of it is a symlink, the run stops with an error before anything is read, because rclone would otherwise follow the link as root and could upload files from elsewhere on the host.
 
 > **Safety:** only regular files are copied. **Symlinks, sockets, devices and empty folders are not**, and file owners and permissions are not kept in a bucket. A run that skipped only such things still counts as OK and does not mention them. If you rely on symlinks, use the restic backup instead.
 
@@ -384,7 +386,9 @@ The policy does not allow creating buckets, and zfsctl does not ask for it: the 
 
 There is nothing special to restore from: open the bucket and download. From a shell, `rclone copy aws:mybucket/photos/current /restore` copies everything back, and an older version of one file is in the `old/<date and time>/` folder of the run that replaced it.
 
-> **Safety:** two mirror jobs on one host cannot have overlapping remotes, and a mirror cannot contain or sit inside a restic job's `rclone:` repository: the sync would move the repository's files into `old/`. zfsctl refuses to save or enable such a job. It cannot tell that two remote names (`aws:` and `aws2:`) point to one bucket, so do not do that.
+> **Safety:** the sudoers line for rclone (`zfsctl print-sudoers HOST --with rclone`) cannot limit rclone's arguments, so whoever holds zfsctl's ssh key on that host can also run `rclone purge` on your bucket or read the keys in root's rclone config: it is as powerful as root. The promise that "zfsctl never deletes anything in `old/`" is about what zfsctl itself runs. For a bucket you cannot afford to lose, turn on versioning (S3) or keep the lifecycle's hidden history (B2), and use a key that cannot touch anything else.
+
+> **Safety:** two mirror jobs on one host cannot have overlapping remotes, and a mirror cannot contain or sit inside a restic job's `rclone:` repository: the sync would move the repository's files into `old/`. zfsctl refuses to save or enable such a job. It cannot tell that two remote names (`aws:` and `aws2:`) point to one bucket, and it only compares jobs on the same host, so do not do that, and do not let two hosts mirror to the same remote folder: each would keep moving the other's files into `old/`.
 
 ## Try it
 

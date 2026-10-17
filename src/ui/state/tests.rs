@@ -7909,6 +7909,40 @@ fn saving_a_mirror_job_asks_first_naming_the_remote_and_saying_nothing_in_old_is
 }
 
 #[test]
+fn changing_what_a_mirror_reads_asks_again_and_says_old_files_move_to_old() {
+    let before = crate::jobs::Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/photos");
+    let mut same = before.clone();
+    assert_eq!(job_save_prompt(Some(&before), &same, None), None, "nothing relevant changed");
+    same.bwlimit = Some("5M".into());
+    assert_eq!(job_save_prompt(Some(&before), &same, None), None, "a speed limit is harmless");
+    for change in [&(|j: &mut crate::jobs::Job| j.path = Some("docs".into())) as &dyn Fn(&mut crate::jobs::Job), &|j| j.source = Some("@old".into())] {
+        let mut after = before.clone();
+        change(&mut after);
+        let prompt = job_save_prompt(Some(&before), &after, None).expect("a different path or source asks");
+        assert!(prompt.contains("moved to old/"), "{prompt}");
+    }
+    let fresh = job_save_prompt(None, &before, None).unwrap();
+    assert!(!fresh.contains("previous one"), "a new job has no previous source: {fresh}");
+}
+
+#[test]
+fn opening_a_mirror_form_forgets_an_earlier_check() {
+    let old = Some(PreflightCheck { host: 0, repository: "aws:bkt/photos".into(), password_file: String::new(), result: None, file_note: None });
+    let m = crate::jobs::Job::test_mirror("m", "tank/data", "hourly", "aws:bkt/photos");
+    let (mut app, _dir) = app_with_jobs(&[m]);
+    app.refresh_jobs();
+    app.backup_preflight = old.clone();
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(app.backup_preflight, None, "C");
+    app.modal = None;
+    app.backup_preflight = old;
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })));
+    assert_eq!(app.backup_preflight, None, "Enter on a mirror job");
+}
+
+#[test]
 fn f2_on_the_mirror_forms_source_lists_the_datasets_snapshots() {
     let mut app = App::new(vec!["local".to_string()]);
     app.modal = Some(Modal::Form { title: "x".into(), fields: mirror_fields(MIRROR_GOOD), focused: 3, description: None, kind: mirror_kind(None, vec![]) });

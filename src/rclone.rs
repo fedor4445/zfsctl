@@ -9,7 +9,9 @@ fn plain(s: &str) -> bool {
 
 /// An rclone remote path `name:path`: the name is letters, digits, `_` and `-` (not starting with `-`), so a
 /// connection string such as `:s3,access_key_id=X:bucket` (credentials in `jobs.toml`) or an option-looking
-/// value is never accepted. The path may be empty (`aws:`), may hold spaces, and must not contain a newline.
+/// value is never accepted. The path may hold spaces and must not contain a newline. It must name something
+/// (on S3 and B2 the first part is the bucket: a bare `aws:` would make `current` and `old` two buckets) and
+/// must have no `.` or `..` part, which some backends resolve and the overlap rule would not see.
 pub fn valid_remote(s: &str) -> bool {
     let Some((name, path)) = s.split_once(':') else { return false };
     !name.is_empty()
@@ -17,6 +19,8 @@ pub fn valid_remote(s: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
         && s.trim() == s
         && plain(path)
+        && path.split('/').any(|part| !part.is_empty())
+        && !path.split('/').any(|part| matches!(part, "." | ".."))
 }
 
 /// `--bwlimit`: bytes per second as digits with an optional single `K`, `M` or `G` suffix.
@@ -64,6 +68,12 @@ pub fn size_args(path: &str) -> Vec<String> {
 pub fn parse_size_count(json: &str) -> Result<u64, String> {
     let value: serde_json::Value = serde_json::from_str(json.trim()).map_err(|e| format!("cannot read rclone size output: {e}"))?;
     value.get("count").and_then(serde_json::Value::as_u64).ok_or_else(|| "rclone size output has no file count".to_string())
+}
+
+/// `rclone lsf --dirs-only PATH`: the folders directly inside a local folder. A symlink to a folder is not
+/// listed (rclone does not follow symlinks), so a path part missing from this list is a symlink or not a folder.
+pub fn lsf_dirs_args(path: &str) -> Vec<String> {
+    ["lsf", "--dirs-only", "--max-depth", "1", path].map(String::from).to_vec()
 }
 
 /// A read-only listing of the remote's top level, with short timeouts, for the form's check.
@@ -204,12 +214,17 @@ mod tests {
 
     #[test]
     fn remotes_are_name_colon_path_without_options_or_connection_strings() {
-        for good in ["aws:bkt/p", "b2:bkt", "aws:", "my-remote_1:a/b c", "aws:bkt/photos 2026"] {
+        for good in ["aws:bkt/p", "b2:bkt", "my-remote_1:a/b c", "aws:bkt/photos 2026", "aws:/bkt", "aws:bkt/.hidden", "aws:bkt/a..b"] {
             assert!(valid_remote(good), "{good}");
         }
-        for bad in [":s3,access_key_id=X:b/p", "-x:b", "a,b:c", "nocolon", "aws:b\nx", "", ":", "a b:c", " aws:b", "aws:b "] {
+        for bad in [":s3,access_key_id=X:b/p", "-x:b", "a,b:c", "nocolon", "aws:b\nx", "", ":", "a b:c", " aws:b", "aws:b ", "aws:", "aws:/", "aws://", "aws:bkt/..", "aws:bkt/./p", "aws:../x", "aws:."] {
             assert!(!valid_remote(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn listing_folders_is_one_read_only_argument_per_value() {
+        assert_eq!(lsf_dirs_args("/var/run/zfsctl/j/my photos"), ["lsf", "--dirs-only", "--max-depth", "1", "/var/run/zfsctl/j/my photos"]);
     }
 
     #[test]

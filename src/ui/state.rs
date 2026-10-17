@@ -1804,6 +1804,7 @@ impl App {
                 self.modal = Some(self.backup_job_form(None));
             }
             KeyCode::Char('C') if self.current_section() == Section::Jobs => {
+                self.backup_preflight = None;
                 self.modal = Some(self.mirror_job_form(None));
             }
             KeyCode::Char('R') if self.current_section() == Section::Jobs => {
@@ -1832,7 +1833,10 @@ impl App {
                             self.backup_preflight = None;
                             self.backup_job_form(Some(job))
                         }
-                        crate::jobs::KIND_MIRROR => self.mirror_job_form(Some(job)),
+                        crate::jobs::KIND_MIRROR => {
+                            self.backup_preflight = None;
+                            self.mirror_job_form(Some(job))
+                        }
                         _ => self.job_form(Some(job.clone()), job.pool.as_deref().unwrap_or("")),
                     });
                 }
@@ -2207,7 +2211,7 @@ impl App {
             return;
         };
         if !crate::rclone::valid_remote(remote) {
-            self.set_error("Check: enter the remote first, like aws:mybucket/photos (the name of an rclone remote, a colon and a path, with no keys in it)".to_string());
+            self.set_error("Check: enter the remote first, like aws:mybucket/photos (the name of an rclone remote, a colon and a bucket or folder, with no keys in it)".to_string());
             return;
         }
         let same = |c: &PreflightCheck| c.host == host && c.repository == remote && c.password_file.is_empty();
