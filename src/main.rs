@@ -13,6 +13,7 @@ mod exec;
 mod help;
 mod hosts;
 mod jobs;
+mod migrate;
 mod notify_cli;
 mod ui;
 mod zfs;
@@ -92,6 +93,7 @@ fn run() -> error::Result<()> {
         print!("{}", help::text());
         return Ok(());
     }
+    migrate::from_zfsctl(&mut |note| eprintln!("zfsctl: {note}"));
     let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
     if let Command::Daemon { state_dir } = command {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
