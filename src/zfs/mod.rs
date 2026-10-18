@@ -14,6 +14,7 @@ pub mod pool;
 pub mod pool_info;
 pub mod property;
 pub mod quota;
+pub mod vdev_role;
 pub mod share;
 pub mod share_detail;
 pub mod smb;
