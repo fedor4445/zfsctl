@@ -4,6 +4,7 @@
 
 use crate::exec::CommandRunner;
 use crate::smart::Severity;
+use crate::zfs::pool_classes::{parse_classes, PoolClasses};
 use crate::zfs::quota::{usage, Facts};
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
@@ -24,6 +25,9 @@ pub struct StorageResult {
     pub checked_at: DateTime<Utc>,
     #[serde(default)]
     pub datasets: Vec<LimitedDataset>,
+    /// Pools with something to say about their special, dedup, log or cache devices (quiet pools are not stored).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pools: Vec<PoolClasses>,
     /// Why the latest check did not happen; the rest is then from the last one that did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -101,7 +105,16 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
         Ok(out) if out.status == 255 => Outcome::Failed(super::shares_check::first_line(&out.stderr, "could not reach the host")),
         Ok(out) if !out.success() && super::shares_check::is_refusal(&out.stderr) => Outcome::Silent,
         Ok(out) if !out.success() => Outcome::Failed(super::shares_check::first_line(&out.stderr, "zfs list failed")),
-        Ok(out) => Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), error: None }),
+        Ok(out) => {
+            // The device classes come from `zpool status`, best effort: a host that will not say still gets its quota lines.
+            let pools = runner
+                .run("zpool", &["status"])
+                .ok()
+                .filter(crate::exec::CommandOutput::success)
+                .map(|o| parse_classes(&o.stdout).into_iter().filter(|p| !p.is_quiet()).collect())
+                .unwrap_or_default();
+            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, error: None })
+        }
     }
 }
 
@@ -185,6 +198,31 @@ pub fn retain_hosts(dir: &Path, configured: &[String]) {
     }
 }
 
+/// What one host adds to Needs attention for its pools' device classes: a special or dedup vdev that is a lone disk is an issue
+/// (losing it loses the pool), a faulted log or cache device is only a watch.
+pub fn pool_problems(file: &StorageFile) -> Vec<StorageProblem> {
+    file.hosts
+        .iter()
+        .filter_map(|(host, result)| {
+            let mut texts = Vec::new();
+            let mut severity = Severity::Watch;
+            for pool in &result.pools {
+                for class in &pool.unprotected {
+                    texts.push(format!("{} {class} vdev has no redundancy", pool.name));
+                    severity = Severity::Issue;
+                }
+                if pool.log_bad {
+                    texts.push(format!("{} log device faulted", pool.name));
+                }
+                if pool.cache_bad {
+                    texts.push(format!("{} cache device faulted", pool.name));
+                }
+            }
+            (!texts.is_empty()).then(|| StorageProblem { host: host.clone(), severity, text: texts.join("; "), checked_at: result.checked_at })
+        })
+        .collect()
+}
+
 /// What one host adds to Needs attention: its dataset nearest to a limit, with how many others are over the warning line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StorageProblem {
@@ -234,7 +272,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], error: None });
         file
     }
 
@@ -279,7 +317,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
@@ -411,6 +449,39 @@ mod tests {
         retain_hosts(dir.path(), &["keep".to_string()]);
         let file = StorageFile::load(&dir.path().join(FILE));
         assert_eq!(file.hosts.keys().collect::<Vec<_>>(), ["keep"]);
+    }
+
+    fn status_with(special: &str, extra: &str) -> String {
+        format!("  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        ONLINE       0     0     0\n\t  da0       ONLINE       0     0     0\n\tspecial\n{special}{extra}\nerrors: No known data errors\n")
+    }
+
+    #[test]
+    fn check_host_keeps_the_device_class_facts_and_survives_a_failing_zpool_status() {
+        let lone = status_with("\t  da1       ONLINE       0     0     0\n", "");
+        let runner = FakeRunner::new("").route("zfs", "list", "").route("zpool", "status", &lone);
+        let Outcome::Checked(r) = check_host(&runner, at(NOW)) else { panic!() };
+        assert_eq!(r.pools.len(), 1);
+        assert_eq!(r.pools[0].unprotected, ["special"]);
+        let quiet = FakeRunner::new("").route("zfs", "list", "").route("zpool", "status", &status_with("\t  mirror-1    ONLINE       0     0     0\n\t    da1       ONLINE       0     0     0\n\t    da2       ONLINE       0     0     0\n", ""));
+        let Outcome::Checked(r) = check_host(&quiet, at(NOW)) else { panic!() };
+        assert!(r.pools.is_empty(), "quiet pools are not stored");
+        let broken = FakeRunner::new("").route("zfs", "list", "a\t9\t9\t10\t0\tfilesystem\n").route_failure("zpool", "status", "cannot open", 1);
+        let Outcome::Checked(r) = check_host(&broken, at(NOW)) else { panic!() };
+        assert!(r.pools.is_empty() && r.datasets.len() == 1, "the quota lines survive a zpool status that fails");
+    }
+
+    #[test]
+    fn a_lone_special_disk_is_an_issue_and_a_faulted_log_is_a_watch_one_line_per_host() {
+        let mut file = file_with("hub", vec![]);
+        file.hosts.get_mut("hub").unwrap().pools = vec![PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: true, cache_bad: false }, PoolClasses { name: "t2".into(), unprotected: vec![], log_bad: false, cache_bad: true }];
+        let p = pool_problems(&file);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].severity, Severity::Issue);
+        assert_eq!(p[0].text, "tank special vdev has no redundancy; tank log device faulted; t2 cache device faulted");
+        file.hosts.get_mut("hub").unwrap().pools = vec![PoolClasses { name: "t2".into(), unprotected: vec![], log_bad: true, cache_bad: false }];
+        assert_eq!(pool_problems(&file)[0].severity, Severity::Watch);
+        file.hosts.get_mut("hub").unwrap().pools.clear();
+        assert!(pool_problems(&file).is_empty());
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod host_resources_os;
 pub mod metrics;
 pub mod permission;
 pub mod pool;
+pub mod pool_classes;
 pub mod pool_info;
 pub mod property;
 pub mod quota;

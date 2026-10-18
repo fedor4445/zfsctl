@@ -198,7 +198,11 @@ pub fn check_lines(state_dir: &std::path::Path) -> Vec<String> {
 
 /// The daily report's lines for datasets near their quota, from `storage.json`.
 pub fn storage_lines(file: &crate::daemon::storage_check::StorageFile, quota: (u8, u8)) -> Vec<String> {
-    crate::daemon::storage_check::problems(file, quota).iter().map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at))).collect()
+    crate::daemon::storage_check::problems(file, quota)
+        .iter()
+        .chain(crate::daemon::storage_check::pool_problems(file).iter())
+        .map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at)))
+        .collect()
 }
 
 /// The daily report's lines for hosts whose file sharing has a problem, from the daemon's `shares.json`.
@@ -321,7 +325,7 @@ mod tests {
         use crate::daemon::storage_check::{LimitedDataset, StorageFile, StorageResult};
         let mut file = StorageFile::default();
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
-        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], error: None });
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], error: None });
         let lines = storage_lines(&file, (90, 98));
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/home 94% of its 100 quota (checked "), "{}", lines[0]);

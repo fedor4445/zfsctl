@@ -431,6 +431,11 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
     }
+    for found in crate::daemon::storage_check::pool_problems(inputs.storage).into_iter().filter(|p| reached(&p.host)) {
+        let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
+        let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
+        items.push(Item { level, subject: found.host.clone(), what, goto: Section::Pools, target: Some(found.host) });
+    }
     // The storage check runs every ten minutes: silent for three times that is a loop that stopped.
     if let (true, Some(last)) = (daemon_running, inputs.storage.ran_at) {
         if inputs.now - last > chrono::Duration::minutes(30) {
@@ -1029,7 +1034,7 @@ mod tests {
 
     fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
         use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], error: None }
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], error: None }
     }
 
     #[test]
@@ -1044,6 +1049,19 @@ mod tests {
         assert_eq!((by("h").level, by("red").level), (Level::Watch, Level::Issue));
         assert!(by("h").what.starts_with("tank/home 94% of its 100 quota") && by("h").what.contains("checked 4m ago"), "{}", by("h").what);
         assert_eq!(by("h").target.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn a_pool_with_a_lone_special_disk_is_a_red_line_that_goes_to_pools() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        let mut entry = storage_entry(2, "tank/x", 10);
+        entry.pools = vec![crate::zfs::pool_classes::PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: false, cache_bad: false }];
+        fx.storage.hosts.insert("h".into(), entry);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let items: Vec<Item> = fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.goto == Section::Pools && i.what.contains("special")).collect();
+        assert_eq!((items.len(), items[0].level), (1, Level::Issue));
+        assert!(items[0].what.starts_with("tank special vdev has no redundancy"), "{}", items[0].what);
     }
 
     #[test]
