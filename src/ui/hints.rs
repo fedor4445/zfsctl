@@ -198,6 +198,15 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     v.push(h("M", "SMB share", 3));
                 }
                 v.push(h("J", "Snapshot job", 3));
+                // The key keys: on an encrypted row, the one that applies to its state.
+                if let Some(enc) = app.selected_dataset_name().and_then(|n| app.encryption.get(&n)) {
+                    if enc.locked {
+                        v.push(h("L", "Load key", 2));
+                    } else {
+                        v.push(h("U", "Unload key", 3).tone(Tone::Warn));
+                        v.push(h("C", "Change key", 3).tone(Tone::Warn));
+                    }
+                }
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -1475,6 +1484,20 @@ mod tests {
         assert!(!keys(&datasets_none_selected()).contains(&"D"));
     }
 
+
+    #[test]
+    fn the_key_keys_are_advertised_only_on_an_encrypted_row_and_only_the_one_that_applies() {
+        let enc = |locked| crate::zfs::encryption::Enc { cipher: "aes-256-gcm".into(), key_format: "passphrase".into(), root: "tank/a".into(), locked };
+        assert!(!keys(&datasets_middle(false)).iter().any(|k| ["L", "U", "C"].contains(k)), "a plain dataset has no key keys");
+        let mut open = datasets_middle(false);
+        open.encryption.insert("tank/a".into(), enc(false));
+        let k = keys(&open);
+        assert!(k.contains(&"U") && k.contains(&"C") && !k.contains(&"L"), "{k:?}");
+        let mut locked = datasets_middle(false);
+        locked.encryption.insert("tank/a".into(), enc(true));
+        let k = keys(&locked);
+        assert!(k.contains(&"L") && !k.contains(&"U") && !k.contains(&"C"), "{k:?}");
+    }
 
     #[test]
     fn the_acl_tab_hides_add_and_remove_on_a_posix_acltype_dataset() {

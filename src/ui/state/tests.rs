@@ -9663,3 +9663,30 @@ fn a_new_key_must_be_eight_characters() {
     assert!(app.handle_modal_key(KeyCode::Enter).is_none());
     assert!(app.status_message.as_deref().unwrap_or("").contains("8 characters"), "{:?}", app.status_message);
 }
+
+#[test]
+fn a_full_load_key_run_keeps_the_passphrase_out_of_arguments_status_and_errors() {
+    for (runner, ok) in [(FakeRunner::new(""), true), (FakeRunner::failing("Key load error: Incorrect key provided for 'tank/s'.", 255), false)] {
+        let mut app = key_app(true, "passphrase");
+        app.handle_key(KeyCode::Char('L'));
+        type_into(&mut app, PASS);
+        app.handle_modal_key(KeyCode::Tab);
+        let action = app.handle_modal_key(KeyCode::Enter).expect("submits");
+        let runner = Arc::new(runner);
+        app.dispatch_mutation(action, runner.clone());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let refreshes = loop {
+            let r = app.drain_worker_messages();
+            if !r.is_empty() || app.status_message.is_some() || Instant::now() > deadline {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(!refreshes.is_empty(), ok, "{refreshes:?} {:?}", app.status_message);
+        let calls = runner.calls.lock().unwrap();
+        assert!(calls.iter().all(|(_, a)| a.iter().all(|x| !x.contains(PASS))), "{calls:?}");
+        assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), format!("{PASS}\n"))]);
+        assert!(!app.status_message.clone().unwrap_or_default().contains(PASS));
+        assert!(!format!("{:?}", app.modal).contains(PASS), "the closed form leaves nothing in the modal");
+    }
+}
