@@ -173,6 +173,8 @@ pub struct DatasetSpace {
     /// `checksum` and `dedup` as the host prints them (`on`, `sha256`, `off`...); empty when not read.
     pub checksum: String,
     pub dedup: String,
+    /// Set when the dataset is encrypted (read separately, best effort: an old `zfs` has no such properties).
+    pub enc: Option<super::encryption::Enc>,
 }
 
 pub const DATASET_SPACE_PROPS: &str = "usedbydataset,usedbysnapshots,usedbychildren,usedbyrefreservation,used,available,referenced,logicalused,compressratio,compression,quota,refquota,reservation,refreservation,recordsize,checksum,dedup";
@@ -202,6 +204,7 @@ pub fn parse_dataset_space(output: &str) -> Result<DatasetSpace> {
         recordsize: num("recordsize"),
         checksum: values.get("checksum").map(|v| (*v).to_string()).unwrap_or_default(),
         dedup: values.get("dedup").map(|v| (*v).to_string()).unwrap_or_default(),
+        enc: None,
     })
 }
 
@@ -212,7 +215,10 @@ pub fn fetch_dataset_space(runner: &dyn CommandRunner, dataset: &str) -> Result<
         &["get", "-Hp", "-o", "property,value", DATASET_SPACE_PROPS, dataset],
         &format!("zfs get space {dataset}"),
     )?;
-    parse_dataset_space(&out.stdout)
+    let mut space = parse_dataset_space(&out.stdout)?;
+    // Not part of the call above: a `zfs` without these properties would fail the whole panel.
+    space.enc = super::encryption::query(runner, dataset).ok().flatten();
+    Ok(space)
 }
 
 /// What the metrics panel is currently about.
@@ -458,5 +464,31 @@ mod tests {
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0].0, "zfs");
         assert_eq!(calls[0].1, vec!["get", "-Hp", "-o", "property,value", DATASET_SPACE_PROPS, "scratch/data"]);
+    }
+
+    #[test]
+    fn the_space_of_an_encrypted_dataset_says_so_and_a_failed_encryption_query_does_not_fail_the_panel() {
+        let enc = "tank/s\tencryption\taes-256-gcm\ntank/s\tkeyformat\tpassphrase\ntank/s\tkeystatus\tunavailable\ntank/s\tencryptionroot\ttank/s\n";
+        let runner = FakeRunner::new(SPACE).route("zfs", "get", SPACE);
+        assert!(fetch_dataset_space(&runner, "tank/s").unwrap().enc.is_none());
+        // Both calls are `zfs get`: answer the second kind by its content.
+        struct Two(FakeRunner, String);
+        impl crate::exec::CommandRunner for Two {
+            fn run(&self, c: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+                let mut out = self.0.run(c, a)?;
+                if a.contains(&"name,property,value") {
+                    out.stdout.clone_from(&self.1);
+                }
+                Ok(out)
+            }
+            fn run_with_stdin(&self, c: &str, a: &[&str], s: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+                self.0.run_with_stdin(c, a, s)
+            }
+            fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+                self.0.run_unprivileged(c, a)
+            }
+        }
+        let got = fetch_dataset_space(&Two(FakeRunner::new(SPACE), enc.to_string()), "tank/s").unwrap().enc.unwrap();
+        assert!(got.locked && got.cipher == "aes-256-gcm" && got.root == "tank/s");
     }
 }

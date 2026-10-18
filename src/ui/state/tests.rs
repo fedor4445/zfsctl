@@ -4945,6 +4945,16 @@ fn refresh_datasets_populates_datasets_from_fake_runner() {
 }
 
 #[test]
+fn refreshing_datasets_also_reads_which_are_encrypted_and_locked() {
+    let mut app = App::new(vec!["local".to_string()]);
+    let get = "tank/data\tencryption\taes-256-gcm\ntank/data\tkeyformat\tpassphrase\ntank/data\tkeystatus\tunavailable\ntank/data\tencryptionroot\ttank/data\n";
+    let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data\t100\t200\t100\t/tank/data\tfilesystem\tyes\n").route("zfs", "get", get));
+    app.refresh_datasets(runner);
+    wait_until(&mut app, |a| !a.datasets.is_empty());
+    assert!(app.encryption["tank/data"].locked, "the Encryption message arrives before the list");
+}
+
+#[test]
 fn refresh_snapshots_populates_snapshots_from_fake_runner() {
     let mut app = App::new(vec!["local".to_string()]);
     let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data@s1\t10\n"));
