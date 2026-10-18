@@ -27,10 +27,13 @@ pub struct Dataset {
     pub available: u64,
     pub referenced: u64,
     pub mountpoint: Option<String>,
+    /// `quota` and `refquota` in bytes; 0 = none (`zfs list -p` prints an unset limit as 0, or `-` on a volume).
+    pub quota: u64,
+    pub refquota: u64,
 }
 
 pub const DATASET_LIST_ARGS: &[&str] = &[
-    "list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type,mounted",
+    "list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type,mounted,quota,refquota",
 ];
 
 /// Parses `zfs list -H -p -o name,used,avail,refer,mountpoint,type,mounted`
@@ -50,11 +53,12 @@ pub fn parse_dataset_list(output: &str) -> Result<Vec<Dataset>> {
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            let &[name, used, available, referenced, mountpoint, kind, mounted] = fields.as_slice() else {
-                return Err(AppError::Parse(format!(
-                    "expected 7 fields in zfs list line: {line:?}"
-                )));
+            // The two limits at the end are optional so a shorter line (an older capture) still reads.
+            let ([name, used, available, referenced, mountpoint, kind, mounted], limits) = match fields.as_slice() {
+                [a, b, c, d, e, f, g, rest @ ..] if rest.len() <= 2 => ([*a, *b, *c, *d, *e, *f, *g], rest),
+                _ => return Err(AppError::Parse(format!("expected 9 fields in zfs list line: {line:?}"))),
             };
+            let limit = |i: usize| limits.get(i).and_then(|v| super::parse_numeric_or_dash(v)).unwrap_or(0);
             let mountpoint = match (mountpoint, mounted) {
                 ("-" | "none" | "legacy", _) => None,
                 (mp, "yes") => Some(mp.to_string()),
@@ -70,6 +74,8 @@ pub fn parse_dataset_list(output: &str) -> Result<Vec<Dataset>> {
                     .ok_or_else(|| AppError::Parse(format!("bad refer in: {line:?}")))?,
                 mountpoint,
                 kind: DatasetKind::parse(kind),
+                quota: limit(0),
+                refquota: limit(1),
             })
         })
         .collect()
@@ -141,6 +147,17 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
 ";
 
     #[test]
+    fn dataset_list_reads_quota_and_refquota_with_zero_or_dash_meaning_none() {
+        let out = "tank\t10\t20\t5\t/tank\tfilesystem\tyes\t10737418240\t0\ntank/vol\t1\t2\t1\t-\tvolume\t-\t-\t-\ntank/r\t1\t2\t1\t/r\tfilesystem\tyes\t0\t4294967296\n";
+        let ds = parse_dataset_list(out).unwrap();
+        assert_eq!((ds[0].quota, ds[0].refquota), (10 << 30, 0));
+        assert_eq!((ds[1].quota, ds[1].refquota), (0, 0), "a volume prints - for both");
+        assert_eq!((ds[2].quota, ds[2].refquota), (0, 4 << 30));
+        let old = parse_dataset_list("tank\t10\t20\t5\t/tank\tfilesystem\tyes\n").unwrap();
+        assert_eq!((old[0].quota, old[0].refquota), (0, 0), "a line without the limit columns still reads");
+    }
+
+    #[test]
     fn parses_dataset_list_fixture() {
         let datasets = parse_dataset_list(ZFS_LIST_FIXTURE).unwrap();
         assert_eq!(
@@ -152,7 +169,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
                     used: 100_000_000,
                     available: 900_000_000,
                     referenced: 100_000_000,
-                    mountpoint: Some("/tank/data".to_string()),
+                    mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0,
                 },
                 Dataset {
                     name: "tank/vol1".to_string(),
@@ -160,7 +177,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
                     used: 50_000_000,
                     available: 900_000_000,
                     referenced: 50_000_000,
-                    mountpoint: None,
+                    mountpoint: None, quota: 0, refquota: 0,
                 },
             ]
         );
@@ -179,7 +196,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
         let datasets = parse_dataset_list(fixture).unwrap();
         assert_eq!(
             datasets,
-            vec![Dataset { name: "zroot/usr".to_string(), kind: DatasetKind::Filesystem, used: 100, available: 200, referenced: 100, mountpoint: None }]
+            vec![Dataset { name: "zroot/usr".to_string(), kind: DatasetKind::Filesystem, used: 100, available: 200, referenced: 100, mountpoint: None, quota: 0, refquota: 0 }]
         );
     }
 
@@ -189,7 +206,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
         let datasets = parse_dataset_list(fixture).unwrap();
         assert_eq!(
             datasets,
-            vec![Dataset { name: "tank/legacy".to_string(), kind: DatasetKind::Filesystem, used: 100, available: 200, referenced: 100, mountpoint: None }]
+            vec![Dataset { name: "tank/legacy".to_string(), kind: DatasetKind::Filesystem, used: 100, available: 200, referenced: 100, mountpoint: None, quota: 0, refquota: 0 }]
         );
     }
 
@@ -208,7 +225,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
         assert_eq!(calls[0].0, "zfs");
         assert_eq!(
             calls[0].1,
-            vec!["list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type,mounted"]
+            vec!["list", "-t", "filesystem,volume", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,type,mounted,quota,refquota"]
         );
     }
 
@@ -223,7 +240,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
                 used: 0,
                 available: 0,
                 referenced: 0,
-                mountpoint: None,
+                mountpoint: None, quota: 0, refquota: 0,
             }]
         );
     }

@@ -229,6 +229,21 @@ const DATASET_NAME_MIN: u16 = 24;
 const SIZE_COL_W: u16 = 8;
 /// Width of the Kind column (`Filesystem`).
 const KIND_COL_W: u16 = 10;
+/// Width of the Quota column (`75% of 4G ref`).
+const QUOTA_COL_W: u16 = 14;
+
+/// The Quota cell: how full the nearer limit is, or `-`.
+fn quota_cell(d: &crate::zfs::dataset::Dataset) -> (String, Option<u8>) {
+    let facts = crate::zfs::quota::Facts { used: d.used, referenced: d.referenced, quota: d.quota, refquota: d.refquota, ..Default::default() };
+    match crate::zfs::quota::usage(&facts) {
+        Some(u) => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a percentage, clamped
+            let percent = u.percent.round().clamp(0.0, 999.0) as u16;
+            (format!("{percent}% of {}{}", crate::zfs::quota::format_size(u.limit), if u.is_ref { " ref" } else { "" }), Some(u8::try_from(percent.min(255)).unwrap_or(255)))
+        }
+        None => ("-".to_string(), None),
+    }
+}
 
 /// Longest value shown in the Properties table's Value column.
 const PROPERTY_VALUE_MIN: u16 = 16;
@@ -262,7 +277,8 @@ fn split_wants(app: &App, section: Section) -> (u16, u16) {
             DatasetDetailTab::Properties => property_pane_want(&app.dataset_properties),
             _ => 0,
         };
-        (name.saturating_add(SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3 + 2), right)
+        let quota = if app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) { QUOTA_COL_W + 1 } else { 0 };
+        (name.saturating_add(SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3 + 2 + quota), right)
     }
 }
 
@@ -609,23 +625,39 @@ fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
+    // A Quota column only when some dataset has a limit and the pane has room for it after the columns that are always there.
+    let fixed = DATASET_NAME_MIN + SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3;
+    let quota_col = app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) && area.width.saturating_sub(2) >= fixed + QUOTA_COL_W + 1;
+    let (warn, crit) = (90, 98);
     let rows = app.datasets.iter().map(|d| {
-        Row::new(vec![
-            d.name.clone(),
-            crate::zfs::disk::human_size(d.used),
-            crate::zfs::disk::human_size(d.available),
-            format!("{:?}", d.kind),
-        ])
+        let mut cells = vec![
+            Cell::from(d.name.clone()),
+            Cell::from(crate::zfs::disk::human_size(d.used)),
+            Cell::from(crate::zfs::disk::human_size(d.available)),
+        ];
+        if quota_col {
+            let (text, percent) = quota_cell(d);
+            let style = match percent {
+                Some(p) if p >= crit => theme.err,
+                Some(p) if p >= warn => theme.warn,
+                _ => Style::default(),
+            };
+            cells.push(Cell::from(Span::styled(text, style)));
+        }
+        cells.push(Cell::from(format!("{:?}", d.kind)));
+        Row::new(cells)
     });
-    let widths = [
-        Constraint::Min(DATASET_NAME_MIN),
-        Constraint::Length(SIZE_COL_W),
-        Constraint::Length(SIZE_COL_W),
-        Constraint::Length(KIND_COL_W),
-    ];
+    let mut widths = vec![Constraint::Min(DATASET_NAME_MIN), Constraint::Length(SIZE_COL_W), Constraint::Length(SIZE_COL_W)];
+    let mut headers = vec!["Name", "Used", "Avail"];
+    if quota_col {
+        widths.push(Constraint::Length(QUOTA_COL_W));
+        headers.push("Quota");
+    }
+    widths.push(Constraint::Length(KIND_COL_W));
+    headers.push("Kind");
     let title = format!("Datasets — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Name", "Used", "Avail", "Kind"]))
+        .header(Row::new(headers))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.datasets_table);
@@ -1800,7 +1832,7 @@ mod tests {
         app.selected_section = app.sections.iter().position(|s| *s == Section::Datasets).unwrap();
         app.datasets = names
             .iter()
-            .map(|n| crate::zfs::dataset::Dataset { name: (*n).to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None })
+            .map(|n| crate::zfs::dataset::Dataset { name: (*n).to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 })
             .collect();
         app.datasets_table.select(Some(0));
         app
@@ -1961,7 +1993,7 @@ mod tests {
             used: 105_250_816,
             available: 32_899_702_784,
             referenced: 0,
-            mountpoint: None,
+            mountpoint: None, quota: 0, refquota: 0,
         }];
         app.datasets_table.select(Some(0));
         let text = render(&mut app, 110, 30).join("\n");
@@ -2043,6 +2075,44 @@ mod tests {
         app.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Linux), ..Default::default() });
         app.selected_host = 1;
         app
+    }
+
+    fn limited_datasets_app() -> App {
+        use crate::zfs::dataset::{Dataset, DatasetKind};
+        let g: u64 = 1 << 30;
+        let ds = |name: &str, used: u64, referenced: u64, quota: u64, refquota: u64| Dataset { name: name.into(), kind: DatasetKind::Filesystem, used, available: 50 * g, referenced, mountpoint: None, quota, refquota };
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Datasets).unwrap();
+        app.datasets = vec![ds("tank/home", 96 * g / 10, g, 10 * g, 0), ds("tank/ref", 9 * g, 3 * g, 0, 4 * g), ds("tank/free", g, g, 0, 0)];
+        app.datasets_table.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn the_datasets_table_shows_how_full_a_quota_is_and_nothing_when_no_dataset_has_one() {
+        let mut app = limited_datasets_app();
+        let wide = render(&mut app, 160, 12).join("\n");
+        assert!(wide.contains("Quota") && wide.contains("96% of 10G") && wide.contains("75% of 4G ref"), "{wide}");
+        for d in &mut app.datasets {
+            (d.quota, d.refquota) = (0, 0);
+        }
+        let none = render(&mut app, 160, 12).join("\n");
+        assert!(!none.contains("Quota"), "no column when nothing has a limit:\n{none}");
+    }
+
+    #[test]
+    fn the_quota_column_is_the_first_to_go_on_a_narrow_pane() {
+        let mut app = limited_datasets_app();
+        let mut dropped_while_kind_stays = false;
+        for width in 60..200 {
+            let screen = render(&mut app, width, 12).join("\n");
+            if screen.contains("Quota") {
+                assert!(screen.contains("Avail") && screen.contains("Kind"), "Quota only shows with the others, width {width}");
+            } else if screen.contains("Kind") {
+                dropped_while_kind_stays = true;
+            }
+        }
+        assert!(dropped_while_kind_stays, "somewhere the Quota column is gone while Kind still fits");
     }
 
     #[test]
@@ -2921,7 +2991,7 @@ mod tests {
     fn the_acl_pane_title_says_when_the_dataset_is_posix() {
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Datasets).unwrap();
-        app.datasets = vec![crate::zfs::dataset::Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+        app.datasets = vec![crate::zfs::dataset::Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
         app.datasets_table.select(Some(0));
         app.pane_focus = crate::ui::state::PaneFocus::Right;
         app.dataset_detail_tab = crate::ui::state::DatasetDetailTab::Acl;
