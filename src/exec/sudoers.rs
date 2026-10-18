@@ -121,7 +121,7 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
     let host: String = host.chars().map(|c| if c.is_control() { '?' } else { c }).collect();
     let mut text = format!("# zfsctl sudoers entry for host {host}, generated {generated}\n");
     let _ = writeln!(text, "# features: {}", features.iter().map(|f| f.name()).collect::<Vec<_>>().join(", "));
-    let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "restic")).collect();
+    let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "beadm" | "restic")).collect();
     if !powerful.is_empty() {
         let (verb, pronoun) = if powerful.len() == 1 { ("is", "it") } else { ("are", "them") };
         let _ = writeln!(text, "# {} {verb} as powerful as root: grant {pronoun} only to hosts you trust zfsctl with.", powerful.join(", "));
