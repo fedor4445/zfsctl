@@ -266,7 +266,7 @@ pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget, with_co
             sample.pool.io = io;
             sample.disk = Some(live);
         } else {
-            let (host, io) = super::host::sample_host(runner)?;
+            let (host, io) = super::host::sample_host(runner, os)?;
             sample.pool.io = io;
             sample.host = Some(host);
         }
