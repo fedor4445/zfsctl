@@ -188,6 +188,8 @@ It copies the newest snapshot with a given prefix (typically the ones a snapshot
 
 > **Safety:** **Keep on target** permanently destroys snapshots on the destination, including ones the source no longer has. Choose N large enough to go back as far as you may need, and read the confirmation before you accept it.
 
+> **Safety:** a replication refuses an **encrypted** source, to a host or to stream files: a send without ZFS's raw option delivers the data decrypted. The form says so when it knows, and a run fails with the same message if the dataset became encrypted after the job was saved. Back encrypted data up with a restic job instead (restic encrypts it with its own key).
+
 > **Safety:** replication is not a backup of mistakes: a deleted file is deleted on the copy at the next run. Keep several snapshots on the destination (a snapshot job there) if you want to go back.
 
 ## Managing jobs

@@ -53,6 +53,7 @@ With a dataset selected, the panel under the list shows where its space goes:
 | **Kids**, **Refres** | space used by child datasets, and by a reservation |
 | **Compr** and **Rec** | compression and its ratio, and the record size |
 | **Quota**, **Ref** | the quota and the refquota, if any, each with how much of it is used (`10.0G 96%`) |
+| **Encrypt** | only for an encrypted dataset: the cipher, the key format and the encryption root, and `LOCKED` when its key is not loaded |
 | **Pool** | the pool's health |
 
 ## Properties
@@ -125,6 +126,16 @@ Both properties only affect data written afterwards. zfsctl says so, and asks:
 - **Turning `dedup` on** asks you to **type the dataset's name** too: deduplication keeps a table of every block in memory (a rule of thumb is 1 to 5 GB of RAM per TB of deduplicated data), the question shows how much RAM the host has and warns when that is under 16 GiB, and switching it off later does not undeduplicate what is already stored. Turning it off, or changing the algorithm, asks `y` then `Enter`.
 
 The panel under the list shows `Checksum` and `Dedup` only when they are not the defaults. Needs attention lists a host that has a dataset with its checksum off (`tank/scratch checksum is off`, up to three names) and a pool that has dedup on but saves less than `dedup_min_ratio` (default 1.10x) once it holds more than 10 GiB and has had dedup on for a week (`tank dedup is on but saves only 1.02x`): paying memory for nothing. The wait matters: the ratio only counts data written after dedup was switched on, so a pool full of old data reads 1.00x at first. The illumos dump device (`rpool/dump`) has its checksum off by design and is not listed.
+
+## Encrypted datasets
+
+ZFS can encrypt a dataset (`encryption=aes-256-gcm` and the like), but only when the dataset is created; the key is then loaded and unloaded. zfsctl shows this much today and does not yet create or unlock encrypted datasets:
+
+- When any dataset on the host is encrypted, the Datasets list gets a **Lock** column: blank for a plain dataset, `open` when the key is loaded and **`LOCKED`** (red) when it is not. A locked dataset cannot be read or mounted. The panel adds the `Encrypt` line described above.
+- A locked dataset that a replication, backup or cloud-mirror job uses, or that is shared, is a yellow line in Needs attention (`tank/secure is locked (a job uses it)`) and in the daily report: it is something that will fail. A locked dataset nobody uses gets no line.
+- **Jobs and encryption:** a replication (to a host or to stream files) and a cloud mirror **refuse an encrypted source**. Without ZFS's raw option a send delivers the data decrypted, and zfsctl does not send data in the clear without being told to. The form refuses to save such a job when it already knows the dataset is encrypted, and a job whose source became encrypted later fails with the same reason (red on the Dashboard). A **restic backup is allowed**: restic encrypts the files with its own key, so an open encrypted dataset is backed up as usual, while a locked one fails with `tank/secure is locked (key not loaded): load the key first`.
+
+Load the key with `zfs load-key tank/secure` on the host (zfsctl will do it for you in a later version).
 
 ## Create a dataset
 
