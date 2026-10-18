@@ -472,4 +472,11 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         assert!(check_passphrase(&"x".repeat(7), true).is_err());
         assert!(check_passphrase(&"é".repeat(8), true).is_ok(), "characters, not bytes");
     }
+
+    #[test]
+    fn the_reason_is_the_first_non_blank_line_of_the_answer() {
+        assert_eq!(query(&FakeRunner::failing("\n  \nConnection closed by 10.0.0.9\nmore", 255), "tank/s"), Err("Connection closed by 10.0.0.9".to_string()));
+        assert_eq!(query(&FakeRunner::failing("\n\nsudo: a password is required\n", 1), "tank/s"), Err("sudo: a password is required".to_string()));
+        assert_eq!(query(&FakeRunner::failing("", 255), "tank/s"), Err("could not reach the host".to_string()));
+    }
 }
