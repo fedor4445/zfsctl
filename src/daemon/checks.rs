@@ -2,8 +2,8 @@
 //! sharing services. This module holds what both ways of starting them share: the marker that says a check is running,
 //! one host's pair of checks, how an answer is merged into `smart.json` and `shares.json`, and the daily pass over all hosts.
 
-use super::shares_check::{self, SharesFile, SharesResult};
-use super::smart_check::{self, HostResult, SmartFile};
+use super::shares_check::{self, SharesFile};
+use super::smart_check::{self, SmartFile};
 use crate::exec::CommandRunner;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ fn claim_marker(dir: &Path, marker: &Marker) -> bool {
                 return true;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let taken = match read_marker(&path.parent().unwrap_or(dir).to_path_buf()) {
+                let taken = match read_marker(dir) {
                     Some(other) => (marker.since - other.beat).num_seconds() <= STALE_AFTER_SECS,
                     // Unreadable: a claimant may be between creating the file and writing it.
                     None => std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age < Duration::from_secs(5)),
@@ -155,7 +155,7 @@ pub struct HostChecks {
 /// Disks first, then shares, one after the other on the one host. Only the tests use this: the real runs ask the two
 /// halves at once (`collect`), so a slow disk cannot take the shares answer with it.
 #[cfg(test)]
-pub fn check_one_host(runner: &dyn CommandRunner, now: DateTime<Utc>, previous_disks: Option<&HostResult>, _previous_shares: Option<&SharesResult>) -> HostChecks {
+pub fn check_one_host(runner: &dyn CommandRunner, now: DateTime<Utc>, previous_disks: Option<&smart_check::HostResult>, _previous_shares: Option<&shares_check::SharesResult>) -> HostChecks {
     HostChecks { disks: smart_check::check_host(runner, now, previous_disks, smart_check::HOST_BUDGET), shares: shares_check::check_host(runner, now) }
 }
 
@@ -190,6 +190,7 @@ pub fn merge_shares(dir: &Path, host: &str, outcome: &shares_check::Outcome) {
 }
 
 /// Both halves of one host's answer (see `merge_disks`, `merge_shares`).
+#[cfg(test)]
 pub fn merge_into(dir: &Path, host: &str, checks: &HostChecks) {
     merge_disks(dir, host, &checks.disks);
     merge_shares(dir, host, &checks.shares);
@@ -323,6 +324,8 @@ pub fn run_pass(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: Dat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::shares_check::SharesResult;
+    use super::smart_check::HostResult;
     use crate::error::{AppError, Result};
     use crate::exec::test_support::FakeRunner;
     use crate::exec::CommandOutput;
