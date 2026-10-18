@@ -277,6 +277,10 @@ fn component_lines(d: &Dashboard, width: usize, compact: bool, theme: &Theme) ->
     if d.cloud.is_empty() {
         lines.push(status_line(Level::Unknown, label("", "cloud   "), "no rclone remotes found", width, theme));
     }
+    if !d.cloud_header.is_empty() {
+        // Aligned with the lines below: the same three-space marker and label prefix, then the column names.
+        lines.push(Line::styled(cut(&format!("     {}{}", label("", "        "), d.cloud_header), width), theme.dim()));
+    }
     for line in &d.cloud {
         lines.push(status_line(line.level, label("", "cloud   "), &line.text, width, theme));
     }

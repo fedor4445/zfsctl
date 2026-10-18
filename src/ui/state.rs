@@ -329,6 +329,8 @@ pub struct App {
     pub cloud_known: crate::ui::cloud::Known,
     pub cloud_errors: HashMap<String, String>,
     pub cloud_sizes: HashMap<String, crate::ui::cloud::Size>,
+    /// The saved measurements were read (once, at the first jobs refresh).
+    cloud_sizes_loaded: bool,
     /// `[cloud.caps]` of `config.toml`, read each time the Cloud list is asked for.
     pub cloud_caps: crate::ui::cloud::Caps,
     /// `[dashboard]` of `config.toml`, read each time the Dashboard refreshes.
@@ -553,6 +555,7 @@ impl App {
             cloud_known: HashMap::new(),
             cloud_errors: HashMap::new(),
             cloud_sizes: HashMap::new(),
+            cloud_sizes_loaded: false,
             cloud_caps: HashMap::new(),
             dashboard_thresholds: crate::config::Thresholds::default(),
             dashboard_table: TableState::default(),
@@ -958,6 +961,12 @@ impl App {
     pub fn refresh_jobs(&mut self) {
         let selected = self.jobs_table.selected().and_then(|i| self.jobs_view.jobs.get(i)).map(|j| j.id.clone());
         self.jobs_view = crate::ui::jobs::load(&self.state_dir, &self.hosts, Some(&self.jobs_view));
+        if !self.cloud_sizes_loaded {
+            self.cloud_sizes_loaded = true;
+            for (job, size) in crate::ui::cloud::load_sizes(&self.state_dir) {
+                self.cloud_sizes.entry(job).or_insert(size);
+            }
+        }
         match selected.and_then(|id| self.jobs_view.jobs.iter().position(|j| j.id == id)) {
             Some(i) => self.jobs_table.select(Some(i)),
             None => clamp_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len()),

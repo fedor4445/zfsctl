@@ -9773,3 +9773,48 @@ fn a_full_encrypted_create_keeps_the_passphrase_out_of_arguments_and_status() {
     assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), format!("{PASS}\n"))]);
     assert!(!app.status_message.clone().unwrap_or_default().contains(PASS));
 }
+
+#[test]
+fn the_last_bucket_measurement_survives_a_restart_and_a_missing_or_broken_file_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(crate::ui::cloud::load_sizes(dir.path()).is_empty());
+    std::fs::write(dir.path().join("cloud-sizes.json"), "not json").unwrap();
+    assert!(crate::ui::cloud::load_sizes(dir.path()).is_empty());
+
+    let mut app = App::new(vec!["local".to_string()]);
+    app.state_dir = dir.path().to_path_buf();
+    let size = crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: chrono::Utc::now(), problem: None };
+    app.tx.send(WorkerMsg::CloudSize("mirror-a".into(), size.clone())).unwrap();
+    app.drain_worker_messages();
+    assert!(dir.path().join("cloud-sizes.json").is_file());
+
+    let mut next = App::new(vec!["local".to_string()]);
+    next.state_dir = dir.path().to_path_buf();
+    assert!(next.cloud_sizes.is_empty());
+    next.refresh_jobs();
+    assert_eq!(next.cloud_sizes.get("mirror-a"), Some(&size));
+    // A reading taken this session is not replaced by the saved one.
+    let newer = crate::ui::cloud::Size { current: Some((9, 9)), ..size };
+    next.cloud_sizes.insert("mirror-a".into(), newer.clone());
+    next.cloud_sizes_loaded = false;
+    next.refresh_jobs();
+    assert_eq!(next.cloud_sizes.get("mirror-a"), Some(&newer));
+}
+
+#[test]
+fn a_failed_measurement_keeps_the_last_good_numbers_and_says_why() {
+    let mut app = App::new(vec!["local".to_string()]);
+    let good = crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: chrono::Utc::now() - chrono::Duration::hours(5), problem: None };
+    app.cloud_sizes.insert("m".into(), good.clone());
+    let failed = crate::ui::cloud::Size { current: None, old: None, at: chrono::Utc::now(), problem: Some("rclone: timeout".into()) };
+    app.tx.send(WorkerMsg::CloudSize("m".into(), failed)).unwrap();
+    app.drain_worker_messages();
+    let kept = &app.cloud_sizes["m"];
+    assert_eq!((kept.current, kept.at, kept.problem.as_deref()), (good.current, good.at, Some("rclone: timeout")));
+    // With nothing measured before, the failure is all there is.
+    let mut fresh = App::new(vec!["local".to_string()]);
+    let failed = crate::ui::cloud::Size { current: None, old: None, at: chrono::Utc::now(), problem: Some("x".into()) };
+    fresh.tx.send(WorkerMsg::CloudSize("m".into(), failed.clone())).unwrap();
+    fresh.drain_worker_messages();
+    assert_eq!(fresh.cloud_sizes["m"], failed);
+}

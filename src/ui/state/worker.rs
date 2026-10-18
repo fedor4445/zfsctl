@@ -439,7 +439,13 @@ impl App {
 
     fn on_cloud_size(&mut self, job_id: String, size: crate::ui::cloud::Size) {
         self.cloud_busy.remove(&format!("size:{job_id}"));
+        // A failed measurement keeps the last good numbers (the Dashboard shows the last value), and says why it failed.
+        let size = match (self.cloud_sizes.get(&job_id), size.problem.is_some() && size.current.is_none()) {
+            (Some(last), true) if last.current.is_some() => crate::ui::cloud::Size { problem: size.problem, ..last.clone() },
+            _ => size,
+        };
         self.cloud_sizes.insert(job_id, size);
+        crate::ui::cloud::save_sizes(&self.state_dir, &self.cloud_sizes);
         if self.status_message.as_deref().is_some_and(|m| m.starts_with("Measuring the bucket")) && !self.cloud_busy.iter().any(|k| k.starts_with("size:")) {
             self.status_message = None;
         }
