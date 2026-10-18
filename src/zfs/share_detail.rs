@@ -64,7 +64,7 @@ fn ok_stdout(output: Result<CommandOutput>) -> Option<String> {
 /// One refresh for the share on `dataset`; `smb_name` is `Some` for an SMB
 /// share and `None` for NFS.
 pub fn sample_share(runner: &dyn CommandRunner, dataset: &str, smb_name: Option<&str>, os: Option<crate::zfs::host_health::HostOs>) -> ShareLive {
-    let mountpoint = ok_stdout(runner.run("zfs", &["get", "-H", "-o", "value", "mountpoint", "--", dataset]))
+    let mountpoint = ok_stdout(runner.run("zfs", &["get", "-H", "-o", "value", "mountpoint", dataset]))
         .map(|s| s.trim().to_string())
         .filter(|m| m.starts_with('/'));
     // `smbstatus` is Samba's, run through sudo: illumos's SMB server has none and Linux's SMB shares are not listed, so asking

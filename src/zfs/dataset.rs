@@ -108,10 +108,11 @@ pub fn destroy_dataset_recursive(runner: &dyn CommandRunner, name: &str) -> Resu
 /// Runs `zfs get all -H -p <dataset>` and parses every property into a
 /// flat list.
 pub fn get_dataset_properties(runner: &dyn CommandRunner, dataset: &str) -> Result<Vec<Property>> {
+    super::not_an_option(dataset)?;
     let output = super::run_checked(
         runner,
         "zfs",
-        &["get", "all", "-H", "-p", "--", dataset],
+        &["get", "-H", "-p", "all", dataset],
         &format!("zfs get all {dataset}"),
     )?;
     crate::zfs::property::parse_property_list(&output.stdout)
@@ -297,7 +298,7 @@ tank/data\tquota\t0\tdefault
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zfs".to_string(), vec!["get".to_string(), "all".to_string(), "-H".to_string(), "-p".to_string(), "--".to_string(), "tank/data".to_string()])
+            ("zfs".to_string(), vec!["get".to_string(), "-H".to_string(), "-p".to_string(), "all".to_string(), "tank/data".to_string()])
         );
     }
 
@@ -329,8 +330,7 @@ tank/data\tquota\t0\tdefault
     #[test]
     fn guards_against_dataset_names_that_look_like_flags_in_get_properties() {
         let runner = FakeRunner::new("");
-        get_dataset_properties(&runner, "-r").unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0].1[4], "--", "a leading '--' must precede the dataset name so zfs cannot parse it as an option");
+        assert!(get_dataset_properties(&runner, "-r").is_err());
+        assert!(runner.calls.lock().unwrap().is_empty(), "a name that looks like a flag is refused (a get takes no `--`: illumos reads it as a name)");
     }
 }

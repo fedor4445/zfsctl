@@ -392,10 +392,11 @@ pub fn replace_disk(runner: &dyn CommandRunner, pool: &str, old_disk: &str, new_
 /// narrow this down usefully — `all` is the standard way to fetch every
 /// property at once, same as `zfs get all` in `dataset.rs`.
 pub fn get_pool_properties(runner: &dyn CommandRunner, pool: &str) -> Result<Vec<Property>> {
+    super::not_an_option(pool)?;
     let output = super::run_checked(
         runner,
         "zpool",
-        &["get", "all", "-H", "-p", "--", pool],
+        &["get", "-H", "-p", "all", pool],
         &format!("zpool get all {pool}"),
     )?;
     crate::zfs::property::parse_property_list(&output.stdout)
@@ -886,7 +887,7 @@ tank\tcomment\tmy pool\tlocal
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
-            ("zpool".to_string(), vec!["get".to_string(), "all".to_string(), "-H".to_string(), "-p".to_string(), "--".to_string(), "tank".to_string()])
+            ("zpool".to_string(), vec!["get".to_string(), "-H".to_string(), "-p".to_string(), "all".to_string(), "tank".to_string()])
         );
     }
 
@@ -918,9 +919,8 @@ tank\tcomment\tmy pool\tlocal
     #[test]
     fn guards_against_pool_names_that_look_like_flags_in_get_properties() {
         let runner = FakeRunner::new("");
-        get_pool_properties(&runner, "-f").unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0].1[4], "--", "a leading '--' must precede the pool name so zpool cannot parse it as an option");
+        assert!(get_pool_properties(&runner, "-f").is_err());
+        assert!(runner.calls.lock().unwrap().is_empty(), "a name that looks like a flag is refused (a get takes no `--`: illumos reads it as a name)");
     }
 
     #[test]

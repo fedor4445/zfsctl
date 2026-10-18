@@ -100,7 +100,7 @@ pub fn sample_snapshot(runner: &dyn CommandRunner, full_name: &str) -> Result<Sn
     let props = run_checked(
         runner,
         "zfs",
-        &["get", "-Hp", "-o", "property,value", "used,referenced,written,creation,clones,userrefs", "--", full_name],
+        &["get", "-Hp", "-o", "property,value", "used,referenced,written,creation,clones,userrefs", full_name],
         &format!("zfs get {full_name}"),
     )?;
     let mut detail = parse_snapshot_props(&props.stdout, full_name)?;
@@ -117,7 +117,7 @@ pub fn sample_snapshot(runner: &dyn CommandRunner, full_name: &str) -> Result<Sn
         .map(|o| parse_siblings(&o.stdout))
         .unwrap_or_default();
     if let Some(out) = runner
-        .run("zfs", &["get", "-Hp", "-o", "property,value", "used,usedbysnapshots", "--", dataset])
+        .run("zfs", &["get", "-Hp", "-o", "property,value", "used,usedbysnapshots", dataset])
         .ok()
         .filter(crate::exec::CommandOutput::success)
     {
