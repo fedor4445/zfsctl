@@ -252,6 +252,8 @@ pub struct HostProbeState {
     pub started_at: Option<Instant>,
     /// The detected host type, kept once seen: it cannot change while the host is up, so it is asked for once.
     pub kind: Option<crate::zfs::host_health::HostKind>,
+    /// The detected operating system, kept once seen (it is read with the type, in the first successful probe).
+    pub os: Option<crate::zfs::host_health::HostOs>,
     /// The last two resource readings, oldest first: the CPU share is the difference between them.
     pub resources: Vec<crate::zfs::host_resources::Resources>,
     /// The host's offset from UTC in seconds, asked for once: it turns a scrub's local time into an age.
@@ -968,6 +970,11 @@ impl App {
             .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
             let _ = tx.send(WorkerMsg::HostChecked(host, line));
         });
+    }
+
+    /// The OS of host number `host` once a probe has read it; `None` until then (and for a host that does not exist).
+    pub fn host_os(&self, host: usize) -> Option<crate::zfs::host_health::HostOs> {
+        self.hosts.get(host).and_then(|name| self.host_probes.get(name)).and_then(|s| s.os)
     }
 
     /// Re-reads what the daily and manual checks found (`smart.json`, `shares.json`) and the running marker.

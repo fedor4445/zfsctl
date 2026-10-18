@@ -601,7 +601,7 @@ mod tests {
         // Three lines of Needs attention: no heartbeat (the daemon is down), and a pool 85% full that was never scrubbed.
         let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: 85, frag_percent: None, errors: Some(0), scan: None, last_scrub: None };
         let name = a.hosts[0].clone();
-        a.host_probes.insert(name, crate::ui::state::HostProbeState { last: Some(crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![pool], kind: None }), ..Default::default() });
+        a.host_probes.insert(name, crate::ui::state::HostProbeState { last: Some(crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![pool], kind: None, os: None }), ..Default::default() });
         a.dashboard_table.select(selected.then_some(0));
         a
     }

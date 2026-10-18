@@ -52,6 +52,48 @@ impl HostKind {
     }
 }
 
+/// The operating system of a host, as `uname -s` says. What each section can do depends on it (`ui::support`); a host
+/// whose OS is unknown or not yet read behaves like FreeBSD, so nothing changes for a setup that worked before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOs {
+    FreeBsd,
+    Linux,
+    Illumos,
+    Other,
+}
+
+impl HostOs {
+    pub fn word(self) -> &'static str {
+        match self {
+            HostOs::FreeBsd => "FreeBSD",
+            HostOs::Linux => "Linux",
+            HostOs::Illumos => "illumos",
+            HostOs::Other => "unknown",
+        }
+    }
+}
+
+/// `uname -s`: `FreeBSD`, `Linux`, `SunOS` (illumos); anything else is `Other`.
+pub fn host_os_from_uname(out: &str) -> HostOs {
+    match out.lines().next().map(str::trim) {
+        Some("FreeBSD") => HostOs::FreeBsd,
+        Some("Linux") => HostOs::Linux,
+        Some("SunOS") => HostOs::Illumos,
+        _ => HostOs::Other,
+    }
+}
+
+/// What the first probe asks, in one round trip: the OS, then (FreeBSD only, errors silenced) the guest kind and whether
+/// this is a jail. The trailing `true` keeps the exit status for ssh failures only: a missing `sysctl` is an answer.
+pub const DETECT_SCRIPT: &str = "uname -s; sysctl -n kern.vm_guest security.jail.jailed 2>/dev/null; true";
+
+/// The OS and, on FreeBSD, the host type from `DETECT_SCRIPT`'s output; Linux and illumos have no source for the type yet.
+fn parse_detection(out: &str) -> (HostOs, HostKind) {
+    let os = host_os_from_uname(out);
+    let rest = out.split_once('\n').map_or("", |(_, rest)| rest);
+    (os, if os == HostOs::FreeBsd { host_kind_from_sysctl(rest) } else { HostKind::Unknown })
+}
+
 /// Reads `sysctl -n kern.vm_guest security.jail.jailed`: line 1 the guest kind, line 2 whether this is a jail.
 pub fn host_kind_from_sysctl(out: &str) -> HostKind {
     let mut lines = out.lines().map(str::trim);
@@ -77,7 +119,8 @@ pub enum HostProbe {
     /// The host answered but cannot be inspected (sudo refused, no `zpool`, unparsable output).
     Unavailable { reason: String },
     /// `kind` is `Some` only on a probe that was asked to detect the type (the first successful one).
-    Reached { rtt_ms: u64, pools: Vec<PoolProbe>, kind: Option<HostKind> },
+    /// `os` is `Some` only on a probe that was asked to detect it, like `kind`.
+    Reached { rtt_ms: u64, pools: Vec<PoolProbe>, kind: Option<HostKind>, os: Option<HostOs> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,16 +299,19 @@ pub fn probe_host(runner: &dyn CommandRunner, detect_kind: bool) -> HostProbe {
         })
         .collect();
     // An ssh-level failure (255) says nothing about the host's type: leave it undetected so the next probe asks again.
-    let kind = if detect_kind {
-        match runner.run_unprivileged("sysctl", &["-n", "kern.vm_guest", "security.jail.jailed"]) {
-            Ok(o) if o.status == 255 => None,
-            Ok(o) if o.success() => Some(host_kind_from_sysctl(&o.stdout)),
-            _ => Some(HostKind::Unknown),
+    let (kind, os) = if detect_kind {
+        match runner.run_unprivileged("sh", &["-c", DETECT_SCRIPT]) {
+            Ok(o) if o.status == 255 => (None, None),
+            Ok(o) if o.success() => {
+                let (os, kind) = parse_detection(&o.stdout);
+                (Some(kind), Some(os))
+            }
+            _ => (Some(HostKind::Unknown), Some(HostOs::Other)),
         }
     } else {
-        None
+        (None, None)
     };
-    HostProbe::Reached { rtt_ms, pools, kind }
+    HostProbe::Reached { rtt_ms, pools, kind, os }
 }
 
 /// The Used cell: the fullest pool's capacity, with the level the State column uses for it.
@@ -382,7 +428,7 @@ mod tests {
     }
 
     fn reached(pools: Vec<PoolProbe>) -> HostProbe {
-        HostProbe::Reached { rtt_ms: 5, pools, kind: None }
+        HostProbe::Reached { rtt_ms: 5, pools, kind: None, os: None }
     }
 
     #[test]
@@ -447,14 +493,14 @@ mod tests {
         fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
             self.unprivileged.lock().unwrap().push((cmd.to_string(), args.iter().map(ToString::to_string).collect()));
             match cmd {
-                "sysctl" => Ok(self.sysctl.clone()),
+                "sh" => Ok(self.sysctl.clone()),
                 _ => self.run(cmd, args),
             }
         }
     }
 
     fn answers(list: CommandOutput, status: CommandOutput) -> Answers {
-        Answers { list, status, calls: Mutex::new(vec![]), sysctl: out("bhyve\n0\n", "", 0), unprivileged: Mutex::new(vec![]) }
+        Answers { list, status, calls: Mutex::new(vec![]), sysctl: out("FreeBSD\nbhyve\n0\n", "", 0), unprivileged: Mutex::new(vec![]) }
     }
 
     #[test]
@@ -523,31 +569,51 @@ mod tests {
     }
 
     #[test]
-    fn detection_runs_one_unprivileged_sysctl_only_when_asked() {
+    fn uname_output_maps_to_the_os() {
+        for (text, os) in [("FreeBSD\n", HostOs::FreeBsd), ("Linux\n", HostOs::Linux), ("SunOS\n", HostOs::Illumos), ("Darwin\n", HostOs::Other), ("", HostOs::Other), ("what is this", HostOs::Other)] {
+            assert_eq!(host_os_from_uname(text), os, "{text:?}");
+        }
+        assert_eq!([HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other].map(HostOs::word), ["FreeBSD", "Linux", "illumos", "unknown"]);
+    }
+
+    #[test]
+    fn the_first_probe_asks_os_and_kind_in_one_round_trip_and_only_when_asked() {
         let runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
-        let HostProbe::Reached { kind, .. } = probe_host(&runner, true) else { panic!() };
-        assert_eq!(kind, Some(HostKind::Vm("bhyve".into())));
+        let HostProbe::Reached { kind, os, .. } = probe_host(&runner, true) else { panic!() };
+        assert_eq!((kind, os), (Some(HostKind::Vm("bhyve".into())), Some(HostOs::FreeBsd)));
         let unpriv = runner.unprivileged.lock().unwrap().clone();
-        assert_eq!(unpriv, vec![("sysctl".to_string(), vec!["-n".to_string(), "kern.vm_guest".to_string(), "security.jail.jailed".to_string()])]);
-        let HostProbe::Reached { kind, .. } = probe_host(&runner, false) else { panic!() };
-        assert_eq!(kind, None);
+        assert_eq!(unpriv.len(), 1, "one round trip for both");
+        assert_eq!(unpriv[0].0, "sh");
+        assert!(unpriv[0].1.last().unwrap().contains("uname -s") && unpriv[0].1.last().unwrap().contains("kern.vm_guest"), "{unpriv:?}");
+        let HostProbe::Reached { kind, os, .. } = probe_host(&runner, false) else { panic!() };
+        assert_eq!((kind, os), (None, None));
         assert_eq!(runner.unprivileged.lock().unwrap().len(), 1, "not asked, not run");
     }
 
     #[test]
-    fn an_ssh_glitch_on_the_sysctl_leaves_the_type_undetected_so_it_is_asked_again() {
-        let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
-        runner.sysctl = out("", "ssh: connect to host 10.0.0.9 port 22: Connection reset", 255);
-        let HostProbe::Reached { kind, .. } = probe_host(&runner, true) else { panic!() };
-        assert_eq!(kind, None, "not Unknown: that would be cached for the whole session");
+    fn on_linux_and_illumos_the_os_is_known_and_the_type_stays_unknown() {
+        for (said, os) in [("Linux\n", HostOs::Linux), ("SunOS\n", HostOs::Illumos)] {
+            let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
+            runner.sysctl = out(said, "", 0);
+            let HostProbe::Reached { kind, os: found, .. } = probe_host(&runner, true) else { panic!() };
+            assert_eq!((kind, found), (Some(HostKind::Unknown), Some(os)), "{said:?}");
+        }
     }
 
     #[test]
-    fn a_failed_sysctl_is_an_unknown_type_not_a_failed_probe() {
+    fn an_ssh_glitch_on_the_detection_leaves_it_undetected_so_it_is_asked_again() {
         let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
-        runner.sysctl = out("", "sysctl: unknown oid 'kern.vm_guest'", 1);
-        let HostProbe::Reached { kind, .. } = probe_host(&runner, true) else { panic!("the probe must still succeed") };
-        assert_eq!(kind, Some(HostKind::Unknown));
+        runner.sysctl = out("", "ssh: connect to host 10.0.0.9 port 22: Connection reset", 255);
+        let HostProbe::Reached { kind, os, .. } = probe_host(&runner, true) else { panic!() };
+        assert_eq!((kind, os), (None, None), "not Unknown: that would be cached for the whole session");
+    }
+
+    #[test]
+    fn a_failed_detection_is_an_unknown_os_and_type_not_a_failed_probe() {
+        let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
+        runner.sysctl = out("", "sh: uname: not found", 127);
+        let HostProbe::Reached { kind, os, .. } = probe_host(&runner, true) else { panic!("the probe must still succeed") };
+        assert_eq!((kind, os), (Some(HostKind::Unknown), Some(HostOs::Other)));
     }
 
     #[test]

@@ -4359,7 +4359,7 @@ fn help_documents_the_hosts_filter_key() {
 fn the_type_is_cached_once_seen_and_a_failed_probe_does_not_erase_it() {
     use crate::zfs::host_health::{HostKind, HostProbe};
     let mut app = App::new(vec!["local".into(), "a".into()]);
-    let reached = |kind| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind };
+    let reached = |kind| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind, os: None };
     app.tx.send(WorkerMsg::HostHealth("a".into(), reached(Some(HostKind::Vm("bhyve".into()))))).unwrap();
     app.drain_worker_messages();
     app.tx.send(WorkerMsg::HostHealth("a".into(), reached(None))).unwrap();
@@ -4372,7 +4372,7 @@ fn the_type_is_cached_once_seen_and_a_failed_probe_does_not_erase_it() {
 fn an_unknown_type_is_cached_so_it_is_not_asked_again() {
     use crate::zfs::host_health::{HostKind, HostProbe};
     let mut app = App::new(vec!["local".into(), "a".into()]);
-    app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Unknown) })).unwrap();
+    app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Unknown), os: None })).unwrap();
     app.drain_worker_messages();
     assert!(app.host_probes["a"].kind.is_some());
 }
@@ -7202,7 +7202,7 @@ fn a_failed_job_of_that_host_warns_only_for_an_enabled_job_whose_latest_run_fail
     let mut app = probes_app();
     app.state_dir = dir.path().to_path_buf();
     app.refresh_jobs();
-    let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
+    let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os: None };
     for name in ["local", "fbsd16", "fbsd16t1"] {
         app.tx.send(WorkerMsg::HostHealth(name.to_string(), healthy())).unwrap();
     }
@@ -7218,7 +7218,7 @@ fn a_failed_job_of_that_host_warns_only_for_an_enabled_job_whose_latest_run_fail
 #[test]
 fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result() {
     let mut app = probes_app();
-    let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
+    let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os: None };
     let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
     app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None, resources: vec![], utc_offset_secs: None });
     let a = app.host_assessment(1);
@@ -8202,7 +8202,7 @@ fn dash_app() -> (App, tempfile::TempDir) {
 
 fn reached_probe(capacity: u8) -> crate::zfs::host_health::HostProbe {
     let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: capacity, frag_percent: None, errors: Some(0), scan: Some(crate::zfs::host_health::ScanSummary::Never), last_scrub: None };
-    crate::zfs::host_health::HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None }
+    crate::zfs::host_health::HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None, os: None }
 }
 
 #[test]
@@ -8719,4 +8719,20 @@ fn a_hung_manual_check_gives_up_at_its_deadline_and_frees_c_and_the_marker() {
     app.pending_host_checks.clear();
     app.handle_key(KeyCode::Char('c'));
     assert_eq!(app.pending_host_checks, ["fbsd16"], "c works again");
+}
+
+#[test]
+fn the_apps_host_os_follows_the_last_probe_that_detected_it() {
+    use crate::zfs::host_health::{HostOs, HostProbe};
+    let mut app = App::new(vec!["local".to_string(), "ub24".to_string()]);
+    assert_eq!(app.host_os(1), None, "not probed yet");
+    let reached = |os| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os };
+    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(Some(HostOs::Linux)))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.host_os(1), Some(HostOs::Linux));
+    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(None))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.host_os(1), Some(HostOs::Linux), "a later probe that did not ask does not make it forget");
+    assert_eq!(app.host_os(0), None);
+    assert_eq!(app.host_os(9), None, "no such host");
 }

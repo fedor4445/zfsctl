@@ -116,7 +116,7 @@ mod tests {
     }
 
     fn fake_probe(hosts: &[HostInfo]) -> Vec<Probed> {
-        hosts.iter().map(|h| Probed { name: h.name.clone(), probe: Some(HostProbe::Reached { rtt_ms: 2, pools: vec![], kind: Some(HostKind::Metal) }) }).collect()
+        hosts.iter().map(|h| Probed { name: h.name.clone(), probe: Some(HostProbe::Reached { rtt_ms: 2, pools: vec![], kind: Some(HostKind::Metal), os: None }) }).collect()
     }
 
     #[test]
