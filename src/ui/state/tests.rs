@@ -9764,6 +9764,9 @@ fn a_bad_encrypted_form_keeps_the_form_and_clears_the_passphrases() {
         ("tank/v", "aes-256-gcm", "short", "short", "8 characters"),
         ("tank/v", "rot13", PASS, PASS, "Cipher"),
         ("vault", "aes-256-gcm", PASS, PASS, "full dataset name"),
+        ("-tank/vault", "aes-256-gcm", PASS, PASS, "full dataset name"),
+        ("tank/my vault", "aes-256-gcm", PASS, PASS, "full dataset name"),
+        ("", "aes-256-gcm", PASS, PASS, "full dataset name"),
         ("tank/s/new", "aes-256-gcm", PASS, PASS, "tank/s is encrypted"),
     ] {
         let mut app = key_app(false, "passphrase");
@@ -9806,4 +9809,18 @@ fn turning_raw_on_or_off_for_a_job_that_has_run_needs_a_confirm_that_says_stream
     assert!(app.handle_modal_key(KeyCode::Enter).is_none());
     let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?} {:?}", app.modal, app.status_message) };
     assert!(prompt.contains("Raw is being turned ON") && prompt.contains("do not chain"), "{prompt}");
+}
+
+#[test]
+fn a_backup_or_snapshot_job_on_an_encrypted_dataset_is_not_refused_by_the_replication_guard() {
+    // The guard is for replication and mirror jobs only: restic re-encrypts, and a snapshot job never sends.
+    let mut app = App::new(vec!["local".to_string()]);
+    encrypted(&mut app, "tank/data", 0);
+    app.hosts = vec!["local".to_string()];
+    for kind in [crate::jobs::KIND_BACKUP, crate::jobs::KIND_SNAPSHOT] {
+        let mut job = crate::jobs::Job::test_replicate("j", "tank/data", "p", "hub", "x/y");
+        job.kind = kind.to_string();
+        let action = PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: std::path::PathBuf::new(), job: Box::new(job) } };
+        assert_eq!(app.encrypted_source(&action), None, "{kind}");
+    }
 }

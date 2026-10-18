@@ -447,4 +447,29 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         let msg = create_encrypted(&runner, "tank/a", "aes-256-gcm", "long enough").unwrap_err().to_string();
         assert!(msg.contains("invalid property") && msg.contains("does not know native encryption") && !msg.contains("long enough"), "{msg}");
     }
+
+    #[test]
+    fn query_fails_closed_on_every_answer_that_is_not_a_clean_one() {
+        let enc_out = "tank/s\tencryption\taes-256-gcm\ntank/s\tkeyformat\tpassphrase\ntank/s\tkeystatus\tavailable\ntank/s\tencryptionroot\ttank/s\n";
+        // A dropped connection is an error even when its text happens to mention an unknown property.
+        assert!(query(&FakeRunner::failing("invalid property 'keystatus'", 255), "tank/s").is_err());
+        // Any other failure that is not "this zfs has no such property" is an error too.
+        assert!(query(&FakeRunner::failing("cannot open 'tank/s': dataset does not exist", 1), "tank/s").is_err());
+        assert!(query(&FakeRunner::failing("", 1), "tank/s").unwrap_err().contains("status 1"));
+        // Only the unknown-property answer means "not encrypted", and a clean answer is parsed.
+        assert_eq!(query(&FakeRunner::failing("bad property list: invalid property 'keystatus'", 1), "tank/s"), Ok(None));
+        assert_eq!(query(&FakeRunner::new(enc_out), "tank/s").unwrap().unwrap().root, "tank/s");
+        assert_eq!(query(&FakeRunner::new(""), "tank/s"), Ok(None));
+    }
+
+    #[test]
+    fn the_encryption_root_dash_means_none_and_a_passphrases_limits_are_exact() {
+        let parsed = parse("x\tencryption\taes-256-gcm\nx\tencryptionroot\t-\n");
+        assert_eq!(parsed["x"].root, "");
+        assert!(check_passphrase(&"x".repeat(512), false).is_ok());
+        assert!(check_passphrase(&"x".repeat(513), false).is_err());
+        assert!(check_passphrase(&"x".repeat(8), true).is_ok(), "8 characters is enough");
+        assert!(check_passphrase(&"x".repeat(7), true).is_err());
+        assert!(check_passphrase(&"é".repeat(8), true).is_ok(), "characters, not bytes");
+    }
 }

@@ -515,6 +515,10 @@ mod tests {
         assert!(kind.masks_field(2));
         assert!(!kind.masks_field(0) && !kind.masks_field(1) && !kind.masks_field(3));
         assert!(!FormKind::CreatePool { host: 0 }.masks_field(2));
+        let change = FormKind::ChangeKey { host: 0, dataset: "d".into() };
+        assert!(change.masks_field(0) && change.masks_field(1) && !change.masks_field(2), "both key fields are masked");
+        let load = FormKind::LoadKey { host: 0, dataset: "d".into() };
+        assert!(load.masks_field(0) && !load.masks_field(1));
     }
 
     #[test]

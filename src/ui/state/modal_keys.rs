@@ -406,7 +406,7 @@ impl App {
 
     /// Why this job cannot be saved because its source is encrypted, when the loaded Datasets list of the job's host says so
     /// (the run-time guard catches what this list does not know). Restic backups re-encrypt by themselves and are allowed.
-    fn encrypted_source(&self, action: &PendingAction) -> Option<String> {
+    pub(super) fn encrypted_source(&self, action: &PendingAction) -> Option<String> {
         let MutationCall::SaveJob { job, .. } = &action.call else { return None };
         if job.kind != crate::jobs::KIND_REPLICATE && job.kind != crate::jobs::KIND_MIRROR {
             return None;

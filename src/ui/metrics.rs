@@ -844,6 +844,11 @@ mod tests {
         let enc = |locked| Some(Enc { cipher: "aes-256-gcm".into(), key_format: "passphrase".into(), root: "tank/secure".into(), locked });
         assert_eq!(text(&DatasetSpace { enc: enc(false), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm   Key passphrase   Root tank/secure");
         assert_eq!(text(&DatasetSpace { enc: enc(true), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm  LOCKED   Key passphrase   Root tank/secure");
+        // A part that is not known is left out rather than shown empty.
+        let bare = |format: &str, root: &str| Some(Enc { cipher: "aes-256-gcm".into(), key_format: format.into(), root: root.into(), locked: false });
+        assert_eq!(text(&DatasetSpace { enc: bare("none", ""), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm");
+        assert_eq!(text(&DatasetSpace { enc: bare("", "tank/s"), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm   Root tank/s");
+        assert_eq!(text(&DatasetSpace { enc: bare("raw", ""), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm   Key raw");
     }
 
     #[test]
