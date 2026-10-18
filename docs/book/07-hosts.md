@@ -32,6 +32,7 @@ The Hosts section is where zfsctl opens. Every host in your configuration is pro
 | `●` and **Name** | the host's label. The dot and the name take the colour of the host's health |
 | **Address** | the host part of its `ssh_target` as you wrote it (no lookup); `local` for the hub |
 | **State** | the first reason at the worst level, or `ok` (see below) |
+| **OS** | the short OS name, read once with the first probe: `FreeBSD 16.0`, `Linux 6.8 (Ubuntu 24)`, `illumos omnios-r151058`; `-` when it cannot be read. It is the first column to go on a narrow terminal |
 | **Type** | `metal`, `vm` or `jail`, read once from the host with `sysctl kern.vm_guest` and `security.jail.jailed`; `-` when it cannot be read |
 | **Tag** | your own label from `config.toml` or the Add Host form; shown only if some host has one |
 | **Used** | the fullest pool on the host (yellow from 80%, red from 90%) |
@@ -40,7 +41,7 @@ The Hosts section is where zfsctl opens. Every host in your configuration is pro
 | **Jobs** | failed over total enabled jobs of that host (`1/4`; red when any failed); `-` if it has none |
 | **Rtt** | the round trip of the last probe |
 
-Name and State always show, and Address on all but a very narrow terminal. As the terminal gets narrower, columns drop from the right in this order: Rtt, Jobs, Scrub, Pools, Tag, Used, Type. At 110 columns you see the first screen of this chapter's other captures.
+Name and State always show, and Address on all but a very narrow terminal. As the terminal gets narrower, columns drop from the right in this order: OS, Rtt, Jobs, Scrub, Pools, Tag, Used, Type. At 110 columns you see the first screen of this chapter's other captures.
 
 ## What State says
 
