@@ -137,6 +137,42 @@ fn checked(name: &str) -> Result<&str> {
     Ok(name)
 }
 
+/// The boot environments of a host, from the tool its OS has: `bectl list -H` on FreeBSD (and for a host whose OS is not
+/// known), `beadm list -H` on illumos. `beadm list` needs no sudo; changing boot environments there is not built yet.
+pub fn list_for(runner: &dyn CommandRunner, os: Option<crate::zfs::host_health::HostOs>) -> Result<Vec<BootEnv>> {
+    if os != Some(crate::zfs::host_health::HostOs::Illumos) {
+        return list(runner);
+    }
+    let out = runner.run_unprivileged("beadm", &["list", "-H"])?;
+    if !out.success() {
+        return Err(AppError::CommandFailed { cmd: "beadm list".to_string(), status: out.status, stderr: out.stderr });
+    }
+    parse_beadm_list(&out.stdout)
+}
+
+/// `beadm list -H`: one `;`-separated row per boot environment: name, uuid, flags (`N` now, `R` reboot, `T` temporary),
+/// mountpoint, space in bytes, policy, created as seconds since the epoch. Numbers that cannot be read are shown as `0` and
+/// `-` instead of failing the whole list.
+pub fn parse_beadm_list(output: &str) -> Result<Vec<BootEnv>> {
+    output
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let f: Vec<&str> = line.split(';').collect();
+            if f.len() < 7 || f[0].is_empty() {
+                return Err(AppError::Parse(format!("unexpected beadm list line: {line}")));
+            }
+            Ok(BootEnv {
+                name: f[0].to_string(),
+                flags: ActiveFlags { now: f[2].contains('N'), reboot: f[2].contains('R'), temp: f[2].contains('T') },
+                mountpoint: Some(f[3]).filter(|m| !m.is_empty() && *m != "-").map(str::to_string),
+                space: f[4].parse::<u64>().map_or_else(|_| "0".to_string(), crate::zfs::disk::human_size),
+                created: f[6].parse::<i64>().ok().and_then(|secs| chrono::DateTime::from_timestamp(secs, 0)).map_or_else(|| "-".to_string(), |t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()),
+            })
+        })
+        .collect()
+}
+
 pub fn list(runner: &dyn CommandRunner) -> Result<Vec<BootEnv>> {
     let output = super::run_checked(runner, "bectl", &["list", "-H"], "bectl list")?;
     parse_bootenvs(&output.stdout)
@@ -222,6 +258,44 @@ mod tests {
         assert_eq!(calls.len(), 1, "exactly one command: {calls:?}");
         assert_eq!(calls[0].0, "bectl");
         calls[0].1.clone()
+    }
+
+    const BEADM_LIST: &str = "omnios-r151054bj;be860a1e-238d-49a6-a18e-289e31cf644a;;;98881536;static;1784923897\n\
+omnios-r151058s-backup-1;cfc19085-badb-4aa1-8caa-f6fc2648a1c0;;;187392;static;1789832373\n\
+omnios-r151058w;c26a8ba2-fd92-4570-9b3c-4a31bee47709;NR;/;4240252928;static;1791728263\n";
+
+    #[test]
+    fn beadm_list_h_is_read_into_boot_environments() {
+        let bes = parse_beadm_list(BEADM_LIST).unwrap();
+        assert_eq!(bes.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["omnios-r151054bj", "omnios-r151058s-backup-1", "omnios-r151058w"]);
+        assert_eq!(bes[0].flags, ActiveFlags::default());
+        assert_eq!((bes[0].mountpoint.as_deref(), bes[0].space.as_str()), (None, "94.3M"));
+        let current = &bes[2];
+        assert_eq!((current.flags.now, current.flags.reboot, current.flags.temp), (true, true, false));
+        assert_eq!((current.mountpoint.as_deref(), current.space.as_str()), (Some("/"), "3.9G"));
+        assert_eq!(current.created.len(), "2026-10-11 10:17".len(), "{}", current.created);
+        assert!(current.created.starts_with("2026-10-"), "{}", current.created);
+    }
+
+    #[test]
+    fn beadm_list_h_survives_blank_lines_garbage_and_temporary_activation() {
+        assert!(parse_beadm_list("").unwrap().is_empty() && parse_beadm_list("\n\n").unwrap().is_empty());
+        assert!(parse_beadm_list("not a beadm line\n").is_err() || parse_beadm_list("not a beadm line\n").unwrap().is_empty());
+        let t = parse_beadm_list("x;u;T;;1024;static;1791728263\n").unwrap();
+        assert_eq!((t[0].flags.temp, t[0].flags.now), (true, false));
+        let odd = parse_beadm_list("x;u;;;notanumber;static;alsonot\n").unwrap();
+        assert_eq!((odd[0].space.as_str(), odd[0].created.as_str()), ("0", "-"), "unreadable numbers are shown, not fatal");
+    }
+
+    #[test]
+    fn the_listing_tool_follows_the_os_and_beadm_needs_no_sudo() {
+        use crate::zfs::host_health::HostOs;
+        let omnios = crate::exec::test_support::FakeRunner::new("").route("beadm", "list", BEADM_LIST);
+        assert_eq!(list_for(&omnios, Some(HostOs::Illumos)).unwrap().len(), 3);
+        assert_eq!(omnios.unprivileged_calls.lock().unwrap().len(), 1, "run without sudo");
+        let freebsd = crate::exec::test_support::FakeRunner::new("").route("bectl", "list", "default\tNR\t/\t3.11G\t2026-09-27 17:25\n");
+        assert_eq!(list_for(&freebsd, None).unwrap().len(), 1, "an unknown OS asks bectl, as before");
+        assert_eq!(list_for(&freebsd, Some(HostOs::FreeBsd)).unwrap().len(), 1);
     }
 
     #[test]

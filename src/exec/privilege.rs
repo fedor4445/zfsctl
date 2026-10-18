@@ -92,6 +92,8 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "swapinfo", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "iostat", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "lsblk", features: &[Feature::Disks], kind: Kind::Unprivileged },
+    // illumos boot environments: read without sudo; changing them is not built yet.
+    Entry { name: "beadm", features: &[], kind: Kind::Unprivileged },
     Entry { name: "showmount", features: &[Feature::Shares], kind: Kind::Unprivileged },
     Entry { name: "stat", features: &[Feature::Restic], kind: Kind::Unprivileged },
     Entry { name: "true", features: &[], kind: Kind::Unprivileged },
