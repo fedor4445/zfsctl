@@ -116,6 +116,10 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
     // with a scrub's or a snapshot's lock key.
     let Some(_dst_guard) = ctx.locks.try_acquire(&dest_host, &format!("#dst@{dest_ds}")) else { return skipped("skipped: already running".to_string()) };
 
+    if let Err(msg) = super::guard::check_source(src, &dataset, super::guard::Need::NotEncrypted) {
+        return failed(msg);
+    }
+
     let token = match resume_token(dst, &dest_ds) {
         Ok(t) => t,
         Err(e) => return failed(e.to_string()),
@@ -237,13 +241,15 @@ mod tests {
         later_listing: Option<String>,
         /// `(snapshot target, stderr)` pairs that `zfs destroy` refuses.
         destroy_fails: Vec<(String, String)>,
+        /// The source's `keystatus` when it is encrypted.
+        keystatus: Option<&'static str>,
         queries: Mutex<Vec<Vec<String>>>,
         commands: Mutex<Vec<Vec<String>>>,
     }
 
     impl Host {
         fn new(listing: &str) -> Self {
-            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
+            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], keystatus: None, queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
         }
         fn commands(&self) -> Vec<Vec<String>> {
             self.commands.lock().unwrap().clone()
@@ -269,6 +275,7 @@ mod tests {
                         None => ok(""),
                     }
                 }
+                Some("get") if args.contains(&"name,property,value") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
                 Some("get") => ok(&self.token),
                 Some("send") => ok(&self.size_output),
                 other => panic!("unexpected query {other:?}"),
@@ -573,6 +580,21 @@ mod tests {
         assert!(outcome.message.contains("has been modified since most recent snapshot"), "{}", outcome.message);
         assert!(!outcome.message.contains("signal received"), "{}", outcome.message);
         assert_eq!(history[0].result, Some(RunResult::Failed));
+    }
+
+    #[test]
+    fn an_encrypted_source_is_refused_before_any_snapshot_is_listed_or_sent() {
+        let rig = Rig::new();
+        for status in ["available", "unavailable"] {
+            let mut src = Host::new(&src_listing());
+            src.keystatus = Some(status);
+            let dst = Host::new("");
+            let (outcome, _) = rig.run(&src, &dst, &job());
+            assert_eq!(outcome.result, RunResult::Failed);
+            assert!(outcome.message.starts_with("tank/data is encrypted"), "{}", outcome.message);
+            assert!(src.commands().is_empty() && dst.commands().is_empty(), "nothing was sent or received");
+            assert!(!src.queries.lock().unwrap().iter().any(|q| q[0] == "list" || q[0] == "send"), "{:?}", src.queries.lock().unwrap());
+        }
     }
 
     #[test]

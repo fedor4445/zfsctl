@@ -18,6 +18,7 @@ pub mod replicate_file;
 pub mod backup;
 pub mod mirror;
 pub mod scrub;
+pub mod guard;
 pub mod shares_check;
 pub mod storage_check;
 pub mod smart_check;
