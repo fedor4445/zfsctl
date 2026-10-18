@@ -190,8 +190,10 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("s", "Snapshot", 2));
                 // Always advertised: when a share can't be created the key
                 // explains why (status message) instead of silently vanishing.
-                v.push(h("N", "NFS share", 3));
-                v.push(h("M", "SMB share", 3));
+                if app.section_supported(Section::Shares) {
+                    v.push(h("N", "NFS share", 3));
+                    v.push(h("M", "SMB share", 3));
+                }
                 v.push(h("J", "Snapshot job", 3));
             }
             v.push(h("r", "Refresh", 4));

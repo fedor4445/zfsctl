@@ -1955,7 +1955,8 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+            // Sharing is FreeBSD's (see `ui::support`): on a host whose OS has no equivalent yet the keys do nothing.
+            KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle && self.section_supported(Section::Shares) => {
                 // Only act (or explain) when a dataset row is selected; with no
                 // selection the key is not advertised and must be inert.
                 let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return true; };
@@ -1976,7 +1977,7 @@ impl App {
                     self.modal = Some(share_edit_modal(existing.unwrap_or(&placeholder), self.selected_host));
                 }
             }
-            KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+            KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle && self.section_supported(Section::Shares) => {
                 let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return true; };
                 if !self.shares_loaded {
                     self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
@@ -2210,7 +2211,11 @@ impl App {
                     match (item.goto, item.target) {
                         (Section::Hosts | Section::Pools | Section::Disks | Section::Shares, Some(name)) => {
                             if let Some(index) = self.hosts.iter().position(|h| *h == name) {
-                                self.selected_host = index;
+                                if index != self.selected_host {
+                                    self.selected_host = index;
+                                    // What the previous host's screens loaded must not look like this host's.
+                                    self.clear_host_data();
+                                }
                             }
                         }
                         (Section::Jobs, Some(id)) => {
@@ -2926,6 +2931,7 @@ impl App {
         if !self.section_supported(Section::Shares) {
             self.shares.clear();
             (self.nfs_available, self.samba_available) = (None, None);
+            self.shares_loaded = false;
             return;
         }
         let host = self.selected_host;

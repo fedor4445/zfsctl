@@ -211,8 +211,14 @@ fn parse_lsblk(output: &str) -> Vec<DiskInfo> {
                 },
             })
         })
-        .filter(|d| !d.name.is_empty())
+        .filter(|d| !d.name.is_empty() && !is_virtual_block_device(&d.name))
         .collect()
+}
+
+/// `lsblk` calls a zvol (`zd0`), a compressed-RAM disk (`zram0`) and a network block device (`nbd0`) a disk too. None is a
+/// disk to build a pool on: a pool on a zvol of a pool is a deadlock waiting to happen.
+fn is_virtual_block_device(name: &str) -> bool {
+    name.strip_prefix("zd").is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())) || name.starts_with("zram") || name.starts_with("nbd")
 }
 
 /// `iostat -En` blocks: `c1t0d0  Soft Errors: ...`, then `Vendor: .. Product: .. Revision: .. Serial No: ..` and
@@ -326,7 +332,9 @@ pub fn list_disks_with_membership(runner: &dyn CommandRunner, os: Option<HostOs>
     let mut disks = list_disks(runner, os)?;
     let pools = pool::list_pools(runner)?;
     for p in &pools {
-        let (vdevs, _scan_status) = pool::get_pool_vdevs(runner, &p.name)?;
+        // On Linux pools are often built from `/dev/disk/by-id` names (`ata-WDC_...`), which match no disk name; `-L` makes
+        // `zpool status` print the real devices (`sdb1`) instead.
+        let (vdevs, _scan_status) = pool::get_pool_vdevs_with(runner, &p.name, os == Some(HostOs::Linux))?;
         annotate_membership_for(os, &mut disks, &p.name, &vdevs);
     }
     Ok(disks)
@@ -400,6 +408,40 @@ Providers:
 
     const LSBLK_UBUNTU: &str = include_str!("disk_fixtures/lsblk_ubuntu.txt");
     const IOSTAT_EN_OMNIOS: &str = include_str!("disk_fixtures/iostat_en_omnios.txt");
+
+    #[test]
+    fn lsblk_skips_zvols_zram_and_nbd_devices_that_are_not_real_disks() {
+        let text = "NAME=\"zd0\" SIZE=\"1073741824\" TYPE=\"disk\" MODEL=\"\" SERIAL=\"\" ROTA=\"0\"\n\
+                    NAME=\"zram0\" SIZE=\"4294967296\" TYPE=\"disk\" MODEL=\"\" SERIAL=\"\" ROTA=\"0\"\n\
+                    NAME=\"nbd3\" SIZE=\"1073741824\" TYPE=\"disk\" MODEL=\"\" SERIAL=\"\" ROTA=\"1\"\n\
+                    NAME=\"sda\" SIZE=\"1000204886016\" TYPE=\"disk\" MODEL=\"WDC\" SERIAL=\"X\" ROTA=\"1\"\n\
+                    NAME=\"nvme0n1\" SIZE=\"512110190592\" TYPE=\"disk\" MODEL=\"S\" SERIAL=\"Y\" ROTA=\"0\"\n";
+        assert_eq!(parse_lsblk(text).iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["sda", "nvme0n1"]);
+    }
+
+    #[test]
+    fn on_linux_the_vdev_names_come_from_zpool_status_with_real_paths_so_by_id_names_match_their_disks() {
+        use crate::zfs::host_health::HostOs;
+        // `zpool status -L` prints the resolved devices (`sdb1`), where plain `zpool status` prints `ata-WDC_...`.
+        let resolved = "  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        ONLINE       0     0     0\n\t  mirror-0  ONLINE       0     0     0\n\t    sdb1    ONLINE       0     0     0\n\t    sdc1    ONLINE       0     0     0\n\nerrors: No known data errors\n";
+        let by_id = resolved.replace("sdb1", "ata-WDC_WD40EFRX_1").replace("sdc1", "ata-WDC_WD40EFRX_2");
+        let lsblk = "NAME=\"sdb\" SIZE=\"4000787030016\" TYPE=\"disk\" MODEL=\"WDC WD40EFRX\" SERIAL=\"1\" ROTA=\"1\"\nNAME=\"sdc\" SIZE=\"4000787030016\" TYPE=\"disk\" MODEL=\"WDC WD40EFRX\" SERIAL=\"2\" ROTA=\"1\"\nNAME=\"sdd\" SIZE=\"4000787030016\" TYPE=\"disk\" MODEL=\"WDC WD40EFRX\" SERIAL=\"3\" ROTA=\"1\"\n";
+        // The status call must carry -L on Linux: FakeRunner routes by first argument, so the by-id answer is for plain `status`.
+        let runner = FakeRunner::new("").route("lsblk", "-b", lsblk).route("zpool", "list", "tank\t100\t10\t90\tONLINE\n").route("zpool", "status", &by_id).route("zpool", "-L", "");
+        let _ = &resolved;
+        let calls_status_with_l = {
+            let r = runner;
+            let disks = list_disks_with_membership(&r, Some(HostOs::Linux)).unwrap();
+            let calls = r.calls.lock().unwrap().clone();
+            (disks, calls)
+        };
+        let (_disks, calls) = calls_status_with_l;
+        assert!(calls.iter().any(|(cmd, args)| cmd == "zpool" && args.first().map(String::as_str) == Some("status") && args.iter().any(|a| a == "-L")), "{calls:?}");
+        let ok = FakeRunner::new("").route("lsblk", "-b", lsblk).route("zpool", "list", "tank\t100\t10\t90\tONLINE\n").route("zpool", "status", &resolved);
+        let disks = list_disks_with_membership(&ok, Some(HostOs::Linux)).unwrap();
+        assert_eq!(disks.iter().filter(|d| matches!(d.membership, DiskMembership::InPool { .. })).count(), 2, "{disks:?}");
+        assert_eq!(disks[2].membership, DiskMembership::Available);
+    }
 
     #[test]
     fn lsblk_lists_only_disks_with_size_model_serial_and_media() {

@@ -8812,3 +8812,40 @@ fn the_acl_tab_says_why_on_linux_and_keys_of_a_dimmed_section_are_inert() {
     app.handle_key(KeyCode::Tab);
     assert_ne!(app.current_section(), Section::BootEnvs, "navigation still works");
 }
+
+#[test]
+fn the_share_keys_in_datasets_do_nothing_on_a_host_without_shares_support_and_are_not_advertised() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+    app.selected_host = 1;
+    go_to(&mut app, Section::Datasets);
+    app.datasets = vec![ds_named("tank/data", Some("/tank/data"))];
+    app.datasets_table.select(Some(0));
+    // as left over from a FreeBSD host's Shares screen
+    (app.shares_loaded, app.nfs_available, app.samba_available) = (true, Some(true), Some(true));
+    app.handle_key(KeyCode::Char('N'));
+    app.handle_key(KeyCode::Char('M'));
+    assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "no share form, no zfs set sharenfs on an illumos host: {:?}", app.modal);
+    assert!(!crate::ui::hints::hints(&app).iter().any(|h| h.key == "N" || h.key == "M"), "the keys are not offered");
+    // a refresh of the dimmed section forgets what the other host's screen had loaded
+    app.refresh_shares(std::sync::Arc::new(NoCalls));
+    assert!(!app.shares_loaded);
+    // and the FreeBSD host still gets them
+    app.selected_host = 0;
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "N"));
+}
+
+#[test]
+fn choosing_a_host_from_the_dashboard_clears_the_previous_hosts_data() {
+    let (mut app, _dir) = dash_app();
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(95)), ..HostProbeState::default() });
+    app.shares_loaded = true;
+    app.nfs_available = Some(true);
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.subject == "fbsd16").expect("fbsd16 has a line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.selected_host, 1);
+    assert!(!app.shares_loaded && app.nfs_available.is_none(), "what the hub's Shares screen loaded is not the new host's");
+}
