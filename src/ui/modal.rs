@@ -33,6 +33,12 @@ pub enum MutationCall {
     RemoveAclEntry { path: String, position: usize },
     SetSmbShare { share: crate::zfs::smb::SmbShare, password: Option<Secret> },
     RemoveSmbShare { dataset: String },
+    /// `zfs load-key` of an encryption root, then (when `mount`) `zfs mount` of it. The passphrase goes in on stdin.
+    LoadKey { dataset: String, passphrase: Secret, mount: bool },
+    /// `zfs unload-key`: the data cannot be read again until the key is loaded.
+    UnloadKey { dataset: String },
+    /// `zfs change-key` of an encryption root: the old passphrase stops working, the data is not re-encrypted.
+    ChangeKey { dataset: String, passphrase: Secret },
     CreateBootEnv { name: String, from: Option<String> },
     ActivateBootEnv { name: String, temporary: bool },
     ClearTemporaryBootEnv { name: String },
@@ -54,10 +60,16 @@ pub enum MutationCall {
     SendTestMessage { settings: Box<crate::config::NotifySettings>, hook: Option<String> },
 }
 
-/// A password held only until it is piped to `smbpasswd`. `Debug` never
-/// prints it, so a logged or panicking `PendingAction` can't leak it.
+/// A password or passphrase held only until it is piped to the command that needs it (`smbpasswd`, `zfs load-key`).
+/// `Debug` never prints it, so a logged or panicking `PendingAction` can't leak it, and the memory is zeroed when it drops.
 #[derive(Clone, PartialEq)]
 pub struct Secret(pub String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -105,6 +117,8 @@ impl MutationCall {
             | MutationCall::UnallowPermission { .. }
             | MutationCall::RemoveAclEntry { .. }
             | MutationCall::RemoveSmbShare { .. }
+            | MutationCall::UnloadKey { .. }
+            | MutationCall::ChangeKey { .. }
             | MutationCall::ActivateBootEnv { temporary: false, .. }
             | MutationCall::DeleteJob { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
@@ -121,6 +135,7 @@ impl MutationCall {
             | MutationCall::SendTestMessage { .. }
             | MutationCall::SetJobEnabled { .. }
             | MutationCall::SetSmbShare { .. }
+            | MutationCall::LoadKey { .. }
             | MutationCall::ActivateBootEnv { temporary: true, .. }
             | MutationCall::CreateBootEnv { .. }
             | MutationCall::ClearTemporaryBootEnv { .. }
@@ -157,6 +172,9 @@ impl MutationCall {
             MutationCall::RemoveAclEntry { .. } => "REMOVE ACL ENTRY",
             MutationCall::SetSmbShare { .. } => "SET SMB SHARE",
             MutationCall::RemoveSmbShare { .. } => "REMOVE SMB SHARE",
+            MutationCall::LoadKey { .. } => "LOAD KEY",
+            MutationCall::UnloadKey { .. } => "UNLOAD KEY",
+            MutationCall::ChangeKey { .. } => "CHANGE KEY",
             MutationCall::CreateBootEnv { .. } => "CREATE BOOT ENV",
             MutationCall::ActivateBootEnv { .. } => "ACTIVATE BOOT ENV",
             MutationCall::ClearTemporaryBootEnv { .. } => "CLEAR TEMPORARY BOOT ENV",
@@ -222,6 +240,9 @@ impl MutationCall {
                 crate::zfs::smb::set_share(runner, share, password.as_ref().map(|p| p.0.as_str()))
             }
             MutationCall::RemoveSmbShare { dataset } => crate::zfs::smb::remove_share(runner, dataset),
+            MutationCall::LoadKey { dataset, passphrase, mount } => crate::zfs::encryption::load_key_and_mount(runner, dataset, &passphrase.0, *mount),
+            MutationCall::UnloadKey { dataset } => crate::zfs::encryption::unload_key(runner, dataset),
+            MutationCall::ChangeKey { dataset, passphrase } => crate::zfs::encryption::change_key(runner, dataset, &passphrase.0),
             MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref(), os),
             MutationCall::ActivateBootEnv { name, temporary } => crate::zfs::bootenv::activate(runner, name, *temporary, os),
             MutationCall::ClearTemporaryBootEnv { name } => crate::zfs::bootenv::clear_temporary(runner, name, os),
@@ -260,6 +281,13 @@ pub struct PendingAction {
 pub struct FormField {
     pub label: String,
     pub value: String,
+}
+
+impl Drop for FormField {
+    /// A form is closed by dropping it: what was typed (a passphrase, in the key forms) is zeroed, not left in freed memory.
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
 }
 
 /// Which mutation a `Modal::Form` is collecting input for, plus the
@@ -339,6 +367,10 @@ pub enum FormKind {
     /// the existing Samba password (only valid when the user is
     /// unchanged, see `existing_user`). The password field is masked.
     ShareSmb { host: usize, dataset: String, path: String, existing_user: Option<String> },
+    /// Fields: `[passphrase, mount after loading (y/n)]`; `dataset` is the encryption root. The passphrase field is masked.
+    LoadKey { host: usize, dataset: String },
+    /// Fields: `[new passphrase, repeat]`; `dataset` is the encryption root. Both fields are masked.
+    ChangeKey { host: usize, dataset: String },
     /// Fields: `[name, clone_from]` -- a blank `clone_from` clones the running boot environment
     /// (bectl's default). `existing` is every current name, for the duplicate check and the F2 picker.
     CreateBootEnv { host: usize, existing: Vec<String> },
@@ -363,7 +395,12 @@ pub enum FormKind {
 impl FormKind {
     /// Whether the form field at `index` must be shown as `*` characters.
     pub fn masks_field(&self, index: usize) -> bool {
-        matches!(self, FormKind::ShareSmb { .. }) && index == 2
+        match self {
+            FormKind::ShareSmb { .. } => index == 2,
+            FormKind::LoadKey { .. } => index == 0,
+            FormKind::ChangeKey { .. } => index <= 1,
+            _ => false,
+        }
     }
 }
 
@@ -446,6 +483,22 @@ mod tests {
         let runner = FakeRunner::new("");
         MutationCall::RemoveSmbShare { dataset: "tank/none".into() }.run(&runner).unwrap_err(); // nothing managed there
         assert_eq!(MutationCall::RemoveSmbShare { dataset: "x".into() }.tone(), Tone::Warn);
+    }
+
+    #[test]
+    fn key_calls_run_through_the_library_and_never_print_the_passphrase() {
+        let secret = "correct horse battery";
+        let runner = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n");
+        let load = MutationCall::LoadKey { dataset: "tank/s".into(), passphrase: Secret(secret.into()), mount: true };
+        let change = MutationCall::ChangeKey { dataset: "tank/s".into(), passphrase: Secret(secret.into()) };
+        load.run(&runner).unwrap();
+        change.run(&runner).unwrap();
+        MutationCall::UnloadKey { dataset: "tank/s".into() }.run(&runner).unwrap();
+        let verbs: Vec<String> = runner.calls.lock().unwrap().iter().map(|(_, a)| a[0].clone()).collect();
+        assert_eq!(verbs, ["get", "load-key", "mount", "get", "change-key", "unload-key"]);
+        assert!(!format!("{load:?}{change:?}").contains(secret));
+        assert_eq!((load.tone(), change.tone()), (Tone::Neutral, Tone::Warn));
+        assert_eq!(MutationCall::UnloadKey { dataset: "x".into() }.tone(), Tone::Warn);
     }
 
     #[test]

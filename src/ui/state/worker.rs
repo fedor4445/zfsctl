@@ -613,7 +613,14 @@ impl App {
                     self.selected_disks.clear();
                 }
             }
-            Err(e) => self.set_error(e.to_string()),
+            Err(e) => {
+                let text = e.to_string();
+                // A key that loaded but whose mount failed has changed what the list shows.
+                if section == Section::Datasets && text.contains("key IS loaded") {
+                    refreshes_needed.push(section);
+                }
+                self.set_error(text);
+            }
         }
     }
 }

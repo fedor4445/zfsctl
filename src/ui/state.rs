@@ -2076,6 +2076,29 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char(c @ ('L' | 'U' | 'C')) if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                let Some(name) = self.selected_dataset_name() else { return true };
+                let op = match c {
+                    'L' => forms::KeyOp::Load,
+                    'U' => forms::KeyOp::Unload,
+                    _ => forms::KeyOp::Change,
+                };
+                match forms::key_target(&self.encryption, &name, op) {
+                    Err(why) => self.status_message = Some(why),
+                    Ok(root) => {
+                        let host = self.selected_host;
+                        self.modal = Some(match op {
+                            forms::KeyOp::Load => forms::load_key_form(host, &root),
+                            forms::KeyOp::Change => forms::change_key_form(host, &root),
+                            forms::KeyOp::Unload => {
+                                let action = PendingAction { host, section: Section::Datasets, call: MutationCall::UnloadKey { dataset: root } };
+                                let prompt = forms::irreversible_prompt(&self.hosts, &action).unwrap_or_default();
+                                Modal::Confirm { prompt, action, choice: None }
+                            }
+                        });
+                    }
+                }
+            }
             // Sharing is FreeBSD's (see `ui::support`): on a host whose OS has no equivalent yet the keys do nothing.
             KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle && self.shares_editable() => {
                 // Only act (or explain) when a dataset row is selected; with no
