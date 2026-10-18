@@ -2398,7 +2398,7 @@ fn disk_form_description(key: char) -> String {
     app.handle_key(KeyCode::Char(key));
     match &app.modal {
         Some(Modal::Form { description: Some(d), fields, .. }) => {
-            assert_eq!(fields.len(), 2, "fields unchanged");
+            assert_eq!(fields.len(), if key == 'a' { 3 } else { 2 }, "the Add vdev form gained a Role field");
             d.clone()
         }
         other => panic!("expected Form with description, got {other:?}"),
@@ -2502,7 +2502,8 @@ fn handle_key_a_in_disks_with_selection_opens_add_vdev_from_disks_form() {
     app.handle_key(KeyCode::Char('a'));
     match &app.modal {
         Some(Modal::Form { fields, kind, .. }) => {
-            assert_eq!(fields.len(), 2);
+            assert_eq!(fields.len(), 3, "pool, role, redundancy");
+            assert_eq!(fields[1].value, "data", "the role defaults to data, as before");
             assert_eq!(*kind, FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".to_string()] });
         }
         other => panic!("expected Form modal, got {other:?}"),
@@ -2577,6 +2578,7 @@ fn build_pending_action_add_vdev_from_disks() {
     let kind = FormKind::AddVdevFromDisks { host: 0, disks: vec!["da2".to_string(), "da3".to_string()] };
     let fields = vec![
         FormField { label: "Target pool name".to_string(), value: "tank".to_string() },
+        FormField { label: "Role".to_string(), value: "data".to_string() },
         FormField { label: "Redundancy".to_string(), value: "mirror".to_string() },
     ];
     let action = build_pending_action(&kind, &fields).unwrap();
@@ -2588,6 +2590,9 @@ fn build_pending_action_add_vdev_from_disks() {
             call: MutationCall::AddVdev { pool: "tank".to_string(), vdev_spec: vec!["mirror".to_string(), "da2".to_string(), "da3".to_string()] },
         }
     );
+    let mut as_log = fields.clone();
+    as_log[1].value = "log".to_string();
+    assert_eq!(build_pending_action(&kind, &as_log).unwrap().call, MutationCall::AddVdev { pool: "tank".to_string(), vdev_spec: vec!["log".into(), "mirror".into(), "da2".into(), "da3".into()] });
 }
 
 #[test]
@@ -7339,11 +7344,16 @@ fn create_pool_forms_confirm_with_the_command_and_the_warning_about_the_disks() 
 fn the_from_disks_forms_confirm_too() {
     for kind in [FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }, FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }] {
         let mut app = App::new(vec!["local".to_string()]);
-        let (a, b) = if matches!(kind, FormKind::CreatePoolFromDisks { .. }) { ("newpool", "mirror") } else { ("tank", "mirror") };
+        let fields = if matches!(kind, FormKind::CreatePoolFromDisks { .. }) {
+            vec![FormField { label: "a".into(), value: "newpool".into() }, FormField { label: "b".into(), value: "mirror".into() }]
+        } else {
+            vec![FormField { label: "a".into(), value: "tank".into() }, FormField { label: "role".into(), value: "data".into() }, FormField { label: "b".into(), value: "mirror".into() }]
+        };
+        let last = fields.len() - 1;
         app.modal = Some(Modal::Form {
             title: "t".to_string(),
-            fields: vec![FormField { label: "a".into(), value: a.into() }, FormField { label: "b".into(), value: b.into() }],
-            focused: 1,
+            fields,
+            focused: last,
             description: None,
             kind,
         });
@@ -7421,8 +7431,8 @@ fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_wh
     app.selected_host = 1;
     app.modal = Some(Modal::Form {
         title: "t".to_string(),
-        fields: vec![FormField { label: "pool".into(), value: "tank".into() }, FormField { label: "b".into(), value: "mirror".into() }],
-        focused: 1,
+        fields: vec![FormField { label: "pool".into(), value: "tank".into() }, FormField { label: "role".into(), value: "data".into() }, FormField { label: "b".into(), value: "mirror".into() }],
+        focused: 2,
         description: None,
         kind: FormKind::AddVdevFromDisks { host: 1, disks: vec!["da0".into(), "da1".into()] },
     });
@@ -9092,4 +9102,109 @@ fn zero_means_none_in_the_quota_form_and_the_prompt_shows_a_readable_size() {
         Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("quota=5368709120 (5G)"), "{prompt}"),
         other => panic!("expected a Confirm, got {other:?}"),
     }
+}
+
+/// The Add vdev form of the Disks section with the given selection, pool, role and redundancy, focused on its last field.
+fn add_from_disks(disks: &[&str], role: &str, redundancy: &str) -> App {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.modal = Some(Modal::Form {
+        title: "t".to_string(),
+        fields: vec![
+            FormField { label: "pool".into(), value: "tank".into() },
+            FormField { label: "role".into(), value: role.into() },
+            FormField { label: "redundancy".into(), value: redundancy.into() },
+        ],
+        focused: 2,
+        description: None,
+        kind: FormKind::AddVdevFromDisks { host: 0, disks: disks.iter().map(|d| (*d).to_string()).collect() },
+    });
+    app
+}
+
+#[test]
+fn a_single_disk_special_is_refused_before_anything_runs_and_the_form_stays_open() {
+    let mut app = add_from_disks(&["da4"], "special", "");
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("whole pool")), "{:?}", app.status_error);
+    assert!(app.pending_add_checks.is_empty());
+}
+
+#[test]
+fn a_log_add_confirms_plainly_and_asks_the_host_for_the_layout() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("zpool add tank log da4") && prompt.contains("Checking the resulting layout"), "{prompt}");
+    assert!(prompt.contains("can be removed again") && !prompt.contains("cannot be removed"), "a log is removable: {prompt}");
+    assert_eq!(app.pending_add_checks.len(), 1);
+    assert_eq!((app.pending_add_checks[0].pool.as_str(), app.pending_add_checks[0].spec.clone(), app.pending_add_checks[0].role), ("tank", vec!["log".to_string(), "da4".to_string()], crate::zfs::vdev_role::Role::Log));
+}
+
+#[test]
+fn the_dry_run_answer_puts_the_layout_into_the_confirm_and_a_special_stays_irreversible() {
+    let mut app = add_from_disks(&["da4", "da5"], "special", "");
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("cannot be removed again"), "{prompt}");
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Ok("would update 'tank' to the following configuration:\n\n\ttank  ONLINE\n\t  special\n\t    mirror".to_string()));
+    match &app.modal {
+        Some(Modal::Confirm { prompt, choice: None, .. }) => assert!(prompt.contains("would update 'tank'") && prompt.contains("special") && !prompt.contains("Checking the resulting"), "{prompt}"),
+        other => panic!("{other:?}"),
+    }
+    // declining still returns to the form
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })) || app.modal.is_none());
+}
+
+#[test]
+fn a_host_that_refuses_the_dry_run_gives_the_form_back_with_its_own_message() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Err("command 'zpool add -n tank log da4' failed with status 1: /dev/da4 is part of active pool 'other'".to_string()));
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("part of active pool")), "{:?}", app.status_error);
+}
+
+#[test]
+fn a_dry_run_answer_for_a_confirm_that_is_gone_is_ignored() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let check = app.pending_add_checks.remove(0);
+    app.modal = None;
+    app.on_add_checked(check.clone(), Err("late".to_string()));
+    assert!(app.modal.is_none() && app.status_error.is_none(), "a late refusal must not reopen a form the user left");
+    // another confirm for a different add is not touched either
+    let mut other = add_from_disks(&["da9"], "cache", "");
+    submit_to_confirm(&mut other);
+    other.on_add_checked(check, Ok("layout".to_string()));
+    match &other.modal {
+        Some(Modal::Confirm { prompt, .. }) => assert!(prompt.contains("Checking the resulting layout"), "{prompt}"),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[test]
+fn the_raw_add_form_refuses_a_lone_special_disk_and_queues_the_dry_run_otherwise() {
+    let mut app = App::new(vec!["local".to_string()]);
+    pool_for_forms(&mut app);
+    app.vdevs = vec![VdevLine { depth: 1, name: "mirror-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+    app.vdevs_table.select(Some(0));
+    app.handle_key(KeyCode::Char('a'));
+    for c in "special da6".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })) && app.status_error.as_deref().is_some_and(|m| m.contains("whole pool")), "{:?}", app.status_error);
+    assert!(app.pending_add_checks.is_empty());
+    for _ in 0..20 {
+        app.handle_modal_key(KeyCode::Backspace);
+    }
+    for c in "special mirror da6 da7".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("zpool add tank special mirror da6 da7"), "{prompt}");
+    assert_eq!(app.pending_add_checks[0].role, crate::zfs::vdev_role::Role::Special);
 }

@@ -582,6 +582,48 @@ pub(super) fn quota_facts(props: &[crate::zfs::property::Property]) -> crate::zf
     }
 }
 
+/// The pool, the `zpool add` words and the role of what the Add vdev forms ask for, or why it is refused: the raw form's spec
+/// is checked word by word, the Disks form builds it from its Role and Redundancy fields.
+pub(super) fn add_vdev_request(kind: &FormKind, fields: &[FormField]) -> Result<(String, Vec<String>, crate::zfs::vdev_role::Role), String> {
+    use crate::zfs::vdev_role::{build_spec, check_raw_spec, Role};
+    match kind {
+        FormKind::AddVdev { pool, .. } => {
+            let spec: Vec<String> = field_value(fields, 0).split_whitespace().map(String::from).collect();
+            let role = check_raw_spec(&spec)?;
+            Ok((pool.clone(), spec, role))
+        }
+        FormKind::AddVdevFromDisks { disks, .. } => {
+            let pool = field_value(fields, 0).trim();
+            if pool.is_empty() {
+                return Err("Target pool name: required".to_string());
+            }
+            let role = Role::parse(field_value(fields, 1)).ok_or_else(|| "Role: data, log, cache, special, dedup or spare".to_string())?;
+            let spec = build_spec(role, field_value(fields, 2), disks)?;
+            Ok((pool.to_string(), spec, role))
+        }
+        _ => Err("not an add-vdev form".to_string()),
+    }
+}
+
+/// The confirmation for adding vdevs: the exact command, the layout `zpool add -n` says it would give (once the host has
+/// answered), and what the role means for undoing it.
+pub(super) fn add_vdev_prompt(host: &str, pool: &str, spec: &[String], role: crate::zfs::vdev_role::Role, layout: Option<&str>) -> String {
+    let shown = match layout {
+        None => "\n\nChecking the resulting layout...".to_string(),
+        Some(text) => {
+            let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+            let cut = if lines.len() > 12 { format!("{}\n  ... {} more lines", lines[..12].join("\n"), lines.len() - 12) } else { lines.join("\n") };
+            format!("\n\n{cut}")
+        }
+    };
+    let why = if role.irreversible() {
+        "A vdev added to a pool usually cannot be removed again. Add it?".to_string()
+    } else {
+        format!("A {} device can be removed again with zpool remove. Add it?", role.word())
+    };
+    format!("On {host}:\n  zpool add {pool} {}{shown}\n\n{why} (y/n)", spec.join(" "))
+}
+
 /// The text of form field `index`; a missing field reads as empty, which every caller
 /// already treats as "not filled in" (forms are built with a fixed field count per kind).
 pub(super) fn field_value(fields: &[FormField], index: usize) -> &str {
@@ -598,10 +640,11 @@ pub(super) fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> O
             format!("zpool create {name} {}", vdev_spec.join(" ")),
             "This overwrites whatever is on those disks. Create the pool?",
         ),
-        MutationCall::AddVdev { pool, vdev_spec } => ask(
-            format!("zpool add {pool} {}", vdev_spec.join(" ")),
-            "A vdev added to a pool usually cannot be removed again. Add it?",
-        ),
+        MutationCall::AddVdev { pool, vdev_spec } => {
+            // Which role this is decides the wording; a spec that cannot be read gets the cautious (irreversible) text.
+            let role = crate::zfs::vdev_role::check_raw_spec(vdev_spec).unwrap_or(crate::zfs::vdev_role::Role::Data);
+            Some(add_vdev_prompt(host, pool, vdev_spec, role, None))
+        }
         MutationCall::ReplaceDisk { pool, old_disk, new_disk } => ask(
             format!("zpool replace {pool} {old_disk} {new_disk}"),
             "The new disk is overwritten. Replace it?",
@@ -755,29 +798,9 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
                 call: MutationCall::CreatePool { name: name.to_string(), vdev_spec: build_vdev_spec_from_selection(redundancy, disks) },
             })
         }
-        FormKind::AddVdev { host, pool } => {
-            let vdev_spec_raw = field_value(fields, 0).trim();
-            if vdev_spec_raw.is_empty() {
-                return None;
-            }
-            let vdev_spec: Vec<String> = vdev_spec_raw.split_whitespace().map(String::from).collect();
-            Some(PendingAction {
-                host: *host,
-                section: Section::Vdevs,
-                call: MutationCall::AddVdev { pool: pool.clone(), vdev_spec },
-            })
-        }
-        FormKind::AddVdevFromDisks { host, disks } => {
-            let pool = field_value(fields, 0).trim();
-            if pool.is_empty() {
-                return None;
-            }
-            let redundancy = field_value(fields, 1).trim();
-            Some(PendingAction {
-                host: *host,
-                section: Section::Vdevs,
-                call: MutationCall::AddVdev { pool: pool.to_string(), vdev_spec: build_vdev_spec_from_selection(redundancy, disks) },
-            })
+        FormKind::AddVdev { host, .. } | FormKind::AddVdevFromDisks { host, .. } => {
+            let (pool, vdev_spec, _) = add_vdev_request(kind, fields).ok()?;
+            Some(PendingAction { host: *host, section: Section::Vdevs, call: MutationCall::AddVdev { pool, vdev_spec } })
         }
         FormKind::ReplaceDisk { host, pool, old_disk } => {
             let new_disk = field_value(fields, 0).trim();
@@ -1136,6 +1159,7 @@ pub(super) fn form_problem(kind: &FormKind, fields: &[FormField]) -> String {
             }
         }
         FormKind::GrantCreateTimePermission { .. } | FormKind::RevokePermissions { .. } => perms_problem(value(0)),
+        FormKind::AddVdev { .. } | FormKind::AddVdevFromDisks { .. } => add_vdev_request(kind, fields).err().unwrap_or_else(|| "Could not submit".to_string()),
         FormKind::AddAclEntry { .. } => {
             if parse_acl_recipient_field(value(0)).is_none() {
                 "Recipient: use owner, group, everyone, user:<name> or group:<name>".to_string()

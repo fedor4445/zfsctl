@@ -266,6 +266,15 @@ pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -
     Ok(())
 }
 
+/// `zpool add -n`: what the pool would look like after adding `vdev_spec`, without changing anything. Options come before the
+/// pool, as OmniOS's `zpool` wants.
+pub fn add_vdev_dry_run(runner: &dyn CommandRunner, pool: &str, vdev_spec: &[&str]) -> Result<String> {
+    let mut args = vec!["add", "-n", "--", pool];
+    args.extend_from_slice(vdev_spec);
+    let out = super::run_checked(runner, "zpool", &args, &format!("zpool add -n {pool} {}", vdev_spec.join(" ")))?;
+    Ok(out.stdout)
+}
+
 /// Adds a new top-level vdev/mirror/raidz group to an existing pool,
 /// e.g. `&["mirror", "da2", "da3"]`. Same raw-vdev-spec shape as
 /// `create_pool` — no guided wizard, this takes an already-built spec.
@@ -612,6 +621,16 @@ errors: No known data errors
             calls[0],
             ("zpool".to_string(), vec!["add".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da2".to_string(), "da3".to_string()])
         );
+    }
+
+    #[test]
+    fn the_dry_run_is_zpool_add_dash_n_with_options_before_the_pool() {
+        let runner = FakeRunner::new("would update 'tank' to the following configuration:");
+        let text = add_vdev_dry_run(&runner, "tank", &["log", "da4"]).unwrap();
+        assert!(text.starts_with("would update"));
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1, ["add", "-n", "--", "tank", "log", "da4"].map(String::from));
+        assert!(add_vdev_dry_run(&FakeRunner::failing("invalid vdev specification", 1), "tank", &["x"]).is_err());
     }
 
     #[test]

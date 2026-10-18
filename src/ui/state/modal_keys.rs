@@ -304,7 +304,16 @@ impl App {
             return self.reject(form, msg);
         };
         if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
-            self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+            let adding = match (&action.call, super::forms::add_vdev_request(&form.kind, &form.fields)) {
+                (MutationCall::AddVdev { pool, vdev_spec }, Ok((_, _, role))) => Some((pool.clone(), vdev_spec.clone(), role)),
+                _ => None,
+            };
+            let modal = form.into_modal();
+            self.confirm_restore = Some((prompt.clone(), modal.clone()));
+            // The host is asked what the layout would be; the confirm shows it when it answers.
+            if let Some((pool, spec, role)) = adding {
+                self.pending_add_checks.push(super::AddCheck { host: action.host, pool, spec, role, form: modal });
+            }
             self.modal = Some(Modal::Confirm { choice: None, prompt, action });
             return None;
         }
