@@ -3309,7 +3309,8 @@ Pools
 Vdevs (inside a drilled-into pool)
   o / O            offline / online the selected disk
   x                replace the selected disk
-  a                add a vdev/mirror/raidz group
+  a                add a vdev/mirror/raidz group, or a log, cache, special, dedup or spare device
+  X                remove the selected log, cache or spare device
 
 Pool/Dataset properties pane
   Enter            edit the selected property

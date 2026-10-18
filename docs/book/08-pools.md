@@ -107,7 +107,8 @@ You see the pool, its vdevs (`raidz2-0`) and the disks in each, with their state
 |---|---|
 | `o` / `O` | take the selected disk offline / bring it online (y/n) |
 | `x` | replace the selected disk with another (a form, then the question) |
-| `a` | add a vdev to the pool (a form, then the question) |
+| `a` | add a vdev to the pool (a form, then the question), including log, cache, special, dedup and spare devices |
+| `X` | remove the selected log, cache or spare device (a question first) |
 
 ## Scrub and resilver
 
