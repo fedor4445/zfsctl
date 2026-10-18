@@ -14,6 +14,19 @@ pub const HOST_DEADLINE: Duration = Duration::from_mins(2);
 /// reports what it did learn inside `HOST_DEADLINE`.
 pub const HOST_BUDGET: Duration = Duration::from_secs(100);
 
+/// Writes `text` to `path` through a temporary file of its own and a rename: a crash leaves the old file or the new
+/// one, and two writers (the daemon and a TUI) never share a temporary file, so neither can tear the other's.
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path.file_name().map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
+    let tmp = path.with_file_name(format!("{name}.tmp.{}.{}", std::process::id(), COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HostResult {
     pub checked_at: DateTime<Utc>,
@@ -40,9 +53,7 @@ impl SmartFile {
 
     /// Writes through a temporary file and a rename, so a crash leaves the old file or the new one.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)?;
-        std::fs::rename(&tmp, path)
+        write_atomic(path, &serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
     }
 
     /// When the daily check last ran: the recorded run, else the newest host check. Only for deciding when to run again.

@@ -36,10 +36,37 @@ fn marker_path(dir: &Path) -> PathBuf {
 }
 
 fn write_marker(dir: &Path, marker: &Marker) -> std::io::Result<()> {
+    smart_check::write_atomic(&marker_path(dir), &serde_json::to_string(marker).map_err(std::io::Error::other)?)
+}
+
+/// Takes the marker file for `marker`: creating it is the claim, so of two that start at the same moment only one gets
+/// it. A fresh marker of another run refuses; one left by a run that died (no heartbeat for three minutes) is replaced.
+/// (Two claimants that both find the same dead marker can still both replace it; that needs a crash and a collision.)
+fn claim_marker(dir: &Path, marker: &Marker) -> bool {
+    use std::io::Write as _;
     let path = marker_path(dir);
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string(marker).map_err(std::io::Error::other)?)?;
-    std::fs::rename(&tmp, path)
+    for _ in 0..2 {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let _ = file.write_all(serde_json::to_string(marker).unwrap_or_default().as_bytes());
+                return true;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let taken = match read_marker(&path.parent().unwrap_or(dir).to_path_buf()) {
+                    Some(other) => (marker.since - other.beat).num_seconds() <= STALE_AFTER_SECS,
+                    // Unreadable: a claimant may be between creating the file and writing it.
+                    None => std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age < Duration::from_secs(5)),
+                };
+                if taken {
+                    return false;
+                }
+                let _ = std::fs::remove_file(&path);
+            }
+            // The state directory cannot be written: no notice, but the check itself still runs.
+            Err(_) => return true,
+        }
+    }
+    false
 }
 
 /// The marker on disk, if there is a readable one (fresh or not).
@@ -62,21 +89,23 @@ pub struct RunGuard {
 }
 
 impl RunGuard {
-    pub fn start(dir: &Path, by: &str, host: Option<&str>) -> RunGuard {
+    /// `None` when another run holds a fresh marker: the caller must not run.
+    pub fn start(dir: &Path, by: &str, host: Option<&str>) -> Option<RunGuard> {
         RunGuard::start_with(dir, by, host, BEAT_EVERY)
     }
 
-    pub fn start_with(dir: &Path, by: &str, host: Option<&str>, beat_every: Duration) -> RunGuard {
+    pub fn start_with(dir: &Path, by: &str, host: Option<&str>, beat_every: Duration) -> Option<RunGuard> {
         let now = Utc::now();
         let mine = Marker { by: by.to_string(), since: now, beat: now, host: host.map(str::to_string) };
-        // A marker that cannot be written only means no red notice: the check itself still runs.
-        let _ = write_marker(dir, &mine);
+        if !claim_marker(dir, &mine) {
+            return None;
+        }
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let beat = {
             let (dir, mine, stop) = (dir.to_path_buf(), mine.clone(), Arc::clone(&stop));
             std::thread::Builder::new().name("checks-beat".to_string()).spawn(move || beat_loop(&dir, &mine, &stop, beat_every)).ok()
         };
-        RunGuard { dir: dir.to_path_buf(), mine, stop, beat }
+        Some(RunGuard { dir: dir.to_path_buf(), mine, stop, beat })
     }
 }
 
@@ -123,36 +152,47 @@ pub struct HostChecks {
     pub shares: shares_check::Outcome,
 }
 
-/// Disks first, then shares, one after the other on the one host. `previous_disks` lets a disk that had a problem and now
-/// says nothing stay visible (see `smart_check::check_host`).
+/// Disks first, then shares, one after the other on the one host. Only the tests use this: the real runs ask the two
+/// halves at once (`collect`), so a slow disk cannot take the shares answer with it.
+#[cfg(test)]
 pub fn check_one_host(runner: &dyn CommandRunner, now: DateTime<Utc>, previous_disks: Option<&HostResult>, _previous_shares: Option<&SharesResult>) -> HostChecks {
     HostChecks { disks: smart_check::check_host(runner, now, previous_disks, smart_check::HOST_BUDGET), shares: shares_check::check_host(runner, now) }
 }
 
-/// Writes one host's answers into `smart.json` and `shares.json`: an answer replaces the host's entry (so a problem that
-/// is gone clears), a failed or silent check keeps the previous entry with a note, a host that never answered gets none.
-/// Only this host's entries change; whole files are read, changed and renamed into place.
-pub fn merge_into(dir: &Path, host: &str, checks: &HostChecks) {
-    let smart_path = dir.join("smart.json");
-    let mut smart = SmartFile::load(&smart_path);
-    match &checks.disks {
+/// Writes one host's disk answer into `smart.json`: an answer replaces the host's entry (so a problem that is gone
+/// clears), a failed or silent check keeps the previous entry with a note, a host that never answered gets none. Only
+/// this host's entry changes; the whole file is read, changed and renamed into place.
+pub fn merge_disks(dir: &Path, host: &str, outcome: &smart_check::Outcome) {
+    let path = dir.join("smart.json");
+    let mut smart = SmartFile::load(&path);
+    match outcome {
         smart_check::Outcome::Checked(result) => {
             smart.hosts.insert(host.to_string(), result.clone());
         }
         smart_check::Outcome::Silent => note(smart.hosts.get_mut(host).map(|e| &mut e.error), GONE_SMART),
         smart_check::Outcome::Failed(why) => note(smart.hosts.get_mut(host).map(|e| &mut e.error), why),
     }
-    let _ = smart.save(&smart_path);
-    let shares_path = dir.join("shares.json");
-    let mut shares = SharesFile::load(&shares_path);
-    match &checks.shares {
+    let _ = smart.save(&path);
+}
+
+/// The same for the shares answer and `shares.json`.
+pub fn merge_shares(dir: &Path, host: &str, outcome: &shares_check::Outcome) {
+    let path = dir.join("shares.json");
+    let mut shares = SharesFile::load(&path);
+    match outcome {
         shares_check::Outcome::Checked(result) => {
             shares.hosts.insert(host.to_string(), result.clone());
         }
         shares_check::Outcome::Silent => note(shares.hosts.get_mut(host).map(|e| &mut e.error), GONE_SHARES),
         shares_check::Outcome::Failed(why) => note(shares.hosts.get_mut(host).map(|e| &mut e.error), why),
     }
-    let _ = shares.save(&shares_path);
+    let _ = shares.save(&path);
+}
+
+/// Both halves of one host's answer (see `merge_disks`, `merge_shares`).
+pub fn merge_into(dir: &Path, host: &str, checks: &HostChecks) {
+    merge_disks(dir, host, &checks.disks);
+    merge_shares(dir, host, &checks.shares);
 }
 
 /// Records why a kept entry was not refreshed; nothing to note when the host has no entry.
@@ -160,6 +200,69 @@ fn note(slot: Option<&mut Option<String>>, why: &str) {
     if let Some(slot) = slot {
         *slot = Some(why.to_string());
     }
+}
+
+enum Half {
+    Disks(smart_check::Outcome),
+    Shares(shares_check::Outcome),
+}
+
+/// Asks every host for both checks, the two halves of a host at once on threads of their own, and merges each half into
+/// the files as it arrives. A half that has not answered by `deadline` is recorded as failed (the previous entry stays,
+/// with a note); the other half is kept. Returns what each host answered, in the order of `hosts`. Does not prune hosts
+/// or date the run: that is `run_pass`.
+pub fn collect(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: Duration) -> Vec<(String, HostChecks)> {
+    let smart_before = SmartFile::load(&dir.join("smart.json"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    for (name, runner) in hosts {
+        let before = smart_before.hosts.get(name).cloned();
+        let (tx_disks, tx_shares, name_disks, name_shares) = (tx.clone(), tx.clone(), name.clone(), name.clone());
+        let (disks_runner, shares_runner) = (Arc::clone(runner), Arc::clone(runner));
+        // A thread that outlives the deadline is left to finish by itself, as the health probe's are.
+        std::thread::spawn(move || {
+            let _ = tx_disks.send((name_disks, Half::Disks(smart_check::check_host(disks_runner.as_ref(), now, before.as_ref(), smart_check::HOST_BUDGET.min(deadline)))));
+        });
+        std::thread::spawn(move || {
+            let _ = tx_shares.send((name_shares, Half::Shares(shares_check::check_host(shares_runner.as_ref(), now))));
+        });
+    }
+    drop(tx);
+    let started = std::time::Instant::now();
+    let mut answers: Vec<(String, Option<smart_check::Outcome>, Option<shares_check::Outcome>)> = hosts.iter().map(|(n, _)| (n.clone(), None, None)).collect();
+    let mut waiting = hosts.len() * 2;
+    while waiting > 0 {
+        let Some(left) = deadline.checked_sub(started.elapsed()) else { break };
+        let Ok((name, half)) = rx.recv_timeout(left) else { break };
+        let Some(slot) = answers.iter_mut().find(|a| a.0 == name) else { continue };
+        match half {
+            Half::Disks(outcome) => {
+                merge_disks(dir, &name, &outcome);
+                slot.1 = Some(outcome);
+            }
+            Half::Shares(outcome) => {
+                merge_shares(dir, &name, &outcome);
+                slot.2 = Some(outcome);
+            }
+        }
+        waiting -= 1;
+    }
+    let why = format!("no answer within {} s", deadline.as_secs());
+    answers
+        .into_iter()
+        .map(|(name, disks, shares)| {
+            let disks = disks.unwrap_or_else(|| {
+                let late = smart_check::Outcome::Failed(why.clone());
+                merge_disks(dir, &name, &late);
+                late
+            });
+            let shares = shares.unwrap_or_else(|| {
+                let late = shares_check::Outcome::Failed(why.clone());
+                merge_shares(dir, &name, &late);
+                late
+            });
+            (name, HostChecks { disks, shares })
+        })
+        .collect()
 }
 
 /// The status line after a check of one host: what each half found, in words.
@@ -173,6 +276,7 @@ pub fn describe(host: &str, checks: &HostChecks) -> String {
             smart_check::problems(&file).first().map_or_else(|| "disks fine".to_string(), |p| format!("disks: {}", p.disks))
         }
         Disks::Silent => String::new(),
+        Disks::Failed(why) if why.starts_with("no answer") => "disks: no answer in time".to_string(),
         Disks::Failed(_) => "disks not reachable".to_string(),
     };
     let shares = match &checks.shares {
@@ -182,6 +286,7 @@ pub fn describe(host: &str, checks: &HostChecks) -> String {
             shares_check::problems(&file).first().map_or_else(|| "shares fine".to_string(), |p| format!("shares: {}", p.text))
         }
         Shares::Silent => String::new(),
+        Shares::Failed(why) if why.starts_with("no answer") => "shares: no answer in time".to_string(),
         Shares::Failed(_) => "shares not reachable".to_string(),
     };
     match (disks.is_empty(), shares.is_empty()) {
@@ -204,34 +309,7 @@ pub struct PassSummary {
 /// The daily pass: both checks on every host at once, each answer merged as it arrives, hosts that have not answered by
 /// `deadline` recorded as failed, entries of hosts that are gone from the configuration dropped, and `ran_at` set.
 pub fn run_pass(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: Duration) -> PassSummary {
-    let smart_before = SmartFile::load(&dir.join("smart.json"));
-    let shares_before = SharesFile::load(&dir.join("shares.json"));
-    let (tx, rx) = std::sync::mpsc::channel();
-    for (name, runner) in hosts {
-        let (tx, name, runner) = (tx.clone(), name.clone(), Arc::clone(runner));
-        let (disks, shares) = (smart_before.hosts.get(&name).cloned(), shares_before.hosts.get(&name).cloned());
-        // A thread that outlives the deadline is left to finish by itself, as the health probe's are.
-        std::thread::spawn(move || {
-            let _ = tx.send((name.clone(), check_one_host(runner.as_ref(), now, disks.as_ref(), shares.as_ref())));
-        });
-    }
-    drop(tx);
-    let started = std::time::Instant::now();
-    let mut answered = std::collections::HashSet::new();
-    while answered.len() < hosts.len() {
-        let Some(left) = deadline.checked_sub(started.elapsed()) else { break };
-        match rx.recv_timeout(left) {
-            Ok((name, checks)) => {
-                merge_into(dir, &name, &checks);
-                answered.insert(name);
-            }
-            Err(_) => break,
-        }
-    }
-    for (name, _) in hosts.iter().filter(|(n, _)| !answered.contains(n)) {
-        let why = format!("no answer within {} s", deadline.as_secs());
-        merge_into(dir, name, &HostChecks { disks: smart_check::Outcome::Failed(why.clone()), shares: shares_check::Outcome::Failed(why) });
-    }
+    collect(dir, hosts, now, deadline);
     let mut smart = SmartFile::load(&dir.join("smart.json"));
     let mut shares = SharesFile::load(&dir.join("shares.json"));
     smart.hosts.retain(|name, _| hosts.iter().any(|(n, _)| n == name));
@@ -304,7 +382,7 @@ mod tests {
     fn the_guard_writes_the_marker_keeps_the_heartbeat_going_and_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         {
-            let _guard = RunGuard::start_with(dir.path(), "tui", Some("fbsd16"), Duration::from_millis(40));
+            let _guard = RunGuard::start_with(dir.path(), "tui", Some("fbsd16"), Duration::from_millis(40)).unwrap();
             let first = read_marker(dir.path()).expect("written at once");
             assert_eq!((first.by.as_str(), first.host.as_deref()), ("tui", Some("fbsd16")));
             std::thread::sleep(Duration::from_millis(250));
@@ -318,7 +396,7 @@ mod tests {
     #[test]
     fn a_guard_dropped_after_another_run_took_the_file_over_leaves_the_others_marker() {
         let dir = tempfile::tempdir().unwrap();
-        let guard = RunGuard::start_with(dir.path(), "tui", None, Duration::from_secs(60));
+        let guard = RunGuard::start_with(dir.path(), "tui", None, Duration::from_secs(60)).unwrap();
         let other = Marker { by: "daemon".into(), since: Utc::now() + chrono::Duration::seconds(5), beat: Utc::now(), host: None };
         write_marker(dir.path(), &other).unwrap();
         drop(guard);
@@ -332,6 +410,92 @@ mod tests {
         assert_eq!(disks.disks.len(), 2);
         let shares_check::Outcome::Checked(shares) = checks.shares else { panic!("shares not checked") };
         assert_eq!((shares.nfs_shares, shares.nfs_running, shares.checked_at), (2, true, at(NOW)));
+    }
+
+    /// Disks hang (smartctl never answers in time), shares answer at once.
+    struct DisksHang;
+
+    impl CommandRunner for DisksHang {
+        fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            if cmd == "smartctl" {
+                std::thread::sleep(Duration::from_secs(3));
+                return Err(AppError::Config("too late".into()));
+            }
+            healthy().run(cmd, args)
+        }
+        fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> Result<CommandOutput> {
+            self.run(c, a)
+        }
+        fn run_unprivileged(&self, c: &str, a: &[&str]) -> Result<CommandOutput> {
+            self.run(c, a)
+        }
+    }
+
+    #[test]
+    fn the_shares_half_is_stored_even_when_the_disks_half_hangs_and_the_disks_keep_their_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut old = SmartFile::default();
+        old.hosts.insert("h".into(), entry(vec![red_disk()]));
+        old.save(&dir.path().join("smart.json")).unwrap();
+        let started = std::time::Instant::now();
+        let done = collect(dir.path(), &runners(vec![("h", Arc::new(DisksHang))]), at(NOW), Duration::from_millis(600));
+        assert!(started.elapsed() < Duration::from_secs(2), "waited for the hung half");
+        assert!(matches!(done[0].1.shares, shares_check::Outcome::Checked(_)), "the shares answer is not lost");
+        assert!(SharesFile::load(&dir.path().join("shares.json")).hosts.contains_key("h"));
+        let smart = SmartFile::load(&dir.path().join("smart.json"));
+        assert!(smart.hosts["h"].error.as_deref().unwrap_or("").contains("no answer"), "{:?}", smart.hosts["h"]);
+        assert_eq!(smart_check::problems(&smart).len(), 1, "the old red disk stays");
+    }
+
+    #[test]
+    fn many_writers_of_one_file_never_leave_it_torn_or_leave_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smart.json");
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for i in 0..60 {
+                        let mut file = SmartFile::default();
+                        file.hosts.insert(format!("h{n}-{i}"), entry(vec![red_disk()]));
+                        file.save(&path).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let loaded = SmartFile::load(&path);
+        assert_eq!(loaded.hosts.len(), 1, "one writer's whole file won, not a mixture: {}", std::fs::read_to_string(&path).unwrap());
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n != "smart.json").collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn a_claim_is_refused_while_a_fresh_marker_exists_replaces_a_stale_one_and_only_one_racer_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = RunGuard::start_with(dir.path(), "tui", None, Duration::from_secs(60)).expect("free");
+        assert!(RunGuard::start_with(dir.path(), "daemon", None, Duration::from_secs(60)).is_none(), "a fresh marker is not taken over");
+        drop(first);
+        let old = Utc::now() - chrono::Duration::minutes(10);
+        write_marker(dir.path(), &Marker { by: "daemon".into(), since: old, beat: old, host: None }).unwrap();
+        assert!(RunGuard::start_with(dir.path(), "tui", None, Duration::from_secs(60)).is_some(), "a run that died does not block");
+        let racing = tempfile::tempdir().unwrap();
+        let wins: usize = (0..8)
+            .map(|_| {
+                let p = racing.path().to_path_buf();
+                std::thread::spawn(move || {
+                    let g = RunGuard::start_with(&p, "tui", None, Duration::from_secs(60));
+                    std::thread::sleep(Duration::from_millis(300));
+                    usize::from(g.is_some())
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .sum();
+        assert_eq!(wins, 1, "exactly one of eight simultaneous claims");
     }
 
     #[test]

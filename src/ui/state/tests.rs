@@ -8692,3 +8692,31 @@ fn a_check_of_an_unreachable_host_keeps_the_old_entry_and_says_it_could_not_be_r
     let after = crate::daemon::smart_check::SmartFile::load(&dir.path().join("smart.json"));
     assert!(after.hosts["fbsd16"].error.is_some() && crate::daemon::smart_check::problems(&after).len() == 1, "the red line stays, with the error noted");
 }
+
+#[test]
+fn a_hung_manual_check_gives_up_at_its_deadline_and_frees_c_and_the_marker() {
+    struct Hung;
+    impl crate::exec::CommandRunner for Hung {
+        fn run(&self, _: &str, _: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            std::thread::sleep(Duration::from_secs(3));
+            Err(crate::error::AppError::Config("too late".into()))
+        }
+        fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+        fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+    }
+    let (mut app, dir) = hosts_app();
+    app.handle_key(KeyCode::Char('c'));
+    let started = Instant::now();
+    app.start_host_check_with("fbsd16".into(), std::sync::Arc::new(Hung), Duration::from_millis(400));
+    wait_for_host_check(&mut app);
+    assert!(started.elapsed() < Duration::from_secs(2), "waited for the hung host");
+    assert!(app.status_message.clone().unwrap_or_default().contains("no answer"), "{:?}", app.status_message);
+    assert!(crate::daemon::checks::read_marker(dir.path()).is_none(), "the marker is released at the deadline");
+    app.pending_host_checks.clear();
+    app.handle_key(KeyCode::Char('c'));
+    assert_eq!(app.pending_host_checks, ["fbsd16"], "c works again");
+}

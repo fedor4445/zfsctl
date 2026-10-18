@@ -397,11 +397,10 @@ fn checks_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, a
             if !smart_check::due(chrono::Local::now().naive_local(), Some(at), last) {
                 return;
             }
-            if let Some(other) = checks::fresh_marker(state_dir, Utc::now()) {
-                log(&format!("daily checks wait: a check started by {} is running", other.by));
+            let Some(_running) = checks::RunGuard::start(state_dir, "daemon", None) else {
+                log("daily checks wait: another check is running");
                 return;
-            }
-            let _running = checks::RunGuard::start(state_dir, "daemon", None);
+            };
             let hosts = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
             let summary = checks::run_pass(state_dir, &hosts, Utc::now(), smart_check::HOST_DEADLINE);
             log(&format!(

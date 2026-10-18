@@ -39,9 +39,7 @@ impl SharesFile {
 
     /// Writes through a temporary file and a rename, so a crash leaves the old file or the new one.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)?;
-        std::fs::rename(&tmp, path)
+        super::smart_check::write_atomic(path, &serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
     }
 
     /// When any host last gave an answer.
@@ -128,6 +126,10 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
     // no block and no file, which reads as no shares; a block that cannot be read is only news while Samba runs.
     let (smb_shares, smb_error) = match crate::zfs::smb::list_managed(runner) {
         Ok(shares) => (shares.len(), None),
+        // This host may not be set up to read the file (the `samba` sudoers feature): no news, like any silent check. A
+        // dropped connection is a failure, not a verdict.
+        Err(crate::error::AppError::CommandFailed { status: 255, stderr, .. }) => return Outcome::Failed(first_line(&stderr, "could not reach the host")),
+        Err(crate::error::AppError::CommandFailed { stderr, .. }) if is_refusal(&stderr) => (0, None),
         Err(e) if samba_running => (0, Some(e.to_string())),
         Err(_) => (0, None),
     };
@@ -293,6 +295,26 @@ mod tests {
         assert_eq!(check_host(&denied_zfs, at(NOW)), Outcome::Silent);
         let broken_zfs = Script(Box::new(|cmd, _| if cmd == "zfs" { out("", "cannot open 'x': dataset does not exist", 1) } else { out(UP.0, "", 0) }));
         assert!(matches!(check_host(&broken_zfs, at(NOW)), Outcome::Failed(_)));
+    }
+
+    #[test]
+    fn a_samba_block_that_sudo_refuses_is_silent_and_a_dropped_ssh_on_the_read_is_failed() {
+        // A host with the `shares` feature (service, zfs) but not `samba` (cat smb4.conf) that runs its own Samba.
+        let no_cat = Script(Box::new(|cmd, args| match (cmd, args[0]) {
+            ("service", _) => out("smbd is running as pid 2.", "", 0),
+            ("zfs", _) => out(TWO_NFS, "", 0),
+            ("cat", _) => out("", "sudo: a password is required", 1),
+            other => panic!("{other:?}"),
+        }));
+        let result = checked(check_host(&no_cat, at(NOW)));
+        assert_eq!((result.smb_error, result.smb_shares), (None, 0), "not set up for reading smb4.conf: no news");
+        let dropped = Script(Box::new(|cmd, args| match (cmd, args[0]) {
+            ("service", _) => out("smbd is running as pid 2.", "", 0),
+            ("zfs", _) => out(TWO_NFS, "", 0),
+            ("cat", _) => out("", "ssh: Connection reset by peer", 255),
+            other => panic!("{other:?}"),
+        }));
+        assert!(matches!(check_host(&dropped, at(NOW)), Outcome::Failed(_)));
     }
 
     #[test]

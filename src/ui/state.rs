@@ -948,21 +948,24 @@ impl App {
     }
 
     /// Runs both checks on `host` in the background, with the same code as the daemon's daily pass, and merges the answers
-    /// into `smart.json` and `shares.json`. A running marker tells the Dashboard (and the daemon) meanwhile.
+    /// into `smart.json` and `shares.json`. A running marker tells the Dashboard (and the daemon) meanwhile; a host that
+    /// does not answer within the daemon's per-host deadline is given up on, so `c` and the daemon are never held up.
     pub fn start_host_check(&mut self, host: String, runner: Arc<dyn CommandRunner>) {
+        self.start_host_check_with(host, runner, crate::daemon::smart_check::HOST_DEADLINE);
+    }
+
+    pub fn start_host_check_with(&mut self, host: String, runner: Arc<dyn CommandRunner>, deadline: Duration) {
         let (state_dir, tx) = (self.state_dir.clone(), self.tx.clone());
         std::thread::spawn(move || {
             // A crash in the worker must still answer, or `c` would stay busy for the rest of the session.
             let line = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _running = crate::daemon::checks::RunGuard::start(&state_dir, "tui", Some(&host));
-                let now = chrono::Utc::now();
-                let disks = crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")).hosts.remove(&host);
-                let shares = crate::daemon::shares_check::SharesFile::load(&state_dir.join("shares.json")).hosts.remove(&host);
-                let checks = crate::daemon::checks::check_one_host(runner.as_ref(), now, disks.as_ref(), shares.as_ref());
-                crate::daemon::checks::merge_into(&state_dir, &host, &checks);
-                crate::daemon::checks::describe(&host, &checks)
+                let Some(_running) = crate::daemon::checks::RunGuard::start(&state_dir, "tui", Some(&host)) else {
+                    return format!("{host}: another check is running; try again in a moment");
+                };
+                let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], chrono::Utc::now(), deadline);
+                done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe(&host, checks))
             }))
-            .unwrap_or_else(|_| format!("{host}: the check crashed; nothing was changed"));
+            .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
             let _ = tx.send(WorkerMsg::HostChecked(host, line));
         });
     }
