@@ -68,6 +68,8 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `n / d` | create / destroy a dataset (type its name; zfs refuses if it has snapshots or children) |
 | `D` | destroy a dataset AND its child datasets and snapshots (type its name; says how many; never -R) |
 | `s` | snapshot the selected dataset |
+| `E` | create an encrypted dataset (name, cipher, passphrase twice, then type the name) |
+| `L / U / C` | load / unload / change the key of the selected encrypted dataset (its encryption root) |
 | `N` | create/edit an NFS share |
 | `M` | create/edit an SMB share |
 | `'[' / ']'` | cycle Properties / Permissions / ACL sub-tabs (once focused) |

@@ -37,6 +37,15 @@ Pools: select a pool, `J`, schedule `0 3 1 * *`. Repeat for each pool (or for ea
 
 Do not write to the destination dataset: a receive fails if the destination changed since its last snapshot (unless you set Force).
 
+## Keep a dataset encrypted
+
+1. Datasets: press `E`, give the name with its pool, keep `aes-256-gcm`, type a passphrase of 8 or more characters twice, then type the dataset's name to confirm.
+2. Write the passphrase down somewhere safe. If it is lost the data cannot be recovered by anyone.
+3. To lock it: unmount it at the shell, then `U`, `y`, `Enter`. To use it again: `L` and the passphrase.
+4. Check: the Lock column says `open` or `LOCKED`.
+
+Replication and cloud mirrors refuse an encrypted source; restic backups work while it is open. A full walkthrough is in [Datasets](09-datasets.md#try-encryption).
+
 ## Back up to a USB disk, or the cloud
 
 1. Install restic; make a password file; `restic init` (chapter 15).
