@@ -1,13 +1,15 @@
 //! Captures real zfsctl screens (or command output) for The zfsctl Book.
 //!
-//! TUI capture:     cargo run --example capture -- --name 08-pools --section Pools --cols 110 --rows 30 --wait 10 [--keys '<Down>'] [--crop 0:20]
+//! TUI capture:     cargo run --example capture -- --name 08-pools --section Pools --cols 110 --rows 30 --wait 10 `\[--keys '<Down>'] \[--crop 0:20]`
 //! Command capture: cargo run --example capture -- --name 05-check-host --cmd 'sudo ./zfsctl/target/release/zfsctl check-host fbsd16'
 //!
-//! Environment: HUB (default fb@172.16.10.90) and ZFSCTL_BIN (default ./zfsctl/target/release/zfsctl), both on the hub.
+//! Environment: `HUB` (default fb@172.16.10.90) and `ZFSCTL_BIN` (default ./zfsctl/target/release/zfsctl), both on the hub.
 //! The TUI runs over `ssh -tt` with its terminal size set by `stty`, and what it draws is read through a terminal emulator
 //! (the `vt100` crate), so the capture is the screen as a person would see it. Captures are written to
 //! docs/book/captures/NAME.txt and are never edited by hand.
 
+
+#![allow(clippy::indexing_slicing, clippy::similar_names)] // a dev tool run by hand; indexing is on data it just built
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -154,7 +156,7 @@ fn clean(lines: &[String]) -> Vec<String> {
     out
 }
 
-fn crop(lines: Vec<String>, spec: &str) -> Result<Vec<String>, String> {
+fn crop(lines: &[String], spec: &str) -> Result<Vec<String>, String> {
     let (first, last) = spec.split_once(':').ok_or("--crop is FIRST:LAST")?;
     let parse = |s: &str| if s.is_empty() { Ok(None) } else { s.parse::<usize>().map(Some).map_err(|_| format!("bad crop number '{s}'")) };
     let (first, last) = (parse(first)?.unwrap_or(0), parse(last)?.unwrap_or(lines.len()).min(lines.len()));
@@ -189,7 +191,7 @@ fn tui(args: &Args) -> Result<Vec<String>, String> {
     let mut stdout = child.stdout.take().ok_or("no stdout")?;
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
-        let mut buf = [0u8; 65536];
+        let mut buf = [0u8; 8192];
         while let Ok(n) = stdout.read(&mut buf) {
             if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
                 break;
@@ -237,7 +239,7 @@ fn run() -> Result<(), String> {
         None => tui(&args)?,
     };
     if let Some(spec) = &args.crop {
-        lines = crop(lines, spec)?;
+        lines = crop(&lines, spec)?;
     }
     let text = clean(&lines).join("\n") + "\n";
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/book/captures").join(format!("{}.txt", args.name));
@@ -285,11 +287,11 @@ mod tests {
     #[test]
     fn crop_takes_first_to_last_exclusive_and_allows_open_ends() {
         let lines = s(&["0", "1", "2", "3"]);
-        assert_eq!(crop(lines.clone(), "1:3").unwrap(), s(&["1", "2"]));
-        assert_eq!(crop(lines.clone(), ":2").unwrap(), s(&["0", "1"]));
-        assert_eq!(crop(lines.clone(), "2:").unwrap(), s(&["2", "3"]));
-        assert_eq!(crop(lines.clone(), "3:99").unwrap(), s(&["3"]));
-        assert!(crop(lines, "x").is_err());
+        assert_eq!(crop(&lines, "1:3").unwrap(), s(&["1", "2"]));
+        assert_eq!(crop(&lines, ":2").unwrap(), s(&["0", "1"]));
+        assert_eq!(crop(&lines, "2:").unwrap(), s(&["2", "3"]));
+        assert_eq!(crop(&lines, "3:99").unwrap(), s(&["3"]));
+        assert!(crop(&lines, "x").is_err());
     }
 
     #[test]
