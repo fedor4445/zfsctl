@@ -193,7 +193,13 @@ impl App {
             },
             FormKind::ChangeKey { .. } => match build_key_action(&form.kind, &form.fields) {
                 Ok(action) => self.confirm_from_form(form, action),
-                Err(msg) => self.reject(form, msg),
+                Err(msg) => {
+                    // Typed blind, so a mismatch starts both over rather than leaving the user to guess which is wrong.
+                    for field in &mut form.fields {
+                        field.value.clear();
+                    }
+                    self.reject(form, msg)
+                }
             },
             FormKind::ShareSmb { .. } => match build_smb_action(&form.kind, &form.fields, &self.shares) {
                 Ok(action) => Some(action),

@@ -68,7 +68,7 @@ pub(crate) fn run_command_with_stdin(
         .spawn()
         .map_err(|source| AppError::Spawn { cmd: spawn_name.to_string(), source })?;
     let mut pipe = child.stdin.take().expect("stdin was requested as piped");
-    let data = stdin.to_string();
+    let data = zeroize::Zeroizing::new(stdin.to_string());
     let writer = std::thread::spawn(move || {
         let _ = pipe.write_all(data.as_bytes());
     });

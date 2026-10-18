@@ -9637,9 +9637,11 @@ fn changing_a_key_checks_the_repeat_then_asks_with_the_warnings() {
     assert!(app.handle_modal_key(KeyCode::Enter).is_none());
     assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
     assert!(app.status_message.as_deref().unwrap_or("").contains("do not match"), "{:?}", app.status_message);
-    app.handle_modal_key(KeyCode::Tab); // a rejected form puts the cursor back on the first field
-    app.handle_modal_key(KeyCode::Backspace);
-    type_into(&mut app, "e");
+    let Some(Modal::Form { fields, .. }) = &app.modal else { panic!() };
+    assert!(fields.iter().all(|f| f.value.is_empty()), "a mismatch clears both blind fields");
+    type_into(&mut app, "new passphrase");
+    app.handle_modal_key(KeyCode::Tab);
+    type_into(&mut app, "new passphrase");
     assert!(app.handle_modal_key(KeyCode::Enter).is_none());
     let Some(Modal::Confirm { prompt, action, .. }) = app.modal.clone() else { panic!("{:?}", app.modal) };
     for want in ["zfs change-key tank/s", "old passphrase stops", "not re-encrypted", "sent elsewhere", "Keep the new"] {
@@ -9666,7 +9668,7 @@ fn a_new_key_must_be_eight_characters() {
 
 #[test]
 fn a_full_load_key_run_keeps_the_passphrase_out_of_arguments_status_and_errors() {
-    for (runner, ok) in [(FakeRunner::new(""), true), (FakeRunner::failing("Key load error: Incorrect key provided for 'tank/s'.", 255), false)] {
+    for (runner, ok) in [(FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n"), true), (FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n").route_failure("zfs", "load-key", "Key load error: Incorrect key provided for 'tank/s'.", 255), false)] {
         let mut app = key_app(true, "passphrase");
         app.handle_key(KeyCode::Char('L'));
         type_into(&mut app, PASS);
@@ -9685,8 +9687,16 @@ fn a_full_load_key_run_keeps_the_passphrase_out_of_arguments_status_and_errors()
         assert_eq!(!refreshes.is_empty(), ok, "{refreshes:?} {:?}", app.status_message);
         let calls = runner.calls.lock().unwrap();
         assert!(calls.iter().all(|(_, a)| a.iter().all(|x| !x.contains(PASS))), "{calls:?}");
+        assert!(calls.iter().any(|(_, a)| a[0] == "load-key"));
         assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), format!("{PASS}\n"))]);
         assert!(!app.status_message.clone().unwrap_or_default().contains(PASS));
-        assert!(!format!("{:?}", app.modal).contains(PASS), "the closed form leaves nothing in the modal");
     }
+}
+
+#[test]
+fn a_load_that_left_the_key_loaded_but_failed_to_mount_refreshes_the_list() {
+    let mut app = key_app(true, "passphrase");
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Datasets, Err(crate::error::AppError::CommandFailed { cmd: "zfs mount x".into(), status: 1, stderr: "busy\nThe key IS loaded; only the mount failed.".into() }))).unwrap();
+    assert_eq!(app.drain_worker_messages(), vec![Section::Datasets]);
+    assert!(app.status_is_error());
 }

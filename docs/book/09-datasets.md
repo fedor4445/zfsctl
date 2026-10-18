@@ -143,7 +143,7 @@ Three keys act on the selected encrypted dataset (a child that shares its parent
 - `U` **unloads the key**. After it the data cannot be read until you load the key again, so you press `y` then `Enter`. ZFS refuses while the dataset, or one under it, is still mounted; unmount it first at the shell (zfsctl shows ZFS's message and says so).
 - `C` **changes the passphrase** of an open encryption root: the new one twice (8 characters or more), then `y` and `Enter` on a question that says the old passphrase stops working, that the data is not re-encrypted (copies sent elsewhere earlier, such as raw replicas, still need the old passphrase) and that nothing else keeps the new one. On a child that uses its parent's key the key says so and does nothing, because a change there would give the child a key of its own.
 
-Datasets with a key in a file (`keyformat=raw` or `hex`) are shown but not handled yet: load those at the shell with `zfs load-key`.
+Only keys typed at a prompt are handled (`keylocation=prompt`, the default, with `keyformat=passphrase`). zfsctl asks the host again right before it loads or changes a key, and refuses a dataset whose key is read from a file (`keylocation=file://...`, or a raw or hex key): zfs would read the file and ignore what you typed, so use `zfs load-key` and `zfs change-key` at the shell for those. Loading mounts only the dataset itself, and only when it is a filesystem with `canmount=on`; a container with `canmount=off` or a volume is just unlocked, and the datasets under it are mounted by ZFS's own `zfs mount`.
 
 ## Create a dataset
 

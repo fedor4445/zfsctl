@@ -108,6 +108,41 @@ pub fn check_passphrase(passphrase: &str, new_key: bool) -> std::result::Result<
     Ok(())
 }
 
+/// What the host says about a dataset right before a key is loaded or changed.
+struct KeyFacts {
+    key_location: String,
+    key_format: String,
+    root: String,
+    can_mount: bool,
+}
+
+/// Asks the host afresh (the screen's list may be old). Fails closed: no answer, no key operation.
+fn key_facts(runner: &dyn CommandRunner, dataset: &str) -> crate::error::Result<KeyFacts> {
+    let args = ["get", "-H", "-o", "property,value", "keylocation,keyformat,encryptionroot,canmount", dataset];
+    let out = runner.run("zfs", &args)?;
+    if !out.success() {
+        return Err(crate::error::AppError::CommandFailed { cmd: format!("zfs get keylocation {dataset}"), status: out.status, stderr: out.stderr });
+    }
+    let value = |name: &str| out.stdout.lines().find_map(|l| l.split_once('\t').filter(|(k, _)| *k == name).map(|(_, v)| v.trim().to_string()));
+    let (Some(key_location), Some(key_format), Some(root)) = (value("keylocation"), value("keyformat"), value("encryptionroot")) else {
+        return Err(crate::error::AppError::Parse(format!("{dataset}: the host did not report its key properties")));
+    };
+    Ok(KeyFacts { key_location, key_format, root, can_mount: value("canmount").as_deref() == Some("on") })
+}
+
+/// A typed passphrase only means something when zfs reads the key from the prompt (stdin): a key kept in a file would be
+/// read from there and the typed text silently ignored, for `change-key` too.
+fn check_prompt_key(facts: &KeyFacts, dataset: &str) -> crate::error::Result<()> {
+    let refuse = |why: String| Err(crate::error::AppError::Parse(why));
+    if facts.key_location != "prompt" {
+        return refuse(format!("{dataset} reads its key from {}, not from a typed passphrase: use zfs at the shell", facts.key_location));
+    }
+    if facts.key_format != "passphrase" {
+        return refuse(format!("{dataset} has a {} key, not a passphrase", facts.key_format));
+    }
+    Ok(())
+}
+
 fn key_command(runner: &dyn CommandRunner, verb: &str, dataset: &str, passphrase: Option<&str>) -> crate::error::Result<()> {
     if dataset.starts_with('-') {
         return Err(crate::error::AppError::Parse(format!("not a dataset name: {dataset}")));
@@ -130,13 +165,24 @@ fn key_command(runner: &dyn CommandRunner, verb: &str, dataset: &str, passphrase
 
 /// `zfs load-key`: the passphrase is the key's one line on stdin. Only the encryption root can be loaded.
 pub fn load_key(runner: &dyn CommandRunner, dataset: &str, passphrase: &str) -> crate::error::Result<()> {
-    key_command(runner, "load-key", dataset, Some(passphrase))
+    load_key_checked(runner, dataset, passphrase).map(|_| ())
 }
 
-/// `load_key`, then `zfs mount` of the same dataset when asked. A mount that fails leaves the key loaded and says so.
+fn load_key_checked(runner: &dyn CommandRunner, dataset: &str, passphrase: &str) -> crate::error::Result<bool> {
+    if dataset.starts_with('-') {
+        return Err(crate::error::AppError::Parse(format!("not a dataset name: {dataset}")));
+    }
+    let facts = key_facts(runner, dataset)?;
+    check_prompt_key(&facts, dataset)?;
+    key_command(runner, "load-key", dataset, Some(passphrase))?;
+    Ok(facts.can_mount)
+}
+
+/// `load_key`, then `zfs mount` of the same dataset when asked and when it is a mountable filesystem (a volume or a
+/// `canmount=off` container is only unlocked). A mount that fails leaves the key loaded and says so.
 pub fn load_key_and_mount(runner: &dyn CommandRunner, dataset: &str, passphrase: &str, mount: bool) -> crate::error::Result<()> {
-    load_key(runner, dataset, passphrase)?;
-    if !mount {
+    let can_mount = load_key_checked(runner, dataset, passphrase)?;
+    if !mount || !can_mount {
         return Ok(());
     }
     let out = runner.run("zfs", &["mount", "--", dataset])?;
@@ -157,6 +203,15 @@ pub fn unload_key(runner: &dyn CommandRunner, dataset: &str) -> crate::error::Re
 
 /// `zfs change-key` with a new passphrase on stdin. The data is not re-encrypted: the old passphrase simply stops working.
 pub fn change_key(runner: &dyn CommandRunner, dataset: &str, passphrase: &str) -> crate::error::Result<()> {
+    if dataset.starts_with('-') {
+        return Err(crate::error::AppError::Parse(format!("not a dataset name: {dataset}")));
+    }
+    // Asked again now: on a dataset that has meanwhile started to use its parent's key, change-key would give it a key of its own.
+    let facts = key_facts(runner, dataset)?;
+    check_prompt_key(&facts, dataset)?;
+    if facts.root != dataset {
+        return Err(crate::error::AppError::Parse(format!("{dataset} uses the key of {}: change the key there", facts.root)));
+    }
     key_command(runner, "change-key", dataset, Some(passphrase))
 }
 
@@ -236,15 +291,19 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         assert!(check_passphrase(&"x".repeat(513), true).is_err(), "zfs takes at most 512 bytes");
     }
 
+    const FACTS: &str = "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n";
+
     #[test]
     fn the_passphrase_goes_through_stdin_and_never_through_the_arguments() {
         let secret = "correct horse battery";
-        let runner = FakeRunner::new("");
+        let runner = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/secure\ncanmount\ton\n");
         load_key(&runner, "tank/secure", secret).unwrap();
         change_key(&runner, "tank/secure", secret).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["load-key".to_string(), "--".to_string(), "tank/secure".to_string()]));
-        assert_eq!(calls[1], ("zfs".to_string(), vec!["change-key".to_string(), "--".to_string(), "tank/secure".to_string()]));
+        let verbs: Vec<&str> = calls.iter().map(|c| c.1[0].as_str()).collect();
+        assert_eq!(verbs, ["get", "load-key", "get", "change-key"]);
+        assert_eq!(calls[1], ("zfs".to_string(), vec!["load-key".to_string(), "--".to_string(), "tank/secure".to_string()]));
+        assert_eq!(calls[3], ("zfs".to_string(), vec!["change-key".to_string(), "--".to_string(), "tank/secure".to_string()]));
         assert!(calls.iter().all(|(_, args)| args.iter().all(|a| !a.contains(secret))));
         let stdin = runner.stdin_calls.lock().unwrap();
         assert_eq!(stdin.len(), 2);
@@ -280,14 +339,43 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
 
     #[test]
     fn a_failed_mount_says_the_key_is_loaded() {
-        let runner = FakeRunner::new("").route_failure("zfs", "mount", "cannot mount 'tank/s': filesystem already mounted", 1);
+        let runner = FakeRunner::new("").route("zfs", "get", FACTS).route_failure("zfs", "mount", "cannot mount 'tank/s': filesystem already mounted", 1);
         let msg = load_key_and_mount(&runner, "tank/s", "pass phrase", true).unwrap_err().to_string();
         assert!(msg.contains("already mounted") && msg.contains("key IS loaded"), "{msg}");
         let calls = runner.calls.lock().unwrap();
-        assert_eq!((calls[0].1[0].as_str(), calls[1].1.as_slice()), ("load-key", ["mount", "--", "tank/s"].map(String::from).as_slice()));
+        assert_eq!((calls[1].1[0].as_str(), calls[2].1.as_slice()), ("load-key", ["mount", "--", "tank/s"].map(String::from).as_slice()));
         drop(calls);
-        let plain = FakeRunner::new("");
+        let plain = FakeRunner::new("").route("zfs", "get", FACTS);
         load_key_and_mount(&plain, "tank/s", "pass phrase", false).unwrap();
-        assert_eq!(plain.calls.lock().unwrap().len(), 1, "no mount unless asked");
+        assert_eq!(plain.calls.lock().unwrap().len(), 2, "no mount unless asked");
+        let off = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\toff\n");
+        load_key_and_mount(&off, "tank/s", "pass phrase", true).unwrap();
+        assert!(off.calls.lock().unwrap().iter().all(|c| c.1[0] != "mount"), "a canmount=off container (or a volume, which prints -) is only unlocked");
+    }
+
+    #[test]
+    fn a_key_kept_in_a_file_or_inherited_is_refused_before_anything_is_sent() {
+        let file = FakeRunner::new("").route("zfs", "get", "keylocation\tfile:///root/s.key\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n");
+        for result in [load_key(&file, "tank/s", "pass phrase"), change_key(&file, "tank/s", "pass phrase")] {
+            assert!(result.unwrap_err().to_string().contains("file:///root/s.key"));
+        }
+        let child = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n");
+        assert!(change_key(&child, "tank/s/kid", "pass phrase").unwrap_err().to_string().contains("uses the key of tank/s"));
+        let raw = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\traw\nencryptionroot\ttank/s\ncanmount\ton\n");
+        assert!(load_key(&raw, "tank/s", "pass phrase").is_err());
+        for r in [&file, &child, &raw] {
+            assert!(r.stdin_calls.lock().unwrap().is_empty(), "the passphrase must not be sent");
+            assert!(r.calls.lock().unwrap().iter().all(|c| c.1[0] == "get"));
+        }
+    }
+
+    #[test]
+    fn a_host_that_cannot_say_how_the_key_is_kept_gets_no_key_operation() {
+        let down = FakeRunner::failing("ssh: connection refused", 255);
+        assert!(load_key(&down, "tank/s", "pass phrase").is_err());
+        assert!(change_key(&down, "tank/s", "pass phrase").is_err());
+        let blank = FakeRunner::new("");
+        assert!(load_key(&blank, "tank/s", "pass phrase").is_err(), "an empty answer is not an answer");
+        assert!(blank.stdin_calls.lock().unwrap().is_empty());
     }
 }

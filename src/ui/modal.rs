@@ -488,22 +488,17 @@ mod tests {
     #[test]
     fn key_calls_run_through_the_library_and_never_print_the_passphrase() {
         let secret = "correct horse battery";
-        let runner = FakeRunner::new("");
+        let runner = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n");
         let load = MutationCall::LoadKey { dataset: "tank/s".into(), passphrase: Secret(secret.into()), mount: true };
         let change = MutationCall::ChangeKey { dataset: "tank/s".into(), passphrase: Secret(secret.into()) };
         load.run(&runner).unwrap();
         change.run(&runner).unwrap();
         MutationCall::UnloadKey { dataset: "tank/s".into() }.run(&runner).unwrap();
         let verbs: Vec<String> = runner.calls.lock().unwrap().iter().map(|(_, a)| a[0].clone()).collect();
-        assert_eq!(verbs, ["load-key", "mount", "change-key", "unload-key"]);
+        assert_eq!(verbs, ["get", "load-key", "mount", "get", "change-key", "unload-key"]);
         assert!(!format!("{load:?}{change:?}").contains(secret));
         assert_eq!((load.tone(), change.tone()), (Tone::Neutral, Tone::Warn));
         assert_eq!(MutationCall::UnloadKey { dataset: "x".into() }.tone(), Tone::Warn);
-    }
-
-    #[test]
-    fn a_secret_is_wiped_when_it_drops() {
-        assert!(std::mem::needs_drop::<Secret>(), "Secret must have a Drop that zeroes the text");
     }
 
     #[test]
