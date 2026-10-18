@@ -46,6 +46,12 @@ impl App {
     // Enter with nothing selected, and every other key, change nothing.
     fn confirm_key(&mut self, key: KeyCode, prompt: String, action: PendingAction, choice: Option<bool>) -> Option<PendingAction> {
         match (key, choice) {
+            // An add whose layout the host has not shown yet waits: the question is about what the pool will look like.
+            (KeyCode::Enter, Some(true)) if matches!(action.call, MutationCall::AddVdev { .. }) && prompt.contains(super::forms::CHECKING_LAYOUT) => {
+                self.status_message = Some("Waiting for the host to show the resulting layout; press Enter again in a moment".to_string());
+                self.modal = Some(Modal::Confirm { prompt, action, choice: Some(true) });
+                None
+            }
             (KeyCode::Enter, Some(true)) => {
                 self.confirm_restore = None;
                 Some(action)
@@ -179,6 +185,7 @@ impl App {
                 Err(msg) => self.reject(form, msg),
             },
             FormKind::EditDatasetProperty { ref key, .. } if crate::zfs::quota::KEYS.contains(&key.as_str()) => self.submit_quota_form(form),
+            FormKind::EditDatasetProperty { ref key, .. } if key == "special_small_blocks" => self.submit_small_blocks_form(form),
             FormKind::ShareSmb { .. } => match build_smb_action(&form.kind, &form.fields, &self.shares) {
                 Ok(action) => Some(action),
                 Err(msg) => self.reject(form, msg),
@@ -217,6 +224,29 @@ impl App {
         };
         let shown = new.map_or_else(String::new, |n| format!(" ({})", crate::zfs::quota::format_size(n)));
         let prompt = format!("On {}:\n  zfs set {key}={value}{shown} {dataset}\n\n{why} Set it? (y/n)", self.hosts.get(host).map_or("?", String::as_str));
+        self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+        None
+    }
+
+    /// `special_small_blocks`: blocks this size and smaller of the dataset's files go to the pool's special vdev. A value that
+    /// reaches the dataset's recordsize puts all of its data there, which the question says.
+    fn submit_small_blocks_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let FormKind::EditDatasetProperty { host, dataset, key } = form.kind.clone() else { return None };
+        let bytes = match crate::zfs::vdev_role::parse_small_blocks(field_value(&form.fields, 0)) {
+            Ok(n) => n,
+            Err(msg) => return self.reject(form, msg),
+        };
+        let recordsize = self.dataset_properties.iter().find(|p| p.name == "recordsize").and_then(|p| p.value.parse::<u64>().ok()).unwrap_or(0);
+        let why = if bytes > 0 && recordsize > 0 && bytes >= recordsize {
+            "This is at least the recordsize: ALL of this dataset's data goes to the special vdev, and fills it. Only new writes are affected."
+        } else if bytes == 0 {
+            "New writes put only metadata on the special vdev."
+        } else {
+            "New writes of blocks this size and smaller go to the special vdev; existing data stays where it is."
+        };
+        let action = PendingAction { host, section: crate::ui::Section::DatasetProperties, call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: key.clone(), value: bytes.to_string() } };
+        let prompt = format!("On {}:\n  zfs set {key}={bytes} {dataset}\n\n{why} Set it? (y/n)", self.hosts.get(host).map_or("?", String::as_str));
         self.confirm_restore = Some((prompt.clone(), form.into_modal()));
         self.modal = Some(Modal::Confirm { choice: None, prompt, action });
         None
@@ -304,7 +334,17 @@ impl App {
             return self.reject(form, msg);
         };
         if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
-            self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+            let adding = match (&action.call, super::forms::add_vdev_request(&form.kind, &form.fields)) {
+                (MutationCall::AddVdev { pool, vdev_spec }, Ok((_, _, role))) => Some((pool.clone(), vdev_spec.clone(), role)),
+                _ => None,
+            };
+            let modal = form.into_modal();
+            self.confirm_restore = Some((prompt.clone(), modal.clone()));
+            // The host is asked what the layout would be; the confirm shows it when it answers.
+            if let Some((pool, spec, role)) = adding {
+                self.add_check_ids += 1;
+                self.pending_add_checks.push(super::AddCheck { id: self.add_check_ids, host: action.host, pool, spec, role, form: modal });
+            }
             self.modal = Some(Modal::Confirm { choice: None, prompt, action });
             return None;
         }

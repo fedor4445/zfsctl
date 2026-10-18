@@ -50,7 +50,8 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 |---|---|
 | `o / O` | offline / online the selected disk |
 | `x` | replace the selected disk |
-| `a` | add a vdev/mirror/raidz group |
+| `a` | add a vdev/mirror/raidz group, or a log, cache, special, dedup or spare device |
+| `X` | remove the selected log, cache or spare device (a plain question first) |
 
 ## Pool/Dataset properties pane
 

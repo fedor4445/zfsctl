@@ -114,6 +114,22 @@ fn flatten_permissions_snapshot(snapshot: &crate::zfs::permission::PermissionsSn
     rows
 }
 
+/// A vdev add waiting for its dry run: what is being added to which pool on which host, and the form it came from (to give
+/// back when the host refuses it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddCheck {
+    /// Tells two asks with the same host, pool and spec apart (decline, change nothing, submit again).
+    pub id: u64,
+    pub host: usize,
+    pub pool: String,
+    pub spec: Vec<String>,
+    pub role: crate::zfs::vdev_role::Role,
+    pub form: Modal,
+}
+
+/// How long a confirm waits for the host's `zpool add -n` layout.
+const ADD_CHECK_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Each variant carries the index (into `App::hosts`) of the host the
 /// result is *about*, so a slow result for a host the user has since
 /// navigated away from can be told apart from a fresh one instead of
@@ -179,6 +195,8 @@ pub struct PendingPruneCheck {
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
+    /// The dry run (`zpool add -n`) of a vdev add finished: the layout it would give, or the host's own refusal.
+    AddChecked(AddCheck, std::result::Result<String, String>),
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
     AlertsPreview(String),
     /// A check of one host from the Hosts section finished: the host and the line to show.
@@ -461,6 +479,9 @@ pub struct App {
     pub pending_prune_check: Vec<PendingPruneCheck>,
     /// Hosts whose disks and shares `c` in Hosts asked to check; the event loop hands each its runner.
     pub pending_host_checks: Vec<String>,
+    /// Vdev adds whose dry run the event loop hands a runner (see `start_add_check`).
+    pub pending_add_checks: Vec<AddCheck>,
+    pub add_check_ids: u64,
     /// A check of one host is running from here.
     pub host_check_running: bool,
     /// Lowercased names currently being probed (submitted, not yet
@@ -595,6 +616,8 @@ impl App {
             prune_check: None,
             pending_prune_check: Vec::new(),
             pending_host_checks: Vec::new(),
+            pending_add_checks: Vec::new(),
+            add_check_ids: 0,
             host_check_running: false,
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
@@ -957,6 +980,33 @@ impl App {
         self.status_error = None;
         self.status_message = Some(format!("Checking {host}..."));
         self.pending_host_checks.push(host);
+    }
+
+    /// Runs `zpool add -n` for a queued vdev add on a worker thread; the answer reaches `on_add_checked`. A host that does not
+    /// answer within `ADD_CHECK_DEADLINE` gives the form back with that said, so a confirm never waits for its layout forever.
+    pub fn start_add_check(&mut self, check: AddCheck, runner: Arc<dyn CommandRunner>) {
+        self.start_add_check_with(check, runner, ADD_CHECK_DEADLINE);
+    }
+
+    pub fn start_add_check_with(&mut self, check: AddCheck, runner: Arc<dyn CommandRunner>, deadline: Duration) {
+        let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let (tx, check, answered) = (self.tx.clone(), check.clone(), Arc::clone(&answered));
+            std::thread::spawn(move || {
+                std::thread::sleep(deadline);
+                if !answered.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let _ = tx.send(WorkerMsg::AddChecked(check, Err(format!("the host did not answer the layout check within {} s", deadline.as_secs().max(1)))));
+                }
+            });
+        }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let spec: Vec<&str> = check.spec.iter().map(String::as_str).collect();
+            let result = crate::zfs::pool::add_vdev_dry_run(runner.as_ref(), &check.pool, &spec).map_err(|e| e.to_string());
+            if !answered.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let _ = tx.send(WorkerMsg::AddChecked(check, result));
+            }
+        });
     }
 
     /// Runs both checks on `host` in the background, with the same code as the daemon's daily pass, and merges the answers
@@ -1504,12 +1554,15 @@ impl App {
             {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
-                        let guided = crate::zfs::quota::KEYS.contains(&prop.name.as_str());
+                        let blocks = prop.name == "special_small_blocks";
+                        let guided = crate::zfs::quota::KEYS.contains(&prop.name.as_str()) || blocks;
                         if guided && matches!(prop.name.as_str(), "quota" | "refquota") && self.dataset_properties.iter().any(|p| p.name == "type" && p.value == "volume") {
                             self.status_message = Some(format!("'{}' does not apply to a volume: it has its volsize and the reservations", prop.name));
                         } else if prop.source.is_editable() {
                             // A size is shown as 10G (or none) and typed the same way; the exact bytes are sent.
-                            let (label, value) = if guided {
+                            let (label, value) = if blocks {
+                                ("special_small_blocks (0, 4K, 32K ... 16M)".to_string(), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "0".to_string(), crate::zfs::quota::format_size))
+                            } else if guided {
                                 (format!("{} (10G, 500M, none)", prop.name), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "none".to_string(), crate::zfs::quota::format_size))
                             } else {
                                 (prop.name.clone(), prop.value.clone())
@@ -1622,6 +1675,18 @@ impl App {
             KeyCode::Char('O') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 self.open_vdev_confirm(true);
             }
+            KeyCode::Char('X') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                let Some(pool) = self.drilled_pool.clone() else { return true };
+                let picked = self.vdevs_table.selected().and_then(|i| crate::zfs::pool::removable_device(&self.vdevs, i));
+                match picked {
+                    Some((device, class)) => {
+                        let host = self.hosts.get(self.selected_host).map_or("?", String::as_str);
+                        let prompt = format!("On {host}:\n  zpool remove {pool} {device}\n\nThe {class} device is taken out of the pool; it can be added again later. Remove it? (y/n)");
+                        self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Vdevs, call: MutationCall::RemoveVdev { pool, device } } });
+                    }
+                    None => self.status_message = Some("only a log, cache or spare device can be removed here (select its row)".to_string()),
+                }
+            }
             KeyCode::Char('x') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 if let Some(i) = self.vdevs_table.selected() {
                     if let Some(vdev) = self.vdevs.get(i) {
@@ -1645,7 +1710,7 @@ impl App {
                 let Some(pool) = self.drilled_pool.clone() else { return true };
                 self.modal = Some(Modal::Form {
                     title: format!("Add vdev to pool '{pool}'"),
-                    fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3)".to_string(), value: String::new() }],
+                    fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3, log da4, cache da5, special mirror da6 da7, spare da8; -f first to force)".to_string(), value: String::new() }],
                     focused: 0,
                     description: None,
                     kind: FormKind::AddVdev { host: self.selected_host, pool },
@@ -2451,7 +2516,8 @@ impl App {
                     title: format!("Add vdev from {} selected disk(s)", disks.len()),
                     fields: vec![
                         FormField { label: "Target pool name".to_string(), value: String::new() },
-                        FormField { label: "Redundancy (blank=stripe, or mirror/raidz1/raidz2/raidz3)".to_string(), value: String::new() },
+                        FormField { label: "Role (data, log, cache, special, dedup, spare)".to_string(), value: "data".to_string() },
+                        FormField { label: "Redundancy (blank=stripe, or mirror/raidz1/raidz2/raidz3; special and dedup default to mirror)".to_string(), value: String::new() },
                     ],
                     focused: 0,
                     description: Some(self.selected_disk_identities(&disks)),
@@ -3267,7 +3333,8 @@ Pools
 Vdevs (inside a drilled-into pool)
   o / O            offline / online the selected disk
   x                replace the selected disk
-  a                add a vdev/mirror/raidz group
+  a                add a vdev/mirror/raidz group, or a log, cache, special, dedup or spare device
+  X                remove the selected log, cache or spare device
 
 Pool/Dataset properties pane
   Enter            edit the selected property

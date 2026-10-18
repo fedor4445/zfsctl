@@ -42,6 +42,7 @@ impl App {
                 WorkerMsg::HostHealth(name, probe) => self.on_host_health(name, probe),
                 WorkerMsg::HostProbe(name, target, result) => self.on_host_probe(name, target, result),
                 WorkerMsg::AlertsPreview(text) => self.on_alerts_preview(text),
+                WorkerMsg::AddChecked(check, result) => self.on_add_checked(check, result),
                 WorkerMsg::HostChecked(_, line) => {
                     self.host_check_running = false;
                     self.status_message = Some(line);
@@ -51,6 +52,37 @@ impl App {
             }
         }
         refreshes_needed
+    }
+
+    /// The dry run of a vdev add answered. If its confirm is still on screen it now shows the layout; if the host refused the
+    /// add, the confirm gives way to the form again with the host's own message. A confirm that is gone (declined, or another
+    /// one opened) ignores a late answer.
+    pub fn on_add_checked(&mut self, check: super::AddCheck, result: std::result::Result<String, String>) {
+        let still_asked = matches!(&self.modal, Some(Modal::Confirm { action, .. })
+            if matches!(&action.call, crate::ui::modal::MutationCall::AddVdev { pool, vdev_spec } if *pool == check.pool && *vdev_spec == check.spec) && action.host == check.host)
+            && self.add_check_ids == check.id;
+        if !still_asked {
+            return;
+        }
+        match result {
+            Ok(layout) => {
+                let host = self.hosts.get(check.host).map_or("?", String::as_str).to_string();
+                let prompt = super::forms::add_vdev_prompt(&host, &check.pool, &check.spec, check.role, Some(&layout));
+                if let Some(Modal::Confirm { prompt: shown, .. }) = &mut self.modal {
+                    shown.clone_from(&prompt);
+                }
+                if let Some((restore_prompt, _)) = &mut self.confirm_restore {
+                    *restore_prompt = prompt;
+                }
+            }
+            Err(message) => {
+                self.modal = Some(check.form);
+                self.confirm_restore = None;
+                // zpool's refusals run over several lines ("invalid vdev specification / use '-f' to override ..."): one line
+                // keeps the hint on the status bar.
+                self.set_error(message.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | "));
+            }
+        }
     }
 
     fn on_pools(&mut self, host: usize, result: Result<Vec<Pool>>, refreshes_needed: &mut Vec<Section>) {

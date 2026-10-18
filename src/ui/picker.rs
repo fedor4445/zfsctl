@@ -143,6 +143,8 @@ const FAILMODES: &[&str] = &["wait", "continue", "panic"];
 /// The redundancy field of the two "from selected disks" forms. Blank means a plain stripe,
 /// which is not a pickable value, so it stays a matter of leaving the field empty.
 const REDUNDANCY: &[&str] = &["mirror", "raidz1", "raidz2", "raidz3"];
+/// What a disk added to a pool can be (`zfs::vdev_role::Role`).
+const ROLES: &[&str] = &["data", "log", "cache", "special", "dedup", "spare"];
 
 /// The pool properties whose value is one of a fixed few, so F2 can offer them. Anything
 /// else (`comment`, `bootfs`, `cachefile`, ...) is free text and gets no picker.
@@ -169,7 +171,9 @@ pub fn vocabulary_for(kind: &FormKind, field_index: usize) -> Option<(&'static [
         (FormKind::AddAclEntry { .. }, 2) => Some((ACL_FLAGS, true)),
         (FormKind::AddAclEntry { .. }, 3) => Some((ACL_TYPES, false)),
         (FormKind::EditPoolProperty { key, .. }, 0) => pool_property_values(key).map(|v| (v, false)),
-        (FormKind::CreatePoolFromDisks { .. } | FormKind::AddVdevFromDisks { .. }, 1) => Some((REDUNDANCY, false)),
+        (FormKind::CreatePoolFromDisks { .. }, 1) => Some((REDUNDANCY, false)),
+        (FormKind::AddVdevFromDisks { .. }, 1) => Some((ROLES, false)),
+        (FormKind::AddVdevFromDisks { .. }, 2) => Some((REDUNDANCY, false)),
         _ => None,
     }
 }
@@ -285,13 +289,15 @@ mod tests {
 
     #[test]
     fn the_redundancy_field_of_both_from_disks_forms_offers_the_layouts_but_the_name_field_does_not() {
-        for kind in [
-            FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string()] },
-            FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".to_string()] },
-        ] {
-            assert_eq!(vocabulary_for(&kind, 1), Some((&["mirror", "raidz1", "raidz2", "raidz3"][..], false)));
-            assert_eq!(vocabulary_for(&kind, 0), None);
-        }
+        let redundancy = Some((&["mirror", "raidz1", "raidz2", "raidz3"][..], false));
+        let create = FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string()] };
+        let add = FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".to_string()] };
+        assert_eq!(vocabulary_for(&create, 1), redundancy);
+        // the Add vdev form has a Role field before the redundancy
+        assert_eq!(vocabulary_for(&add, 1), Some((&["data", "log", "cache", "special", "dedup", "spare"][..], false)));
+        assert_eq!(vocabulary_for(&add, 2), redundancy);
+        assert_eq!(vocabulary_for(&create, 0), None);
+        assert_eq!(vocabulary_for(&add, 0), None);
     }
 
     #[test]

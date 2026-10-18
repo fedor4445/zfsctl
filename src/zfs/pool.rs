@@ -266,12 +266,67 @@ pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -
     Ok(())
 }
 
+/// Splits a raw vdev spec into the options typed before the vdevs (`-f`, `-o ashift=12`) and the vdevs themselves: the options
+/// must come before the pool name (OmniOS's `zpool` reads nothing as an option after a pool), the vdevs after it.
+fn split_leading_flags<'a>(spec: &'a [&'a str]) -> (&'a [&'a str], &'a [&'a str]) {
+    let mut end = 0;
+    while let Some(word) = spec.get(end) {
+        if !word.starts_with('-') {
+            break;
+        }
+        end += if matches!(*word, "-o" | "-O") { 2 } else { 1 };
+    }
+    let end = end.min(spec.len());
+    spec.split_at(end)
+}
+
+/// The class a vdev row belongs to, from the depth-0 heading above it (`logs`, `cache`, `spares`, `special`, `dedup`), and the
+/// device to give `zpool remove` when this row is a log, cache or spare device at the top level (a log mirror as a whole, a
+/// single log disk, one cache or spare leaf). Anything else (data, special, dedup, the leaves of a log mirror) is `None`.
+pub fn removable_device(lines: &[VdevLine], index: usize) -> Option<(String, &'static str)> {
+    let line = lines.get(index)?;
+    if line.depth != 1 {
+        return None;
+    }
+    // The first depth-0 line is the pool itself (a pool may be called `cache` or `special`); only later ones are class headings.
+    let pool_line = lines.iter().position(|l| l.depth == 0)?;
+    let class = lines[..index].iter().enumerate().rev().find(|(i, l)| l.depth == 0 && *i > pool_line).map(|(_, l)| l.name.as_str())?;
+    let class = match class {
+        "logs" => "log",
+        "cache" => "cache",
+        "spares" => "spare",
+        _ => return None,
+    };
+    Some((line.name.clone(), class))
+}
+
+/// `zpool remove`: takes a log, cache or spare device out of the pool.
+pub fn remove_vdev(runner: &dyn CommandRunner, pool: &str, device: &str) -> Result<()> {
+    super::run_checked(runner, "zpool", &["remove", "--", pool, device], &format!("zpool remove {pool} {device}"))?;
+    Ok(())
+}
+
+/// `zpool add -n`: what the pool would look like after adding `vdev_spec`, without changing anything. Options come before the
+/// pool, as OmniOS's `zpool` wants.
+pub fn add_vdev_dry_run(runner: &dyn CommandRunner, pool: &str, vdev_spec: &[&str]) -> Result<String> {
+    let (flags, rest) = split_leading_flags(vdev_spec);
+    let mut args = vec!["add", "-n"];
+    args.extend_from_slice(flags);
+    args.extend(["--", pool]);
+    args.extend_from_slice(rest);
+    let out = super::run_checked(runner, "zpool", &args, &format!("zpool add -n {pool} {}", vdev_spec.join(" ")))?;
+    Ok(out.stdout)
+}
+
 /// Adds a new top-level vdev/mirror/raidz group to an existing pool,
 /// e.g. `&["mirror", "da2", "da3"]`. Same raw-vdev-spec shape as
 /// `create_pool` — no guided wizard, this takes an already-built spec.
 pub fn add_vdev(runner: &dyn CommandRunner, pool: &str, vdev_spec: &[&str]) -> Result<()> {
-    let mut args = vec!["add", "--", pool];
-    args.extend_from_slice(vdev_spec);
+    let (flags, rest) = split_leading_flags(vdev_spec);
+    let mut args = vec!["add"];
+    args.extend_from_slice(flags);
+    args.extend(["--", pool]);
+    args.extend_from_slice(rest);
     super::run_checked(
         runner,
         "zpool",
@@ -612,6 +667,63 @@ errors: No known data errors
             calls[0],
             ("zpool".to_string(), vec!["add".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da2".to_string(), "da3".to_string()])
         );
+    }
+
+    fn lines(spec: &[(usize, &str)]) -> Vec<VdevLine> {
+        spec.iter().map(|(depth, name)| VdevLine { depth: *depth, name: (*name).to_string(), health: PoolHealth::Online }).collect()
+    }
+
+    #[test]
+    fn removable_device_covers_log_cache_and_spare_at_the_top_level_only() {
+        let v = lines(&[(0, "tank"), (1, "mirror-0"), (2, "da0"), (2, "da1"), (0, "logs"), (1, "mirror-1"), (2, "da2"), (2, "da3"), (1, "da4"), (0, "cache"), (1, "da5"), (0, "spares"), (1, "da6"), (0, "special"), (1, "mirror-2"), (2, "da7")]);
+        let at = |name: &str| v.iter().position(|l| l.name == name).unwrap();
+        assert_eq!(removable_device(&v, at("mirror-1")), Some(("mirror-1".to_string(), "log")), "a log mirror goes as a whole");
+        assert_eq!(removable_device(&v, at("da4")), Some(("da4".to_string(), "log")));
+        assert_eq!(removable_device(&v, at("da5")), Some(("da5".to_string(), "cache")));
+        assert_eq!(removable_device(&v, at("da6")), Some(("da6".to_string(), "spare")));
+        for no in ["tank", "mirror-0", "da0", "da2", "da3", "logs", "cache", "spares", "special", "mirror-2", "da7"] {
+            assert_eq!(removable_device(&v, at(no)), None, "{no} is not offered");
+        }
+        assert_eq!(removable_device(&v, 99), None);
+    }
+
+    #[test]
+    fn a_pool_named_like_a_class_heading_is_not_mistaken_for_one() {
+        for name in ["cache", "logs", "special", "dedup", "spares"] {
+            let v = lines(&[(0, name), (1, "da0"), (1, "da1")]);
+            assert_eq!(removable_device(&v, 1), None, "a data disk of pool '{name}'");
+            assert_eq!(removable_device(&v, 2), None);
+        }
+        let v = lines(&[(0, "cache"), (1, "da0"), (0, "logs"), (1, "da4")]);
+        assert_eq!(removable_device(&v, 3), Some(("da4".to_string(), "log")), "a real log of a pool called cache");
+    }
+
+    #[test]
+    fn remove_vdev_runs_zpool_remove_with_the_pool_before_the_device() {
+        let runner = FakeRunner::new("");
+        remove_vdev(&runner, "tank", "mirror-1").unwrap();
+        assert_eq!(runner.calls.lock().unwrap()[0].1, ["remove", "--", "tank", "mirror-1"].map(String::from));
+        assert!(remove_vdev(&FakeRunner::failing("cannot remove", 1), "tank", "da9").is_err());
+    }
+
+    #[test]
+    fn leading_flags_of_a_spec_go_before_the_pool_in_both_the_add_and_its_dry_run() {
+        let runner = FakeRunner::new("");
+        add_vdev(&runner, "tank", &["-f", "special", "mirror", "da6", "da7"]).unwrap();
+        add_vdev_dry_run(&runner, "tank", &["-f", "-o", "ashift=12", "log", "da4"]).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1, ["add", "-f", "--", "tank", "special", "mirror", "da6", "da7"].map(String::from));
+        assert_eq!(calls[1].1, ["add", "-n", "-f", "-o", "ashift=12", "--", "tank", "log", "da4"].map(String::from));
+    }
+
+    #[test]
+    fn the_dry_run_is_zpool_add_dash_n_with_options_before_the_pool() {
+        let runner = FakeRunner::new("would update 'tank' to the following configuration:");
+        let text = add_vdev_dry_run(&runner, "tank", &["log", "da4"]).unwrap();
+        assert!(text.starts_with("would update"));
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1, ["add", "-n", "--", "tank", "log", "da4"].map(String::from));
+        assert!(add_vdev_dry_run(&FakeRunner::failing("invalid vdev specification", 1), "tank", &["x"]).is_err());
     }
 
     #[test]

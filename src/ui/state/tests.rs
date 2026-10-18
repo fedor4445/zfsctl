@@ -2398,7 +2398,7 @@ fn disk_form_description(key: char) -> String {
     app.handle_key(KeyCode::Char(key));
     match &app.modal {
         Some(Modal::Form { description: Some(d), fields, .. }) => {
-            assert_eq!(fields.len(), 2, "fields unchanged");
+            assert_eq!(fields.len(), if key == 'a' { 3 } else { 2 }, "the Add vdev form gained a Role field");
             d.clone()
         }
         other => panic!("expected Form with description, got {other:?}"),
@@ -2502,7 +2502,8 @@ fn handle_key_a_in_disks_with_selection_opens_add_vdev_from_disks_form() {
     app.handle_key(KeyCode::Char('a'));
     match &app.modal {
         Some(Modal::Form { fields, kind, .. }) => {
-            assert_eq!(fields.len(), 2);
+            assert_eq!(fields.len(), 3, "pool, role, redundancy");
+            assert_eq!(fields[1].value, "data", "the role defaults to data, as before");
             assert_eq!(*kind, FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".to_string()] });
         }
         other => panic!("expected Form modal, got {other:?}"),
@@ -2577,6 +2578,7 @@ fn build_pending_action_add_vdev_from_disks() {
     let kind = FormKind::AddVdevFromDisks { host: 0, disks: vec!["da2".to_string(), "da3".to_string()] };
     let fields = vec![
         FormField { label: "Target pool name".to_string(), value: "tank".to_string() },
+        FormField { label: "Role".to_string(), value: "data".to_string() },
         FormField { label: "Redundancy".to_string(), value: "mirror".to_string() },
     ];
     let action = build_pending_action(&kind, &fields).unwrap();
@@ -2588,6 +2590,9 @@ fn build_pending_action_add_vdev_from_disks() {
             call: MutationCall::AddVdev { pool: "tank".to_string(), vdev_spec: vec!["mirror".to_string(), "da2".to_string(), "da3".to_string()] },
         }
     );
+    let mut as_log = fields.clone();
+    as_log[1].value = "log".to_string();
+    assert_eq!(build_pending_action(&kind, &as_log).unwrap().call, MutationCall::AddVdev { pool: "tank".to_string(), vdev_spec: vec!["log".into(), "mirror".into(), "da2".into(), "da3".into()] });
 }
 
 #[test]
@@ -7262,6 +7267,11 @@ fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result
 /// Enter on a finished irreversible form, then the confirmation's `y` and Enter.
 fn submit_and_confirm(app: &mut App) -> Option<PendingAction> {
     assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    // a vdev add waits for the host's layout before the question can be answered
+    if !app.pending_add_checks.is_empty() {
+        let check = app.pending_add_checks.remove(0);
+        app.on_add_checked(check, Ok("would update 'tank' to the following configuration:\n\n\ttank\n".to_string()));
+    }
     app.handle_modal_key(KeyCode::Char('y'));
     app.handle_modal_key(KeyCode::Enter)
 }
@@ -7295,6 +7305,9 @@ fn add_vdev_shows_the_exact_command_and_runs_only_after_y_then_enter() {
     }
     let prompt = submit_to_confirm(&mut app);
     assert!(prompt.contains("zpool add tank mirror da2 da3"), "{prompt}");
+    // the host shows the layout first; only then can the question be answered
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Ok("would update 'tank' to the following configuration:\n\n\ttank\n\t  mirror-0\n\t  mirror\n".to_string()));
     assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter with nothing selected does nothing");
     assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
     let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter runs it");
@@ -7339,11 +7352,16 @@ fn create_pool_forms_confirm_with_the_command_and_the_warning_about_the_disks() 
 fn the_from_disks_forms_confirm_too() {
     for kind in [FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }, FormKind::AddVdevFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] }] {
         let mut app = App::new(vec!["local".to_string()]);
-        let (a, b) = if matches!(kind, FormKind::CreatePoolFromDisks { .. }) { ("newpool", "mirror") } else { ("tank", "mirror") };
+        let fields = if matches!(kind, FormKind::CreatePoolFromDisks { .. }) {
+            vec![FormField { label: "a".into(), value: "newpool".into() }, FormField { label: "b".into(), value: "mirror".into() }]
+        } else {
+            vec![FormField { label: "a".into(), value: "tank".into() }, FormField { label: "role".into(), value: "data".into() }, FormField { label: "b".into(), value: "mirror".into() }]
+        };
+        let last = fields.len() - 1;
         app.modal = Some(Modal::Form {
             title: "t".to_string(),
-            fields: vec![FormField { label: "a".into(), value: a.into() }, FormField { label: "b".into(), value: b.into() }],
-            focused: 1,
+            fields,
+            focused: last,
             description: None,
             kind,
         });
@@ -7421,8 +7439,8 @@ fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_wh
     app.selected_host = 1;
     app.modal = Some(Modal::Form {
         title: "t".to_string(),
-        fields: vec![FormField { label: "pool".into(), value: "tank".into() }, FormField { label: "b".into(), value: "mirror".into() }],
-        focused: 1,
+        fields: vec![FormField { label: "pool".into(), value: "tank".into() }, FormField { label: "role".into(), value: "data".into() }, FormField { label: "b".into(), value: "mirror".into() }],
+        focused: 2,
         description: None,
         kind: FormKind::AddVdevFromDisks { host: 1, disks: vec!["da0".into(), "da1".into()] },
     });
@@ -9092,4 +9110,238 @@ fn zero_means_none_in_the_quota_form_and_the_prompt_shows_a_readable_size() {
         Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("quota=5368709120 (5G)"), "{prompt}"),
         other => panic!("expected a Confirm, got {other:?}"),
     }
+}
+
+/// The Add vdev form of the Disks section with the given selection, pool, role and redundancy, focused on its last field.
+fn add_from_disks(disks: &[&str], role: &str, redundancy: &str) -> App {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.modal = Some(Modal::Form {
+        title: "t".to_string(),
+        fields: vec![
+            FormField { label: "pool".into(), value: "tank".into() },
+            FormField { label: "role".into(), value: role.into() },
+            FormField { label: "redundancy".into(), value: redundancy.into() },
+        ],
+        focused: 2,
+        description: None,
+        kind: FormKind::AddVdevFromDisks { host: 0, disks: disks.iter().map(|d| (*d).to_string()).collect() },
+    });
+    app
+}
+
+#[test]
+fn a_single_disk_special_is_refused_before_anything_runs_and_the_form_stays_open() {
+    let mut app = add_from_disks(&["da4"], "special", "");
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("whole pool")), "{:?}", app.status_error);
+    assert!(app.pending_add_checks.is_empty());
+}
+
+#[test]
+fn a_log_add_confirms_plainly_and_asks_the_host_for_the_layout() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("zpool add tank log da4") && prompt.contains("Checking the resulting layout"), "{prompt}");
+    assert!(prompt.contains("can be removed again") && !prompt.contains("cannot be removed"), "a log is removable: {prompt}");
+    assert_eq!(app.pending_add_checks.len(), 1);
+    assert_eq!((app.pending_add_checks[0].pool.as_str(), app.pending_add_checks[0].spec.clone(), app.pending_add_checks[0].role), ("tank", vec!["log".to_string(), "da4".to_string()], crate::zfs::vdev_role::Role::Log));
+}
+
+#[test]
+fn the_dry_run_answer_puts_the_layout_into_the_confirm_and_a_special_stays_irreversible() {
+    let mut app = add_from_disks(&["da4", "da5"], "special", "");
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("cannot be removed again"), "{prompt}");
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Ok("would update 'tank' to the following configuration:\n\n\ttank  ONLINE\n\t  special\n\t    mirror".to_string()));
+    match &app.modal {
+        Some(Modal::Confirm { prompt, choice: None, .. }) => assert!(prompt.contains("would update 'tank'") && prompt.contains("special") && !prompt.contains("Checking the resulting"), "{prompt}"),
+        other => panic!("{other:?}"),
+    }
+    // declining still returns to the form
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "declining after the layout arrived still gives the form back: {:?}", app.modal);
+}
+
+#[test]
+fn a_host_that_refuses_the_dry_run_gives_the_form_back_with_its_own_message() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Err("command 'zpool add -n tank log da4' failed with status 1: /dev/da4 is part of active pool 'other'".to_string()));
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("part of active pool")), "{:?}", app.status_error);
+}
+
+#[test]
+fn a_dry_run_answer_for_a_confirm_that_is_gone_is_ignored() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let check = app.pending_add_checks.remove(0);
+    app.modal = None;
+    app.on_add_checked(check.clone(), Err("late".to_string()));
+    assert!(app.modal.is_none() && app.status_error.is_none(), "a late refusal must not reopen a form the user left");
+    // another confirm for a different add is not touched either
+    let mut other = add_from_disks(&["da9"], "cache", "");
+    submit_to_confirm(&mut other);
+    other.on_add_checked(check, Ok("layout".to_string()));
+    match &other.modal {
+        Some(Modal::Confirm { prompt, .. }) => assert!(prompt.contains("Checking the resulting layout"), "{prompt}"),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[test]
+fn the_raw_add_form_refuses_a_lone_special_disk_and_queues_the_dry_run_otherwise() {
+    let mut app = App::new(vec!["local".to_string()]);
+    pool_for_forms(&mut app);
+    app.vdevs = vec![VdevLine { depth: 1, name: "mirror-0".to_string(), health: crate::zfs::pool::PoolHealth::Online }];
+    app.vdevs_table.select(Some(0));
+    app.handle_key(KeyCode::Char('a'));
+    for c in "special da6".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })) && app.status_error.as_deref().is_some_and(|m| m.contains("whole pool")), "{:?}", app.status_error);
+    assert!(app.pending_add_checks.is_empty());
+    for _ in 0..20 {
+        app.handle_modal_key(KeyCode::Backspace);
+    }
+    for c in "special mirror da6 da7".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("zpool add tank special mirror da6 da7"), "{prompt}");
+    assert_eq!(app.pending_add_checks[0].role, crate::zfs::vdev_role::Role::Special);
+}
+
+#[test]
+fn capital_x_on_a_log_cache_or_spare_row_asks_y_n_with_the_command_and_removes_it() {
+    let mut app = App::new(vec!["local".to_string()]);
+    pool_for_forms(&mut app);
+    let line = |depth, name: &str| VdevLine { depth, name: name.to_string(), health: crate::zfs::pool::PoolHealth::Online };
+    app.vdevs = vec![line(0, "tank"), line(1, "da0"), line(0, "logs"), line(1, "da4"), line(0, "cache"), line(1, "da5")];
+    app.vdevs_table.select(Some(3));
+    app.handle_key(KeyCode::Char('X'));
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("zpool remove tank da4") && prompt.contains("log device"), "{prompt}");
+    assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter sends it");
+    assert_eq!(action.call, MutationCall::RemoveVdev { pool: "tank".into(), device: "da4".into() });
+}
+
+#[test]
+fn capital_x_on_a_data_device_says_it_is_not_offered_and_the_hint_follows_the_row() {
+    let mut app = App::new(vec!["local".to_string()]);
+    pool_for_forms(&mut app);
+    let line = |depth, name: &str| VdevLine { depth, name: name.to_string(), health: crate::zfs::pool::PoolHealth::Online };
+    app.vdevs = vec![line(0, "tank"), line(1, "da0"), line(0, "logs"), line(1, "da4")];
+    app.vdevs_table.select(Some(1));
+    let keys = |a: &App| crate::ui::hints::hints(a).iter().map(|h| h.key.to_string()).collect::<Vec<_>>();
+    assert!(!keys(&app).contains(&"X".to_string()));
+    app.handle_key(KeyCode::Char('X'));
+    assert!(app.modal.is_none() && app.status_message.as_deref().is_some_and(|m| m.contains("log, cache or spare")), "{:?}", app.status_message);
+    app.vdevs_table.select(Some(3));
+    assert!(keys(&app).contains(&"X".to_string()));
+}
+
+#[test]
+fn special_small_blocks_is_a_guided_form_that_warns_when_it_reaches_the_recordsize() {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    app.dataset_properties.push(Property { name: "special_small_blocks".into(), value: "0".into(), source: PropertySource::Default });
+    app.dataset_properties.push(Property { name: "recordsize".into(), value: "131072".into(), source: PropertySource::Default });
+    open_property(&mut app, "special_small_blocks");
+    let Some(crate::ui::modal::Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[0].value, "0");
+    assert!(submit_value(&mut app, "3K").is_none() && app.status_error.as_deref().is_some_and(|m| m.contains("power of two")), "{:?}", app.status_error);
+    assert!(submit_value(&mut app, "32K").is_none());
+    let action = confirm_limit_change(&mut app);
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "special_small_blocks".into(), value: "32768".into() });
+    open_property(&mut app, "special_small_blocks");
+    assert!(submit_value(&mut app, "128K").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("ALL of this dataset's data"), "{prompt}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn y_then_enter_waits_until_the_host_has_shown_the_layout() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    app.handle_modal_key(KeyCode::Char('y'));
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "no layout yet: the add does not go");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Waiting for the host")), "{:?}", app.status_message);
+    assert!(matches!(app.modal, Some(Modal::Confirm { choice: Some(true), .. })), "the y stays selected");
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Ok("would update 'tank'".to_string()));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "once the layout is on screen, Enter sends it");
+}
+
+#[test]
+fn a_host_that_never_answers_the_layout_check_gives_the_form_back_after_the_deadline() {
+    struct Hang;
+    impl CommandRunner for Hang {
+        fn run(&self, _: &str, _: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+        fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+    }
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let check = app.pending_add_checks.remove(0);
+    app.start_add_check_with(check, Arc::new(Hang), Duration::from_millis(100));
+    let end = Instant::now() + Duration::from_secs(2);
+    while matches!(app.modal, Some(Modal::Confirm { .. })) && Instant::now() < end {
+        app.drain_worker_messages();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("did not answer")), "{:?}", app.status_error);
+}
+
+#[test]
+fn a_refusal_with_several_lines_is_one_status_line_and_a_repeated_ask_is_told_apart_by_its_id() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let first = app.pending_add_checks.remove(0);
+    // decline and submit the same thing again: a new ask with a new id
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    app.handle_modal_key(KeyCode::Enter);
+    let second = app.pending_add_checks.remove(0);
+    assert_ne!(first.id, second.id);
+    app.on_add_checked(first, Err("stale".to_string()));
+    assert!(matches!(app.modal, Some(Modal::Confirm { .. })), "the first ask's answer must not touch the second confirm");
+    app.on_add_checked(second, Err("invalid vdev specification\nuse '-f' to override the following errors:\nmismatched replication level".to_string()));
+    assert_eq!(app.status_error.as_deref(), Some("invalid vdev specification | use '-f' to override the following errors: | mismatched replication level"));
+}
+
+#[test]
+fn the_layout_excerpt_shows_what_the_add_changes_not_the_whole_tree() {
+    use crate::zfs::vdev_role::Role;
+    let mut text = String::from("would update 'tank' to the following configuration:\n\n\ttank\n");
+    for i in 0..4 {
+        text.push_str(&format!("\t  raidz2-{i}\n"));
+        for d in 0..6 {
+            text.push_str(&format!("\t    da{}\n", i * 6 + d));
+        }
+    }
+    text.push_str("\tspecial\n\t  mirror\n\t    da30\n\t    da31\n\tcache\n\t  da40\n");
+    let special = super::forms::layout_excerpt(&text, Role::Special);
+    assert!(special.contains("would update 'tank'") && special.contains("special") && special.contains("da31"), "{special}");
+    assert!(!special.contains("raidz2-0") && !special.contains("da40"), "only the special section: {special}");
+    let cache = super::forms::layout_excerpt(&text, Role::Cache);
+    assert!(cache.contains("cache") && cache.contains("da40") && !cache.contains("da30"), "{cache}");
+    let data = super::forms::layout_excerpt(&text, Role::Data);
+    assert!(data.contains("raidz2-3") && data.contains("...") && !data.contains("special"), "the tail of the data vdevs: {data}");
+    assert_eq!(super::forms::layout_excerpt("no tabs here", Role::Log), "no tabs here");
 }

@@ -188,6 +188,19 @@ fn apply_pending_host_checks(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued vdev add its host's runner for the `zpool add -n` dry run.
+fn apply_pending_add_checks(app: &mut App, inventory: &HostInventory) {
+    for check in std::mem::take(&mut app.pending_add_checks) {
+        match inventory.hosts.get(check.host) {
+            Some(h) => app.start_add_check(check, h.runner.clone()),
+            None => {
+                let why = format!("unknown host #{}", check.host);
+                app.on_add_checked(check, Err(why));
+            }
+        }
+    }
+}
+
 /// Hands each queued Cloud lookup (remote list, bucket size) its host's runner.
 fn apply_pending_cloud(app: &mut App, inventory: &HostInventory) {
     for pending in std::mem::take(&mut app.pending_cloud) {
@@ -270,6 +283,7 @@ fn event_loop(
         apply_pending_pool_fetches(app, inventory);
         apply_pending_preflights(app, inventory);
         apply_pending_host_checks(app, inventory);
+        apply_pending_add_checks(app, inventory);
         apply_pending_cloud(app, inventory);
         apply_pending_prune_checks(app, inventory);
         poll_host_probes(app, inventory);
