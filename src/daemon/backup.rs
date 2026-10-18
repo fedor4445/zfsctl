@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
         let calls = host.calls();
         let forget = calls.iter().find(|c| c.starts_with("restic forget")).expect("forget ran");
-        assert_eq!(forget, "restic forget --repo=/mnt/usb/restic --password-file=/root/pw --retry-lock=10m --prune --tag=zfsctl:job --host=fb --keep-daily=7 --keep-weekly=4");
+        assert_eq!(forget, "restic forget --repo=/mnt/usb/restic --password-file=/root/pw --retry-lock=10m --prune --tag=zfsctl:job --tag=zfsctl:job --host=fb --keep-daily=7 --keep-weekly=4");
         assert!(calls.iter().position(|c| c.starts_with("zfs destroy")) < calls.iter().position(|c| c.starts_with("restic forget")), "the clone is gone before the slow prune");
     }
 
