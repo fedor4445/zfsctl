@@ -144,13 +144,14 @@ mod tests {
 
     #[test]
     fn a_program_in_an_added_directory_is_found_even_when_path_lacks_it() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let tool = dir.path().join("zit-probe-tool");
-        std::fs::write(&tool, "#!/bin/sh\necho found\n").unwrap();
-        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A link to an existing program, not a script written just now: executing a file another test thread still
+        // has open for writing fails with "Text file busy" when tests fork in parallel.
+        let echo = ["/bin/echo", "/usr/bin/echo"].into_iter().find(|p| std::path::Path::new(p).exists()).expect("an echo program");
+        std::os::unix::fs::symlink(echo, dir.path().join("zit-probe-tool")).unwrap();
         let extra = dir.path().to_string_lossy().into_owned();
         let mut command = Command::new("zit-probe-tool");
+        command.arg("found");
         with_extra_path(&mut command, &[extra.as_str()]);
         let out = command.output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "found");
