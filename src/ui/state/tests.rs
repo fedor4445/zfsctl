@@ -8783,7 +8783,7 @@ fn selecting_a_linux_host_dims_boot_envs_and_a_freebsd_host_restores_it() {
 
 #[test]
 fn a_dimmed_section_runs_no_command_when_refreshed_and_shows_no_stale_rows() {
-    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
     app.selected_host = 1;
     app.bootenvs = vec![be("left-from-the-hub", true, true, false, None)];
     app.shares = vec![crate::zfs::share::Share::Nfs { dataset: "tank/x".into(), raw: "on".into(), networks: vec![], hosts: vec![], read_only: false, root: None }];
@@ -8794,7 +8794,7 @@ fn a_dimmed_section_runs_no_command_when_refreshed_and_shows_no_stale_rows() {
     std::thread::sleep(Duration::from_millis(100));
     app.drain_worker_messages();
     assert!(app.bootenvs.is_empty() && app.shares.is_empty(), "the other host's rows are gone");
-    assert!(app.acl_unsupported().is_none() || app.acl_unsupported().is_some_and(|t| t.contains("illumos")));
+    assert!(app.acl_unsupported().is_none() || app.acl_unsupported().is_some_and(|t| t.contains("Linux")));
 }
 
 #[test]
@@ -8848,4 +8848,33 @@ fn choosing_a_host_from_the_dashboard_clears_the_previous_hosts_data() {
     app.handle_key(KeyCode::Enter);
     assert_eq!(app.selected_host, 1);
     assert!(!app.shares_loaded && app.nfs_available.is_none(), "what the hub's Shares screen loaded is not the new host's");
+}
+
+#[test]
+fn boot_envs_on_illumos_are_listed_with_beadm_and_read_only() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+    app.selected_host = 1;
+    go_to(&mut app, Section::BootEnvs);
+    assert!(app.current_section_supported() && app.bootenvs_read_only());
+    let beadm = "omnios-r151058s;e0a8;;;4186112;static;1789232809\nomnios-r151058w;c26a;NR;/;4240252928;static;1791728263\n";
+    app.refresh_bootenvs(std::sync::Arc::new(crate::exec::test_support::FakeRunner::new("").route("beadm", "list", beadm)));
+    for _ in 0..100 {
+        app.drain_worker_messages();
+        if !app.bootenvs.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(app.bootenvs.len(), 2, "{:?}", app.bootenvs);
+    assert!(app.bootenvs[1].flags.now && app.bootenvs[1].flags.reboot);
+    app.bootenvs_table.select(Some(1));
+    for key in ['n', 'a', 't', 'T', 'R', 'm', 'u', 'd', 'D'] {
+        app.handle_key(KeyCode::Char(key));
+        assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "{key} must do nothing on a read-only list");
+    }
+    let keys: Vec<&str> = crate::ui::hints::hints(&app).iter().map(|h| h.key).collect();
+    assert!(keys.contains(&"↑↓") && keys.contains(&"r"), "{keys:?}");
+    assert!(!keys.iter().any(|k| matches!(*k, "n" | "a" | "t" | "T" | "R" | "m" | "u" | "d" | "D")), "{keys:?}");
+    app.selected_host = 0;
+    assert!(!app.bootenvs_read_only(), "the FreeBSD host keeps every key");
 }
