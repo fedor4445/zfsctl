@@ -1331,6 +1331,17 @@ impl App {
     }
 
     /// See `selected_pool_name`.
+    /// Whether the key `L` (load), `U` (unload) or `C` (change) would do something on the selected dataset: the hints show
+    /// only the ones that would, instead of keys that just refuse.
+    pub fn key_applies(&self, op: char) -> bool {
+        let op = match op {
+            'L' => forms::KeyOp::Load,
+            'U' => forms::KeyOp::Unload,
+            _ => forms::KeyOp::Change,
+        };
+        self.selected_dataset_name().is_some_and(|n| forms::key_target(&self.encryption, &n, op).is_ok())
+    }
+
     pub fn selected_dataset_name(&self) -> Option<String> {
         self.datasets_table.selected().and_then(|i| self.datasets.get(i)).map(|d| d.name.clone())
     }
