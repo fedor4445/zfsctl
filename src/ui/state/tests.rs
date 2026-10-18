@@ -7220,11 +7220,11 @@ fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result
     let mut app = probes_app();
     let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os: None };
     let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
-    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None, resources: vec![], utc_offset_secs: None });
+    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), os: None, kind: None, resources: vec![], utc_offset_secs: None });
     let a = app.host_assessment(1);
     assert_eq!(a.level, crate::zfs::host_health::Level::Warning);
     assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
-    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None, resources: vec![], utc_offset_secs: None });
+    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), os: None, kind: None, resources: vec![], utc_offset_secs: None });
     assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
 }
 
