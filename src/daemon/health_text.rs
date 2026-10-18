@@ -358,7 +358,7 @@ mod tests {
     fn the_daily_report_lists_the_share_problems_after_the_disk_ones() {
         let dir = tempfile::tempdir().unwrap();
         let mut shares = crate::daemon::shares_check::SharesFile::default();
-        shares.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: t(0), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None });
+        shares.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: t(0), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None, nfs_name: None, smb_name: None });
         shares.save(&dir.path().join("shares.json")).unwrap();
         let lines = check_lines(dir.path());
         assert_eq!(lines.len(), 1);

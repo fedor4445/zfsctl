@@ -538,7 +538,7 @@ mod tests {
         smart.hosts.insert("h".into(), entry(vec![red_disk()]));
         smart.save(&dir.path().join("smart.json")).unwrap();
         let mut shares = SharesFile::default();
-        shares.hosts.insert("h".into(), SharesResult { checked_at: at("2026-10-16T03:30:00Z"), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None });
+        shares.hosts.insert("h".into(), SharesResult { checked_at: at("2026-10-16T03:30:00Z"), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None, nfs_name: None, smb_name: None });
         shares.save(&dir.path().join("shares.json")).unwrap();
         for runner in [down_host(), silent_host()] {
             merge_into(dir.path(), "h", &check_one_host(&runner, at(NOW), None, None));

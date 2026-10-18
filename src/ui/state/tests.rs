@@ -8559,7 +8559,7 @@ fn enter_on_a_resilver_line_selects_that_host_in_pools() {
 fn enter_on_a_share_line_selects_that_host_in_shares_and_the_marker_reaches_the_dashboard() {
     let (mut app, dir) = dash_app();
     let mut file = crate::daemon::shares_check::SharesFile::default();
-    file.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: chrono::Utc::now(), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None });
+    file.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: chrono::Utc::now(), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None, nfs_name: None, smb_name: None });
     file.save(&dir.path().join("shares.json")).unwrap();
     app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
     app.refresh_dashboard();
