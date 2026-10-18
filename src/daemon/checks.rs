@@ -430,7 +430,7 @@ mod tests {
             self.run(c, a)
         }
         fn run_unprivileged(&self, c: &str, a: &[&str]) -> Result<CommandOutput> {
-            self.run(c, a)
+            healthy().run_unprivileged(c, a)
         }
     }
 

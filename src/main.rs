@@ -135,7 +135,8 @@ fn admin(command: &Command, config: &config::Config) -> error::Result<i32> {
         Command::CheckHost { host, with, without } => (host, with, without, true),
         _ => unreachable!("admin() is only called for the two admin commands"),
     };
-    let features = exec::privilege::select(with, without)?;
+    // Unknown feature names are refused before anything is asked of the host; the OS-specific choice follows once it is known.
+    exec::privilege::select(with, without)?;
     let inventory = hosts::HostInventory::from_config(config);
     let Some(found) = inventory.get(host) else {
         let names: Vec<&str> = inventory.hosts.iter().map(|h| h.name.as_str()).collect();
@@ -145,11 +146,13 @@ fn admin(command: &Command, config: &config::Config) -> error::Result<i32> {
         println!("{host} is the hub: zfsctl runs as root here, so there is nothing to configure.");
         return Ok(0);
     };
+    let os = exec::sudoers::detect_os(found.runner.as_ref());
+    let features = exec::privilege::select_for_os(os, with, without)?;
     let result = if check {
         exec::sudoers::check_host_target(found.runner.as_ref(), host, target, &features).map(|report| (report.render(), report.exit_code()))
     } else {
         let generated = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        exec::sudoers::print_sudoers(found.runner.as_ref(), host, target, &features, &generated).map(|text| (text, 0))
+        exec::sudoers::print_sudoers(found.runner.as_ref(), host, target, os, &features, &generated).map(|text| (text, 0))
     };
     match result {
         Ok((text, code)) => {

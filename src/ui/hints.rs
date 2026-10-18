@@ -134,6 +134,8 @@ fn context_hints(app: &App) -> Vec<Hint> {
     let section = app.current_section();
     let right = app.pane_focus == PaneFocus::Right;
     match (section, right) {
+        // A section this host's OS has no equivalent for is dimmed: only the global hints below apply.
+        (s, _) if !app.section_supported(s) => {}
         (Section::Hosts, _) => {
             if !app.hosts.is_empty() {
                 v.push(h("↑↓", "Host", 1));
@@ -188,8 +190,10 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("s", "Snapshot", 2));
                 // Always advertised: when a share can't be created the key
                 // explains why (status message) instead of silently vanishing.
-                v.push(h("N", "NFS share", 3));
-                v.push(h("M", "SMB share", 3));
+                if app.section_supported(Section::Shares) {
+                    v.push(h("N", "NFS share", 3));
+                    v.push(h("M", "SMB share", 3));
+                }
                 v.push(h("J", "Snapshot job", 3));
             }
             v.push(h("r", "Refresh", 4));
@@ -601,7 +605,7 @@ mod tests {
         // Three lines of Needs attention: no heartbeat (the daemon is down), and a pool 85% full that was never scrubbed.
         let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: 85, frag_percent: None, errors: Some(0), scan: None, last_scrub: None };
         let name = a.hosts[0].clone();
-        a.host_probes.insert(name, crate::ui::state::HostProbeState { last: Some(crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![pool], kind: None }), ..Default::default() });
+        a.host_probes.insert(name, crate::ui::state::HostProbeState { last: Some(crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![pool], kind: None, os: None }), ..Default::default() });
         a.dashboard_table.select(selected.then_some(0));
         a
     }
@@ -632,6 +636,19 @@ mod tests {
         }
         let without = labels(&settings(0));
         assert!(without == [("r", "Refresh")] || without.iter().all(|(k, _)| *k != "Enter" && *k != "↑↓"), "{without:?}");
+    }
+
+    #[test]
+    fn a_dimmed_section_offers_only_the_global_hints() {
+        use crate::zfs::host_health::HostOs;
+        let mut a = base();
+        a.hosts = vec!["local".to_string(), "ub24".to_string()];
+        a.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Linux), ..Default::default() });
+        a.selected_host = 1;
+        go(&mut a, Section::BootEnvs);
+        let keys: Vec<&str> = hints(&a).iter().map(|h| h.key).collect();
+        assert!(!keys.contains(&"n") && !keys.contains(&"d") && !keys.contains(&"a") && !keys.contains(&"Enter"), "{keys:?}");
+        assert!(keys.contains(&"Tab") && keys.contains(&"q"), "the global hints stay: {keys:?}");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! This table is the one source for the generated sudoers line, the host check and the drift guards.
 
 use crate::error::{AppError, Result};
+use crate::zfs::host_health::HostOs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
@@ -31,6 +32,12 @@ impl Feature {
             Feature::Rclone => "rclone",
             Feature::Smart => "smart",
         }
+    }
+
+    /// Whether the feature's tools exist (and its jobs run) on a host running `os`. Only `core` (`zpool`, `zfs`) and `smart`
+    /// (`smartctl`) do on Linux and illumos so far.
+    pub fn works_on(self, os: HostOs) -> bool {
+        !matches!(os, HostOs::Linux | HostOs::Illumos) || matches!(self, Feature::Core | Feature::Smart)
     }
 
     pub fn parse(name: &str) -> Option<Feature> {
@@ -84,6 +91,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "sysctl", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "swapinfo", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "iostat", features: &[Feature::Core], kind: Kind::Unprivileged },
+    Entry { name: "lsblk", features: &[Feature::Disks], kind: Kind::Unprivileged },
     Entry { name: "showmount", features: &[Feature::Shares], kind: Kind::Unprivileged },
     Entry { name: "stat", features: &[Feature::Restic], kind: Kind::Unprivileged },
     Entry { name: "true", features: &[], kind: Kind::Unprivileged },
@@ -123,6 +131,25 @@ pub fn require_registered(name: &str, privileged: bool) -> Result<()> {
     } else {
         Err(AppError::Config(format!("{name} is not a registered remote command (add it to exec::privilege::ENTRIES)")))
     }
+}
+
+/// `select` for a host running `os`: FreeBSD (and a host whose OS is unknown) as before; Linux and illumos start from `core`
+/// alone, because the other features run FreeBSD's tools (`geom`, `bectl`, `service`, ...) or belong to jobs those hosts
+/// cannot run yet. Adding a feature the OS does not support is an error that names it; `smart` is allowed everywhere.
+pub fn select_for_os(os: HostOs, with: &[String], without: &[String]) -> Result<Vec<Feature>> {
+    if !matches!(os, HostOs::Linux | HostOs::Illumos) {
+        return select(with, without);
+    }
+    let parse = |name: &String| Feature::parse(name).ok_or_else(|| AppError::Config(format!("unknown feature '{name}'; valid features: {}", Feature::ALL.map(Feature::name).join(", "))));
+    let added: Vec<Feature> = with.iter().map(parse).collect::<Result<_>>()?;
+    let removed: Vec<Feature> = without.iter().map(parse).collect::<Result<_>>()?;
+    if let Some(f) = added.iter().find(|f| !f.works_on(os)) {
+        return Err(AppError::Config(format!("feature '{}' is not available on {} hosts", f.name(), os.word())));
+    }
+    if let Some(f) = added.iter().find(|f| removed.contains(f)) {
+        return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
+    }
+    Ok(Feature::ALL.into_iter().filter(|f| f.works_on(os) && (*f == Feature::Core || added.contains(f)) && !removed.contains(f)).collect())
 }
 
 /// The features a run covers: all but `restic`, `rclone` and `smart`, plus `with`, minus `without`.
@@ -236,6 +263,28 @@ mod tests {
         let all = select(&["restic".to_string()], &[]).unwrap();
         assert!(!names(unprivileged_for(&all)).contains(&"sh"));
         assert!(!names(unprivileged_for(&all)).contains(&"sudo"));
+    }
+
+    #[test]
+    fn select_for_os_defaults_linux_and_illumos_to_core_only_and_keeps_the_freebsd_defaults() {
+        use crate::zfs::host_health::HostOs;
+        for os in [HostOs::Linux, HostOs::Illumos] {
+            assert_eq!(select_for_os(os, &[], &[]).unwrap(), [Feature::Core], "{os:?}");
+        }
+        for os in [HostOs::FreeBsd, HostOs::Other] {
+            assert_eq!(select_for_os(os, &["restic".to_string()], &["acl".to_string()]).unwrap(), select(&["restic".to_string()], &["acl".to_string()]).unwrap(), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn with_a_feature_the_os_does_not_support_is_refused_with_its_name_and_smart_is_allowed() {
+        use crate::zfs::host_health::HostOs;
+        for name in ["bootenvs", "disks", "acl", "shares", "samba", "restic", "rclone"] {
+            let err = select_for_os(HostOs::Linux, &[name.to_string()], &[]).unwrap_err().to_string();
+            assert!(err.contains(name) && err.contains("Linux"), "{err}");
+        }
+        assert_eq!(select_for_os(HostOs::Illumos, &["smart".to_string()], &[]).unwrap(), [Feature::Core, Feature::Smart]);
+        assert!(select_for_os(HostOs::Linux, &["nope".to_string()], &[]).unwrap_err().to_string().contains("unknown feature"));
     }
 
     #[test]

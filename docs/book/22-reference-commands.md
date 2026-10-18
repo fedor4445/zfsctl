@@ -71,7 +71,7 @@ On a managed host the unprivileged account may run these programs as root throug
 | `rclone` | cloud mirror jobs (`--with rclone`) | any arguments |
 | `smartctl` | the daily disk health check (`--with smart`) | only `--scan -j` and `-j -H -A -i /dev/*` (the `*` also matches spaces, so an extra flag is not stopped; zfsctl sends only read-only flags) |
 
-Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat`, `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.
+Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` (also `iostat -En` for the Disks of an illumos host), `lsblk` (the Disks of a Linux host), `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.
 
 > **Safety:** `zfs`, `zpool`, `bectl`, `restic` and `rclone` are powerful: whoever holds the account's ssh key effectively has root on that host. That is the price of managing it remotely; keep the key safe and the account locked to key logins.
 

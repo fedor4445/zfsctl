@@ -290,7 +290,7 @@ mod tests {
     }
 
     fn probed_ok(name: &str) -> Probed {
-        Probed { name: name.into(), probe: Some(HostProbe::Reached { rtt_ms: 3, pools: vec![], kind: None }) }
+        Probed { name: name.into(), probe: Some(HostProbe::Reached { rtt_ms: 3, pools: vec![], kind: None, os: None }) }
     }
 
     fn probed_bad(name: &str) -> Probed {
@@ -518,7 +518,7 @@ mod tests {
         let mut m = monitor();
         let hosts = [host("a")];
         assert!(m.needs_kind("a"));
-        let probed = [Probed { name: "a".into(), probe: Some(HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Metal) }) }];
+        let probed = [Probed { name: "a".into(), probe: Some(HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Metal), os: None }) }];
         m.observe(t(0), local(0), &hosts, &probed, &[], &[], &mut FakeSink::new());
         assert!(!m.needs_kind("a"));
     }

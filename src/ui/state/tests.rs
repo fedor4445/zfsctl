@@ -4359,7 +4359,7 @@ fn help_documents_the_hosts_filter_key() {
 fn the_type_is_cached_once_seen_and_a_failed_probe_does_not_erase_it() {
     use crate::zfs::host_health::{HostKind, HostProbe};
     let mut app = App::new(vec!["local".into(), "a".into()]);
-    let reached = |kind| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind };
+    let reached = |kind| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind, os: None };
     app.tx.send(WorkerMsg::HostHealth("a".into(), reached(Some(HostKind::Vm("bhyve".into()))))).unwrap();
     app.drain_worker_messages();
     app.tx.send(WorkerMsg::HostHealth("a".into(), reached(None))).unwrap();
@@ -4372,7 +4372,7 @@ fn the_type_is_cached_once_seen_and_a_failed_probe_does_not_erase_it() {
 fn an_unknown_type_is_cached_so_it_is_not_asked_again() {
     use crate::zfs::host_health::{HostKind, HostProbe};
     let mut app = App::new(vec!["local".into(), "a".into()]);
-    app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Unknown) })).unwrap();
+    app.tx.send(WorkerMsg::HostHealth("a".into(), HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: Some(HostKind::Unknown), os: None })).unwrap();
     app.drain_worker_messages();
     assert!(app.host_probes["a"].kind.is_some());
 }
@@ -7202,7 +7202,7 @@ fn a_failed_job_of_that_host_warns_only_for_an_enabled_job_whose_latest_run_fail
     let mut app = probes_app();
     app.state_dir = dir.path().to_path_buf();
     app.refresh_jobs();
-    let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
+    let healthy = || crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os: None };
     for name in ["local", "fbsd16", "fbsd16t1"] {
         app.tx.send(WorkerMsg::HostHealth(name.to_string(), healthy())).unwrap();
     }
@@ -7218,13 +7218,13 @@ fn a_failed_job_of_that_host_warns_only_for_an_enabled_job_whose_latest_run_fail
 #[test]
 fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result() {
     let mut app = probes_app();
-    let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None };
+    let healthy = crate::zfs::host_health::HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os: None };
     let long_ago = Instant::now().checked_sub(Duration::from_secs(120)).unwrap();
-    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), kind: None, resources: vec![], utc_offset_secs: None });
+    app.host_probes.insert("fbsd16".to_string(), HostProbeState { last: Some(healthy.clone()), in_flight: true, finished_at: Some(long_ago), started_at: Some(long_ago), os: None, kind: None, resources: vec![], utc_offset_secs: None });
     let a = app.host_assessment(1);
     assert_eq!(a.level, crate::zfs::host_health::Level::Warning);
     assert!(a.reason.starts_with("no answer for "), "{}", a.reason);
-    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), kind: None, resources: vec![], utc_offset_secs: None });
+    app.host_probes.insert("fbsd16t1".to_string(), HostProbeState { last: Some(healthy), in_flight: true, finished_at: Some(long_ago), started_at: Some(Instant::now()), os: None, kind: None, resources: vec![], utc_offset_secs: None });
     assert_eq!(app.host_assessment(2).reason, "ok", "a probe that has only just started is normal");
 }
 
@@ -8202,7 +8202,7 @@ fn dash_app() -> (App, tempfile::TempDir) {
 
 fn reached_probe(capacity: u8) -> crate::zfs::host_health::HostProbe {
     let pool = crate::zfs::host_health::PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: capacity, frag_percent: None, errors: Some(0), scan: Some(crate::zfs::host_health::ScanSummary::Never), last_scrub: None };
-    crate::zfs::host_health::HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None }
+    crate::zfs::host_health::HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None, os: None }
 }
 
 #[test]
@@ -8719,4 +8719,133 @@ fn a_hung_manual_check_gives_up_at_its_deadline_and_frees_c_and_the_marker() {
     app.pending_host_checks.clear();
     app.handle_key(KeyCode::Char('c'));
     assert_eq!(app.pending_host_checks, ["fbsd16"], "c works again");
+}
+
+#[test]
+fn the_apps_host_os_follows_the_last_probe_that_detected_it() {
+    use crate::zfs::host_health::{HostOs, HostProbe};
+    let mut app = App::new(vec!["local".to_string(), "ub24".to_string()]);
+    assert_eq!(app.host_os(1), None, "not probed yet");
+    let reached = |os| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os };
+    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(Some(HostOs::Linux)))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.host_os(1), Some(HostOs::Linux));
+    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(None))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.host_os(1), Some(HostOs::Linux), "a later probe that did not ask does not make it forget");
+    assert_eq!(app.host_os(0), None);
+    assert_eq!(app.host_os(9), None, "no such host");
+}
+
+/// Two hosts: the hub (FreeBSD) and `ub24`, whose probe said it runs `os`.
+fn two_os_app(os: crate::zfs::host_health::HostOs) -> App {
+    use crate::zfs::host_health::{HostOs, HostProbe};
+    let mut app = App::new(vec!["local".to_string(), "ub24".to_string()]);
+    let reached = |os| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os: Some(os) };
+    app.tx.send(WorkerMsg::HostHealth("local".into(), reached(HostOs::FreeBsd))).unwrap();
+    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(os))).unwrap();
+    app.drain_worker_messages();
+    app
+}
+
+fn go_to(app: &mut App, section: Section) {
+    app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
+}
+
+/// A runner that must never be asked anything: a dimmed section runs no command.
+struct NoCalls;
+
+impl crate::exec::CommandRunner for NoCalls {
+    fn run(&self, cmd: &str, _: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        panic!("a dimmed section ran {cmd}")
+    }
+    fn run_with_stdin(&self, cmd: &str, a: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, a)
+    }
+    fn run_unprivileged(&self, cmd: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, a)
+    }
+}
+
+#[test]
+fn selecting_a_linux_host_dims_boot_envs_and_a_freebsd_host_restores_it() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
+    app.selected_host = 0;
+    assert!(app.section_supported(Section::BootEnvs));
+    app.selected_host = 1;
+    assert!(!app.section_supported(Section::BootEnvs) && !app.section_supported(Section::Shares) && !app.section_supported(Section::DatasetAcl));
+    assert!(app.section_supported(Section::Disks) && app.section_supported(Section::Pools));
+    go_to(&mut app, Section::BootEnvs);
+    assert!(!app.current_section_supported());
+    app.selected_host = 0;
+    assert!(app.current_section_supported(), "back on the FreeBSD host everything is offered again");
+}
+
+#[test]
+fn a_dimmed_section_runs_no_command_when_refreshed_and_shows_no_stale_rows() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+    app.selected_host = 1;
+    app.bootenvs = vec![be("left-from-the-hub", true, true, false, None)];
+    app.shares = vec![crate::zfs::share::Share::Nfs { dataset: "tank/x".into(), raw: "on".into(), networks: vec![], hosts: vec![], read_only: false, root: None }];
+    let runner: std::sync::Arc<dyn crate::exec::CommandRunner> = std::sync::Arc::new(NoCalls);
+    app.refresh_bootenvs(runner.clone());
+    app.refresh_shares(runner.clone());
+    app.refresh_dataset_acl(runner, "/tank/x".to_string());
+    std::thread::sleep(Duration::from_millis(100));
+    app.drain_worker_messages();
+    assert!(app.bootenvs.is_empty() && app.shares.is_empty(), "the other host's rows are gone");
+    assert!(app.acl_unsupported().is_none() || app.acl_unsupported().is_some_and(|t| t.contains("illumos")));
+}
+
+#[test]
+fn the_acl_tab_says_why_on_linux_and_keys_of_a_dimmed_section_are_inert() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
+    app.selected_host = 1;
+    go_to(&mut app, Section::Datasets);
+    app.datasets = vec![ds_named("ztest/data", Some("/ztest/data"))];
+    app.datasets_table.select(Some(0));
+    app.dataset_properties_for = Some("ztest/data".into());
+    assert!(app.acl_unsupported().is_some_and(|t| t.contains("Linux")), "{:?}", app.acl_unsupported());
+    go_to(&mut app, Section::BootEnvs);
+    app.handle_key(KeyCode::Char('n'));
+    assert!(app.modal.is_none(), "n in Boot Envs needs no selection, so only the guard stops it");
+    app.handle_key(KeyCode::Tab);
+    assert_ne!(app.current_section(), Section::BootEnvs, "navigation still works");
+}
+
+#[test]
+fn the_share_keys_in_datasets_do_nothing_on_a_host_without_shares_support_and_are_not_advertised() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+    app.selected_host = 1;
+    go_to(&mut app, Section::Datasets);
+    app.datasets = vec![ds_named("tank/data", Some("/tank/data"))];
+    app.datasets_table.select(Some(0));
+    // as left over from a FreeBSD host's Shares screen
+    (app.shares_loaded, app.nfs_available, app.samba_available) = (true, Some(true), Some(true));
+    app.handle_key(KeyCode::Char('N'));
+    app.handle_key(KeyCode::Char('M'));
+    assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "no share form, no zfs set sharenfs on an illumos host: {:?}", app.modal);
+    assert!(!crate::ui::hints::hints(&app).iter().any(|h| h.key == "N" || h.key == "M"), "the keys are not offered");
+    // a refresh of the dimmed section forgets what the other host's screen had loaded
+    app.refresh_shares(std::sync::Arc::new(NoCalls));
+    assert!(!app.shares_loaded);
+    // and the FreeBSD host still gets them
+    app.selected_host = 0;
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "N"));
+}
+
+#[test]
+fn choosing_a_host_from_the_dashboard_clears_the_previous_hosts_data() {
+    let (mut app, _dir) = dash_app();
+    app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(95)), ..HostProbeState::default() });
+    app.shares_loaded = true;
+    app.nfs_available = Some(true);
+    let items = app.dashboard().attention;
+    let index = items.iter().position(|i| i.subject == "fbsd16").expect("fbsd16 has a line");
+    for _ in 0..=index {
+        app.handle_key(KeyCode::Down);
+    }
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.selected_host, 1);
+    assert!(!app.shares_loaded && app.nfs_available.is_none(), "what the hub's Shares screen loaded is not the new host's");
 }
