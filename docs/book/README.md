@@ -1,20 +1,16 @@
 # The zfsctl Book
 
-A friendly guide to running ZFS on FreeBSD with zfsctl: a terminal tool that shows your pools, datasets, snapshots, disks and shares, runs your scheduled snapshots, replication and backups, and tells you when something needs attention.
+A guide to running ZFS with zfsctl: a terminal tool that shows your pools, datasets, snapshots, disks and shares, runs your scheduled snapshots, replication and backups, and tells you when something needs attention.
 
 ## Who this is for
 
-You run (or want to run) ZFS on FreeBSD, on one machine or several. You may be a long-time FreeBSD or ZFS user who wants one place to see and manage everything, or you may come from Linux or Windows and be meeting ZFS and FreeBSD for the first time. The book assumes you can use a terminal and install a package. It does not assume you know what a vdev is, what `rc.conf` does, or how FreeBSD names a disk: those are explained where you need them, and short notes point out what the familiar Linux or Windows thing is called here.
+You run ZFS on FreeBSD, Linux or illumos, on one machine or several. The book assumes you can use a terminal and install a package. FreeBSD-specific parts (`rc.conf`, `geom`, `bectl`, `pkg`) are explained where they come up.
 
 ## How to read it
 
 Read the first five chapters in order once; after that, jump to the chapter for the part of zfsctl you are using. Every chapter has the same shape: *What you will learn*, the body, *Try it*, and *Where next*.
 
 Boxes mark the things worth noticing:
-
-> **Coming from Linux:** a note on what the Linux tool or habit you know is called here.
-
-> **Coming from Windows:** the same for Windows.
 
 > **Safety:** said before anything that changes your data.
 

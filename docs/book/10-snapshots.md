@@ -115,8 +115,6 @@ Press `b` on a snapshot to roll its dataset back to that moment. You **type the 
 
 > **Safety:** a rollback **throws away everything written after the snapshot**, including any later snapshots. If you only need one old file, do not roll back: every snapshot is readable at `/<mountpoint>/.zfs/snapshot/<name>/`, so you can copy the file out. Use `b` when you really want the whole dataset to go back.
 
-> **Coming from Linux:** `/.zfs/snapshot/` is what makes this nicer than LVM snapshots: you browse an old version like a directory, with no mounting. **Coming from Windows:** this is the "Previous Versions" tab, as a folder.
-
 ## How scheduled snapshots are named
 
 A snapshot **job** (chapter 14) names its snapshots `<prefix>-<timestamp>`, for example `auto-20261010T020000Z`, and it only ever deletes snapshots with its own prefix when it applies its retention (`keep`). Your own snapshots, with other names, are never touched by a job. A backup job uses the newest snapshot with its prefix, which is why the two share a prefix.

@@ -4,15 +4,13 @@
 
 - How FreeBSD is organised, in just enough detail to use zfsctl comfortably.
 - The few commands you will use every day: `pkg`, `service`, `sysrc`, `geom` and friends.
-- How FreeBSD names disks, and how that differs from Linux.
+- How FreeBSD names disks.
 
 If you already run FreeBSD, skim the headings and move on to [Installing](04-installing.md). For depth, the [FreeBSD Handbook](https://docs.freebsd.org/en/books/handbook/) is excellent.
 
 ## One system, not a distribution
 
 FreeBSD is a complete operating system: kernel, libraries and basic tools come together from one project and are released together (the test hub in this book runs 15.1-RELEASE). Software you add yourself lives apart, under `/usr/local`: its programs in `/usr/local/bin`, its configuration in `/usr/local/etc`. The base system never touches `/usr/local`, and packages never touch the base. That is why zfsctl installs to `/usr/local/bin/zfsctl` and its configuration is `/usr/local/etc/zfsctl/config.toml`.
-
-> **Coming from Linux:** there is no "distribution" to choose. `/etc` holds the base system's configuration and `/usr/local/etc` the packages'. The `GENERIC` kernel and ZFS ship in the base system.
 
 ## Installing software with pkg
 
@@ -24,8 +22,6 @@ pkg upgrade              # upgrade installed packages
 ```
 
 On the test hub, `pkg info` shows `restic-0.19.1`, `rclone-1.75.1` and `msmtp-1.8.32`: the three extra tools zfsctl can use for backups and mail (chapters 15 and 16).
-
-> **Coming from Linux:** `pkg` is `apt` or `dnf`. **Coming from Windows:** think of `winget`, but it is how you install almost everything.
 
 ## Services: rc.conf, sysrc and service
 
@@ -39,10 +35,6 @@ sysrc zfsctl_enable          # what is the setting?
 ```
 
 On the test hub, `sysrc zfsctl_enable zfs_enable` prints `zfsctl_enable: YES` and `zfs_enable: YES`, and `ls /usr/local/etc/rc.d` shows the `zfsctl` script. A service is "enabled" only when `rc.conf` says `NAME_enable="YES"`.
-
-> **Coming from Linux:** `service NAME start|stop|status` works as you expect; `sysrc NAME_enable=YES` is `systemctl enable NAME`; `/etc/rc.conf` is the single file where all that lives. There is no `journalctl`: logs are plain files, mostly in `/var/log` (`/var/log/messages` first).
-
-> **Coming from Windows:** `service` is Services (`services.msc`), and `rc.conf` is the list of which ones start automatically.
 
 ## Disks have driver names
 
@@ -61,10 +53,6 @@ The test hub's disks are `ada0` (the system disk) and `ada1` to `ada4` (the disk
 geom disk list           # every disk with its size, model and serial
 zpool status             # which disks are in which pool
 ```
-
-> **Coming from Linux:** `geom disk list` is a more readable `lsblk`; there is no `/dev/disk/by-id`, so the serial number is your stable handle.
-
-> **Coming from Windows:** `ada1` is "Disk 1" in Disk Management.
 
 ## Users, root and sudo
 
