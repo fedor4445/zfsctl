@@ -6,7 +6,6 @@ use crate::smart::Disk;
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// How long one host may take: a scan and a read of each disk.
@@ -14,6 +13,19 @@ pub const HOST_DEADLINE: Duration = Duration::from_mins(2);
 /// How long `check_host` keeps asking disks before it marks the rest "not checked in time", so a slow host still
 /// reports what it did learn inside `HOST_DEADLINE`.
 pub const HOST_BUDGET: Duration = Duration::from_secs(100);
+
+/// Writes `text` to `path` through a temporary file of its own and a rename: a crash leaves the old file or the new
+/// one, and two writers (the daemon and a TUI) never share a temporary file, so neither can tear the other's.
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path.file_name().map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
+    let tmp = path.with_file_name(format!("{name}.tmp.{}.{}", std::process::id(), COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HostResult {
@@ -41,9 +53,7 @@ impl SmartFile {
 
     /// Writes through a temporary file and a rename, so a crash leaves the old file or the new one.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)?;
-        std::fs::rename(&tmp, path)
+        write_atomic(path, &serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
     }
 
     /// When the daily check last ran: the recorded run, else the newest host check. Only for deciding when to run again.
@@ -105,46 +115,6 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>, previous: Opti
     } else {
         Outcome::Checked(HostResult { checked_at: now, disks, error: None })
     }
-}
-
-/// Checks every host at once and waits until `deadline`; a host that has not answered then is `Failed`. A silent or
-/// failed host keeps the entry it had.
-pub fn run_all(hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, previous: &SmartFile, deadline: Duration) -> SmartFile {
-    let (tx, rx) = std::sync::mpsc::channel();
-    for (name, runner) in hosts {
-        let (tx, name, runner) = (tx.clone(), name.clone(), Arc::clone(runner));
-        let before = previous.hosts.get(&name).cloned();
-        // A thread that outlives the deadline is left to finish by itself, as the health probe's are.
-        std::thread::spawn(move || {
-            let _ = tx.send((name, check_host(runner.as_ref(), now, before.as_ref(), HOST_BUDGET.min(deadline))));
-        });
-    }
-    drop(tx);
-    let started = std::time::Instant::now();
-    let mut answers: BTreeMap<String, Outcome> = BTreeMap::new();
-    while answers.len() < hosts.len() {
-        let Some(left) = deadline.checked_sub(started.elapsed()) else { break };
-        match rx.recv_timeout(left) {
-            Ok((name, outcome)) => {
-                answers.insert(name, outcome);
-            }
-            Err(_) => break,
-        }
-    }
-    let mut file = SmartFile { ran_at: Some(now), ..SmartFile::default() };
-    for (name, _) in hosts {
-        let kept = |why: String| previous.hosts.get(name).map(|old| HostResult { error: Some(why), ..old.clone() });
-        let entry = match answers.remove(name) {
-            Some(Outcome::Checked(result)) => Some(result),
-            Some(Outcome::Silent) => kept("smartctl is no longer available on this host".to_string()),
-            Some(Outcome::Failed(why)) => kept(why),
-            None => kept(format!("no answer within {} s", deadline.as_secs())),
-        };
-        if let Some(entry) = entry {
-            file.hosts.insert(name.clone(), entry);
-        }
-    }
-    file
 }
 
 /// One host's problems in a form both the Dashboard and the daily report can print.
@@ -266,43 +236,6 @@ mod tests {
         assert!(matches!(check_host(&ssh_255, at("2026-10-17T03:30:00Z"), None, Duration::from_secs(60)), Outcome::Failed(_)));
     }
 
-    fn runners(list: Vec<(&str, Script)>) -> Vec<(String, Arc<dyn CommandRunner>)> {
-        list.into_iter().map(|(n, s)| (n.to_string(), Arc::new(s) as Arc<dyn CommandRunner>)).collect()
-    }
-
-    #[test]
-    fn a_failed_check_keeps_the_previous_result_and_records_the_error() {
-        let mut previous = SmartFile::default();
-        let old = HostResult { checked_at: at("2026-10-16T03:30:00Z"), disks: vec![Disk { dev: "ada0".into(), problems: vec![] }], error: None };
-        previous.hosts.insert("h".into(), old.clone());
-        let down = Script(Box::new(|_, _| Err(AppError::Config("no route".into()))));
-        let file = run_all(&runners(vec![("h", down)]), at("2026-10-17T03:30:00Z"), &previous, Duration::from_secs(5));
-        let kept = &file.hosts["h"];
-        assert_eq!((kept.checked_at, &kept.disks), (old.checked_at, &old.disks));
-        assert!(kept.error.as_deref().unwrap_or("").contains("no route"), "{kept:?}");
-        // and a host that has never answered gets no entry at all
-        let file = run_all(&runners(vec![("new", Script(Box::new(|_, _| Err(AppError::Config("no route".into())))))]), at("2026-10-17T03:30:00Z"), &SmartFile::default(), Duration::from_secs(5));
-        assert!(file.hosts.is_empty());
-    }
-
-    #[test]
-    fn a_silent_host_that_used_to_report_keeps_its_entry_with_a_note() {
-        let mut previous = SmartFile::default();
-        previous.hosts.insert("h".into(), HostResult { checked_at: at("2026-10-16T03:30:00Z"), disks: vec![], error: None });
-        let gone = Script(Box::new(|_, _| Ok(CommandOutput { stdout: String::new(), stderr: "sudo: smartctl: command not found".into(), status: 1 })));
-        let file = run_all(&runners(vec![("h", gone)]), at("2026-10-17T03:30:00Z"), &previous, Duration::from_secs(5));
-        assert!(file.hosts["h"].error.as_deref().unwrap_or("").contains("no longer"), "{:?}", file.hosts["h"]);
-    }
-
-    #[test]
-    fn a_run_is_dated_even_when_every_host_is_silent_so_it_is_not_repeated_every_few_minutes() {
-        let silent = Script(Box::new(|_, _| Ok(CommandOutput { stdout: String::new(), stderr: "sudo: a password is required".into(), status: 1 })));
-        let file = run_all(&runners(vec![("h", silent)]), at("2026-10-17T03:30:00Z"), &SmartFile::default(), Duration::from_secs(5));
-        assert!(file.hosts.is_empty());
-        assert_eq!(file.ran_at, Some(at("2026-10-17T03:30:00Z")));
-        assert_eq!(file.last_run(), Some(at("2026-10-17T03:30:00Z")));
-    }
-
     #[test]
     fn problems_groups_a_hosts_disks_in_one_entry_and_skips_healthy_hosts() {
         use crate::smart::Problem;
@@ -346,18 +279,6 @@ mod tests {
         assert_eq!(result.disks.len(), 2, "{result:?}");
         assert_eq!(result.disks[0].problems[0].text, "SMART health FAILED", "the disk that was answered keeps its verdict");
         assert!(result.disks[1].problems[0].text.contains("not checked in time"), "{:?}", result.disks[1]);
-    }
-
-    #[test]
-    fn a_hung_host_does_not_stop_the_others() {
-        let hung = Script(Box::new(|_, _| {
-            std::thread::sleep(Duration::from_secs(3));
-            out("", 0)
-        }));
-        let started = std::time::Instant::now();
-        let file = run_all(&runners(vec![("hung", hung), ("good", host(FAILING, HEALTHY))]), at("2026-10-17T03:30:00Z"), &SmartFile::default(), Duration::from_millis(500));
-        assert!(started.elapsed() < Duration::from_secs(2), "waited for the hung host");
-        assert!(file.hosts.contains_key("good") && !file.hosts.contains_key("hung"), "{file:?}");
     }
 
     #[test]

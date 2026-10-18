@@ -1,5 +1,6 @@
 //! `zfsctl daemon`: runs scheduled jobs on the hub, unattended.
 
+pub mod checks;
 pub mod cron;
 pub mod engine;
 pub mod health;
@@ -17,6 +18,7 @@ pub mod replicate_file;
 pub mod backup;
 pub mod mirror;
 pub mod scrub;
+pub mod shares_check;
 pub mod smart_check;
 pub mod snapshot;
 pub mod transfer;
@@ -378,29 +380,33 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
     }
 }
 
-/// Checks the disks of every host with `smartctl` once a day, at `at` (the hub's local time), and also at start when
-/// the last run is missing or over a day old. Nothing here depends on the health monitor being on.
-fn smart_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, at: Option<chrono::NaiveTime>) {
+/// Runs the daily checks (disks with `smartctl`, file sharing services) on every host once a day, at `at` (the hub's
+/// local time), and also at start when the last run is missing or over a day old. Nothing here depends on the health
+/// monitor being on. While it runs a marker file says so (the Dashboard shows a red notice); it does not start while a
+/// check of one host is running from the TUI, and tries again at its next wake.
+fn checks_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, at: Option<chrono::NaiveTime>) {
     let Some(at) = at else {
-        log("disk health check is off");
+        log("daily checks are off");
         return;
     };
-    log(&format!("disk health check daily at {}", at.format("%H:%M")));
+    log(&format!("daily checks (disks, shares) at {}", at.format("%H:%M")));
     let path = state_dir.join("smart.json");
     while !stop.load(Ordering::SeqCst) {
-        guarded("the disk health check", || {
-            let previous = smart_check::SmartFile::load(&path);
-            let last = previous.last_run().map(|t| t.with_timezone(&chrono::Local).naive_local());
+        guarded("the daily checks", || {
+            let last = smart_check::SmartFile::load(&path).last_run().map(|t| t.with_timezone(&chrono::Local).naive_local());
             if !smart_check::due(chrono::Local::now().naive_local(), Some(at), last) {
                 return;
             }
+            let Some(_running) = checks::RunGuard::start(state_dir, "daemon", None) else {
+                log("daily checks wait: another check is running");
+                return;
+            };
             let hosts = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
-            let fresh = smart_check::run_all(&hosts, Utc::now(), &previous, smart_check::HOST_DEADLINE);
-            let problems = fresh.hosts.values().flat_map(|h| &h.disks).filter(|d| !d.problems.is_empty()).count();
-            match fresh.save(&path) {
-                Ok(()) => log(&format!("disk health checked on {} of {} hosts, {problems} disk(s) with a problem", fresh.hosts.len(), hosts.len())),
-                Err(e) => log(&format!("cannot write {}: {e}", path.display())),
-            }
+            let summary = checks::run_pass(state_dir, &hosts, Utc::now(), smart_check::HOST_DEADLINE);
+            log(&format!(
+                "daily checks done: disks on {} of {} hosts, shares on {} of {} hosts, {} problem(s)",
+                summary.disks_hosts, summary.hosts, summary.shares_hosts, summary.hosts, summary.problems
+            ));
         });
         for _ in 0..300 {
             if stop.load(Ordering::SeqCst) {
@@ -469,14 +475,14 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         }
     }
 
-    match Config::load(config_path).map_err(|e| e.to_string()).and_then(|c| c.daemon.smart_time()) {
+    match Config::load(config_path).map_err(|e| e.to_string()).and_then(|c| c.daemon.daily_time()) {
         Ok(at) => {
             let (shared, state_dir, stop) = (Arc::clone(&shared), state_dir.clone(), Arc::clone(stop));
-            if let Err(e) = std::thread::Builder::new().name("smart".to_string()).spawn(move || smart_loop(&shared, &state_dir, &stop, at)) {
-                log(&format!("could not start the disk health check: {e}"));
+            if let Err(e) = std::thread::Builder::new().name("checks".to_string()).spawn(move || checks_loop(&shared, &state_dir, &stop, at)) {
+                log(&format!("could not start the daily checks: {e}"));
             }
         }
-        Err(problem) => log(&format!("config.toml [daemon] problem, the disk health check is off: {problem}")),
+        Err(problem) => log(&format!("config.toml [daemon] problem, the daily checks are off: {problem}")),
     }
 
     let mut last_problem: Option<String> = None;

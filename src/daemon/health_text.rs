@@ -186,6 +186,18 @@ pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile) -> Vec<String> {
     crate::daemon::smart_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.disks, utc(p.checked_at))).collect()
 }
 
+/// All the lines the daily report adds for the daemon's checks: disks first, then shares.
+pub fn check_lines(state_dir: &std::path::Path) -> Vec<String> {
+    let mut lines = disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")));
+    lines.extend(share_lines(&crate::daemon::shares_check::SharesFile::load(&state_dir.join("shares.json"))));
+    lines
+}
+
+/// The daily report's lines for hosts whose file sharing has a problem, from the daemon's `shares.json`.
+pub fn share_lines(file: &crate::daemon::shares_check::SharesFile) -> Vec<String> {
+    crate::daemon::shares_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at))).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String]) -> Message {
     let count = |want: &[Level]| rows.iter().filter(|r| want.contains(&r.level)).count();
@@ -340,6 +352,19 @@ mod tests {
         let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
         assert!(m.body.contains("  fbsd16: da1 reallocated sectors 8") && !m.body.contains("Nothing needs attention"), "{}", m.body);
         assert!(disk_lines(&crate::daemon::smart_check::SmartFile::default()).is_empty());
+    }
+
+    #[test]
+    fn the_daily_report_lists_the_share_problems_after_the_disk_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shares = crate::daemon::shares_check::SharesFile::default();
+        shares.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: t(0), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None });
+        shares.save(&dir.path().join("shares.json")).unwrap();
+        let lines = check_lines(dir.path());
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("fbsd16: NFS: 2 shares but nfsd is not running (checked "), "{}", lines[0]);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
+        assert!(m.body.contains("  fbsd16: NFS: 2 shares but nfsd is not running") && !m.body.contains("Nothing needs attention"), "{}", m.body);
     }
 
     #[test]

@@ -138,6 +138,9 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if !app.hosts.is_empty() {
                 v.push(h("↑↓", "Host", 1));
             }
+            if !app.hosts.is_empty() {
+                v.push(h("c", "Check disks and shares", 2));
+            }
             v.push(h("n", "Add host", 2));
             v.push(h("/", "Filter", 3));
             if !app.host_filter.is_empty() {
@@ -629,6 +632,17 @@ mod tests {
         }
         let without = labels(&settings(0));
         assert!(without == [("r", "Refresh")] || without.iter().all(|(k, _)| *k != "Enter" && *k != "↑↓"), "{without:?}");
+    }
+
+    #[test]
+    fn the_hosts_section_offers_c_for_a_host_and_other_sections_do_not() {
+        let mut a = base();
+        go(&mut a, Section::Hosts);
+        assert!(hints(&a).iter().any(|h| h.key == "c" && h.label == "Check disks and shares"));
+        a.hosts.clear();
+        assert!(!hints(&a).iter().any(|h| h.key == "c"), "no host, nothing to check");
+        go(&mut a, Section::Pools);
+        assert!(!hints(&a).iter().any(|h| h.key == "c" && h.label.starts_with("Check")));
     }
 
     #[test]

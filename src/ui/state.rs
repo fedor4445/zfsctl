@@ -181,6 +181,8 @@ pub struct PendingPruneCheck {
 pub enum WorkerMsg {
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
     AlertsPreview(String),
+    /// A check of one host from the Hosts section finished: the host and the line to show.
+    HostChecked(String, String),
     Pools(usize, Result<Vec<Pool>>),
     Datasets(usize, Result<Vec<Dataset>>),
     Snapshots(usize, Result<Vec<Snapshot>>),
@@ -320,6 +322,9 @@ pub struct App {
     pub settings_table: TableState,
     /// What the daemon's daily disk check found (`smart.json`), reloaded with the Dashboard.
     pub smart: crate::daemon::smart_check::SmartFile,
+    pub shares_check: crate::daemon::shares_check::SharesFile,
+    /// The check that is running now (a fresh `checks-running.json`), if any.
+    pub checks_marker: Option<crate::daemon::checks::Marker>,
     /// How often the list on screen reloads by itself; `None` is off. Set from `[ui]` at start and after a save in Settings.
     pub auto_refresh_interval: Option<Duration>,
     last_alerts_refresh: Option<Instant>,
@@ -449,6 +454,10 @@ pub struct App {
     pub pending_preflight: Vec<PendingPreflight>,
     pub prune_check: Option<PruneCheck>,
     pub pending_prune_check: Vec<PendingPruneCheck>,
+    /// Hosts whose disks and shares `c` in Hosts asked to check; the event loop hands each its runner.
+    pub pending_host_checks: Vec<String>,
+    /// A check of one host is running from here.
+    pub host_check_running: bool,
     /// Lowercased names currently being probed (submitted, not yet
     /// resolved) -- checked alongside `self.hosts` so a second
     /// submission of the same name while the first is still
@@ -523,6 +532,8 @@ impl App {
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
             smart: crate::daemon::smart_check::SmartFile::default(),
+            shares_check: crate::daemon::shares_check::SharesFile::default(),
+            checks_marker: None,
             auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
             done_note: None,
@@ -577,6 +588,8 @@ impl App {
             pending_preflight: Vec::new(),
             prune_check: None,
             pending_prune_check: Vec::new(),
+            pending_host_checks: Vec::new(),
+            host_check_running: false,
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
             pending_refresh: HashSet::new(),
@@ -915,11 +928,66 @@ impl App {
         }
     }
 
+    /// `c` in Hosts: queue a check of the selected host's disks and shares, unless one is already running (from here, or
+    /// by the daemon or another zfsctl, which the marker file tells).
+    fn request_host_check(&mut self) {
+        let Some(host) = self.hosts.get(self.selected_host).cloned() else { return };
+        if self.host_check_running {
+            self.set_error("A check is already running".to_string());
+            return;
+        }
+        if let Some(other) = crate::daemon::checks::fresh_marker(&self.state_dir, chrono::Utc::now()) {
+            let since = other.since.with_timezone(&chrono::Local).format("%H:%M");
+            self.set_error(format!("A check is already running ({}, since {since})", other.by));
+            return;
+        }
+        self.host_check_running = true;
+        self.status_error = None;
+        self.status_message = Some(format!("Checking {host}..."));
+        self.pending_host_checks.push(host);
+    }
+
+    /// Runs both checks on `host` in the background, with the same code as the daemon's daily pass, and merges the answers
+    /// into `smart.json` and `shares.json`. A running marker tells the Dashboard (and the daemon) meanwhile; a host that
+    /// does not answer within the daemon's per-host deadline is given up on, so `c` and the daemon are never held up.
+    pub fn start_host_check(&mut self, host: String, runner: Arc<dyn CommandRunner>) {
+        self.start_host_check_with(host, runner, crate::daemon::smart_check::HOST_DEADLINE);
+    }
+
+    pub fn start_host_check_with(&mut self, host: String, runner: Arc<dyn CommandRunner>, deadline: Duration) {
+        let (state_dir, tx) = (self.state_dir.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            // A crash in the worker must still answer, or `c` would stay busy for the rest of the session.
+            let line = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(_running) = crate::daemon::checks::RunGuard::start(&state_dir, "tui", Some(&host)) else {
+                    return format!("{host}: another check is running; try again in a moment");
+                };
+                let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], chrono::Utc::now(), deadline);
+                done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe(&host, checks))
+            }))
+            .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
+            let _ = tx.send(WorkerMsg::HostChecked(host, line));
+        });
+    }
+
+    /// Re-reads what the daily and manual checks found (`smart.json`, `shares.json`) and the running marker.
+    fn reload_check_files(&mut self) {
+        self.smart = crate::daemon::smart_check::SmartFile::load(&self.state_dir.join("smart.json"));
+        self.shares_check = crate::daemon::shares_check::SharesFile::load(&self.state_dir.join("shares.json"));
+        self.refresh_checks_marker();
+    }
+
+    /// Re-reads the marker of a running check. Cheap (one small file), so it is also done every pass of the event loop while the
+    /// Dashboard is open: the red notice must appear and vanish with the check, not with the next 60-second refresh.
+    pub fn refresh_checks_marker(&mut self) {
+        self.checks_marker = crate::daemon::checks::fresh_marker(&self.state_dir, chrono::Utc::now());
+    }
+
     /// Reloads everything the Dashboard shows that is not a host probe: the jobs, the alert settings, the cloud remotes and the
     /// `[dashboard]` thresholds (an unreadable `config.toml` means the defaults). Probes arrive on their own every 30 s.
     pub fn refresh_dashboard(&mut self) {
         self.dashboard_thresholds = crate::config::Config::load(&self.config_path).map(|c| c.dashboard.resolve()).unwrap_or_default();
-        self.smart = crate::daemon::smart_check::SmartFile::load(&self.state_dir.join("smart.json"));
+        self.reload_check_files();
         self.refresh_alerts();
         self.refresh_cloud();
     }
@@ -952,6 +1020,8 @@ impl App {
             alerts: &self.alerts_view,
             thresholds: &self.dashboard_thresholds,
             smart: &self.smart,
+            shares: &self.shares_check,
+            running: self.checks_marker.as_ref(),
             now: chrono::Utc::now(),
         })
     }
@@ -1447,6 +1517,7 @@ impl App {
                 self.host_filter_editing = true;
                 self.host_filter_origin = Some(self.selected_host);
             }
+            KeyCode::Char('c') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() => self.request_host_check(),
             KeyCode::Char('n') if self.current_section() == Section::Hosts => {
                 self.host_filter.clear();
                 self.modal = Some(Modal::Form {
@@ -2115,7 +2186,7 @@ impl App {
                         self.pane_focus = PaneFocus::Middle;
                     }
                     match (item.goto, item.target) {
-                        (Section::Hosts | Section::Pools | Section::Disks, Some(name)) => {
+                        (Section::Hosts | Section::Pools | Section::Disks | Section::Shares, Some(name)) => {
                             if let Some(index) = self.hosts.iter().position(|h| *h == name) {
                                 self.selected_host = index;
                             }
@@ -3082,6 +3153,7 @@ Global
 Hosts
   Up / Down        select the active host
   /                filter the host list by name, address, tag or type (Enter keeps it, Esc clears it)
+  c                check the selected host's disks (smartctl) and shares (NFS, Samba) now; the result joins the Dashboard (read-only)
   n                add a new host (prompts for Name, SSH target and an optional Tag)
 
 Pools

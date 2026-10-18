@@ -289,6 +289,8 @@ pub struct Dashboard {
     pub failed_jobs: Vec<String>,
     pub cloud: Vec<Line>,
     pub alerts: Line,
+    /// While a check runs: what to tell the operator (shown in red under the header). Not a problem, so not in `attention`.
+    pub running: Option<String>,
 }
 
 /// Everything the Dashboard is built from. All of it is already in memory: building it asks nobody anything.
@@ -302,6 +304,10 @@ pub struct Inputs<'a> {
     pub thresholds: &'a Thresholds,
     /// What the daemon's daily `smartctl` check found (`smart.json`).
     pub smart: &'a crate::daemon::smart_check::SmartFile,
+    /// What the daily check found about file sharing (`shares.json`).
+    pub shares: &'a crate::daemon::shares_check::SharesFile,
+    /// The check that is running now, if any (a fresh marker).
+    pub running: Option<&'a crate::daemon::checks::Marker>,
     pub now: DateTime<Utc>,
 }
 
@@ -396,29 +402,42 @@ fn plural(n: usize, word: &str) -> String {
 /// Builds the whole Dashboard. The verdict says `checking...` until every host has answered its first probe, so a screen that
 /// does not know yet never claims everything is quiet.
 /// A check older than this, with the daemon running, is a broken check rather than good health.
-const SMART_STALE_DAYS: i64 = 3;
+const CHECK_STALE_DAYS: i64 = 3;
 
-/// One line per reachable host whose disks have a problem, and one line when the daily check itself has stopped
+/// One line per reachable host whose disks have a problem, and one line when the daily checks themselves have stopped
 /// happening. Healthy hosts, hosts that never answered and unreachable hosts (the Hosts row says so) add nothing.
 fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     use crate::smart::Severity;
+    let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
     let mut items = Vec::new();
-    for found in crate::daemon::smart_check::problems(inputs.smart) {
-        let Some(host) = inputs.hosts.iter().find(|h| h.name == found.host) else { continue };
-        if !matches!(host.probe, Some(HostProbe::Reached { .. })) {
-            continue;
-        }
+    for found in crate::daemon::smart_check::problems(inputs.smart).into_iter().filter(|p| reached(&p.host)) {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.disks, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Disks, target: Some(found.host) });
     }
-    if let (true, Some(last)) = (daemon_running && !inputs.smart.hosts.is_empty(), inputs.smart.newest_check()) {
+    for found in crate::daemon::shares_check::problems(inputs.shares).into_iter().filter(|p| reached(&p.host)) {
+        let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
+        let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
+        items.push(Item { level, subject: found.host.clone(), what, goto: Section::Shares, target: Some(found.host) });
+    }
+    // The newest answer over both files: a file that is missing is no data, not "never checked".
+    let newest = [inputs.smart.newest_check(), inputs.shares.newest_check()].into_iter().flatten().max();
+    if let (true, Some(last)) = (daemon_running, newest) {
         let days = (inputs.now - last).num_days();
-        if days >= SMART_STALE_DAYS {
-            items.push(Item { level: Level::Watch, subject: "disks".to_string(), what: format!("disk check is {days} days old"), goto: Section::Jobs, target: None });
+        if days >= CHECK_STALE_DAYS {
+            items.push(Item { level: Level::Watch, subject: "checks".to_string(), what: format!("disk and shares check is {days} days old"), goto: Section::Jobs, target: None });
         }
     }
     items
+}
+
+/// What the red notice says while a check runs.
+fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
+    let since = marker.since.with_timezone(&chrono::Local).format("%H:%M");
+    match &marker.host {
+        Some(host) => format!("checking {host}: disks and shares since {since}"),
+        None => format!("checking: daily disk and shares check since {since}"),
+    }
 }
 
 pub fn build(inputs: &Inputs) -> Dashboard {
@@ -491,7 +510,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, hosts, daemon, jobs, failed_jobs, cloud, alerts }
+    Dashboard { verdict, attention, hosts, daemon, jobs, failed_jobs, cloud, alerts, running: inputs.running.map(running_notice) }
 }
 
 
@@ -780,15 +799,17 @@ mod tests {
         caps: crate::ui::cloud::Caps,
         thresholds: Thresholds,
         smart: crate::daemon::smart_check::SmartFile,
+        shares: crate::daemon::shares_check::SharesFile,
+        marker: Option<crate::daemon::checks::Marker>,
     }
 
     impl Fixture {
         fn new(view: JobsView) -> Fixture {
-            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default() }
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default(), shares: Default::default(), marker: None }
         }
 
         fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, now: now() })
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, shares: &self.shares, running: self.marker.as_ref(), now: now() })
         }
     }
 
@@ -922,7 +943,7 @@ mod tests {
         let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
         let probe = reached(vec![]);
         let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
-        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Disks || i.subject == "disks").collect()
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Disks || i.subject == "checks").collect()
     }
 
     #[test]
@@ -955,19 +976,91 @@ mod tests {
         let problem: &[(&str, crate::smart::Severity, &str)] = &[("ada0", crate::smart::Severity::Watch, "pending sectors 2")];
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         fx.smart = smart_file(&[("h", 24 * 4, problem)]);
-        let stale: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "disks").collect();
+        let stale: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "checks").collect();
         assert_eq!(stale.len(), 1);
-        assert_eq!((stale[0].level, stale[0].what.as_str()), (Level::Watch, "disk check is 4 days old"));
+        assert_eq!((stale[0].level, stale[0].what.as_str()), (Level::Watch, "disk and shares check is 4 days old"));
         fx.smart.ran_at = Some(now() - Duration::hours(1));
-        let still: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "disks").collect();
+        let still: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "checks").collect();
         assert_eq!(still.len(), 1, "the daemon ran an hour ago but no host has answered for 4 days: the check is broken, not fine");
         fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::hours(24);
-        assert!(disk_items(&fx, &["h"]).iter().all(|i| i.subject != "disks"), "a host answered yesterday");
+        assert!(disk_items(&fx, &["h"]).iter().all(|i| i.subject != "checks"), "a host answered yesterday");
         fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::days(4);
         fx.smart.ran_at = Some(now() - Duration::days(5));
         let mut off = Fixture::new(view(vec![], &[], None));
         off.smart = fx.smart.clone();
-        assert!(disk_items(&off, &["h"]).iter().all(|i| i.subject != "disks"), "the daemon is not running: its own line says so, and this one would only repeat it");
+        assert!(disk_items(&off, &["h"]).iter().all(|i| i.subject != "checks"), "the daemon is not running: its own line says so, and this one would only repeat it");
+    }
+
+    fn shares_entry(hours_ago: i64, nfs_running: bool, nfs_shares: usize, samba_running: bool, smb_shares: usize, smb_error: Option<&str>) -> crate::daemon::shares_check::SharesResult {
+        crate::daemon::shares_check::SharesResult { checked_at: now() - Duration::hours(hours_ago), nfs_running, samba_running, nfs_shares, smb_shares, smb_error: smb_error.map(str::to_string), error: None }
+    }
+
+    fn share_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Shares).collect()
+    }
+
+    #[test]
+    fn a_stopped_nfsd_with_shares_is_one_red_line_that_goes_to_shares_and_a_healthy_host_none() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.shares.hosts.insert("h".into(), shares_entry(3, false, 2, true, 0, None));
+        fx.shares.hosts.insert("ok".into(), shares_entry(3, true, 2, true, 1, None));
+        let items = share_items(&fx, &["h", "ok"]);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!((items[0].level, items[0].subject.as_str(), items[0].target.as_deref()), (Level::Issue, "h", Some("h")));
+        assert!(items[0].what.starts_with("NFS: 2 shares but nfsd is not running") && items[0].what.contains("checked 3h ago"), "{}", items[0].what);
+    }
+
+    #[test]
+    fn an_unreadable_smb_block_is_one_yellow_line() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.shares.hosts.insert("h".into(), shares_entry(1, true, 0, true, 0, Some("SMB: the managed block has no end")));
+        let items = share_items(&fx, &["h"]);
+        assert_eq!((items.len(), items[0].level), (1, Level::Watch));
+        assert!(items[0].what.starts_with("Samba: "), "{}", items[0].what);
+    }
+
+    #[test]
+    fn the_last_good_share_result_stays_after_a_failed_check_with_its_real_age_and_an_unreachable_host_has_no_line() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        let mut old = shares_entry(30, false, 1, true, 0, None);
+        old.error = Some("no route".into());
+        fx.shares.hosts.insert("h".into(), old);
+        assert!(share_items(&fx, &["h"])[0].what.contains("checked 1d ago"));
+        let down = HostProbe::Disconnected;
+        let input = HostInput { name: "h", assessment: assess(Some(&down), false), probe: Some(&down), resources: None, utc_offset_secs: Some(0) };
+        assert!(fx.build(vec![input]).attention.iter().all(|i| i.goto != Section::Shares), "the Hosts row already says it is unreachable");
+    }
+
+    #[test]
+    fn the_stale_line_covers_both_files_and_a_missing_file_is_not_stale() {
+        let problem: &[(&str, crate::smart::Severity, &str)] = &[("ada0", crate::smart::Severity::Watch, "pending sectors 2")];
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.smart = smart_file(&[("h", 1, problem)]);
+        let stale = |fx: &Fixture| disk_items(fx, &["h"]).into_iter().filter(|i| i.subject == "checks").count();
+        assert_eq!(stale(&fx), 0, "a fresh smart.json and no shares.json at all: nothing is stale");
+        fx.smart = smart_file(&[("h", 24 * 4, problem)]);
+        assert_eq!(stale(&fx), 1);
+        fx.shares.hosts.insert("h".into(), shares_entry(2, true, 1, true, 0, None));
+        assert_eq!(stale(&fx), 0, "the shares check answered 2 hours ago: the checks work");
+        let none = Fixture::new(view(vec![], &[], beat(1)));
+        assert_eq!(stale(&none), 0, "no data in either file: no line");
+    }
+
+    #[test]
+    fn a_running_check_shows_a_red_notice_that_is_not_counted_in_the_verdict() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        assert_eq!(fx.build(vec![fine_host("h", &probe, &r, &b)]).running, None);
+        fx.marker = Some(crate::daemon::checks::Marker { by: "daemon".into(), since: now(), beat: now(), host: None });
+        let d = fx.build(vec![fine_host("h", &probe, &r, &b)]);
+        assert!(d.running.as_deref().unwrap_or("").contains("daily disk and shares check since"), "{:?}", d.running);
+        assert_eq!(d.verdict.text, "all quiet", "a running check is a notice, not a problem");
+        fx.marker = Some(crate::daemon::checks::Marker { by: "tui".into(), since: now(), beat: now(), host: Some("fbsd16".into()) });
+        assert!(fx.build(vec![]).running.unwrap().starts_with("checking fbsd16: disks and shares since"));
     }
 
     #[test]

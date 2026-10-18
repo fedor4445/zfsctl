@@ -30,7 +30,7 @@ The file is `/usr/local/etc/zfsctl/config.toml`. It has up to six parts: any num
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `smart_check` | text | `03:30` | when the daemon checks the disks of every host with `smartctl`, once a day, in the hub's local time: `HH:MM`, or `off`. Read when the daemon starts. The result is kept in `smart.json` and shown on the Dashboard; a host without `smartctl` (or without the `smart` sudoers feature) is skipped without a word |
+| `daily_check` | text | `03:30` | when the daemon runs the daily checks on every host, in the hub's local time: the disks with `smartctl` and the file sharing services (is `nfsd`, is Samba running where there are shares). `HH:MM`, or `off`. Read when the daemon starts. The results are kept in `smart.json` and `shares.json` and shown on the Dashboard; a host without `smartctl`, without the `smart` sudoers feature or without the `shares`/`samba` ones is skipped without a word. The name was `smart_check` for a day; that is still read |
 | `notify_command` | text | none | a shell command run (through `sh -c`, killed after 30 seconds) for job failures and health messages; the details arrive in `ZFSCTL_KIND`, `ZFSCTL_HOST`, `ZFSCTL_JOB`, `ZFSCTL_RESULT`, `ZFSCTL_MESSAGE` and `ZFSCTL_BODY` |
 
 ### `[notify]`
