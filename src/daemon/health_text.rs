@@ -192,14 +192,16 @@ pub fn check_lines(state_dir: &std::path::Path) -> Vec<String> {
     lines.extend(share_lines(&crate::daemon::shares_check::SharesFile::load(&state_dir.join("shares.json"))));
     // The report has no config of its own: the thresholds are the user's, read from the fixed config path (defaults when absent).
     let thresholds = crate::config::Config::load(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH)).map(|c| c.dashboard.resolve()).unwrap_or_default();
-    lines.extend(storage_lines(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), thresholds.quota, thresholds.dedup_ratio));
+    let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
+    lines.extend(storage_lines(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), thresholds.quota, thresholds.dedup_ratio, &jobs));
     lines
 }
 
 /// The daily report's lines for datasets near their quota, from `storage.json`.
-pub fn storage_lines(file: &crate::daemon::storage_check::StorageFile, quota: (u8, u8), dedup_ratio: u16) -> Vec<String> {
+pub fn storage_lines(file: &crate::daemon::storage_check::StorageFile, quota: (u8, u8), dedup_ratio: u16, jobs: &[Job]) -> Vec<String> {
     crate::daemon::storage_check::problems(file, quota)
         .iter()
+        .chain(crate::daemon::storage_check::locked_problems(file, jobs).iter())
         .chain(crate::daemon::storage_check::pool_problems(file).iter())
         .chain(crate::daemon::storage_check::integrity_problems(file, dedup_ratio, chrono::Utc::now()).iter())
         .map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at)))
@@ -326,11 +328,22 @@ mod tests {
         use crate::daemon::storage_check::{LimitedDataset, StorageFile, StorageResult};
         let mut file = StorageFile::default();
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
-        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None });
-        let lines = storage_lines(&file, (90, 98), 110);
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None });
+        let lines = storage_lines(&file, (90, 98), 110, &[]);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/home 94% of its 100 quota (checked "), "{}", lines[0]);
-        assert!(storage_lines(&file, (95, 99), 110).is_empty());
+        assert!(storage_lines(&file, (95, 99), 110, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_report_names_a_locked_dataset_that_a_share_or_a_job_uses() {
+        use crate::daemon::storage_check::{LockedDataset, StorageFile, StorageResult};
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let mut file = StorageFile::default();
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![], pools: vec![], zfs_version: None, locked: vec![LockedDataset { name: "tank/secure".into(), shared: true }], integrity: Default::default(), integrity_stale: false, error: None });
+        let lines = storage_lines(&file, (90, 98), 110, &[]);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("fbsd16: tank/secure is locked (shared) (checked "), "{}", lines[0]);
     }
 
     #[test]

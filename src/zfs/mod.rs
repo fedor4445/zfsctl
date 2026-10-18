@@ -3,6 +3,7 @@ pub mod accounts;
 pub mod dataset;
 pub mod disk;
 pub mod disk_detail;
+pub mod encryption;
 pub mod host;
 pub mod host_health;
 pub mod host_resources;

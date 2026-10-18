@@ -124,6 +124,9 @@ pub fn run_mirror(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
 
     // `#` cannot appear in a pool name, so the key cannot collide with another kind's lock.
     let Some(_guard) = ctx.locks.try_acquire(&job.host, &format!("#mir@{}", job.id)) else { return skipped("skipped: already running".to_string()) };
+    if let Err(msg) = super::guard::check_source(runner, &dataset, super::guard::Need::NotEncrypted) {
+        return failed(msg);
+    }
     let clone = clone_name_for(CLONE_PREFIX, &dataset, &job.id);
     let mount = mountpoint(&job.id);
     if let Err(e) = remove_stale_clone(runner, ctx.clock, &clone) {
@@ -202,6 +205,8 @@ mod tests {
         real_dirs: Vec<String>,
         /// What `rclone lsf <remote>/old/<stamp>` answers: None = no such folder (exit 3).
         old_stamp_listing: Option<String>,
+        /// The source's `keystatus` when it is encrypted.
+        keystatus: Option<&'static str>,
         clone_exists: Mutex<bool>,
         calls: Mutex<Vec<String>>,
         sync_args: Mutex<Vec<Vec<String>>>,
@@ -209,7 +214,7 @@ mod tests {
 
     impl Host {
         fn new() -> Self {
-            Host { size_json: "{\"count\":3,\"bytes\":30,\"sizeless\":0}".into(), sync_script: format!("{STATS}; exit 0"), clone_fails: false, clone_made_but_unmounted: false, rclone_missing: false, real_dirs: vec![], old_stamp_listing: None, clone_exists: Mutex::new(false), calls: Mutex::new(vec![]), sync_args: Mutex::new(vec![]) }
+            Host { size_json: "{\"count\":3,\"bytes\":30,\"sizeless\":0}".into(), sync_script: format!("{STATS}; exit 0"), clone_fails: false, clone_made_but_unmounted: false, rclone_missing: false, real_dirs: vec![], old_stamp_listing: None, keystatus: None, clone_exists: Mutex::new(false), calls: Mutex::new(vec![]), sync_args: Mutex::new(vec![]) }
         }
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
@@ -225,6 +230,7 @@ mod tests {
             let ok = |s: &str| Ok(CommandOutput { stdout: s.to_string(), stderr: String::new(), status: 0 });
             let fail = |s: &str| Ok(CommandOutput { stdout: String::new(), stderr: s.to_string(), status: 1 });
             match (cmd, args.first().copied()) {
+                ("zfs", Some("get")) => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
                 ("zfs", Some("list")) if args.contains(&"snapshot") => ok(&format!("tank/data@{B}\t2\t20\n")),
                 ("zfs", Some("list")) => {
                     if self.clone_exists() { ok("tank/zit-mirror-job\n") } else { fail("dataset does not exist") }
@@ -326,6 +332,20 @@ mod tests {
         assert!(!host.clone_exists());
         assert_eq!(history.last().unwrap().result, Some(RunResult::Ok));
         assert!(crate::daemon::progress::read_all(&rig.state.path().join("progress")).is_empty());
+    }
+
+    #[test]
+    fn an_encrypted_source_is_refused_before_anything_is_cloned_or_synced() {
+        let rig = Rig::new();
+        for status in ["available", "unavailable"] {
+            let mut host = Host::new();
+            host.keystatus = Some(status);
+            let (outcome, history) = rig.run(&host, &job());
+            assert_eq!(outcome.result, RunResult::Failed);
+            assert!(outcome.message.starts_with("tank/data is encrypted"), "{}", outcome.message);
+            assert!(!host.calls().iter().any(|c| c.starts_with("zfs clone") || c.starts_with("zfs snapshot") || c.starts_with("rclone")), "{:?}", host.calls());
+            assert_eq!(history.last().unwrap().result, Some(RunResult::Failed));
+        }
     }
 
     #[test]

@@ -22,6 +22,12 @@ impl App {
             match msg {
                 WorkerMsg::Pools(host, result) => self.on_pools(host, result, &mut refreshes_needed),
                 WorkerMsg::Datasets(host, result) => self.on_datasets(host, result, &mut refreshes_needed),
+                WorkerMsg::Encryption(host, found) => {
+                    if host == self.selected_host {
+                        self.encryption = found;
+                        self.encryption_for = host;
+                    }
+                }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),
                 WorkerMsg::Disks(host, result) => self.on_disks(host, result, &mut refreshes_needed),
                 WorkerMsg::Shares(host, result) => self.on_shares(host, result, &mut refreshes_needed),

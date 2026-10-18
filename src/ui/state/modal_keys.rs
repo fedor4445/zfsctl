@@ -357,6 +357,9 @@ impl App {
         match built {
             Ok(mut action) => {
                 action.host = self.selected_host;
+                if let Some(msg) = self.encrypted_source(&action) {
+                    return self.reject(form, msg);
+                }
                 let to_prune = matches!(&action.call, MutationCall::SaveJob { job, .. } if job.dest_keep.is_some());
                 if to_prune {
                     self.request_prune_check(form.into_modal(), action);
@@ -369,6 +372,18 @@ impl App {
             }
             Err(msg) => self.reject(form, msg),
         }
+    }
+
+    /// Why this job cannot be saved because its source is encrypted, when the loaded Datasets list of the job's host says so
+    /// (the run-time guard catches what this list does not know). Restic backups re-encrypt by themselves and are allowed.
+    fn encrypted_source(&self, action: &PendingAction) -> Option<String> {
+        let MutationCall::SaveJob { job, .. } = &action.call else { return None };
+        if job.kind != crate::jobs::KIND_REPLICATE && job.kind != crate::jobs::KIND_MIRROR {
+            return None;
+        }
+        let dataset = job.dataset.as_deref()?;
+        // A disabled job may be saved (to switch off one that now fails).
+        (job.enabled && self.hosts.get(self.encryption_for) == Some(&job.host) && self.encryption.contains_key(dataset)).then(|| crate::daemon::guard::not_allowed(dataset))
     }
 
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.

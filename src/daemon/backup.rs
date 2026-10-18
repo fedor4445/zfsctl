@@ -278,6 +278,9 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
 
     // `#` cannot appear in a pool name, so the key cannot collide with another kind's lock.
     let Some(_guard) = ctx.locks.try_acquire(&job.host, &format!("#bak@{}", job.id)) else { return skipped("skipped: already running".to_string()) };
+    if let Err(msg) = super::guard::check_source(runner, &dataset, super::guard::Need::KeyLoaded) {
+        return failed(msg);
+    }
     let clone = clone_name(&dataset, &job.id);
     let mount = mountpoint(&job.id);
 
@@ -393,6 +396,8 @@ mod tests {
         readlink_refused: bool,
         /// `zfs snapshot` fails with this message.
         snapshot_error: Option<&'static str>,
+        /// The source's `keystatus` when it is encrypted.
+        keystatus: Option<&'static str>,
         /// Destroying a snapshot (not the clone) fails.
         snapshot_destroy_fails: bool,
         destroy_fails: bool,
@@ -422,6 +427,7 @@ mod tests {
                 symlinks: vec![],
                 readlink_refused: false,
                 snapshot_error: None,
+                keystatus: None,
                 snapshot_destroy_fails: false,
                 destroy_fails: false,
                 forget_fails: false,
@@ -456,6 +462,7 @@ mod tests {
                 ("zfs", Some("list")) => {
                     if self.clone_exists() { ok("tank/zit-restic-job\n") } else { fail("dataset does not exist") }
                 }
+                ("zfs", Some("get")) if args.contains(&"name,property,value") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
                 ("zfs", Some("get")) => ok("1791500000\n"),
                 ("zfs", Some("clone")) => {
                     if self.clone_fails {
@@ -832,6 +839,21 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Failed);
         assert!(outcome.message.contains("left by an earlier run") && outcome.message.contains("busy"), "{}", outcome.message);
         assert!(!host.called("zfs clone") && !host.called("restic backup"));
+    }
+
+    #[test]
+    fn restic_backs_up_an_open_encrypted_source_and_stops_at_a_locked_one() {
+        let rig = Rig::new();
+        let mut open = Host::new();
+        open.keystatus = Some("available");
+        let (outcome, _) = rig.run(&open, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        let mut locked = Host::new();
+        locked.keystatus = Some("unavailable");
+        let (outcome, _) = rig.run(&locked, &job());
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert_eq!(outcome.message, "tank/data is locked (key not loaded): load the key first");
+        assert!(!locked.called("zfs clone") && !locked.called("zfs snapshot") && !locked.called("restic"), "{:?}", locked.calls());
     }
 
     #[test]

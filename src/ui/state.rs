@@ -203,6 +203,8 @@ pub enum WorkerMsg {
     HostChecked(String, String),
     Pools(usize, Result<Vec<Pool>>),
     Datasets(usize, Result<Vec<Dataset>>),
+    /// The host's encrypted datasets; sent just before `Datasets` so the list never shows without them.
+    Encryption(usize, std::collections::BTreeMap<String, crate::zfs::encryption::Enc>),
     Snapshots(usize, Result<Vec<Snapshot>>),
     Disks(usize, Result<Vec<DiskInfo>>),
     Shares(usize, Result<SharesSnapshot>),
@@ -299,6 +301,10 @@ pub struct App {
     pub selected_host: usize,
     pub pools: Vec<Pool>,
     pub datasets: Vec<Dataset>,
+    /// The selected host's encrypted datasets (the Lock column, the save-time job guard); empty when none or not read.
+    pub encryption: std::collections::BTreeMap<String, crate::zfs::encryption::Enc>,
+    /// The host index `encryption` was read for (a job form may be for another host).
+    pub encryption_for: usize,
     pub snapshots: Vec<Snapshot>,
     /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
     /// snapshots can say "unknown" instead of a misleading 0.
@@ -521,6 +527,8 @@ impl App {
             selected_host: 0,
             pools: Vec::new(),
             datasets: Vec::new(),
+            encryption: std::collections::BTreeMap::new(),
+            encryption_for: 0,
             snapshots: Vec::new(),
             snapshots_loaded: false,
             pools_table: TableState::default(),
@@ -1417,6 +1425,7 @@ impl App {
         self.metrics = crate::ui::metrics::MetricsView::default();
         self.pools.clear();
         self.datasets.clear();
+        self.encryption.clear();
         self.snapshots.clear();
         self.snapshots_loaded = false;
         self.pools_table.select(None);
@@ -3012,6 +3021,10 @@ impl App {
         self.begin_refresh(Section::Datasets, host);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            // Not sent when the host could not be asked: the Lock column and the save-time guard keep what they knew.
+            if let Some(found) = crate::zfs::encryption::list(runner.as_ref()) {
+                let _ = tx.send(WorkerMsg::Encryption(host, found));
+            }
             let result = crate::zfs::dataset::list_datasets(runner.as_ref());
             let _ = tx.send(WorkerMsg::Datasets(host, result));
         });

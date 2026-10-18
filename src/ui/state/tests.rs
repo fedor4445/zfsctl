@@ -4945,6 +4945,16 @@ fn refresh_datasets_populates_datasets_from_fake_runner() {
 }
 
 #[test]
+fn refreshing_datasets_also_reads_which_are_encrypted_and_locked() {
+    let mut app = App::new(vec!["local".to_string()]);
+    let get = "tank/data\tencryption\taes-256-gcm\ntank/data\tkeyformat\tpassphrase\ntank/data\tkeystatus\tunavailable\ntank/data\tencryptionroot\ttank/data\n";
+    let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data\t100\t200\t100\t/tank/data\tfilesystem\tyes\n").route("zfs", "get", get));
+    app.refresh_datasets(runner);
+    wait_until(&mut app, |a| !a.datasets.is_empty());
+    assert!(app.encryption["tank/data"].locked, "the Encryption message arrives before the list");
+}
+
+#[test]
 fn refresh_snapshots_populates_snapshots_from_fake_runner() {
     let mut app = App::new(vec!["local".to_string()]);
     let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data@s1\t10\n"));
@@ -7900,6 +7910,51 @@ fn a_forced_replication_with_a_selection_shows_both_warnings_and_one_confirm_sav
     assert!(app.handle_modal_key(KeyCode::Enter).is_some());
 }
 
+fn encrypted(app: &mut App, name: &str, host: usize) {
+    app.encryption.insert(name.into(), crate::zfs::encryption::Enc { cipher: "aes-256-gcm".into(), key_format: "passphrase".into(), root: name.into(), locked: false });
+    app.encryption_for = host;
+}
+
+#[test]
+fn a_replication_or_mirror_of_an_encrypted_dataset_is_not_saved() {
+    let mut app = keep_form_app("");
+    encrypted(&mut app, "tank/data", 0);
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "the form stays open: {:?}", app.modal);
+    assert!(app.status_is_error() && app.status_message.as_deref().unwrap_or("").contains("tank/data is encrypted"), "{:?}", app.status_message);
+
+    let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+    app.modal = Some(Modal::Form { title: "x".into(), fields: mirror_fields(MIRROR_GOOD).into_iter().collect(), focused: 0, description: None, kind: mirror_kind(None, vec![]) });
+    encrypted(&mut app, "tank/data", 0);
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn a_disabled_job_on_an_encrypted_dataset_can_still_be_saved() {
+    let mut app = keep_form_app("");
+    encrypted(&mut app, "tank/data", 0);
+    let mut existing = repl_job(false);
+    existing.enabled = false;
+    existing.host = "local".into();
+    existing.dataset = Some("tank/data".into());
+    let Some(Modal::Form { kind, .. }) = app.modal.as_mut() else { panic!() };
+    *kind = repl_kind(Some(existing), vec![]);
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(!matches!(app.modal, Some(Modal::Form { .. })), "{:?} {:?}", app.modal, app.status_message);
+}
+
+#[test]
+fn the_save_time_guard_only_trusts_a_list_read_for_the_jobs_own_host_and_never_blocks_without_one() {
+    let mut app = keep_form_app("");
+    encrypted(&mut app, "tank/data", 1);
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(!matches!(app.modal, Some(Modal::Form { .. })), "another host's list says nothing about this job: {:?}", app.modal);
+    let mut app = keep_form_app("");
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(!matches!(app.modal, Some(Modal::Form { .. })), "no list loaded: the run-time guard decides");
+}
+
 const MIRROR_GOOD: [&str; 9] = ["local", "tank/data", "", "hourly", "", "aws:bkt/photos", "", "30 3 * * *", "y"];
 
 fn mirror_kind(existing: Option<crate::jobs::Job>, jobs: Vec<crate::jobs::Job>) -> FormKind {
@@ -9356,7 +9411,7 @@ fn integrity_app(checksum: &str, dedup: &str) -> App {
 }
 
 fn version_of(app: &mut App, version: &str) {
-    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), integrity: Default::default(), integrity_stale: false, error: None });
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: Default::default(), integrity_stale: false, error: None });
 }
 
 #[test]

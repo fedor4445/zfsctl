@@ -231,6 +231,8 @@ const SIZE_COL_W: u16 = 8;
 const KIND_COL_W: u16 = 10;
 /// Width of the Quota column (`75% of 4G ref`).
 const QUOTA_COL_W: u16 = 14;
+/// Width of the Lock column (`LOCKED`).
+const LOCK_COL_W: u16 = 6;
 
 /// The Quota cell: how full the nearer limit is, or `-`.
 fn quota_cell(d: &crate::zfs::dataset::Dataset) -> (String, Option<u8>) {
@@ -278,7 +280,8 @@ fn split_wants(app: &App, section: Section) -> (u16, u16) {
             _ => 0,
         };
         let quota = if app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) { QUOTA_COL_W + 1 } else { 0 };
-        (name.saturating_add(SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3 + 2 + quota), right)
+        let lock = if app.encryption.is_empty() { 0 } else { LOCK_COL_W + 1 };
+        (name.saturating_add(SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3 + 2 + quota + lock), right)
     }
 }
 
@@ -627,7 +630,10 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     // A Quota column only when some dataset has a limit and the pane has room for it after the columns that are always there.
     let fixed = DATASET_NAME_MIN + SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3;
-    let quota_col = app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) && area.width.saturating_sub(2) >= fixed + QUOTA_COL_W + 1;
+    // The Lock column comes first: whether data can be read matters more than how full it is.
+    let lock_col = !app.encryption.is_empty() && area.width.saturating_sub(2) >= fixed + LOCK_COL_W + 1;
+    let lock_w = if lock_col { LOCK_COL_W + 1 } else { 0 };
+    let quota_col = app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) && area.width.saturating_sub(2) >= fixed + lock_w + QUOTA_COL_W + 1;
     let (warn, crit) = app.dashboard_thresholds.quota;
     let rows = app.datasets.iter().map(|d| {
         let mut cells = vec![
@@ -644,6 +650,11 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
             };
             cells.push(Cell::from(Span::styled(text, style)));
         }
+        if lock_col {
+            let enc = app.encryption.get(&d.name);
+            let style = if enc.is_some_and(|e| e.locked) { theme.err } else { Style::default() };
+            cells.push(Cell::from(Span::styled(crate::zfs::encryption::lock_text(enc), style)));
+        }
         cells.push(Cell::from(format!("{:?}", d.kind)));
         Row::new(cells)
     });
@@ -652,6 +663,10 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     if quota_col {
         widths.push(Constraint::Length(QUOTA_COL_W));
         headers.push("Quota");
+    }
+    if lock_col {
+        widths.push(Constraint::Length(LOCK_COL_W));
+        headers.push("Lock");
     }
     widths.push(Constraint::Length(KIND_COL_W));
     headers.push("Kind");
@@ -2098,6 +2113,29 @@ mod tests {
         }
         let none = render(&mut app, 160, 12).join("\n");
         assert!(!none.contains("Quota"), "no column when nothing has a limit:\n{none}");
+    }
+
+    #[test]
+    fn the_datasets_table_marks_encrypted_datasets_open_or_locked() {
+        use crate::zfs::encryption::Enc;
+        let mut app = limited_datasets_app();
+        let wide = render(&mut app, 160, 12).join("\n");
+        assert!(!wide.contains("Lock"), "no column when nothing is encrypted:\n{wide}");
+        let enc = |locked| Enc { cipher: "aes-256-gcm".into(), key_format: "passphrase".into(), root: "tank/home".into(), locked };
+        app.encryption.insert("tank/home".into(), enc(false));
+        app.encryption.insert("tank/ref".into(), enc(true));
+        let wide = render(&mut app, 160, 12).join("\n");
+        assert!(wide.contains("Lock") && wide.contains("open") && wide.contains("LOCKED"), "{wide}");
+        let mut dropped_while_kind_stays = false;
+        for width in 50..200 {
+            let screen = render(&mut app, width, 12).join("\n");
+            if screen.contains("Lock") {
+                assert!(screen.contains("Avail") && screen.contains("Kind"), "Lock only shows with the others, width {width}");
+            } else if screen.contains("Kind") {
+                dropped_while_kind_stays = true;
+            }
+        }
+        assert!(dropped_while_kind_stays);
     }
 
     #[test]

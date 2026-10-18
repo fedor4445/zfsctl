@@ -84,6 +84,9 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     // a pool name, so the key cannot collide with a scrub's, a snapshot's or another replication's.
     let Some(_guard) = ctx.locks.try_acquire("local", &format!("#dir@{dir}")) else { return skipped("skipped: already running".to_string()) };
 
+    if let Err(msg) = super::guard::check_source(src, &dataset, super::guard::Need::NotEncrypted) {
+        return failed(msg);
+    }
     let source = match list_snapshot_infos(src, &dataset) {
         Ok(s) => s,
         Err(e) => return failed(e.to_string()),
@@ -210,12 +213,14 @@ mod tests {
     struct Host {
         listing: String,
         send_script: String,
+        /// The source's `keystatus` when it is encrypted.
+        keystatus: Option<&'static str>,
         commands: std::sync::Mutex<Vec<Vec<String>>>,
     }
 
     impl Host {
         fn new(listing: &str) -> Self {
-            Host { listing: listing.into(), send_script: "printf 'STREAMDATA'".into(), commands: std::sync::Mutex::new(vec![]) }
+            Host { listing: listing.into(), send_script: "printf 'STREAMDATA'".into(), keystatus: None, commands: std::sync::Mutex::new(vec![]) }
         }
         fn commands(&self) -> Vec<Vec<String>> {
             self.commands.lock().unwrap().clone()
@@ -226,6 +231,7 @@ mod tests {
         fn run(&self, _cmd: &str, args: &[&str]) -> Result<CommandOutput> {
             let ok = |stdout: &str| Ok(CommandOutput { stdout: stdout.to_string(), stderr: String::new(), status: 0 });
             match args.first().copied() {
+                Some("get") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
                 Some("list") => ok(&self.listing),
                 Some("send") => ok("size\t10\n"),
                 other => panic!("unexpected query {other:?}"),
@@ -317,6 +323,18 @@ mod tests {
         assert_eq!(state.get("r"), Some(&Sent { snapshot: B.to_string(), guid: 2, dir: rig.dir() }));
         assert_eq!((history.len(), history[0].result), (1, Some(RunResult::Ok)));
         assert!(crate::daemon::progress::read_all(&rig.state.path().join("progress")).is_empty());
+    }
+
+    #[test]
+    fn an_encrypted_source_is_refused_and_no_stream_file_is_written() {
+        let rig = Rig::new();
+        let mut src = Host::new(&listing(&[(A, 1, 10), (B, 2, 20)]));
+        src.keystatus = Some("available");
+        let (outcome, _) = rig.run(&src, &rig.job(&rig.dir()));
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.starts_with("tank/data is encrypted"), "{}", outcome.message);
+        assert!(src.commands().is_empty());
+        assert!(rig.files().is_empty());
     }
 
     #[test]
