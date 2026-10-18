@@ -17,7 +17,7 @@ before they commit.
    common ones and let the command's own error stand). `Enter` on `dedup` opens: `off`, `on`, `verify`, `sha256`,
    `sha256,verify`, `sha512`, `sha512,verify`, `skein`, `skein,verify`, `edonr,verify`, `blake3`, `blake3,verify`.
 2. **Guards.**
-   - `checksum=off` is **refused** (not offered): the plan says why in one line. (Users who truly want it have the shell.)
+   - `checksum=off`: see "Open for the user" below (this draft refuses it).
    - Every checksum change says it applies **only to data written afterwards** and offers a reminder to scrub (does not
      start one).
    - Turning `dedup` on is a typed confirm (type the dataset name): the text states that the dedup table must fit in RAM
@@ -55,3 +55,41 @@ README.
 
 Spec, plan, tests, whole-branch review, live check on the hub and a VM (change a scratch dataset's checksum and dedup; see
 the refusals and confirms; see the Dashboard lines appear and clear), merge, install.
+
+## Decisions from the builder check (my calls)
+
+- **Supported values** come from a table in code keyed by the OpenZFS version in the host summary: `on`, `fletcher4`, `sha256`,
+  `sha512` always; `skein`, `edonr` from 0.8; `blake3` from 2.2. A host whose version is unknown (illumos has no `zfs version`)
+  is offered only `on`, `fletcher4`, `sha256`, `sha512`. Dedup values follow the table; `edonr` only as `edonr,verify`. On an
+  encrypted dataset the list is limited to what ZFS allows (verified on a VM; interplay with slice 4).
+- **The guard is in the apply path, not the picker.** The picker and the free-text property form go through one validation
+  step in the set-property path, so `dedup=on` always needs the typed confirm and (this draft) `checksum=off` is always refused.
+- **`zpool status -D`** is read asynchronously when the confirm opens, 10-second limit; on timeout or failure the confirm
+  says "table size unknown" and the user can still go ahead.
+- **RAM warning:** the host's physical RAM (the Resources reading exists for all three OSes) below 16 GiB is a warning line,
+  never a refusal.
+- **Dashboard.** Dedup: one line per pool, only for `local`/`received` `dedup` values (not inherited copies), only when the pool
+  has more than 10 GiB allocated (a pool where dedup was just enabled does not flag). Checksum off: one line per host naming
+  up to three datasets and a count.
+- The Datasets panel shows Dedup/Checksum when not default; both are added to the panel's property read.
+
+## Open for the user
+
+- Should `checksum=off` be refused outright (this draft), or allowed behind the same typed confirm as `dedup=on`?
+
+## Shared by all four slices: the storage reading (my call, from the builder check)
+
+The four slices add readings per host (quota use, checksum/dedup, key status, pool device classes). They share **one** new
+check, built in slice 1 and extended by the others, so they do not each edit `HostChecks`:
+
+- A third check next to disks and shares: `daemon/storage_check.rs`, state file `storage.json` in the state directory,
+  `HostChecks` gains a `storage` field (merged like `merge_disks`/`merge_shares`), the same running marker, and `c` on demand
+  in Hosts runs all three. Per host it holds the datasets' limits and use, the `checksum`/`dedup`/`keystatus`/`encryptionroot`
+  values and the pool facts each slice needs; each slice adds its own fields (all `#[serde(default)]`).
+- **Cadence:** every 10 minutes, not daily (a quota line must clear soon after the fix). It is one `zfs get`/`zfs list` plus
+  one `zpool status` per host, read-only, in its own loop apart from the 03:30 daily pass.
+- New thresholds live under `[dashboard]` (`config.rs` `DashboardConfig`, `config_edit.rs`, the Settings screen):
+  `quota_warn` (90), `quota_crit` (98), `dedup_min_ratio` (1.10). The lines also appear in the daily report email.
+- Every form validates against **that host's** runner (its pool space, its OpenZFS version), never the hub's.
+- Dashboard lines read `storage.json` like they read `smart.json`; a stale file (older than 3x the cadence) shows the same
+  "check is N old" notice style as the disk check.
