@@ -13,9 +13,10 @@ pub fn supports(os: Option<HostOs>, section: Section) -> bool {
     }
 }
 
-/// Boot environments can be listed on illumos (`beadm list`) but not yet changed: the section is read-only there.
-pub fn bootenvs_read_only(os: Option<HostOs>) -> bool {
-    os == Some(HostOs::Illumos)
+/// Whether a key of the Boot Envs section is offered on a host running `os`: on illumos `beadm` has no equivalent of
+/// mounting (`m`, `u`) or of destroying together with the origin snapshot (`D`).
+pub fn bootenv_key_offered(os: Option<HostOs>, key: char) -> bool {
+    !(os == Some(HostOs::Illumos) && matches!(key, 'm' | 'u' | 'D'))
 }
 
 /// The name of a section as the sidebar and the messages call it.
@@ -82,10 +83,13 @@ mod tests {
     }
 
     #[test]
-    fn boot_environments_are_read_only_on_illumos_only() {
-        assert!(bootenvs_read_only(Some(HostOs::Illumos)));
-        for os in [None, Some(HostOs::FreeBsd), Some(HostOs::Linux), Some(HostOs::Other)] {
-            assert!(!bootenvs_read_only(os), "{os:?}");
+    fn on_illumos_only_the_keys_beadm_cannot_serve_are_withheld() {
+        for key in ['n', 'a', 't', 'T', 'R', 'd'] {
+            assert!(bootenv_key_offered(Some(HostOs::Illumos), key), "{key}");
+        }
+        for key in ['m', 'u', 'D'] {
+            assert!(!bootenv_key_offered(Some(HostOs::Illumos), key), "{key}");
+            assert!(bootenv_key_offered(Some(HostOs::FreeBsd), key) && bootenv_key_offered(None, key) && bootenv_key_offered(Some(HostOs::Other), key), "{key}");
         }
     }
 

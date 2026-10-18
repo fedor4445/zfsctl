@@ -1224,7 +1224,6 @@ fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
     let host = app.active_host_name();
     let title = match app.selected_bootenv().filter(|b| b.can_unmount()).and_then(|b| b.mountpoint.as_deref().map(|m| (b.name.as_str(), m))) {
         Some((name, path)) => format!("'{}' mounted at {} — {host}{suffix}", sanitise_for_display(name), sanitise_for_display(path)),
-        None if app.bootenvs_read_only() => format!("Boot Environments — {host} ('r' to refresh; read-only on illumos for now){suffix}"),
         None => format!("Boot Environments — {host} ('r' to refresh){suffix}"),
     };
     let table = Table::new(rows, widths)
