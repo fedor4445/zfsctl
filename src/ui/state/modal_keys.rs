@@ -206,7 +206,7 @@ impl App {
             Err(msg) => return self.reject(form, msg),
         };
         // The facts must be the form's own dataset's: a refresh may have moved the selection while the form was open.
-        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref().is_some_and(|d| d != dataset) {
+        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref() != Some(dataset.as_str()) {
             return self.reject(form, "the dataset's properties are not loaded yet: press r and try again".to_string());
         }
         let facts = super::forms::quota_facts(&self.dataset_properties);
@@ -235,7 +235,7 @@ impl App {
     fn submit_integrity_form(&mut self, form: FormParts) -> Option<PendingAction> {
         use crate::zfs::integrity::{check_checksum, check_dedup, checksum_confirm, dedup_confirm, Confirm};
         let FormKind::EditDatasetProperty { host, dataset, key } = form.kind.clone() else { return None };
-        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref().is_some_and(|d| d != dataset) {
+        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref() != Some(dataset.as_str()) {
             return self.reject(form, "the dataset's properties are not loaded yet: press r and try again".to_string());
         }
         let host_name = self.hosts.get(host).cloned().unwrap_or_default();
@@ -255,6 +255,7 @@ impl App {
         let ram = self.host_resources(&host_name).map(|(r, _)| r.physical);
         let text = match (key.as_str(), &confirm) {
             ("checksum", Confirm::Typed) => format!("{command}With the checksum off, ZFS stops checking the integrity of what is written to this dataset from now on: silent corruption will not be detected, and a scrub cannot repair it. Existing data keeps its old checksums.\nType the dataset name to confirm:"),
+            ("checksum", Confirm::Plain) if current == "off" => format!("{command}Only data written from now on is checksummed with {new}. What was written while the checksum was off has none: a scrub cannot verify or repair it, only rewriting that data does. Set it? (y/n)"),
             ("checksum", Confirm::Plain) => format!("{command}Only data written from now on uses {new}; existing data keeps its old checksum. Run a scrub afterwards to verify the pool. Set it? (y/n)"),
             ("dedup", Confirm::Typed) => {
                 let memory = ram.map_or_else(|| "this host's RAM is not known".to_string(), |r| format!("this host has {} of RAM", crate::zfs::disk::human_size(r)));

@@ -190,6 +190,9 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
         Setting::ScrubIgnore => ("Scrub ignore", ""),
         Setting::Cap(name) => return format!("Cap of {name}: {}", if v(0).is_empty() { "none" } else { v(0) }),
     };
+    // `1.25x` is accepted when typed; the unit is added once.
+    let values: Vec<String> = if matches!(setting, Setting::DedupRatio) { values.iter().map(|v| v.trim().trim_end_matches('x').to_string()).collect() } else { values.to_vec() };
+    let v = |i: usize| values.get(i).map_or("", |v| v.trim());
     if values.iter().all(|x| x.trim().is_empty()) {
         return format!("{label}: back to the default");
     }
@@ -341,5 +344,6 @@ mod tests {
         assert_eq!(describe(&Setting::Memory, &values(&["85", "95"])), "Memory warn / crit: 85 / 95 %");
         assert_eq!(describe(&Setting::Cap("b2".to_string()), &values(&[""])), "Cap of b2: none");
         assert_eq!(describe(&Setting::Theme, &values(&[""])), "Theme: back to the default");
+        assert_eq!(describe(&Setting::DedupRatio, &values(&["1.25x"])), "Dedup warn below: 1.25x", "the unit is not doubled");
     }
 }

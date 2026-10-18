@@ -21,6 +21,10 @@ pub struct Integrity {
     /// Every pool's allocated bytes and dedup ratio in hundredths (`1.02x` is 102), for the dedup line.
     #[serde(default)]
     pub pools: Vec<PoolSpace>,
+    /// When each pool in `dedup_pools` was first seen with dedup on (kept across passes): the ratio of a pool that has only just
+    /// started deduplicating is 1.00x however much data it holds, so the line waits `DEDUP_GRACE`.
+    #[serde(default)]
+    pub dedup_since: std::collections::BTreeMap<String, DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -57,6 +61,10 @@ pub struct StorageResult {
     /// What the integrity settings look like on this host (`zfs get -s local,received checksum,dedup`, `zpool list`).
     #[serde(default, skip_serializing_if = "Integrity::is_empty")]
     pub integrity: Integrity,
+    /// An integrity command could not be asked (ssh dropped), so `integrity` and `zfs_version` are not this pass's: `apply`
+    /// keeps the last good ones. Not stored.
+    #[serde(skip)]
+    pub integrity_stale: bool,
     /// The host's OpenZFS version (`2.4.2-1-FreeBSD_g...`), when `zfs version` says it (OmniOS has no such command).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zfs_version: Option<String>,
@@ -88,7 +96,24 @@ impl StorageFile {
     /// keeps the last good reading and says why it is old.
     pub fn apply(&mut self, host: &str, outcome: Outcome, now: DateTime<Utc>) {
         match outcome {
-            Outcome::Checked(result) => {
+            Outcome::Checked(mut result) => {
+                let old = self.hosts.get(host);
+                if result.integrity_stale {
+                    // The host could not be asked about its integrity settings this time: what was known stays.
+                    if let Some(old) = old {
+                        result.integrity = old.integrity.clone();
+                        result.zfs_version.clone_from(&old.zfs_version);
+                    }
+                } else {
+                    // Remember since when each pool has had dedup on; a pool seen for the first time starts now.
+                    let since: std::collections::BTreeMap<String, DateTime<Utc>> = result
+                        .integrity
+                        .dedup_pools
+                        .iter()
+                        .map(|pool| (pool.clone(), old.and_then(|o| o.integrity.dedup_since.get(pool)).copied().unwrap_or(now)))
+                        .collect();
+                    result.integrity.dedup_since = since;
+                }
                 self.hosts.insert(host.to_string(), result);
             }
             Outcome::Silent => {
@@ -139,7 +164,8 @@ fn parse_integrity(settings: &str, pools: &str) -> Integrity {
         let &[name, property, value] = f.as_slice() else { continue };
         let pool = name.split('/').next().unwrap_or(name).to_string();
         match (property, value) {
-            ("checksum", "off") if !name.ends_with("/dump") => out.checksum_off.push(name.to_string()),
+            // Illumos's dump device is exactly `<pool>/dump`; a user's `tank/backups/dump` is not it.
+            ("checksum", "off") if name.split('/').count() != 2 || !name.ends_with("/dump") => out.checksum_off.push(name.to_string()),
             ("dedup", v) if v != "off" && v != "-" => {
                 if !out.dedup_pools.contains(&pool) {
                     out.dedup_pools.push(pool);
@@ -183,11 +209,25 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
                 .map(|o| parse_classes(&o.stdout).into_iter().filter(|p| !p.is_quiet()).collect())
                 .unwrap_or_default();
             // Each of these may fail on its own (sudo, an old zfs): the rest is still worth having.
-            let text = |cmd: &str, args: &[&str]| runner.run(cmd, args).ok().filter(crate::exec::CommandOutput::success).map(|o| o.stdout).unwrap_or_default();
+            // An answer that is an error (an old zfs, a refusal) is empty; a connection that dropped (Err or ssh's 255) is not an
+            // answer at all, and must not wipe what was known.
+            let mut lost = false;
+            let mut text = |cmd: &str, args: &[&str]| match runner.run(cmd, args) {
+                Ok(o) if o.status == 255 => {
+                    lost = true;
+                    String::new()
+                }
+                Ok(o) if o.success() => o.stdout,
+                Ok(_) => String::new(),
+                Err(_) => {
+                    lost = true;
+                    String::new()
+                }
+            };
             let settings = text("zfs", &["get", "-H", "-p", "-s", "local,received", "-t", "filesystem,volume", "-o", "name,property,value", "checksum,dedup"]);
             let pool_list = text("zpool", &["list", "-H", "-p", "-o", "name,allocated,dedupratio"]);
             let zfs_version = parse_version(&text("zfs", &["version"]));
-            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version, integrity: parse_integrity(&settings, &pool_list), error: None })
+            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version, integrity: parse_integrity(&settings, &pool_list), integrity_stale: lost, error: None })
         }
     }
 }
@@ -272,10 +312,13 @@ pub fn retain_hosts(dir: &Path, configured: &[String]) {
     }
 }
 
+/// How long a pool must have had dedup on before a poor ratio is reported (the ratio is 1.00x until duplicates are written).
+pub const DEDUP_GRACE: chrono::Duration = chrono::Duration::days(7);
+
 /// What one host adds to Needs attention for its integrity settings: a checksum that is off (up to three datasets named), and a
 /// pool paying for deduplication that saves less than `min_ratio_x100` (hundredths, 110 = 1.10x). A pool with under 10 GiB
 /// allocated is left alone (dedup just switched on has nothing to dedupe yet).
-pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16) -> Vec<StorageProblem> {
+pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16, now: DateTime<Utc>) -> Vec<StorageProblem> {
     const ENOUGH_DATA: u64 = 10 << 30;
     file.hosts
         .iter()
@@ -283,7 +326,9 @@ pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16) -> Vec<Storag
             let i = &result.integrity;
             let mut texts = Vec::new();
             for pool in &i.dedup_pools {
-                if let Some(space) = i.pools.iter().find(|p| &p.name == pool).filter(|p| p.allocated > ENOUGH_DATA && p.ratio_x100 < u32::from(min_ratio_x100)) {
+                // The ratio only counts data written since dedup was turned on: wait before judging a pool that has just started.
+                let settled = i.dedup_since.get(pool).is_some_and(|since| now - *since >= DEDUP_GRACE);
+                if let Some(space) = i.pools.iter().find(|p| &p.name == pool).filter(|p| settled && p.allocated > ENOUGH_DATA && p.ratio_x100 < u32::from(min_ratio_x100)) {
                     texts.push(format!("{pool} dedup is on but saves only {:.2}x", f64::from(space.ratio_x100) / 100.0));
                 }
             }
@@ -371,7 +416,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, integrity: Default::default(), error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None });
         file
     }
 
@@ -416,7 +461,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, integrity: Default::default(), error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
@@ -592,6 +637,8 @@ mod tests {
         assert_eq!(i.dedup_pools, ["tpool", "tank"], "one entry per pool, and `off` is not dedup");
         assert_eq!(i.pools, [PoolSpace { name: "rpool".into(), allocated: 10_434_462_720, ratio_x100: 100 }, PoolSpace { name: "tank".into(), allocated: 26_843_545_600, ratio_x100: 102 }]);
         assert_eq!(parse_integrity("", ""), Integrity::default());
+        let nested = parse_integrity("tank/backups/dump\tchecksum\toff\nrpool/dump\tchecksum\toff\nzroot/dump\tchecksum\toff\n", "");
+        assert_eq!(nested.checksum_off, ["tank/backups/dump"], "only `<pool>/dump` is the dump device");
     }
 
     #[test]
@@ -623,22 +670,78 @@ mod tests {
         const GIB: u64 = 1 << 30;
         let mut file = file_with("hub", vec![]);
         let entry = file.hosts.get_mut("hub").unwrap();
-        entry.integrity = Integrity { checksum_off: vec![], dedup_pools: vec!["tank".into()], pools: vec![PoolSpace { name: "tank".into(), allocated: 20 * GIB, ratio_x100: 102 }] };
-        let p = integrity_problems(&file, 110);
+        entry.integrity = Integrity { checksum_off: vec![], dedup_pools: vec!["tank".into()], pools: vec![PoolSpace { name: "tank".into(), allocated: 20 * GIB, ratio_x100: 102 }], dedup_since: [("tank".to_string(), at(NOW))].into() };
+        let p = integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30));
         assert_eq!((p.len(), p[0].severity, p[0].text.as_str()), (1, Severity::Watch, "tank dedup is on but saves only 1.02x"));
-        assert!(integrity_problems(&file, 100).is_empty(), "1.02 is not below 1.00");
+        assert!(integrity_problems(&file, 100, at(NOW) + chrono::Duration::days(30)).is_empty(), "1.02 is not below 1.00");
         let mut edit = |f: &mut dyn FnMut(&mut Integrity), file: &mut StorageFile| f(&mut file.hosts.get_mut("hub").unwrap().integrity);
         edit(&mut |i| i.pools[0].ratio_x100 = 150, &mut file);
-        assert!(integrity_problems(&file, 110).is_empty(), "it saves 1.5x");
+        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30)).is_empty(), "it saves 1.5x");
         edit(&mut |i| i.pools[0] = PoolSpace { name: "tank".into(), allocated: 5 * GIB, ratio_x100: 100 }, &mut file);
-        assert!(integrity_problems(&file, 110).is_empty(), "under 10 GiB: nothing to dedupe yet");
+        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30)).is_empty(), "under 10 GiB: nothing to dedupe yet");
         edit(&mut |i| i.dedup_pools.clear(), &mut file);
         edit(&mut |i| i.pools[0].allocated = 50 * GIB, &mut file);
-        assert!(integrity_problems(&file, 110).is_empty(), "no dataset has dedup on");
+        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30)).is_empty(), "no dataset has dedup on");
         edit(&mut |i| i.checksum_off = ["a", "b", "c", "d", "e"].map(String::from).to_vec(), &mut file);
-        assert_eq!(integrity_problems(&file, 110)[0].text, "a, b, c checksum is off (+2 more)");
+        assert_eq!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30))[0].text, "a, b, c checksum is off (+2 more)");
         edit(&mut |i| i.checksum_off = vec!["tank/scratch".into()], &mut file);
-        assert_eq!(integrity_problems(&file, 110)[0].text, "tank/scratch checksum is off");
+        assert_eq!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30))[0].text, "tank/scratch checksum is off");
+    }
+
+    #[test]
+    fn a_pool_that_only_just_started_deduplicating_is_not_judged_until_the_grace_has_passed() {
+        const GIB: u64 = 1 << 30;
+        let mut file = StorageFile::default();
+        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: Default::default() }, integrity_stale: false, error: None };
+        file.apply("hub", Outcome::Checked(answer(true)), at(NOW));
+        assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW), "first seen now");
+        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(1)).is_empty(), "2 TiB of old data, ratio 1.00x, one day after enabling: not yet");
+        // a later pass keeps the first-seen time
+        file.apply("hub", Outcome::Checked(answer(true)), at(NOW) + chrono::Duration::days(2));
+        assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW));
+        assert_eq!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(8)).len(), 1, "a week on, still 1.00x: now it is paying for nothing");
+        // dedup switched off and on again starts a new clock
+        file.apply("hub", Outcome::Checked(answer(false)), at(NOW) + chrono::Duration::days(9));
+        assert!(file.hosts["hub"].integrity.dedup_since.is_empty());
+        file.apply("hub", Outcome::Checked(answer(true)), at(NOW) + chrono::Duration::days(10));
+        assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW) + chrono::Duration::days(10));
+    }
+
+    #[test]
+    fn a_dropped_connection_on_an_integrity_command_keeps_what_was_known_but_an_unsupported_one_does_not() {
+        let dir_runner = |zfs_get: Result<crate::exec::CommandOutput, ()>| {
+            struct R(Result<crate::exec::CommandOutput, ()>);
+            impl CommandRunner for R {
+                fn run(&self, cmd: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+                    let ok = |s: &str| Ok(crate::exec::CommandOutput { stdout: s.to_string(), stderr: String::new(), status: 0 });
+                    match (cmd, args.first().copied()) {
+                        ("zfs", Some("list")) => ok("a\\t9\\t9\\t10\\t0\\tfilesystem\\n"),
+                        ("zfs", Some("get")) => self.0.clone().map_err(|()| crate::error::AppError::Parse("ssh went away".into())),
+                        _ => ok(""),
+                    }
+                }
+                fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+                    self.run(c, a)
+                }
+                fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+                    self.run(c, a)
+                }
+            }
+            R(zfs_get)
+        };
+        let mut file = file_with("hub", vec![]);
+        file.hosts.get_mut("hub").unwrap().integrity.checksum_off = vec!["tank/scratch".into()];
+        file.hosts.get_mut("hub").unwrap().zfs_version = Some("2.4.2".into());
+        let Outcome::Checked(lost) = check_host(&dir_runner(Err(())), at(NOW)) else { panic!() };
+        assert!(lost.integrity_stale);
+        file.apply("hub", Outcome::Checked(lost), at(NOW));
+        assert_eq!(file.hosts["hub"].integrity.checksum_off, ["tank/scratch"], "the line must not vanish because ssh dropped");
+        assert_eq!(file.hosts["hub"].zfs_version.as_deref(), Some("2.4.2"));
+        // an old zfs that does not know the command answers with an error: that is an answer, and the list is empty
+        let Outcome::Checked(unsupported) = check_host(&dir_runner(Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: "unknown option".into(), status: 2 })), at(NOW)) else { panic!() };
+        assert!(!unsupported.integrity_stale);
+        file.apply("hub", Outcome::Checked(unsupported), at(NOW));
+        assert!(file.hosts["hub"].integrity.checksum_off.is_empty());
     }
 
     #[test]

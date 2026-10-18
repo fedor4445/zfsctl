@@ -431,7 +431,7 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
     }
-    for found in crate::daemon::storage_check::integrity_problems(inputs.storage, inputs.thresholds.dedup_ratio).into_iter().filter(|p| reached(&p.host)) {
+    for found in crate::daemon::storage_check::integrity_problems(inputs.storage, inputs.thresholds.dedup_ratio, inputs.now).into_iter().filter(|p| reached(&p.host)) {
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
         items.push(Item { level: Level::Watch, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
     }
@@ -1038,7 +1038,7 @@ mod tests {
 
     fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
         use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, integrity: Default::default(), error: None }
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None }
     }
 
     #[test]

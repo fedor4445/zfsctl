@@ -79,3 +79,11 @@
 - [ ] **Step 2: Live (hub):** scratch dataset `tpool/ck`: `Enter` on `checksum` (see the list; `blake3` ok on 2.4), set `sha256` (plain confirm + scrub reminder), set `off` (typed name; wrong name refused), set `dedup=on` (typed; RAM text), `c` in Hosts -> Dashboard shows `tpool/ck checksum is off`; set it back -> line gone after `c`; `dedup=off`; destroy the dataset. On `omnios` check that `rpool/dump` does not raise a line.
 - [ ] **Step 3:** Whole-branch subagent review (Review Focus); fix Critical/Important test-first.
 - [ ] **Step 4:** Ask the user before merge + install; update memory.
+
+## Review fixes (2026-10-18)
+
+- The dedup line waits a week (`DEDUP_GRACE`) from when the storage check first saw the pool with dedup on (`Integrity.dedup_since`, carried across passes): `zpool`'s ratio only counts data written after dedup started, so a pool with old data reads 1.00x.
+- A dropped connection or ssh 255 on an integrity command keeps the last good `integrity` and version (`integrity_stale`); an error answer (old zfs, refusal) is an empty answer.
+- Only `<pool>/dump` is skipped, not any dataset ending in `/dump`.
+- Turning the checksum back on from `off` says a scrub cannot verify what was written while it was off; a dedup change with an unknown current value gets the typed confirm; the "properties loaded for this dataset" guard is `!= Some(dataset)`; the Settings description does not double the `x`.
+- Left: the version comes from storage.json only (unknown without the daemon or a `c`, so no gate); the dedup confirm does not show the pool's ratio; a seventh panel line can push the Pool line off a very short terminal.

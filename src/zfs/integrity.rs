@@ -82,7 +82,8 @@ pub fn checksum_confirm(new: &str) -> Confirm {
 
 /// Turning dedup on where it was off costs RAM and does not undo cleanly: the typed confirm. Everything else is plain.
 pub fn dedup_confirm(old: &str, new: &str) -> Confirm {
-    if old == "off" && new != "off" { Confirm::Typed } else { Confirm::Plain }
+    // An unknown current value counts as off: the cautious reading when the list is stale or the row is missing.
+    if (old == "off" || old.is_empty()) && new != "off" { Confirm::Typed } else { Confirm::Plain }
 }
 
 #[cfg(test)]
@@ -134,5 +135,6 @@ mod tests {
         assert_eq!(dedup_confirm("on", "verify"), Confirm::Plain);
         assert_eq!(dedup_confirm("on", "off"), Confirm::Plain);
         assert_eq!(dedup_confirm("off", "off"), Confirm::Plain);
+        assert_eq!(dedup_confirm("", "on"), Confirm::Typed, "an unknown current value is treated as off");
     }
 }

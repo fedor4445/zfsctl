@@ -8975,6 +8975,7 @@ fn quota_app(volume: bool, quota: u64, refquota: u64, reservation: u64, refreser
     app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Right);
+    app.dataset_properties_for = Some("tank/data".to_string());
     let prop = |name: &str, value: u64| Property { name: name.to_string(), value: value.to_string(), source: PropertySource::Local };
     app.dataset_properties = vec![
         prop("quota", quota),
@@ -9355,7 +9356,7 @@ fn integrity_app(checksum: &str, dedup: &str) -> App {
 }
 
 fn version_of(app: &mut App, version: &str) {
-    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), integrity: Default::default(), error: None });
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), integrity: Default::default(), integrity_stale: false, error: None });
 }
 
 #[test]
@@ -9447,4 +9448,29 @@ fn a_value_the_dataset_already_has_is_said_and_sends_nothing() {
     open_property(&mut app, "checksum");
     assert!(submit_value(&mut app, "sha256").is_none());
     assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })) && app.status_error.as_deref().is_some_and(|m| m.contains("already sha256")), "{:?}", app.status_error);
+}
+
+#[test]
+fn turning_the_checksum_back_on_says_a_scrub_cannot_verify_what_was_written_while_it_was_off() {
+    let mut app = integrity_app("off", "off");
+    open_property(&mut app, "checksum");
+    assert!(submit_value(&mut app, "on").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("has none") && prompt.contains("rewriting"), "{prompt}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn dedup_on_without_a_known_current_value_still_asks_for_the_name() {
+    let mut app = integrity_app("on", "off");
+    app.dataset_properties.retain(|p| p.name != "dedup");
+    app.dataset_properties.push(Property { name: "compression".into(), value: "on".into(), source: PropertySource::Default });
+    // open the form on a row that exists, then point it at dedup: the list has no dedup row, so `current` is empty
+    open_property(&mut app, "checksum");
+    if let Some(crate::ui::modal::Modal::Form { kind, .. }) = &mut app.modal {
+        *kind = crate::ui::modal::FormKind::EditDatasetProperty { host: 0, dataset: "tank/data".into(), key: "dedup".into() };
+    }
+    assert!(submit_value(&mut app, "on").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::ConfirmTyped { .. })), "{:?}", app.modal);
 }
