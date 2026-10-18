@@ -170,9 +170,12 @@ pub struct DatasetSpace {
     pub reservation: u64,
     pub refreservation: u64,
     pub recordsize: u64,
+    /// `checksum` and `dedup` as the host prints them (`on`, `sha256`, `off`...); empty when not read.
+    pub checksum: String,
+    pub dedup: String,
 }
 
-pub const DATASET_SPACE_PROPS: &str = "usedbydataset,usedbysnapshots,usedbychildren,usedbyrefreservation,used,available,referenced,logicalused,compressratio,compression,quota,refquota,reservation,refreservation,recordsize";
+pub const DATASET_SPACE_PROPS: &str = "usedbydataset,usedbysnapshots,usedbychildren,usedbyrefreservation,used,available,referenced,logicalused,compressratio,compression,quota,refquota,reservation,refreservation,recordsize,checksum,dedup";
 
 /// Parses `zfs get -Hp -o property,value <DATASET_SPACE_PROPS> <dataset>`.
 pub fn parse_dataset_space(output: &str) -> Result<DatasetSpace> {
@@ -197,6 +200,8 @@ pub fn parse_dataset_space(output: &str) -> Result<DatasetSpace> {
         reservation: num("reservation"),
         refreservation: num("refreservation"),
         recordsize: num("recordsize"),
+        checksum: values.get("checksum").map(|v| (*v).to_string()).unwrap_or_default(),
+        dedup: values.get("dedup").map(|v| (*v).to_string()).unwrap_or_default(),
     })
 }
 
@@ -356,7 +361,7 @@ mod tests {
     const IOSTAT_IDLE: &str = "scratch\t106217472\t145440768\t0\t0\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n";
     const IOSTAT_BUSY: &str = "tank\t1000\t2000\t840\t12\t88080384\t4096\t1200000\t3400000\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
     const STATUS: &str = "  pool: scratch\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:00 with 0 errors on Sat Sep 26 11:53:24 2026\nconfig:\n\n\tNAME                            STATE     READ WRITE CKSUM\n\tscratch                         ONLINE       3     1     7\n\t  mirror-0                      ONLINE       0     0     0\n\t    /root/zfsctl-scratch/vdev3  ONLINE       9     9     9\n\nerrors: No known data errors\n";
-    const SPACE: &str = "usedbydataset\t105046016\nusedbysnapshots\t188416\nusedbychildren\t0\nusedbyrefreservation\t0\nused\t105234432\navailable\t19611648\nreferenced\t105046016\nlogicalused\t105027072\ncompressratio\t1.00\nquota\t0\nrefquota\t0\nreservation\t0\nrefreservation\t0\nrecordsize\t131072\ncompression\ton\n";
+    const SPACE: &str = "usedbydataset\t105046016\nusedbysnapshots\t188416\nusedbychildren\t0\nusedbyrefreservation\t0\nused\t105234432\navailable\t19611648\nreferenced\t105046016\nlogicalused\t105027072\ncompressratio\t1.00\nquota\t0\nrefquota\t0\nreservation\t0\nrefreservation\t0\nrecordsize\t131072\ncompression\ton\nchecksum\tsha256\ndedup\toff\n";
 
     #[test]
     fn iostat_idle_pool_has_zero_rates_and_no_latency() {
