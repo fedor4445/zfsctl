@@ -33,6 +33,12 @@ pub enum MutationCall {
     RemoveAclEntry { path: String, position: usize },
     SetSmbShare { share: crate::zfs::smb::SmbShare, password: Option<Secret> },
     RemoveSmbShare { dataset: String },
+    /// `zfs load-key` of an encryption root, then (when `mount`) `zfs mount` of it. The passphrase goes in on stdin.
+    LoadKey { dataset: String, passphrase: Secret, mount: bool },
+    /// `zfs unload-key`: the data cannot be read again until the key is loaded.
+    UnloadKey { dataset: String },
+    /// `zfs change-key` of an encryption root: the old passphrase stops working, the data is not re-encrypted.
+    ChangeKey { dataset: String, passphrase: Secret },
     CreateBootEnv { name: String, from: Option<String> },
     ActivateBootEnv { name: String, temporary: bool },
     ClearTemporaryBootEnv { name: String },
@@ -111,6 +117,8 @@ impl MutationCall {
             | MutationCall::UnallowPermission { .. }
             | MutationCall::RemoveAclEntry { .. }
             | MutationCall::RemoveSmbShare { .. }
+            | MutationCall::UnloadKey { .. }
+            | MutationCall::ChangeKey { .. }
             | MutationCall::ActivateBootEnv { temporary: false, .. }
             | MutationCall::DeleteJob { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
@@ -127,6 +135,7 @@ impl MutationCall {
             | MutationCall::SendTestMessage { .. }
             | MutationCall::SetJobEnabled { .. }
             | MutationCall::SetSmbShare { .. }
+            | MutationCall::LoadKey { .. }
             | MutationCall::ActivateBootEnv { temporary: true, .. }
             | MutationCall::CreateBootEnv { .. }
             | MutationCall::ClearTemporaryBootEnv { .. }
@@ -163,6 +172,9 @@ impl MutationCall {
             MutationCall::RemoveAclEntry { .. } => "REMOVE ACL ENTRY",
             MutationCall::SetSmbShare { .. } => "SET SMB SHARE",
             MutationCall::RemoveSmbShare { .. } => "REMOVE SMB SHARE",
+            MutationCall::LoadKey { .. } => "LOAD KEY",
+            MutationCall::UnloadKey { .. } => "UNLOAD KEY",
+            MutationCall::ChangeKey { .. } => "CHANGE KEY",
             MutationCall::CreateBootEnv { .. } => "CREATE BOOT ENV",
             MutationCall::ActivateBootEnv { .. } => "ACTIVATE BOOT ENV",
             MutationCall::ClearTemporaryBootEnv { .. } => "CLEAR TEMPORARY BOOT ENV",
@@ -228,6 +240,9 @@ impl MutationCall {
                 crate::zfs::smb::set_share(runner, share, password.as_ref().map(|p| p.0.as_str()))
             }
             MutationCall::RemoveSmbShare { dataset } => crate::zfs::smb::remove_share(runner, dataset),
+            MutationCall::LoadKey { dataset, passphrase, mount } => crate::zfs::encryption::load_key_and_mount(runner, dataset, &passphrase.0, *mount),
+            MutationCall::UnloadKey { dataset } => crate::zfs::encryption::unload_key(runner, dataset),
+            MutationCall::ChangeKey { dataset, passphrase } => crate::zfs::encryption::change_key(runner, dataset, &passphrase.0),
             MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref(), os),
             MutationCall::ActivateBootEnv { name, temporary } => crate::zfs::bootenv::activate(runner, name, *temporary, os),
             MutationCall::ClearTemporaryBootEnv { name } => crate::zfs::bootenv::clear_temporary(runner, name, os),
@@ -452,6 +467,22 @@ mod tests {
         let runner = FakeRunner::new("");
         MutationCall::RemoveSmbShare { dataset: "tank/none".into() }.run(&runner).unwrap_err(); // nothing managed there
         assert_eq!(MutationCall::RemoveSmbShare { dataset: "x".into() }.tone(), Tone::Warn);
+    }
+
+    #[test]
+    fn key_calls_run_through_the_library_and_never_print_the_passphrase() {
+        let secret = "correct horse battery";
+        let runner = FakeRunner::new("");
+        let load = MutationCall::LoadKey { dataset: "tank/s".into(), passphrase: Secret(secret.into()), mount: true };
+        let change = MutationCall::ChangeKey { dataset: "tank/s".into(), passphrase: Secret(secret.into()) };
+        load.run(&runner).unwrap();
+        change.run(&runner).unwrap();
+        MutationCall::UnloadKey { dataset: "tank/s".into() }.run(&runner).unwrap();
+        let verbs: Vec<String> = runner.calls.lock().unwrap().iter().map(|(_, a)| a[0].clone()).collect();
+        assert_eq!(verbs, ["load-key", "mount", "change-key", "unload-key"]);
+        assert!(!format!("{load:?}{change:?}").contains(secret));
+        assert_eq!((load.tone(), change.tone()), (Tone::Neutral, Tone::Warn));
+        assert_eq!(MutationCall::UnloadKey { dataset: "x".into() }.tone(), Tone::Warn);
     }
 
     #[test]

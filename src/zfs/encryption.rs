@@ -133,6 +133,23 @@ pub fn load_key(runner: &dyn CommandRunner, dataset: &str, passphrase: &str) -> 
     key_command(runner, "load-key", dataset, Some(passphrase))
 }
 
+/// `load_key`, then `zfs mount` of the same dataset when asked. A mount that fails leaves the key loaded and says so.
+pub fn load_key_and_mount(runner: &dyn CommandRunner, dataset: &str, passphrase: &str, mount: bool) -> crate::error::Result<()> {
+    load_key(runner, dataset, passphrase)?;
+    if !mount {
+        return Ok(());
+    }
+    let out = runner.run("zfs", &["mount", "--", dataset])?;
+    if out.success() {
+        return Ok(());
+    }
+    Err(crate::error::AppError::CommandFailed {
+        cmd: format!("zfs mount {dataset}"),
+        status: out.status,
+        stderr: format!("{}\nThe key IS loaded; only the mount failed.", out.stderr.trim_end()),
+    })
+}
+
 /// `zfs unload-key`: zfs refuses while the dataset is mounted, and its message is passed on.
 pub fn unload_key(runner: &dyn CommandRunner, dataset: &str) -> crate::error::Result<()> {
     key_command(runner, "unload-key", dataset, None)
@@ -259,5 +276,18 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         let busy = FakeRunner::failing("Key unload error: 'tank/secure' is busy.", 255);
         let msg = unload_key(&busy, "tank/secure").unwrap_err().to_string();
         assert!(msg.contains("is busy") && msg.contains("unmount"), "{msg}");
+    }
+
+    #[test]
+    fn a_failed_mount_says_the_key_is_loaded() {
+        let runner = FakeRunner::new("").route_failure("zfs", "mount", "cannot mount 'tank/s': filesystem already mounted", 1);
+        let msg = load_key_and_mount(&runner, "tank/s", "pass phrase", true).unwrap_err().to_string();
+        assert!(msg.contains("already mounted") && msg.contains("key IS loaded"), "{msg}");
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!((calls[0].1[0].as_str(), calls[1].1.as_slice()), ("load-key", ["mount", "--", "tank/s"].map(String::from).as_slice()));
+        drop(calls);
+        let plain = FakeRunner::new("");
+        load_key_and_mount(&plain, "tank/s", "pass phrase", false).unwrap();
+        assert_eq!(plain.calls.lock().unwrap().len(), 1, "no mount unless asked");
     }
 }
