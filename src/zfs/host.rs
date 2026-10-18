@@ -210,7 +210,7 @@ fn stdout_of(output: Result<crate::exec::CommandOutput>) -> Option<String> {
 
 /// One host refresh: the summary plus all-pools I/O for a 1-second window.
 /// Blocks for about a second, so it belongs on a worker thread.
-pub fn sample_host(runner: &dyn CommandRunner) -> Result<(HostSummary, PoolIo)> {
+pub fn sample_host(runner: &dyn CommandRunner, host_os: Option<crate::zfs::host_health::HostOs>) -> Result<(HostSummary, PoolIo)> {
     use crate::zfs::host_health::{parse_pool_list_frag, parse_status_all, PoolProbe};
     let rows = parse_pool_list_frag(&run_checked(runner, "zpool", &["list", "-Hp", "-o", "name,size,alloc,free,frag,health"], "zpool list")?.stdout)?;
     let status = stdout_of(runner.run("zpool", &["status"])).map(|s| parse_status_all(&s));
@@ -226,6 +226,11 @@ pub fn sample_host(runner: &dyn CommandRunner) -> Result<(HostSummary, PoolIo)> 
     let started = Instant::now();
     let os = stdout_of(runner.run_unprivileged("uname", &["-sr"])).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let rtt_ms = os.is_some().then(|| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    // Linux and illumos have their own readers for the rest (no `sysctl` there).
+    if let Some(other @ (crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos)) = host_os {
+        let status = stdout_of(runner.run("zpool", &["status", "-x"])).and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+        return Ok(crate::zfs::host_facts_os::finish(runner, other, HostSummary { os, pools, status, rtt_ms, pool_rows, ..HostSummary::default() }));
+    }
     let now = stdout_of(runner.run_unprivileged("date", &["+%s"])).and_then(|s| s.trim().parse::<u64>().ok());
     let boot = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kern.boottime"])).and_then(|s| parse_boottime(&s));
     let core = stdout_of(runner.run_unprivileged(
@@ -301,11 +306,11 @@ mod tests {
 
     #[test]
     fn sample_host_needs_the_pool_list_but_tolerates_every_other_failure() {
-        assert!(sample_host(&FakeRunner::failing("no zfs", 1)).is_err());
+        assert!(sample_host(&FakeRunner::failing("no zfs", 1), None).is_err());
         let runner = FakeRunner::new("")
             .route("zpool", "list", "tank\t3000\t1000\t2000\t5\tONLINE\nbad\t100\t50\t50\t-\tDEGRADED\n")
             .route_failure("zpool", "status", "boom", 1);
-        let (s, io) = sample_host(&runner).unwrap();
+        let (s, io) = sample_host(&runner, None).unwrap();
         assert_eq!((s.pools.len(), s.unhealthy(), s.capacity()), (2, 1, (1050, 3100)));
         assert_eq!((s.os, s.load, s.arc, s.status, io), (None, None, None, None, PoolIo::default()));
     }
@@ -319,7 +324,7 @@ mod tests {
             .route("sysctl", "-n", "{ sec = 1791293984, usec = 6 } Tue\n")
             .route("zpool", "status", "all pools are healthy\n")
             .route("zpool", "iostat", IOSTAT);
-        let (s, io) = sample_host(&runner).unwrap();
+        let (s, io) = sample_host(&runner, None).unwrap();
         assert_eq!(s.os.as_deref(), Some("FreeBSD 15.1-RELEASE-p4"));
         assert_eq!(s.uptime_secs, Some(1407));
         assert_eq!(s.status.as_deref(), Some("all pools are healthy"));
@@ -463,8 +468,28 @@ mod tests {
     }
 
     #[test]
+    fn a_linux_host_is_sampled_from_proc_without_sysctl_or_swapinfo() {
+        use crate::zfs::host_health::HostOs;
+        let runner = Scripted::new()
+            .on("zpool list", LIST)
+            .on("zpool status", STATUS)
+            .on("zpool iostat", "scratch\t1\t2\t0\t0\t0\t0\n")
+            .on("uname", "Linux 6.8.0-45-generic\n")
+            .on("sh -c echo '== meminfo'", "== meminfo\nMemTotal:       32850256 kB\nMemAvailable:   31218412 kB\nSwapTotal:       2097152 kB\nSwapFree:        1572864 kB\n== stat\ncpu  1 2 3 4 5 0 0 0 0 0\n== load\n0.04 0.02 0.00 1/756 1\n== arc\n== cores\n32\n")
+            .on("sh -c echo '== uptime'", "== uptime\n598760.37\n== model\nmodel name\t: Xeon E5\n== meminfo\nMemFree:          858624 kB\n== arc\nsize 4 100\nc_max 4 200\nhits 4 30\nmisses 4 10\n== zfs\n2.2.2\n");
+        let (s, _) = sample_host(&runner, Some(HostOs::Linux)).unwrap();
+        assert_eq!((s.os.as_deref(), s.zfs_version.as_deref(), s.uptime_secs, s.load), (Some("Linux 6.8.0-45-generic"), Some("2.2.2"), Some(598_760), Some([0.04, 0.02, 0.0])));
+        assert_eq!(s.cpu.as_ref().map(|c| (c.model.as_str(), c.cores)), Some(("Xeon E5", 32)));
+        assert_eq!(s.memory.map(|m| (m.physical, m.free)), Some((32_850_256 * 1024, 858_624 * 1024)));
+        assert_eq!(s.swap, Some(Swap { total: 2_097_152 * 1024, used: 524_288 * 1024 }));
+        assert_eq!(s.arc.map(|a| (a.size, a.max)), Some((100, 200)));
+        let calls = runner.calls.lock().unwrap().clone();
+        assert!(calls.iter().all(|c| !c.starts_with("sysctl") && !c.starts_with("swapinfo")), "{calls:?}");
+    }
+
+    #[test]
     fn the_sample_carries_cpu_memory_swap_and_pool_rows() {
-        let (summary, _) = sample_host(&full_host()).unwrap();
+        let (summary, _) = sample_host(&full_host(), None).unwrap();
         let cpu = summary.cpu.as_ref().unwrap();
         assert_eq!((cpu.model.as_str(), cpu.cores, cpu.percent), ("Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz", 36, Some(50.0)));
         assert_eq!(summary.memory.unwrap().physical, 21_418_688_512);
@@ -476,17 +501,17 @@ mod tests {
 
     #[test]
     fn l2arc_is_only_reported_when_a_cache_device_exists() {
-        let (none, _) = sample_host(&full_host()).unwrap();
+        let (none, _) = sample_host(&full_host(), None).unwrap();
         assert_eq!(none.l2arc, None, "l2_size 0: no cache device, no line");
         let with = full_host().on("sysctl -n kstat.zfs.misc.arcstats.l2_size", "12884901888\n600\n400\n");
-        let (summary, _) = sample_host(&with).unwrap();
+        let (summary, _) = sample_host(&with, None).unwrap();
         assert_eq!(summary.l2arc, Some(L2arc { size: 12_884_901_888, hits: 600, misses: 400 }));
     }
 
     #[test]
     fn the_cpu_usage_is_measured_around_the_iostat_window_with_no_extra_wait() {
         let host = full_host();
-        sample_host(&host).unwrap();
+        sample_host(&host, None).unwrap();
         let calls = host.calls.lock().unwrap().clone();
         let at = |p: &str| calls.iter().position(|c| c.starts_with(p)).unwrap_or_else(|| panic!("no {p} in {calls:?}"));
         let first = calls.iter().position(|c| c == "sysctl -n kern.cp_time").unwrap();
@@ -497,7 +522,7 @@ mod tests {
     #[test]
     fn every_new_figure_is_best_effort_and_a_missing_one_leaves_the_rest() {
         let host = full_host().failing("sysctl -n hw.model").failing("swapinfo").failing("sysctl -n kern.cp_time").failing("zpool status");
-        let (summary, _) = sample_host(&host).unwrap();
+        let (summary, _) = sample_host(&host, None).unwrap();
         assert_eq!((summary.cpu.clone(), summary.memory, summary.swap), (None, None, None));
         assert_eq!(summary.pools.len(), 2, "the required part still works");
         assert!(summary.pool_rows.iter().all(|p| p.errors.is_none() && p.scan.is_none()), "no zpool status: unknown, not clean");
@@ -508,7 +533,7 @@ mod tests {
     fn a_cpu_model_without_a_usage_reading_still_shows_the_model_and_cores() {
         let host = full_host();
         host.cp_time.lock().unwrap().clear();
-        let (summary, _) = sample_host(&host).unwrap();
+        let (summary, _) = sample_host(&host, None).unwrap();
         let cpu = summary.cpu.unwrap();
         assert_eq!((cpu.cores, cpu.percent), (36, None));
     }
