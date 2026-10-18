@@ -7934,10 +7934,14 @@ fn a_replication_or_mirror_of_an_encrypted_dataset_is_not_saved() {
 fn a_disabled_job_on_an_encrypted_dataset_can_still_be_saved() {
     let mut app = keep_form_app("");
     encrypted(&mut app, "tank/data", 0);
-    let Some(Modal::Form { fields, .. }) = app.modal.as_mut() else { panic!() };
-    fields[7].value = "n".into();
+    let mut existing = repl_job(false);
+    existing.enabled = false;
+    existing.host = "local".into();
+    existing.dataset = Some("tank/data".into());
+    let Some(Modal::Form { kind, .. }) = app.modal.as_mut() else { panic!() };
+    *kind = repl_kind(Some(existing), vec![]);
     app.handle_modal_key(KeyCode::Enter);
-    assert!(!matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(!matches!(app.modal, Some(Modal::Form { .. })), "{:?} {:?}", app.modal, app.status_message);
 }
 
 #[test]
