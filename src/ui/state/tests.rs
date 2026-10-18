@@ -451,6 +451,28 @@ fn handle_modal_key_confirm_typed_esc_cancels() {
 }
 
 #[test]
+fn a_mutation_the_hosts_os_cannot_serve_is_refused_before_anything_is_sent() {
+    use crate::zfs::host_health::HostOs;
+    use crate::ui::modal::{MutationCall, PendingAction};
+    let cases = [
+        (Section::Shares, MutationCall::RemoveSmbShare { dataset: "tank/x".into() }, None),
+        (Section::Shares, MutationCall::RemoveSmbShare { dataset: "tank/x".into() }, Some(HostOs::Linux)),
+        (Section::BootEnvs, MutationCall::CreateBootEnv { name: "be".into(), from: None }, Some(HostOs::Linux)),
+    ];
+    for (section, call, os) in cases {
+        let mut app = App::new(vec!["local".to_string()]);
+        if let Some(os) = os {
+            app.set_os_for_test("local", os);
+        }
+        let runner = Arc::new(FakeRunner::new(""));
+        app.dispatch_mutation(PendingAction { host: 0, section, call }, runner.clone());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(runner.calls.lock().unwrap().is_empty() && runner.unprivileged_calls.lock().unwrap().is_empty(), "{section:?} {os:?} must send nothing");
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains("not")), "{:?}", app.status_message);
+    }
+}
+
+#[test]
 fn dispatch_mutation_success_queues_refresh_for_its_section() {
     let mut app = App::new(vec!["local".to_string()]);
     let action = crate::ui::modal::PendingAction {
