@@ -8736,3 +8736,79 @@ fn the_apps_host_os_follows_the_last_probe_that_detected_it() {
     assert_eq!(app.host_os(0), None);
     assert_eq!(app.host_os(9), None, "no such host");
 }
+
+/// Two hosts: the hub (FreeBSD) and `ub24`, whose probe said it runs `os`.
+fn two_os_app(os: crate::zfs::host_health::HostOs) -> App {
+    use crate::zfs::host_health::{HostOs, HostProbe};
+    let mut app = App::new(vec!["local".to_string(), "ub24".to_string()]);
+    let reached = |os| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os: Some(os) };
+    app.tx.send(WorkerMsg::HostHealth("local".into(), reached(HostOs::FreeBsd))).unwrap();
+    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(os))).unwrap();
+    app.drain_worker_messages();
+    app
+}
+
+fn go_to(app: &mut App, section: Section) {
+    app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
+}
+
+/// A runner that must never be asked anything: a dimmed section runs no command.
+struct NoCalls;
+
+impl crate::exec::CommandRunner for NoCalls {
+    fn run(&self, cmd: &str, _: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        panic!("a dimmed section ran {cmd}")
+    }
+    fn run_with_stdin(&self, cmd: &str, a: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, a)
+    }
+    fn run_unprivileged(&self, cmd: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, a)
+    }
+}
+
+#[test]
+fn selecting_a_linux_host_dims_boot_envs_and_a_freebsd_host_restores_it() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
+    app.selected_host = 0;
+    assert!(app.section_supported(Section::BootEnvs));
+    app.selected_host = 1;
+    assert!(!app.section_supported(Section::BootEnvs) && !app.section_supported(Section::Shares) && !app.section_supported(Section::DatasetAcl));
+    assert!(app.section_supported(Section::Disks) && app.section_supported(Section::Pools));
+    go_to(&mut app, Section::BootEnvs);
+    assert!(!app.current_section_supported());
+    app.selected_host = 0;
+    assert!(app.current_section_supported(), "back on the FreeBSD host everything is offered again");
+}
+
+#[test]
+fn a_dimmed_section_runs_no_command_when_refreshed_and_shows_no_stale_rows() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+    app.selected_host = 1;
+    app.bootenvs = vec![be("left-from-the-hub", true, true, false, None)];
+    app.shares = vec![crate::zfs::share::Share::Nfs { dataset: "tank/x".into(), raw: "on".into(), networks: vec![], hosts: vec![], read_only: false, root: None }];
+    let runner: std::sync::Arc<dyn crate::exec::CommandRunner> = std::sync::Arc::new(NoCalls);
+    app.refresh_bootenvs(runner.clone());
+    app.refresh_shares(runner.clone());
+    app.refresh_dataset_acl(runner, "/tank/x".to_string());
+    std::thread::sleep(Duration::from_millis(100));
+    app.drain_worker_messages();
+    assert!(app.bootenvs.is_empty() && app.shares.is_empty(), "the other host's rows are gone");
+    assert!(app.acl_unsupported().is_none() || app.acl_unsupported().is_some_and(|t| t.contains("illumos")));
+}
+
+#[test]
+fn the_acl_tab_says_why_on_linux_and_keys_of_a_dimmed_section_are_inert() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
+    app.selected_host = 1;
+    go_to(&mut app, Section::Datasets);
+    app.datasets = vec![ds_named("ztest/data", Some("/ztest/data"))];
+    app.datasets_table.select(Some(0));
+    app.dataset_properties_for = Some("ztest/data".into());
+    assert!(app.acl_unsupported().is_some_and(|t| t.contains("Linux")), "{:?}", app.acl_unsupported());
+    go_to(&mut app, Section::BootEnvs);
+    app.handle_key(KeyCode::Char('n'));
+    assert!(app.modal.is_none(), "n in Boot Envs needs no selection, so only the guard stops it");
+    app.handle_key(KeyCode::Tab);
+    assert_ne!(app.current_section(), Section::BootEnvs, "navigation still works");
+}

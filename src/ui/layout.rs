@@ -176,26 +176,15 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let label = match s {
-                Section::Dashboard => "Dashboard",
-                Section::Hosts => "Hosts",
-                Section::Pools => "Pools",
-                Section::Datasets => "Datasets",
-                Section::Snapshots => "Snapshots",
-                Section::Disks => "Disks",
-                Section::Shares => "Shares",
-                Section::BootEnvs => "Boot Envs",
-                Section::Jobs => "Jobs",
-                Section::Cloud => "Cloud",
-                Section::Alerts => "Alerts",
-                Section::Settings => "Settings",
-                Section::Vdevs => "Vdevs",
-                Section::PoolProperties => "Pool Properties",
-                Section::DatasetProperties => "Dataset Properties",
-                Section::DatasetPermissions => "Dataset Permissions",
-                Section::DatasetAcl => "Dataset ACL",
+            let label = crate::ui::support::section_label(*s);
+            // A section this host's OS has no equivalent for yet is dimmed (it still opens, and says why).
+            let style = if i == app.selected_section {
+                theme.selected_row()
+            } else if !app.section_supported(*s) {
+                theme.dim()
+            } else {
+                Style::default()
             };
-            let style = if i == app.selected_section { theme.selected_row() } else { Style::default() };
             ListItem::new(label).style(style)
         })
         .collect();
@@ -712,6 +701,7 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
     let widths = [Constraint::Length(3), Constraint::Length(14), Constraint::Min(20), Constraint::Length(16), Constraint::Length(6)];
     let title = match app.acl_unsupported() {
         // Short on purpose: the right pane is narrow. The full reason is in the status line when n or d is pressed.
+        Some(reason) if !reason.contains("acltype") => format!("ACL — {dataset} ({reason})"),
         Some(_) => format!("ACL — {dataset} (acltype=posix: NFSv4 ACLs only)"),
         None => format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)"),
     };
@@ -735,6 +725,18 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
+}
+
+/// The body of a section the selected host's OS has no equivalent for: a bordered box that says so, in the dim style.
+fn draw_unsupported(f: &mut Frame, app: &App, area: Rect, section: Section) {
+    let os = app.host_os(app.selected_host).map_or("this", crate::zfs::host_health::HostOs::word);
+    let text = match app.host_os(app.selected_host) {
+        Some(os) => crate::ui::support::unsupported_text(os, section),
+        None => format!("{} is not supported on {os} hosts yet.", crate::ui::support::section_label(section)),
+    };
+    let title = format!("{} — {}", crate::ui::support::section_label(section), app.active_host_name());
+    let block = Block::default().borders(Borders::ALL).border_style(app.theme.pane_border(true)).title(title);
+    f.render_widget(Paragraph::new(text).style(app.theme.dim()).wrap(Wrap { trim: false }).block(block), area);
 }
 
 fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1137,6 +1139,10 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
+    if !app.section_supported(Section::Shares) {
+        draw_unsupported(f, app, area, Section::Shares);
+        return;
+    }
     let theme = app.theme.clone();
     let rows = app.shares.iter().map(|s| match s {
         Share::Nfs { dataset, raw, .. } => Row::new(vec![dataset.clone(), "NFS".to_string(), raw.clone()]),
@@ -1164,6 +1170,10 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
+    if !app.section_supported(Section::BootEnvs) {
+        draw_unsupported(f, app, area, Section::BootEnvs);
+        return;
+    }
     const NAME_W: u16 = 24;
     const ACTIVE_W: u16 = 12;
     const SPACE_W: u16 = 8;
@@ -2006,6 +2016,48 @@ mod tests {
         app.cloud_table.select(Some(1));
         let idle = render(&mut app, 130, 40).join("\n");
         assert!(idle.contains("Remote — t1:") && idle.contains("No job uses this remote"), "{idle}");
+    }
+
+    fn linux_host_app() -> App {
+        use crate::zfs::host_health::HostOs;
+        let mut app = App::new(vec!["local".to_string(), "ub24".to_string()]);
+        app.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Linux), ..Default::default() });
+        app.selected_host = 1;
+        app
+    }
+
+    #[test]
+    fn the_sidebar_dims_unsupported_entries_for_the_selected_host() {
+        use ratatui::style::Modifier;
+        let mut app = linux_host_app();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let style_of = |label: &str| {
+            let (x, y) = (0..30u16).find_map(|y| (0..40u16).find_map(|x| ((0..label.len() as u16).all(|i| buf[(x + i, y)].symbol() == &label[i as usize..=i as usize])).then_some((x, y)))).unwrap_or_else(|| panic!("no {label} on screen"));
+            (buf[(x, y)].fg, buf[(x, y)].modifier)
+        };
+        let dim = app.theme.dim();
+        let dimmed = |label: &str| style_of(label).0 == dim.fg.unwrap_or(ratatui::style::Color::Reset) && style_of(label).1.contains(dim.add_modifier | Modifier::empty());
+        assert!(dimmed("Boot Envs") && dimmed("Shares"), "unsupported entries are dimmed");
+        assert!(!dimmed("Disks") && !dimmed("Pools") && !dimmed("Jobs"), "supported ones are not");
+        app.selected_host = 0;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf2 = terminal.backend().buffer().clone();
+        let boot = (0..30u16).find(|y| (0..40u16).any(|x| buf2[(x, *y)].symbol() == "B" && buf2[(x + 1, *y)].symbol() == "o" && buf2[(x + 5, *y)].symbol() == "E")).unwrap();
+        let x = (0..40u16).find(|x| buf2[(*x, boot)].symbol() == "B").unwrap();
+        assert_ne!(buf2[(x, boot)].fg, dim.fg.unwrap_or(ratatui::style::Color::Reset), "back on the FreeBSD host it is restored");
+    }
+
+    #[test]
+    fn a_dimmed_section_says_why_in_its_body() {
+        let mut app = linux_host_app();
+        for (section, text) in [(Section::BootEnvs, "Boot Envs is not supported on Linux hosts yet."), (Section::Shares, "Shares is not supported on Linux hosts yet.")] {
+            app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
+            let screen = render(&mut app, 120, 20).join("\n");
+            assert!(screen.contains(text), "{screen}");
+        }
     }
 
     #[test]

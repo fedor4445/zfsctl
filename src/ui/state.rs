@@ -972,6 +972,16 @@ impl App {
         });
     }
 
+    /// Whether `section` works on the selected host's OS (see `ui::support`): a host whose OS is not known yet counts as
+    /// FreeBSD, so nothing flickers while the first probe runs.
+    pub fn section_supported(&self, section: Section) -> bool {
+        crate::ui::support::supports(self.host_os(self.selected_host), section)
+    }
+
+    pub fn current_section_supported(&self) -> bool {
+        self.section_supported(self.current_section())
+    }
+
     /// The OS of host number `host` once a probe has read it; `None` until then (and for a host that does not exist).
     pub fn host_os(&self, host: usize) -> Option<crate::zfs::host_health::HostOs> {
         self.hosts.get(host).and_then(|name| self.host_probes.get(name)).and_then(|s| s.os)
@@ -1240,13 +1250,16 @@ impl App {
 
     /// Why the ACL tab cannot edit the selected dataset, from its `acltype` property (only trusted when the
     /// loaded properties belong to this very dataset).
-    pub fn acl_unsupported(&self) -> Option<&'static str> {
+    pub fn acl_unsupported(&self) -> Option<String> {
+        if let (false, Some(os)) = (self.section_supported(Section::DatasetAcl), self.host_os(self.selected_host)) {
+            return Some(crate::ui::support::unsupported_text(os, Section::DatasetAcl));
+        }
         let name = self.selected_dataset_name()?;
         if self.dataset_properties_for.as_deref() != Some(name.as_str()) {
             return None;
         }
         let acltype = self.dataset_properties.iter().find(|p| p.name == "acltype")?;
-        (acltype.value == "posix").then_some("this dataset has acltype=posix: the ACL tab edits NFSv4 ACLs only")
+        (acltype.value == "posix").then(|| "this dataset has acltype=posix: the ACL tab edits NFSv4 ACLs only".to_string())
     }
 
     /// Why `D` (zfs destroy -r) must not run on `name`, if it must not. A pool root would wipe the whole pool
@@ -1362,14 +1375,16 @@ impl App {
         }
         let _handled = self.key_global(key)
             || self.key_navigation(key)
-            || self.key_pools(key)
-            || self.key_dataset_detail(key)
-            || self.key_dataset_list(key)
-            || self.key_lists_and_snapshots(key)
-            || self.key_jobs(key)
-            || self.key_alerts_and_shares(key)
-            || self.key_bootenvs(key)
-            || self.key_disks(key);
+            // A section the host's OS has no equivalent for (see `ui::support`) is dimmed: its keys do nothing.
+            || (self.current_section_supported()
+                && (self.key_pools(key)
+                    || self.key_dataset_detail(key)
+                    || self.key_dataset_list(key)
+                    || self.key_lists_and_snapshots(key)
+                    || self.key_jobs(key)
+                    || self.key_alerts_and_shares(key)
+                    || self.key_bootenvs(key)
+                    || self.key_disks(key)));
     }
 
 
@@ -1805,7 +1820,7 @@ impl App {
                     && self.dataset_detail_tab == DatasetDetailTab::Acl
                     && self.acl_unsupported().is_some() =>
             {
-                self.status_message = self.acl_unsupported().map(str::to_string);
+                self.status_message = self.acl_unsupported();
             }
             KeyCode::Char('n')
                 if self.current_section() == Section::Datasets
@@ -2908,6 +2923,11 @@ impl App {
     /// See `refresh_pools` for why this queues rather than drops a
     /// request while already in flight.
     pub fn refresh_shares(&mut self, runner: Arc<dyn CommandRunner>) {
+        if !self.section_supported(Section::Shares) {
+            self.shares.clear();
+            (self.nfs_available, self.samba_available) = (None, None);
+            return;
+        }
         let host = self.selected_host;
         if self.is_refreshing(Section::Shares, host) {
             self.pending_refresh.insert((Section::Shares, host));
@@ -2923,6 +2943,11 @@ impl App {
 
     /// See `refresh_pools` for why this queues rather than drops a request while in flight.
     pub fn refresh_bootenvs(&mut self, runner: Arc<dyn CommandRunner>) {
+        if !self.section_supported(Section::BootEnvs) {
+            self.bootenvs.clear();
+            self.bootenvs_unavailable = None;
+            return;
+        }
         let host = self.selected_host;
         if self.is_refreshing(Section::BootEnvs, host) {
             self.pending_refresh.insert((Section::BootEnvs, host));
@@ -3032,6 +3057,10 @@ impl App {
     /// See `refresh_dataset_permissions`. `path` is the dataset's
     /// mountpoint, not its name -- ACLs are filesystem-path-scoped.
     pub fn refresh_dataset_acl(&mut self, runner: Arc<dyn CommandRunner>, path: String) {
+        if !self.section_supported(Section::DatasetAcl) {
+            self.acl_entries.clear();
+            return;
+        }
         let host = self.selected_host;
         if self.is_refreshing(Section::DatasetAcl, host) {
             self.pending_refresh.insert((Section::DatasetAcl, host));

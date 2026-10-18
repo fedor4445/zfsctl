@@ -134,6 +134,8 @@ fn context_hints(app: &App) -> Vec<Hint> {
     let section = app.current_section();
     let right = app.pane_focus == PaneFocus::Right;
     match (section, right) {
+        // A section this host's OS has no equivalent for is dimmed: only the global hints below apply.
+        (s, _) if !app.section_supported(s) => {}
         (Section::Hosts, _) => {
             if !app.hosts.is_empty() {
                 v.push(h("↑↓", "Host", 1));
@@ -632,6 +634,19 @@ mod tests {
         }
         let without = labels(&settings(0));
         assert!(without == [("r", "Refresh")] || without.iter().all(|(k, _)| *k != "Enter" && *k != "↑↓"), "{without:?}");
+    }
+
+    #[test]
+    fn a_dimmed_section_offers_only_the_global_hints() {
+        use crate::zfs::host_health::HostOs;
+        let mut a = base();
+        a.hosts = vec!["local".to_string(), "ub24".to_string()];
+        a.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Linux), ..Default::default() });
+        a.selected_host = 1;
+        go(&mut a, Section::BootEnvs);
+        let keys: Vec<&str> = hints(&a).iter().map(|h| h.key).collect();
+        assert!(!keys.contains(&"n") && !keys.contains(&"d") && !keys.contains(&"a") && !keys.contains(&"Enter"), "{keys:?}");
+        assert!(keys.contains(&"Tab") && keys.contains(&"q"), "the global hints stay: {keys:?}");
     }
 
     #[test]
