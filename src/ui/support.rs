@@ -16,7 +16,7 @@ pub fn supports(os: Option<HostOs>, section: Section) -> bool {
 /// Shares are listed everywhere but created, edited and removed only with FreeBSD's tools (the `exports(5)` syntax of
 /// `sharenfs`, the managed Samba block, `service`): on Linux and illumos the section is read-only.
 pub fn shares_editable(os: Option<HostOs>) -> bool {
-    !matches!(os, Some(HostOs::Linux | HostOs::Illumos))
+    os == Some(HostOs::FreeBsd)
 }
 
 /// Whether a key of the Boot Envs section is offered on a host running `os`: on illumos `beadm` has no equivalent of
@@ -88,8 +88,11 @@ mod tests {
 
     #[test]
     fn shares_can_be_changed_only_where_the_freebsd_tools_exist() {
-        assert!(shares_editable(None) && shares_editable(Some(HostOs::FreeBsd)) && shares_editable(Some(HostOs::Other)));
-        assert!(!shares_editable(Some(HostOs::Linux)) && !shares_editable(Some(HostOs::Illumos)));
+        assert!(shares_editable(Some(HostOs::FreeBsd)));
+        // Data safety: until the OS is read (the first probe, or one that failed) nothing FreeBSD-specific is sent.
+        for os in [None, Some(HostOs::Other), Some(HostOs::Linux), Some(HostOs::Illumos)] {
+            assert!(!shares_editable(os), "{os:?}");
+        }
     }
 
     #[test]

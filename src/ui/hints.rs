@@ -511,6 +511,8 @@ mod tests {
 
     fn datasets_middle(shares_loaded: bool) -> App {
         let mut a = base();
+        let host = a.hosts[0].clone();
+        a.set_os_for_test(&host, crate::zfs::host_health::HostOs::FreeBsd);
         go(&mut a, Section::Datasets);
         a.datasets = vec![dataset("tank/a"), dataset("tank/b")];
         a.datasets_table.select(Some(0));
