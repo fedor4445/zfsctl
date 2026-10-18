@@ -254,10 +254,12 @@ pub fn service_state(runner: &dyn CommandRunner, os: HostOs, unit: &str) -> Resu
         };
     }
     let out = runner.run_unprivileged("systemctl", &["show", "-p", "LoadState", "-p", "ActiveState", unit])?;
-    if out.status == 255 {
+    let value = |key: &str| out.stdout.lines().find_map(|l| l.strip_prefix(key)).map(str::trim).unwrap_or("");
+    // `systemctl show` always prints a LoadState, even for a unit that does not exist. Anything else (ssh down, no systemd at
+    // all, no systemctl) is not an answer about the service: it must not be read as "stopped".
+    if out.status != 0 || value("LoadState=").is_empty() {
         return Err(fail("systemctl show", &out));
     }
-    let value = |key: &str| out.stdout.lines().find_map(|l| l.strip_prefix(key)).map(str::trim).unwrap_or("");
     Ok(if value("LoadState=") == "not-found" {
         ServiceState::NotInstalled
     } else if value("ActiveState=") == "active" {
@@ -339,7 +341,12 @@ mod tests {
         assert_eq!(service_state(&r("LoadState=loaded\nActiveState=inactive\n"), Linux, nfs_unit(Linux)).unwrap(), ServiceState::Stopped);
         assert_eq!(service_state(&r("LoadState=loaded\nActiveState=failed\n"), Linux, smb_unit(Linux)).unwrap(), ServiceState::Stopped);
         assert_eq!(service_state(&r("LoadState=not-found\nActiveState=inactive\n"), Linux, smb_unit(Linux)).unwrap(), ServiceState::NotInstalled, "a unit that does not exist is not installed, whatever ActiveState says");
-        assert_eq!(service_state(&r(""), Linux, nfs_unit(Linux)).unwrap(), ServiceState::Stopped, "no answer lines: not running");
+        // Not an answer about the service: a host without systemd, a missing systemctl, an answer with no LoadState line.
+        assert!(service_state(&r(""), Linux, nfs_unit(Linux)).is_err(), "no LoadState line is not an answer");
+        let no_systemd = FakeRunner::new("").route_failure("systemctl", "show", "System has not been booted with systemd as init system (PID 1). Can't operate.\n", 1);
+        assert!(service_state(&no_systemd, Linux, nfs_unit(Linux)).is_err(), "an OpenRC or container host is not 'stopped'");
+        let missing = FakeRunner::new("").route_failure("systemctl", "show", "sh: systemctl: not found\n", 127);
+        assert!(service_state(&missing, Linux, smb_unit(Linux)).is_err());
     }
 
     #[test]

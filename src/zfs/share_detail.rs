@@ -63,11 +63,15 @@ fn ok_stdout(output: Result<CommandOutput>) -> Option<String> {
 
 /// One refresh for the share on `dataset`; `smb_name` is `Some` for an SMB
 /// share and `None` for NFS.
-pub fn sample_share(runner: &dyn CommandRunner, dataset: &str, smb_name: Option<&str>) -> ShareLive {
+pub fn sample_share(runner: &dyn CommandRunner, dataset: &str, smb_name: Option<&str>, os: Option<crate::zfs::host_health::HostOs>) -> ShareLive {
     let mountpoint = ok_stdout(runner.run("zfs", &["get", "-H", "-o", "value", "mountpoint", "--", dataset]))
         .map(|s| s.trim().to_string())
         .filter(|m| m.starts_with('/'));
+    // `smbstatus` is Samba's, run through sudo: illumos's SMB server has none and Linux's SMB shares are not listed, so asking
+    // would only fill the auth log with refusals every second.
+    let samba_here = !matches!(os, Some(crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos));
     let clients = match smb_name {
+        Some(_) if !samba_here => None,
         Some(name) => ok_stdout(runner.run("smbstatus", &["-S"])).map(|out| parse_smb_clients(&out, name)),
         None => mountpoint
             .as_deref()
@@ -84,6 +88,17 @@ mod tests {
     // The header and the IPC$ row are real `smbstatus -S` output from the hub.
     const SMB: &str = "\nService      pid     Machine       Connected at                     Encryption   Signing     \n---------------------------------------------------------------------------------------------\nIPC$         3507    100.100.100.10 Tue Oct  6 10:16:22 2026 EDT     -            -           \ncarol        3511    10.0.0.5       Tue Oct  6 10:17:00 2026 EDT     -            -           \ncarol        3512    10.0.0.5       Tue Oct  6 10:17:09 2026 EDT     -            -           \nalice        3520    10.0.0.9       Tue Oct  6 10:18:00 2026 EDT     -            -           \n";
     const NFS: &str = "All mount points on localhost:\n10.0.0.7:/tpool\n10.0.0.8:/tpool/sub\n10.0.0.7:/tpool/sub\n10.0.0.9:/tpoolx\nfe80::1:/tpool\n";
+
+    #[test]
+    fn an_smb_share_on_illumos_or_linux_asks_for_no_smbstatus() {
+        use crate::zfs::host_health::HostOs;
+        for os in [HostOs::Illumos, HostOs::Linux] {
+            let runner = FakeRunner::new("").route("zfs", "get", "/tank/alice\n");
+            let live = sample_share(&runner, "tank/alice", Some("alice"), Some(os));
+            assert_eq!(live.clients, None, "{os:?}");
+            assert!(runner.calls.lock().unwrap().iter().all(|(c, _)| c != "smbstatus"), "no sudo smbstatus every second on {os:?}: {:?}", runner.calls.lock().unwrap());
+        }
+    }
 
     #[test]
     fn smb_clients_are_the_distinct_machines_on_that_share_only() {
@@ -103,12 +118,12 @@ mod tests {
     #[test]
     fn nfs_asks_showmount_unprivileged_and_smb_asks_smbstatus() {
         let runner = FakeRunner::new("").route("zfs", "get", "/tpool\n").route("showmount", "-a", NFS);
-        let live = sample_share(&runner, "tpool", None);
+        let live = sample_share(&runner, "tpool", None, None);
         assert_eq!((live.mountpoint.as_deref(), live.clients.map(|c| c.len())), (Some("/tpool"), Some(3)));
         assert_eq!(runner.unprivileged_calls.lock().unwrap().len(), 1);
 
         let runner = FakeRunner::new("").route("zfs", "get", "/data/carol\n").route("smbstatus", "-S", SMB);
-        let live = sample_share(&runner, "tank/carol", Some("carol"));
+        let live = sample_share(&runner, "tank/carol", Some("carol"), None);
         assert_eq!(live.clients, Some(vec!["10.0.0.5".to_string()]));
         assert!(runner.unprivileged_calls.lock().unwrap().is_empty(), "smbstatus needs root, so it runs under sudo");
     }
@@ -116,11 +131,11 @@ mod tests {
     #[test]
     fn a_host_that_will_not_say_is_unavailable_not_zero_clients() {
         let runner = FakeRunner::new("").route("zfs", "get", "/tpool\n").route_failure("showmount", "-a", "RPC: Program not registered", 1);
-        assert_eq!(sample_share(&runner, "tpool", None).clients, None);
+        assert_eq!(sample_share(&runner, "tpool", None, None).clients, None);
         let runner = FakeRunner::new("").route_failure("smbstatus", "-S", "sudo: a password is required", 1);
-        assert_eq!(sample_share(&runner, "tank/x", Some("x")).clients, None);
+        assert_eq!(sample_share(&runner, "tank/x", Some("x"), None).clients, None);
         let legacy = FakeRunner::new("").route("zfs", "get", "legacy\n");
-        let live = sample_share(&legacy, "tank/y", None);
+        let live = sample_share(&legacy, "tank/y", None, None);
         assert_eq!((live.mountpoint, live.clients), (None, None), "no mountpoint, so NFS clients cannot be matched");
     }
 }

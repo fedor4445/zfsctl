@@ -744,9 +744,9 @@ impl App {
         let with_contents = self.metrics.want_contents(now);
         self.metrics.begin();
         let host = self.selected_host;
-        let tx = self.tx.clone();
+        let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            let result = crate::zfs::metrics::sample_target(runner.as_ref(), &target, with_contents);
+            let result = crate::zfs::metrics::sample_target(runner.as_ref(), &target, with_contents, os);
             let _ = tx.send(WorkerMsg::Metrics(host, target, Box::new(result)));
         });
     }
