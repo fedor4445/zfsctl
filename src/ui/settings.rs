@@ -192,7 +192,6 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
     };
     // `1.25x` is accepted when typed; the unit is added once.
     let values: Vec<String> = if matches!(setting, Setting::DedupRatio) { values.iter().map(|v| v.trim().trim_end_matches('x').to_string()).collect() } else { values.to_vec() };
-    let v = |i: usize| values.get(i).map_or("", |v| v.trim());
     if values.iter().all(|x| x.trim().is_empty()) {
         return format!("{label}: back to the default");
     }

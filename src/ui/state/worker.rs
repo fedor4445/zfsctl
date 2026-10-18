@@ -49,7 +49,7 @@ impl App {
                 WorkerMsg::HostProbe(name, target, result) => self.on_host_probe(name, target, result),
                 WorkerMsg::AlertsPreview(text) => self.on_alerts_preview(text),
                 WorkerMsg::AddChecked(check, result) => self.on_add_checked(check, result),
-                WorkerMsg::HostChecked(_, line) => {
+                WorkerMsg::HostChecked(line) => {
                     self.host_check_running = false;
                     self.status_message = Some(line);
                     self.reload_check_files();

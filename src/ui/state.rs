@@ -199,8 +199,8 @@ pub enum WorkerMsg {
     AddChecked(AddCheck, std::result::Result<String, String>),
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
     AlertsPreview(String),
-    /// A check of one host from the Hosts section finished: the host and the line to show.
-    HostChecked(String, String),
+    /// A check of one host from the Hosts section finished: the line to show.
+    HostChecked(String),
     Pools(usize, Result<Vec<Pool>>),
     Datasets(usize, Result<Vec<Dataset>>),
     /// The host's encrypted datasets; sent just before `Datasets` so the list never shows without them.
@@ -1052,7 +1052,7 @@ impl App {
                 done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe(&host, checks))
             }))
             .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
-            let _ = tx.send(WorkerMsg::HostChecked(host, line));
+            let _ = tx.send(WorkerMsg::HostChecked(line));
         });
     }
 

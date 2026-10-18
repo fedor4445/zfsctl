@@ -279,6 +279,7 @@ fn parse_iostat_en(output: &str) -> Vec<DiskInfo> {
 /// (not a vdev); depth 1 is either a group node (`mirror-0`,
 /// `raidz1-0`, ...) or a bare top-level disk; depth 2+ are a group's
 /// children.
+#[cfg(test)]
 pub fn annotate_membership(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine]) {
     annotate_with(disks, pool, vdevs, &disk_matches_vdev);
 }

@@ -306,6 +306,7 @@ pub const FILE: &str = "storage.json";
 pub const HOST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Asks one host and writes the answer into `storage.json` (load, apply, save), so `c` and the daemon's loop share one path.
+#[cfg(test)]
 pub fn check_and_merge(dir: &Path, host: &str, runner: &dyn CommandRunner, now: DateTime<Utc>) {
     let outcome = check_host(runner, now);
     let path = dir.join(FILE);
@@ -741,7 +742,7 @@ mod tests {
         let p = integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30));
         assert_eq!((p.len(), p[0].severity, p[0].text.as_str()), (1, Severity::Watch, "tank dedup is on but saves only 1.02x"));
         assert!(integrity_problems(&file, 100, at(NOW) + chrono::Duration::days(30)).is_empty(), "1.02 is not below 1.00");
-        let mut edit = |f: &mut dyn FnMut(&mut Integrity), file: &mut StorageFile| f(&mut file.hosts.get_mut("hub").unwrap().integrity);
+        let edit = |f: &mut dyn FnMut(&mut Integrity), file: &mut StorageFile| f(&mut file.hosts.get_mut("hub").unwrap().integrity);
         edit(&mut |i| i.pools[0].ratio_x100 = 150, &mut file);
         assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30)).is_empty(), "it saves 1.5x");
         edit(&mut |i| i.pools[0] = PoolSpace { name: "tank".into(), allocated: 5 * GIB, ratio_x100: 100 }, &mut file);

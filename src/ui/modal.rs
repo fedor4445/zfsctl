@@ -199,6 +199,7 @@ impl MutationCall {
 impl MutationCall {
     /// The single place that maps a `MutationCall` variant to its
     /// underlying `zfs::*` library call.
+    #[cfg(test)]
     pub fn run(&self, runner: &dyn CommandRunner) -> Result<()> {
         self.run_on(runner, None)
     }

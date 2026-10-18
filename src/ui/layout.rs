@@ -1067,7 +1067,7 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let mut selected_line = 0;
     let mut group = "";
-    let mut title = |lines: &mut Vec<Line>, name: &'static str| {
+    let title = |lines: &mut Vec<Line>, name: &'static str| {
         if !lines.is_empty() {
             lines.push(Line::raw(String::new()));
         }

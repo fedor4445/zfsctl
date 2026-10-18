@@ -263,7 +263,7 @@ fn status_line(level: Level, label: &str, text: &str, width: usize, theme: &Them
 /// blank lines (each line then says what it is) for a screen that is too short for the full layout.
 fn component_lines(d: &Dashboard, width: usize, compact: bool, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let mut section = |lines: &mut Vec<Line<'static>>, title: &str| {
+    let section = |lines: &mut Vec<Line<'static>>, title: &str| {
         if !compact {
             lines.push(Line::raw(""));
             lines.push(heading(title, width, theme));

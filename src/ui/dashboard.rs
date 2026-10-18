@@ -24,6 +24,7 @@ pub enum Level {
 }
 
 impl Level {
+    #[cfg(test)]
     pub fn rank(self) -> u8 {
         match self {
             Level::Fine => 0,
