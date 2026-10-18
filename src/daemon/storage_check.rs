@@ -120,33 +120,69 @@ pub fn check_and_merge(dir: &Path, host: &str, runner: &dyn CommandRunner, now: 
     let _ = file.save(&path);
 }
 
-/// Asks every host at once and waits at most `deadline` for each; a host that has not answered by then is left as it was.
-/// Returns how many hosts were asked and answered in time.
+/// Hosts whose last question has not been answered yet, so a host that hangs is asked once and not once per pass (each
+/// question is a thread and an ssh process that stay until the host answers).
+fn in_flight() -> &'static std::sync::Mutex<std::collections::BTreeSet<String>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> = std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+/// Asks every host at once and waits at most `deadline` for each. Each answer is merged into the file as it arrives (load,
+/// apply, save), so another writer's changes are never overwritten with an old snapshot; a host that has not answered by the
+/// deadline keeps its last reading and gets the reason. A host still unanswered from an earlier pass is skipped.
+/// Returns how many hosts answered in time.
 pub fn run_pass(dir: &Path, hosts: &[(String, std::sync::Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: std::time::Duration) -> usize {
     let (tx, rx) = std::sync::mpsc::channel();
+    let mut asked = Vec::new();
     for (name, runner) in hosts {
+        // Keyed by state directory too: the guard is per daemon, and tests (one process, many directories) must not meet.
+        let key = format!("{}\0{name}", dir.display());
+        if !in_flight().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key.clone()) {
+            continue;
+        }
+        asked.push(name.clone());
         let (tx, name, runner) = (tx.clone(), name.clone(), std::sync::Arc::clone(runner));
         std::thread::spawn(move || {
-            let _ = tx.send((name, check_host(runner.as_ref(), now)));
+            let outcome = check_host(runner.as_ref(), now);
+            in_flight().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
+            let _ = tx.send((name, outcome));
         });
     }
     drop(tx);
     let end = std::time::Instant::now() + deadline;
     let path = dir.join(FILE);
-    let mut file = StorageFile::load(&path);
-    let mut answered = 0;
-    while answered < hosts.len() {
+    let merge = |name: &str, outcome: Outcome| {
+        let mut file = StorageFile::load(&path);
+        file.apply(name, outcome, now);
+        let _ = file.save(&path);
+    };
+    let mut answered = std::collections::BTreeSet::new();
+    while answered.len() < asked.len() {
         let Some(left) = end.checked_duration_since(std::time::Instant::now()) else { break };
         match rx.recv_timeout(left) {
             Ok((name, outcome)) => {
-                file.apply(&name, outcome, now);
-                answered += 1;
+                merge(&name, outcome);
+                answered.insert(name);
             }
             Err(_) => break,
         }
     }
-    let _ = file.save(&path);
-    answered
+    for name in asked.iter().filter(|n| !answered.contains(*n)) {
+        merge(name, Outcome::Failed(format!("no answer within {} s", deadline.as_secs().max(1))));
+    }
+    answered.len()
+}
+
+/// Drops the hosts that are no longer configured, so a removed host's lines do not stay in the Dashboard's file or the
+/// daily report.
+pub fn retain_hosts(dir: &Path, configured: &[String]) {
+    let path = dir.join(FILE);
+    let mut file = StorageFile::load(&path);
+    let before = file.hosts.len();
+    file.hosts.retain(|host, _| configured.contains(host));
+    if file.hosts.len() != before {
+        let _ = file.save(&path);
+    }
 }
 
 /// What one host adds to Needs attention: its dataset nearest to a limit, with how many others are over the warning line.
@@ -302,6 +338,79 @@ mod tests {
         assert_eq!(answered, 1);
         let file = StorageFile::load(&dir.path().join(FILE));
         assert!(file.hosts.contains_key("good") && !file.hosts.contains_key("stuck"));
+    }
+
+    /// A runner whose `zfs list` blocks for `hold` and counts how often it was asked.
+    struct Slow {
+        hold: std::time::Duration,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl CommandRunner for Slow {
+        fn run(&self, _: &str, _: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(self.hold);
+            Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+        fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+    }
+
+    #[test]
+    fn a_pass_never_writes_back_a_stale_snapshot_over_what_another_writer_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let slow: std::sync::Arc<dyn CommandRunner> = std::sync::Arc::new(Slow { hold: std::time::Duration::from_millis(600), asked: Default::default() });
+        let good: std::sync::Arc<dyn CommandRunner> = std::sync::Arc::new(FakeRunner::new("").route("zfs", "list", "a\t9\t9\t10\t0\tfilesystem\n"));
+        let hosts = vec![("lu-good".to_string(), good), ("lost-update-slow".to_string(), slow)];
+        let path = dir.path().to_path_buf();
+        let pass = std::thread::spawn(move || run_pass(&path, &hosts, at(NOW), std::time::Duration::from_millis(300)));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // another writer (the TUI's `c`, or the daemon) saves a host while the pass is still waiting
+        check_and_merge(dir.path(), "other", &FakeRunner::new("").route("zfs", "list", "b\t9\t9\t10\t0\tfilesystem\n"), at(NOW));
+        pass.join().unwrap();
+        let file = StorageFile::load(&dir.path().join(FILE));
+        assert!(file.hosts.contains_key("other"), "the other writer's host must survive the pass: {:?}", file.hosts.keys().collect::<Vec<_>>());
+        assert!(file.hosts.contains_key("lu-good"));
+    }
+
+    #[test]
+    fn a_host_that_misses_the_deadline_keeps_its_old_lines_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        check_and_merge(dir.path(), "late-host", &FakeRunner::new("").route("zfs", "list", "a\t99\t99\t100\t0\tfilesystem\n"), at(NOW));
+        let slow: std::sync::Arc<dyn CommandRunner> = std::sync::Arc::new(Slow { hold: std::time::Duration::from_millis(800), asked: Default::default() });
+        run_pass(dir.path(), &[("late-host".to_string(), slow)], at(NOW), std::time::Duration::from_millis(100));
+        let entry = &StorageFile::load(&dir.path().join(FILE)).hosts["late-host"];
+        assert_eq!(entry.datasets.len(), 1, "the last good reading stays");
+        assert!(entry.error.as_deref().is_some_and(|e| e.contains("no answer")), "{:?}", entry.error);
+    }
+
+    #[test]
+    fn a_host_whose_last_question_is_still_unanswered_is_not_asked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hung: std::sync::Arc<dyn CommandRunner> = std::sync::Arc::new(Slow { hold: std::time::Duration::from_millis(700), asked: asked.clone() });
+        let hosts = vec![("hung-once".to_string(), hung)];
+        for _ in 0..3 {
+            run_pass(dir.path(), &hosts, at(NOW), std::time::Duration::from_millis(50));
+        }
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "one stuck question, not one per pass");
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        run_pass(dir.path(), &hosts, at(NOW), std::time::Duration::from_millis(50));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2, "asked again once the first one finished");
+    }
+
+    #[test]
+    fn hosts_that_left_the_config_lose_their_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        for host in ["keep", "gone"] {
+            check_and_merge(dir.path(), host, &FakeRunner::new("").route("zfs", "list", "a\t99\t99\t100\t0\tfilesystem\n"), at(NOW));
+        }
+        retain_hosts(dir.path(), &["keep".to_string()]);
+        let file = StorageFile::load(&dir.path().join(FILE));
+        assert_eq!(file.hosts.keys().collect::<Vec<_>>(), ["keep"]);
     }
 
     #[test]

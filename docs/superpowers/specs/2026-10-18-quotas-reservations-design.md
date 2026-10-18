@@ -41,7 +41,7 @@ hard to do wrong.
 ## Constraints
 
 - Works through `zfs set`/`zfs get`/`zfs list` only: no new sudoers entry, works on FreeBSD, Linux and illumos hosts.
-- Raising or removing a limit is a plain confirm; **lowering a quota or raising a reservation** gets the two-key confirm
+- (Superseded by "Confirm tiers" in the decisions below: the two-key confirm is by headroom and reservation size, and a change outside those applies directly like other property edits.) Raising or removing a limit is a plain confirm; **lowering a quota or raising a reservation** gets the two-key confirm
   (the user's data-safety rule), because they can make writes fail for the people using the dataset.
 - Value parsing and the arithmetic live in one pure module with tests; the form is thin.
 - The general property form keeps working for every other property and for these four if someone prefers it.

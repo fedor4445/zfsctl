@@ -431,6 +431,12 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
     }
+    // The storage check runs every ten minutes: silent for three times that is a loop that stopped.
+    if let (true, Some(last)) = (daemon_running, inputs.storage.ran_at) {
+        if inputs.now - last > chrono::Duration::minutes(30) {
+            items.push(Item { level: Level::Watch, subject: "checks".to_string(), what: format!("the quota check last ran {}", age_text(inputs.now, last)), goto: Section::Jobs, target: None });
+        }
+    }
     // The newest answer over both files: a file that is missing is no data, not "never checked".
     let newest = [inputs.smart.newest_check(), inputs.shares.newest_check()].into_iter().flatten().max();
     if let (true, Some(last)) = (daemon_running, newest) {
@@ -1038,6 +1044,23 @@ mod tests {
         assert_eq!((by("h").level, by("red").level), (Level::Watch, Level::Issue));
         assert!(by("h").what.starts_with("tank/home 94% of its 100 quota") && by("h").what.contains("checked 4m ago"), "{}", by("h").what);
         assert_eq!(by("h").target.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn a_quota_check_that_stopped_running_is_one_yellow_line_but_only_while_the_daemon_runs() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.storage.ran_at = Some(now() - Duration::minutes(12));
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let stale = |fx: &Fixture| -> Vec<Item> { fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("quota check")).collect() };
+        assert!(stale(&fx).is_empty(), "12 minutes is within the 10-minute cadence's slack");
+        fx.storage.ran_at = Some(now() - Duration::minutes(45));
+        let items = stale(&fx);
+        assert_eq!((items.len(), items[0].level), (1, Level::Watch));
+        assert!(items[0].what.contains("45m"), "{}", items[0].what);
+        let mut down = Fixture::new(view(vec![], &[], beat(1000)));
+        down.storage.ran_at = Some(now() - Duration::minutes(45));
+        assert!(stale(&down).is_empty(), "no daemon, no complaint about the daemon's check");
     }
 
     #[test]

@@ -99,8 +99,10 @@ pub fn check(key: &str, new: Option<u64>, facts: &Facts) -> Result<Tier, String>
                     return Err(format!("a refreservation of {} is larger than the refquota ({})", size(new), size(r)));
                 }
             }
-            let old = if key == "reservation" { facts.reservation } else { facts.refreservation };
-            let raise = new.saturating_sub(old);
+            // What the pool is charged: space the dataset already uses is already taken (ZFS charges max(used, new) - max(used,
+            // old); for refreservation, what the dataset itself refers to).
+            let (old, base) = if key == "reservation" { (facts.reservation, facts.used) } else { (facts.refreservation, facts.referenced) };
+            let raise = new.max(base).saturating_sub(old.max(base));
             if raise > facts.available {
                 return Err(format!("the pool cannot back {} more: only {} is available", size(raise), size(facts.available)));
             }
@@ -200,6 +202,18 @@ mod tests {
     }
 
     #[test]
+    fn reserving_space_the_dataset_already_uses_costs_the_pool_nothing() {
+        // ZFS charges max(used, new) - max(used, old): 500G in use, 40G free, reserve 500G is fine
+        let f = Facts { used: 500 * G, referenced: 500 * G, available: 40 * G, ..Facts::default() };
+        assert_eq!(check("reservation", Some(500 * G), &f), Ok(Tier::Direct));
+        assert_eq!(check("refreservation", Some(500 * G), &f), Ok(Tier::Direct));
+        assert!(check("reservation", Some(545 * G), &f).is_err(), "45G beyond use with 40G free");
+        assert!(check("reservation", Some(530 * G), &f).is_ok());
+        let already = Facts { reservation: 500 * G, ..f };
+        assert!(check("reservation", Some(530 * G), &already).is_ok(), "30G more than the old reservation");
+    }
+
+    #[test]
     fn volumes_take_the_reservations_but_not_the_quotas() {
         // verified on the hub: `zfs set reservation=` works on a volume, `quota=` says it does not apply to its type
         let v = Facts { is_volume: true, ..facts() };
@@ -214,12 +228,13 @@ mod tests {
     #[test]
     fn tier_is_two_key_under_ten_percent_headroom_or_a_big_reservation_raise() {
         let f = Facts { used: 100 * G, referenced: 100 * G, available: 1000 * G, ..Facts::default() };
+        let empty = Facts { used: 0, referenced: 0, ..f };
         assert_eq!(check("quota", Some(110 * G), &f), Ok(Tier::Direct), "exactly 110% of use");
         assert_eq!(check("quota", Some(109 * G), &f), Ok(Tier::TwoKey));
         assert_eq!(check("quota", None, &f), Ok(Tier::Direct));
         assert_eq!(check("refquota", Some(109 * G), &f), Ok(Tier::TwoKey));
-        assert_eq!(check("reservation", Some(100 * G), &f), Ok(Tier::Direct), "exactly 10% of available");
-        assert_eq!(check("reservation", Some(101 * G), &f), Ok(Tier::TwoKey));
+        assert_eq!(check("reservation", Some(100 * G), &empty), Ok(Tier::Direct), "exactly 10% of available");
+        assert_eq!(check("reservation", Some(101 * G), &empty), Ok(Tier::TwoKey));
     }
 
     #[test]

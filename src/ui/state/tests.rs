@@ -9060,3 +9060,22 @@ fn a_reservation_above_the_quota_is_refused_with_the_quota_named() {
     assert!(submit_value(&mut app, "12G").is_none());
     assert!(app.status_error.as_deref().is_some_and(|m| m.contains("larger than the quota")), "{:?}", app.status_error);
 }
+
+#[test]
+fn zero_means_none_in_the_quota_form_and_the_prompt_shows_a_readable_size() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 20 * g, 0, 0, 0);
+    open_property(&mut app, "quota");
+    let action = submit_value(&mut app, "0").expect("0 removes the limit, as in ZFS");
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: "none".into() });
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    app.dataset_properties_for = Some("tank/other".to_string());
+    assert!(submit_value(&mut app, "20G").is_none(), "facts of another dataset must not validate this one");
+    app.dataset_properties_for = Some("tank/data".to_string());
+    assert!(submit_value(&mut app, "5G").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("quota=5368709120 (5G)"), "{prompt}"),
+        other => panic!("expected a Confirm, got {other:?}"),
+    }
+}

@@ -428,6 +428,7 @@ fn storage_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
         guarded("the storage check", || {
             let hosts = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
             storage_check::run_pass(state_dir, &hosts, Utc::now(), storage_check::HOST_DEADLINE);
+            storage_check::retain_hosts(state_dir, &hosts.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>());
         });
         let mut waited = Duration::ZERO;
         while waited < STORAGE_EVERY {

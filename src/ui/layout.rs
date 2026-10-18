@@ -628,7 +628,7 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     // A Quota column only when some dataset has a limit and the pane has room for it after the columns that are always there.
     let fixed = DATASET_NAME_MIN + SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3;
     let quota_col = app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) && area.width.saturating_sub(2) >= fixed + QUOTA_COL_W + 1;
-    let (warn, crit) = (90, 98);
+    let (warn, crit) = app.dashboard_thresholds.quota;
     let rows = app.datasets.iter().map(|d| {
         let mut cells = vec![
             Cell::from(d.name.clone()),
