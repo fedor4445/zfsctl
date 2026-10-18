@@ -47,7 +47,8 @@ phase A and show `not supported on <OS> yet` until built.
    host's probe state. Everything OS-specific keys off it.
 2. **Phase A: one backend per OS for each section, and an honest fallback.** The section code asks a per-OS backend
    (a function of the host's OS and the section) for its data. Where the backend exists it is used (table above);
-   where it does not, the section shows `not supported on <OS> yet`, its keys are not offered in the hint bar, and no
+   where it does not, the section shows `not supported on <OS> yet`, **its entry in the sidebar is dimmed** while that
+   host is selected (it can still be opened, to read why), its keys are not offered in the hint bar and are inert, and no
    command that cannot work is run (so no `sudo` errors in the TUI or the daemon log). The daily shares check uses the
    service-state backend of the host's OS and is silent where there is none.
 3. **Phase A: sudoers by OS.** `print-sudoers` and `check-host` choose the default feature set from the host's OS (Linux
