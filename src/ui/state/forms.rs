@@ -989,7 +989,7 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::NotifySettings | FormKind::Setting { .. } | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::LoadKey { .. } | FormKind::ChangeKey { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::NotifySettings | FormKind::Setting { .. } | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::LoadKey { .. } | FormKind::ChangeKey { .. } | FormKind::CreateEncrypted { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
     }
 }
 
@@ -1114,6 +1114,43 @@ pub(super) fn change_key_form(host: usize, root: &str) -> Modal {
         description: Some("Sets a new passphrase for this dataset and the ones that use its key. Nothing is stored by zfsctl: lose it and the data cannot be recovered.".to_string()),
         kind: FormKind::ChangeKey { host, dataset: root.to_string() },
     }
+}
+
+pub(super) fn create_encrypted_form(host: usize) -> Modal {
+    Modal::Form {
+        title: "Create encrypted dataset".to_string(),
+        fields: vec![
+            FormField { label: "Name (with its pool)".to_string(), value: String::new() },
+            FormField { label: "Cipher".to_string(), value: crate::zfs::encryption::CIPHERS[0].to_string() },
+            FormField { label: "Passphrase (8 or more characters)".to_string(), value: String::new() },
+            FormField { label: "Repeat".to_string(), value: String::new() },
+        ],
+        focused: 0,
+        description: Some("Encryption can only be chosen now: it cannot be added to or removed from a dataset later. Datasets created under it use the same key. zfsctl stores no key: if the passphrase is lost the data cannot be recovered by anyone.".to_string()),
+        kind: FormKind::CreateEncrypted { host },
+    }
+}
+
+/// Checks the form and builds the call. `parent_encrypted` says the dataset would sit under an encrypted one.
+pub(super) fn build_create_encrypted(kind: &FormKind, fields: &[FormField], encryption: &std::collections::BTreeMap<String, crate::zfs::encryption::Enc>) -> std::result::Result<PendingAction, String> {
+    let FormKind::CreateEncrypted { host } = kind else { return Err("not the encrypted-dataset form".to_string()) };
+    let name = field_value(fields, 0).trim();
+    if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) || !name.contains('/') {
+        return Err("Name: give the full dataset name including its pool, such as tank/secure".to_string());
+    }
+    if let Some(parent) = name.rsplit_once('/').map(|(p, _)| p).filter(|p| encryption.contains_key(*p)) {
+        return Err(format!("{parent} is encrypted: what is created under it uses its key already. Use n for a plain new dataset there"));
+    }
+    let cipher = field_value(fields, 1).trim();
+    if !crate::zfs::encryption::CIPHERS.contains(&cipher) {
+        return Err(format!("Cipher: one of {}", crate::zfs::encryption::CIPHERS.join(", ")));
+    }
+    let passphrase = field_value(fields, 2);
+    crate::zfs::encryption::check_passphrase(passphrase, true)?;
+    if passphrase != field_value(fields, 3) {
+        return Err("The two passphrases do not match".to_string());
+    }
+    Ok(PendingAction { host: *host, section: Section::Datasets, call: MutationCall::CreateEncryptedDataset { name: name.to_string(), cipher: cipher.to_string(), passphrase: crate::ui::modal::Secret(passphrase.to_string()) } })
 }
 
 pub(super) fn build_key_action(kind: &FormKind, fields: &[FormField]) -> std::result::Result<PendingAction, String> {

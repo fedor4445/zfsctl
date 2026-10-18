@@ -2,7 +2,7 @@
 
 use super::forms::{
     build_backup_job_action, build_bootenv_action, build_job_action, build_mirror_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
-    build_key_action, irreversible_prompt,
+    build_create_encrypted, build_key_action, irreversible_prompt,
 };
 use super::{App, Instant, Modal, MutationCall, PendingAction};
 use crate::ui::modal::{FormField, FormKind};
@@ -187,6 +187,22 @@ impl App {
             FormKind::EditDatasetProperty { ref key, .. } if crate::zfs::quota::KEYS.contains(&key.as_str()) => self.submit_quota_form(form),
             FormKind::EditDatasetProperty { ref key, .. } if key == "special_small_blocks" => self.submit_small_blocks_form(form),
             FormKind::EditDatasetProperty { ref key, .. } if key == "checksum" || key == "dedup" => self.submit_integrity_form(form),
+            FormKind::CreateEncrypted { .. } => match build_create_encrypted(&form.kind, &form.fields, &self.encryption) {
+                Ok(action) => {
+                    let MutationCall::CreateEncryptedDataset { name, cipher, .. } = &action.call else { return None };
+                    let prompt = format!(
+                        "Type the dataset name to create the encrypted dataset '{name}' ({cipher}, passphrase key).\nIf you lose the passphrase the data CANNOT be recovered by anyone, including zfsctl, which stores nothing. Encryption cannot be added or removed later. Write the passphrase down somewhere safe first."
+                    );
+                    self.modal = Some(Modal::ConfirmTyped { prompt, expected: name.clone(), input: String::new(), action });
+                    None
+                }
+                Err(msg) => {
+                    for field in form.fields.iter_mut().skip(2) {
+                        field.value.clear();
+                    }
+                    self.reject(form, msg)
+                }
+            },
             FormKind::LoadKey { .. } => match build_key_action(&form.kind, &form.fields) {
                 Ok(action) => Some(action),
                 Err(msg) => self.reject(form, msg),

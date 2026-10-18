@@ -2026,6 +2026,9 @@ impl App {
                     kind: FormKind::CreateDataset { host: self.selected_host },
                 });
             }
+            KeyCode::Char('E') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
+                self.modal = Some(forms::create_encrypted_form(self.selected_host));
+            }
             KeyCode::Char('D') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(name) = self.selected_dataset_name() {
                     if let Some(why) = self.recursive_destroy_refusal(&name) {

@@ -9700,3 +9700,76 @@ fn a_load_that_left_the_key_loaded_but_failed_to_mount_refreshes_the_list() {
     assert_eq!(app.drain_worker_messages(), vec![Section::Datasets]);
     assert!(app.status_is_error());
 }
+
+fn fill_encrypted_form(app: &mut App, name: &str, cipher: &str, pass: &str, repeat: &str) {
+    app.handle_key(KeyCode::Char('E'));
+    let Some(Modal::Form { fields, .. }) = app.modal.as_mut() else { panic!("{:?}", app.modal) };
+    fields[0].value = name.into();
+    fields[1].value = cipher.into();
+    fields[2].value = pass.into();
+    fields[3].value = repeat.into();
+    for _ in 0..4 {
+        app.handle_modal_key(KeyCode::Enter);
+        if !matches!(app.modal, Some(Modal::Form { .. })) {
+            break;
+        }
+    }
+}
+
+#[test]
+fn e_opens_the_encrypted_dataset_form_with_the_default_cipher_and_two_masked_fields() {
+    let mut app = key_app(false, "passphrase");
+    app.handle_key(KeyCode::Char('E'));
+    let Some(Modal::Form { fields, kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[1].value, "aes-256-gcm");
+    assert!((0..4).map(|i| kind.masks_field(i)).eq([false, false, true, true]));
+}
+
+#[test]
+fn an_encrypted_dataset_needs_its_name_typed_with_the_lost_key_warning() {
+    let mut app = key_app(false, "passphrase");
+    fill_encrypted_form(&mut app, "tank/vault", "aes-256-gcm", PASS, PASS);
+    let Some(Modal::ConfirmTyped { prompt, expected, .. }) = &app.modal else { panic!("{:?} / {:?}", app.modal, app.status_message) };
+    assert_eq!(expected, "tank/vault");
+    assert!(prompt.contains("CANNOT be recovered") && prompt.contains("including zfsctl") && !prompt.contains(PASS), "{prompt}");
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none(), "Enter before the name is typed does nothing");
+    type_into(&mut app, "tank/vault");
+    let action = app.handle_modal_key(KeyCode::Enter).expect("name typed");
+    assert!(matches!(&action.call, MutationCall::CreateEncryptedDataset { name, cipher, passphrase } if name == "tank/vault" && cipher == "aes-256-gcm" && passphrase.0 == PASS));
+    assert!(!format!("{action:?}").contains(PASS));
+}
+
+#[test]
+fn a_bad_encrypted_form_keeps_the_form_and_clears_the_passphrases() {
+    for (name, cipher, pass, repeat, says) in [
+        ("tank/v", "aes-256-gcm", PASS, "something else", "do not match"),
+        ("tank/v", "aes-256-gcm", "short", "short", "8 characters"),
+        ("tank/v", "rot13", PASS, PASS, "Cipher"),
+        ("vault", "aes-256-gcm", PASS, PASS, "full dataset name"),
+        ("tank/s/new", "aes-256-gcm", PASS, PASS, "tank/s is encrypted"),
+    ] {
+        let mut app = key_app(false, "passphrase");
+        fill_encrypted_form(&mut app, name, cipher, pass, repeat);
+        let Some(Modal::Form { fields, .. }) = &app.modal else { panic!("{name}: {:?}", app.modal) };
+        assert!(fields[2].value.is_empty() && fields[3].value.is_empty());
+        assert!(app.status_message.as_deref().unwrap_or("").contains(says), "{says}: {:?}", app.status_message);
+    }
+}
+
+#[test]
+fn a_full_encrypted_create_keeps_the_passphrase_out_of_arguments_and_status() {
+    let mut app = key_app(false, "passphrase");
+    fill_encrypted_form(&mut app, "tank/vault", "aes-256-gcm", PASS, PASS);
+    type_into(&mut app, "tank/vault");
+    let action = app.handle_modal_key(KeyCode::Enter).expect("confirmed");
+    let runner = Arc::new(FakeRunner::new(""));
+    app.dispatch_mutation(action, runner.clone());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.drain_worker_messages().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let calls = runner.calls.lock().unwrap();
+    assert!(calls.iter().all(|(_, a)| a.iter().all(|x| !x.contains(PASS))));
+    assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), format!("{PASS}\n"))]);
+    assert!(!app.status_message.clone().unwrap_or_default().contains(PASS));
+}
