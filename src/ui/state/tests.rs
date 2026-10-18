@@ -2656,7 +2656,7 @@ fn shares_result_for_a_stale_host_is_discarded() {
                 shares: vec![smb("tank/data")],
                 nfs_available: true,
                 samba_available: true,
-                smb_error: None,
+                smb_error: None, nfs_unknown: false, samba_unknown: false,
             }),
         ))
         .unwrap();
@@ -2685,6 +2685,7 @@ fn switching_host_clears_shares_state() {
 #[test]
 fn enter_on_nfs_share_row_opens_prefilled_edit_form() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     for _ in 0..5 {
         app.handle_key(KeyCode::Tab);
     } // -> Shares
@@ -2714,6 +2715,7 @@ fn enter_on_nfs_share_row_opens_prefilled_edit_form() {
 #[test]
 fn handle_key_d_on_nfs_share_row_opens_remove_confirm_modal() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     for _ in 0..5 {
         app.handle_key(KeyCode::Tab);
     } // -> Shares
@@ -2740,6 +2742,7 @@ fn handle_key_d_on_nfs_share_row_opens_remove_confirm_modal() {
 
 fn datasets_app_with_mount(mountpoint: Option<&str>) -> App {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd); // shares are edited only on a host known to be FreeBSD
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
     app.datasets = vec![Dataset { name: "tank/media".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string) }];
@@ -2939,6 +2942,7 @@ fn smb_form_warns_that_a_password_replaces_the_users_samba_password() {
 #[test]
 fn enter_on_an_smb_share_row_opens_its_prefilled_form_using_the_stanza_path() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     for _ in 0..5 {
         app.handle_key(KeyCode::Tab);
     } // -> Shares
@@ -2951,6 +2955,7 @@ fn enter_on_an_smb_share_row_opens_its_prefilled_form_using_the_stanza_path() {
 #[test]
 fn handle_key_d_on_smb_share_row_opens_a_remove_confirm_for_the_managed_share() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     for _ in 0..5 {
         app.handle_key(KeyCode::Tab);
     }
@@ -2970,7 +2975,7 @@ fn an_smb_error_in_the_shares_snapshot_sets_an_error_status_but_keeps_the_nfs_sh
     app.tx
         .send(WorkerMsg::Shares(
             0,
-            Ok(crate::zfs::share::SharesSnapshot { shares: vec![nfs], nfs_available: true, samba_available: true, smb_error: Some("boom".into()) }),
+            Ok(crate::zfs::share::SharesSnapshot { shares: vec![nfs], nfs_available: true, samba_available: true, smb_error: Some("boom".into()), nfs_unknown: false, samba_unknown: false }),
         ))
         .unwrap();
     app.drain_worker_messages();
@@ -2982,6 +2987,7 @@ fn an_smb_error_in_the_shares_snapshot_sets_an_error_status_but_keeps_the_nfs_sh
 #[test]
 fn handle_key_shift_n_on_datasets_opens_blank_share_nfs_form_when_not_yet_shared() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
     app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
@@ -3008,6 +3014,7 @@ fn handle_key_shift_n_on_datasets_opens_blank_share_nfs_form_when_not_yet_shared
 #[test]
 fn handle_key_shift_n_on_datasets_sets_hint_when_nfs_unavailable() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
     app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
@@ -3022,6 +3029,7 @@ fn handle_key_shift_n_on_datasets_sets_hint_when_nfs_unavailable() {
 #[test]
 fn handle_key_shift_n_with_unloaded_shares_names_the_fix() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
     app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
@@ -3034,6 +3042,7 @@ fn handle_key_shift_n_with_unloaded_shares_names_the_fix() {
 #[test]
 fn handle_key_shift_n_on_datasets_sets_hint_when_shares_not_yet_loaded() {
     let mut app = App::new(vec!["local".to_string()]);
+    app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
     app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
@@ -5880,7 +5889,7 @@ fn auto_refresh_starts_the_refresh_that_belongs_to_the_visible_section() {
 #[test]
 fn a_share_refresh_keeps_the_selection_on_the_same_share_and_protocol() {
     let nfs = |d: &str| crate::zfs::share::Share::Nfs { dataset: d.to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None };
-    let snapshot = |shares| crate::zfs::share::SharesSnapshot { shares, nfs_available: true, samba_available: true, smb_error: None };
+    let snapshot = |shares| crate::zfs::share::SharesSnapshot { shares, nfs_available: true, samba_available: true, smb_error: None, nfs_unknown: false, samba_unknown: false };
     let mut app = in_section(Section::Shares);
     app.shares = vec![nfs("tank/a"), smb("tank/b")];
     app.shares_table.select(Some(1)); // the SMB share on tank/b

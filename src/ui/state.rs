@@ -986,6 +986,12 @@ impl App {
         crate::ui::support::supports(self.host_os(self.selected_host), section)
     }
 
+    /// Test helper: the OS the first probe would have read for a host.
+    #[cfg(test)]
+    pub fn set_os_for_test(&mut self, host: &str, os: crate::zfs::host_health::HostOs) {
+        self.host_probes.entry(host.to_string()).or_default().os = Some(os);
+    }
+
     /// Whether shares can be created, edited and removed on the selected host (FreeBSD's tools only; see `ui::support`).
     pub fn shares_editable(&self) -> bool {
         crate::ui::support::shares_editable(self.host_os(self.selected_host))

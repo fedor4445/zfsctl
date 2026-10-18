@@ -102,6 +102,8 @@ pub const ENTRIES: &[Entry] = &[
     // File sharing service state on Linux (systemd) and illumos (SMF): read without sudo.
     Entry { name: "systemctl", features: &[], kind: Kind::Unprivileged },
     Entry { name: "svcs", features: &[], kind: Kind::Unprivileged },
+    // Without systemd the NFS and Samba servers are looked for in the process list.
+    Entry { name: "pgrep", features: &[], kind: Kind::Unprivileged },
     // illumos boot environments (the list is read through `sh`, without sudo; changes need this entry).
     Entry { name: "beadm", features: &[Feature::Beadm], kind: ANY },
     Entry { name: "showmount", features: &[Feature::Shares], kind: Kind::Unprivileged },

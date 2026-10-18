@@ -127,8 +127,9 @@ fn check_other_os(runner: &dyn CommandRunner, now: DateTime<Utc>, os: crate::zfs
     };
     Outcome::Checked(SharesResult {
         checked_at: now,
-        nfs_running: nfs == ServiceState::Running,
-        samba_running: smb == ServiceState::Running,
+        // A state that could not be read makes no claim: it is not a server that is down.
+        nfs_running: matches!(nfs, ServiceState::Running | ServiceState::Unknown),
+        samba_running: matches!(smb, ServiceState::Running | ServiceState::Unknown),
         nfs_shares,
         smb_shares,
         smb_error: None,
@@ -392,7 +393,7 @@ mod tests {
 
     #[test]
     fn a_linux_host_with_nfs_shares_and_a_stopped_server_is_red_with_its_own_service_name() {
-        let result = checked(check_host(&other_os("Linux\n", ONE_NFS, "", LOADED_INACTIVE, LOADED_ACTIVE), at(NOW)));
+        let result = checked(check_host(&other_os("Linux\n", ONE_NFS, TWO_SMB, LOADED_INACTIVE, LOADED_ACTIVE), at(NOW)));
         assert_eq!((result.nfs_running, result.nfs_shares, result.smb_shares), (false, 1, 0), "Samba shares are not counted on Linux yet");
         let mut file = SharesFile::default();
         file.hosts.insert("ub24".into(), result);
@@ -413,6 +414,23 @@ mod tests {
         let mut file = SharesFile::default();
         file.hosts.insert("omnios".into(), down);
         assert_eq!(problems(&file)[0].text, "SMB: 2 shares but smb/server is not running");
+    }
+
+    #[test]
+    fn a_service_that_cannot_be_read_is_no_claim_and_never_red() {
+        // No systemd and no pgrep: shares exist, but nothing says the server is down.
+        let blind = Script(Box::new(|cmd, args| match (cmd, args[0]) {
+            ("uname", _) => out("Linux\n", "", 0),
+            ("zfs", _) => out(ONE_NFS, "", 0),
+            ("systemctl", _) => out("", "System has not been booted with systemd", 1),
+            ("pgrep", _) => out("", "sh: pgrep: not found", 127),
+            other => panic!("{other:?}"),
+        }));
+        let result = checked(check_host(&blind, at(NOW)));
+        assert!(result.nfs_running && result.samba_running, "unknown is not 'not running'");
+        let mut file = SharesFile::default();
+        file.hosts.insert("alpine".into(), result);
+        assert!(problems(&file).is_empty());
     }
 
     #[test]

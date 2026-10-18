@@ -1171,7 +1171,8 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     if app.nfs_available == Some(false) {
         hints.push(nfs_text.as_str());
     }
-    if app.samba_available == Some(false) {
+    let samba_listed = app.host_os(app.selected_host) != Some(crate::zfs::host_health::HostOs::Linux);
+    if app.samba_available == Some(false) && samba_listed {
         hints.push(smb_text.as_str());
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
@@ -2085,6 +2086,7 @@ mod tests {
         (app.nfs_available, app.samba_available) = (Some(false), Some(false));
         let screen = render(&mut app, 160, 12).join("\n");
         assert!(screen.contains("NFS unavailable: nfs-server not running") && screen.contains("read-only on Linux"), "{screen}");
+        assert!(!screen.contains("SMB unavailable"), "Samba shares are not listed on Linux, so its state says nothing here:\n{screen}");
         app.selected_host = 0;
         let screen = render(&mut app, 160, 12).join("\n");
         assert!(screen.contains("NFS unavailable: nfsd not running"), "{screen}");
