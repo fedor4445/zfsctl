@@ -1155,11 +1155,17 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     });
     let widths = [Constraint::Length(24), Constraint::Length(8), Constraint::Min(20)];
     let mut hints = Vec::new();
+    // The services' own names: FreeBSD's `nfsd` and `smbd`, `nfs-server` and `smbd` on Linux, SMF's `nfs/server` and `smb/server`.
+    let (nfs, smb) = match app.host_os(app.selected_host) {
+        Some(os @ (crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos)) => (crate::zfs::share::nfs_name(os), crate::zfs::share::smb_name(os)),
+        _ => ("nfsd", "smbd"),
+    };
+    let (nfs_text, smb_text) = (format!("NFS unavailable: {nfs} not running"), format!("SMB unavailable: {smb} not running"));
     if app.nfs_available == Some(false) {
-        hints.push("NFS unavailable: nfsd not running");
+        hints.push(&nfs_text);
     }
     if app.samba_available == Some(false) {
-        hints.push("SMB unavailable: smbd not running");
+        hints.push(&smb_text);
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
     let actions = match app.host_os(app.selected_host) {
@@ -2063,6 +2069,18 @@ mod tests {
             let screen = render(&mut app, 120, 20).join("\n");
             assert!(screen.contains(text), "{screen}");
         }
+    }
+
+    #[test]
+    fn the_shares_title_names_the_services_of_the_hosts_os() {
+        let mut app = linux_host_app();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+        (app.nfs_available, app.samba_available) = (Some(false), Some(false));
+        let screen = render(&mut app, 160, 12).join("\n");
+        assert!(screen.contains("NFS unavailable: nfs-server not running") && screen.contains("read-only on Linux"), "{screen}");
+        app.selected_host = 0;
+        let screen = render(&mut app, 160, 12).join("\n");
+        assert!(screen.contains("NFS unavailable: nfsd not running"), "{screen}");
     }
 
     #[test]
