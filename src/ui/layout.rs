@@ -322,6 +322,7 @@ pub struct HostColumns {
     pub scrub: bool,
     pub jobs: bool,
     pub rtt: bool,
+    pub os: bool,
 }
 
 type Step = (u16, fn(&mut HostColumns));
@@ -331,18 +332,20 @@ const POOLS_W: u16 = 5;
 const SCRUB_W: u16 = 13;
 const JOBS_W: u16 = 5;
 const RTT_W: u16 = 6;
+/// "Linux 6.8 (Ubuntu 24)" is 21.
+const OS_W: u16 = 22;
 const ADDR_W: u16 = 18;
 const STATE_MIN: u16 = 22;
 
-/// The optional columns are added in the reverse of their drop order (Type, Used, Tag, Pools, Scrub, Jobs, Rtt)
+/// The optional columns are added in the reverse of their drop order (Type, Used, Tag, Pools, Scrub, Jobs, Rtt, OS name)
 /// while they fit, stopping at the first that does not, so a narrower column can never outlive a wider one that
 /// goes before it. `tag_w` is the longest tag (0 = no host has one, so no Tag column).
 pub fn fit_host_columns(inner: u16, name_w: u16, tag_w: u16) -> HostColumns {
     let addr = inner >= 16 + STATE_MIN + ADDR_W + 2;
     let mut rest = inner.saturating_sub(name_w + 1 + STATE_MIN + if addr { ADDR_W + 1 } else { 0 });
-    let mut c = HostColumns { addr, type_: false, tag: false, used: false, pools: false, scrub: false, jobs: false, rtt: false };
+    let mut c = HostColumns { addr, type_: false, tag: false, used: false, pools: false, scrub: false, jobs: false, rtt: false, os: false };
     let tag_cols = tag_w.clamp(3, 14);
-    let steps: [Step; 7] = [
+    let steps: [Step; 8] = [
         (TYPE_W, |c| c.type_ = true),
         (USED_W, |c| c.used = true),
         (tag_cols, |c| c.tag = true),
@@ -350,6 +353,7 @@ pub fn fit_host_columns(inner: u16, name_w: u16, tag_w: u16) -> HostColumns {
         (SCRUB_W, |c| c.scrub = true),
         (JOBS_W, |c| c.jobs = true),
         (RTT_W, |c| c.rtt = true),
+        (OS_W, |c| c.os = true),
     ];
     for (i, (w, set)) in steps.into_iter().enumerate() {
         if i == 2 && tag_w == 0 {
@@ -405,6 +409,9 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
                 };
                 cells.push(Cell::from(Span::styled(word, style)));
             }
+            if cols.os {
+                cells.push(Cell::from(Span::styled(state.and_then(|s| s.os_name.clone()).unwrap_or_else(|| "-".to_string()), theme.dim())));
+            }
             if cols.tag {
                 cells.push(Cell::from(app.host_tag(i).to_string()));
             }
@@ -443,7 +450,7 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     }
     widths.push(Constraint::Min(8));
     headers.push("State");
-    for (on, w, h) in [(cols.type_, TYPE_W, "Type"), (cols.tag, tag_w.max(3), "Tag"), (cols.used, USED_W, "Used"), (cols.pools, POOLS_W, "Pools"), (cols.scrub, SCRUB_W, "Scrub"), (cols.jobs, JOBS_W, "Jobs"), (cols.rtt, RTT_W, "Rtt")] {
+    for (on, w, h) in [(cols.type_, TYPE_W, "Type"), (cols.os, OS_W, "OS"), (cols.tag, tag_w.max(3), "Tag"), (cols.used, USED_W, "Used"), (cols.pools, POOLS_W, "Pools"), (cols.scrub, SCRUB_W, "Scrub"), (cols.jobs, JOBS_W, "Jobs"), (cols.rtt, RTT_W, "Rtt")] {
         if on {
             widths.push(Constraint::Length(w));
             headers.push(h);
@@ -2955,8 +2962,8 @@ mod tests {
 
     #[test]
     fn the_host_columns_drop_in_the_documented_order_and_the_required_three_stay() {
-        // Array order is the drop order: Rtt first, Type last.
-        let order = |c: &HostColumns| [c.rtt, c.jobs, c.scrub, c.pools, c.tag, c.used, c.type_];
+        // Array order is the drop order: the OS name first, Type last.
+        let order = |c: &HostColumns| [c.os, c.rtt, c.jobs, c.scrub, c.pools, c.tag, c.used, c.type_];
         let wide = fit_host_columns(200, 10, 8);
         assert!(order(&wide).iter().all(|b| *b) && wide.addr, "everything fits at 200");
         for w in 30..200 {
@@ -2970,7 +2977,18 @@ mod tests {
             }
         }
         assert!(!order(&fit_host_columns(30, 10, 8)).iter().any(|b| *b), "at 30 columns only the required ones remain");
-        assert!(!order(&fit_host_columns(200, 10, 0))[4], "no tags configured: no Tag column");
+        assert!(!order(&fit_host_columns(200, 10, 0))[5], "no tags configured: no Tag column");
+    }
+
+    #[test]
+    fn the_hosts_table_shows_the_short_os_name_when_it_fits() {
+        let mut app = linux_host_app();
+        app.host_probes.get_mut("ub24").unwrap().os_name = Some("Linux 6.8 (Ubuntu 24)".into());
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
+        let wide = render(&mut app, 200, 14).join("\n");
+        assert!(wide.contains("OS") && wide.contains("Linux 6.8 (Ubuntu 24)"), "{wide}");
+        let narrow = render(&mut app, 80, 14).join("\n");
+        assert!(!narrow.contains("Ubuntu 24"), "the OS name is the first column to go:\n{narrow}");
     }
 
     #[test]
