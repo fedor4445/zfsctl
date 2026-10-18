@@ -584,7 +584,8 @@ fn dataset_lines(s: &DatasetSpace) -> Vec<Line<'static>> {
     if let Some(e) = &s.enc {
         let key = if e.key_format.is_empty() || e.key_format == "none" { String::new() } else { format!("   Key {}", e.key_format) };
         let root = if e.root.is_empty() { String::new() } else { format!("   Root {}", e.root) };
-        lines.push(Line::from(format!("Encrypt {}{key}{root}{}", e.cipher, if e.locked { "   LOCKED" } else { "" })));
+        // LOCKED comes first: the panel is narrow and the end of a long line is cut.
+        lines.push(Line::from(format!("Encrypt {}{}{key}{root}", e.cipher, if e.locked { "  LOCKED" } else { "" })));
     }
     lines
 }
@@ -842,7 +843,7 @@ mod tests {
         let text = |s: &DatasetSpace| -> Vec<String> { dataset_lines(s).iter().map(|l| l.spans.iter().map(|sp| sp.content.to_string()).collect()).collect() };
         let enc = |locked| Some(Enc { cipher: "aes-256-gcm".into(), key_format: "passphrase".into(), root: "tank/secure".into(), locked });
         assert_eq!(text(&DatasetSpace { enc: enc(false), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm   Key passphrase   Root tank/secure");
-        assert_eq!(text(&DatasetSpace { enc: enc(true), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm   Key passphrase   Root tank/secure   LOCKED");
+        assert_eq!(text(&DatasetSpace { enc: enc(true), ..DatasetSpace::default() }).last().unwrap(), "Encrypt aes-256-gcm  LOCKED   Key passphrase   Root tank/secure");
     }
 
     #[test]
