@@ -254,6 +254,8 @@ pub struct HostProbeState {
     pub kind: Option<crate::zfs::host_health::HostKind>,
     /// The detected operating system, kept once seen (it is read with the type, in the first successful probe).
     pub os: Option<crate::zfs::host_health::HostOs>,
+    /// The short name for the Hosts table (`Linux 6.8 (Ubuntu 24)`), read with the OS.
+    pub os_name: Option<String>,
     /// The last two resource readings, oldest first: the CPU share is the difference between them.
     pub resources: Vec<crate::zfs::host_resources::Resources>,
     /// The host's offset from UTC in seconds, asked for once: it turns a scrub's local time into an age.
@@ -1041,6 +1043,7 @@ impl App {
                     probe: self.host_probes.get(name).and_then(|s| s.last.as_ref()).filter(|_| !gave_up),
                     resources: self.host_resources(name).filter(|_| !gave_up),
                     utc_offset_secs: self.host_probes.get(name).and_then(|s| s.utc_offset_secs),
+                    os_name: self.host_probes.get(name).and_then(|s| s.os_name.as_deref()),
                 }
             })
             .collect();

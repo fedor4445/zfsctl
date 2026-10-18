@@ -85,7 +85,35 @@ pub fn host_os_from_uname(out: &str) -> HostOs {
 
 /// What the first probe asks, in one round trip: the OS, then (FreeBSD only, errors silenced) the guest kind and whether
 /// this is a jail. The trailing `true` keeps the exit status for ssh failures only: a missing `sysctl` is an answer.
-pub const DETECT_SCRIPT: &str = "uname -s; sysctl -n kern.vm_guest security.jail.jailed 2>/dev/null; true";
+pub const DETECT_SCRIPT: &str = "uname -s; sysctl -n kern.vm_guest security.jail.jailed 2>/dev/null; echo \"@@r $(uname -r)\"; echo \"@@v $(uname -v | cut -c1-60)\"; \
+[ -r /etc/os-release ] && . /etc/os-release && echo \"@@d $NAME $VERSION_ID\"; true";
+
+/// The short name the Hosts table shows, from the `@@` lines of `DETECT_SCRIPT`: `FreeBSD 16.0`, `Linux 6.8 (Ubuntu 24)`,
+/// `illumos omnios-r151058`. `None` when the host gave nothing to name it by (or the OS is not one we know).
+pub fn os_name(os: HostOs, out: &str) -> Option<String> {
+    let line = |tag: &str| out.lines().find_map(|l| l.strip_prefix(tag)).map(str::trim).filter(|s| !s.is_empty());
+    let release = line("@@r ");
+    // "6.8.0-45-generic" and "16.0-CURRENT" are "6.8" and "16.0".
+    let short = |r: &str, parts: usize| r.split(['-', ' ']).next().unwrap_or(r).split('.').take(parts).collect::<Vec<_>>().join(".");
+    match os {
+        HostOs::FreeBsd => release.map(|r| format!("FreeBSD {}", short(r, 2))),
+        HostOs::Linux => {
+            let kernel = short(release?, 2);
+            // "Ubuntu 24.04" is "Ubuntu 24"; "Debian GNU/Linux 12" stays.
+            let distro = line("@@d ").map(|d| match d.rsplit_once(' ') {
+                Some((name, version)) if version.chars().next().is_some_and(|c| c.is_ascii_digit()) => format!("{name} {}", version.split('.').next().unwrap_or(version)),
+                _ => d.to_string(),
+            });
+            Some(match distro {
+                Some(d) => format!("Linux {kernel} ({d})"),
+                None => format!("Linux {kernel}"),
+            })
+        }
+        // "omnios-r151058-3b4c5d6e7f": the distribution and its release.
+        HostOs::Illumos => line("@@v ").map(|v| format!("illumos {}", v.split('-').take(2).collect::<Vec<_>>().join("-"))),
+        HostOs::Other => None,
+    }
+}
 
 /// The OS and, on FreeBSD, the host type from `DETECT_SCRIPT`'s output; Linux and illumos have no source for the type yet.
 fn parse_detection(out: &str) -> (HostOs, HostKind) {
@@ -120,7 +148,7 @@ pub enum HostProbe {
     Unavailable { reason: String },
     /// `kind` is `Some` only on a probe that was asked to detect the type (the first successful one).
     /// `os` is `Some` only on a probe that was asked to detect it, like `kind`.
-    Reached { rtt_ms: u64, pools: Vec<PoolProbe>, kind: Option<HostKind>, os: Option<HostOs> },
+    Reached { rtt_ms: u64, pools: Vec<PoolProbe>, kind: Option<HostKind>, os: Option<HostOs>, os_name: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,19 +327,19 @@ pub fn probe_host(runner: &dyn CommandRunner, detect_kind: bool) -> HostProbe {
         })
         .collect();
     // An ssh-level failure (255) says nothing about the host's type: leave it undetected so the next probe asks again.
-    let (kind, os) = if detect_kind {
+    let (kind, os, name) = if detect_kind {
         match runner.run_unprivileged("sh", &["-c", DETECT_SCRIPT]) {
-            Ok(o) if o.status == 255 => (None, None),
+            Ok(o) if o.status == 255 => (None, None, None),
             Ok(o) if o.success() => {
                 let (os, kind) = parse_detection(&o.stdout);
-                (Some(kind), Some(os))
+                (Some(kind), Some(os), os_name(os, &o.stdout))
             }
-            _ => (Some(HostKind::Unknown), Some(HostOs::Other)),
+            _ => (Some(HostKind::Unknown), Some(HostOs::Other), None),
         }
     } else {
-        (None, None)
+        (None, None, None)
     };
-    HostProbe::Reached { rtt_ms, pools, kind, os }
+    HostProbe::Reached { rtt_ms, pools, kind, os, os_name: name }
 }
 
 /// The Used cell: the fullest pool's capacity, with the level the State column uses for it.
@@ -428,7 +456,7 @@ mod tests {
     }
 
     fn reached(pools: Vec<PoolProbe>) -> HostProbe {
-        HostProbe::Reached { rtt_ms: 5, pools, kind: None, os: None }
+        HostProbe::Reached { rtt_ms: 5, pools, kind: None, os: None, os_name: None }
     }
 
     #[test]
@@ -554,6 +582,28 @@ mod tests {
         assert_eq!(jobs_cell(0, 0), ("-".to_string(), false));
         assert_eq!(jobs_cell(0, 4), ("0/4".to_string(), false));
         assert_eq!(jobs_cell(1, 4), ("1/4".to_string(), true));
+    }
+
+    #[test]
+    fn the_short_os_name_comes_from_uname_and_os_release() {
+        let name = |os, text: &str| os_name(os, text);
+        assert_eq!(name(HostOs::FreeBsd, "FreeBSD\nbhyve\n0\n@@r 16.0-CURRENT\n@@v FreeBSD 16.0-CURRENT #3: Sat\n"), Some("FreeBSD 16.0".into()));
+        assert_eq!(name(HostOs::Linux, "Linux\n@@r 6.8.0-45-generic\n@@v #45-Ubuntu SMP\n@@d Ubuntu 24.04\n"), Some("Linux 6.8 (Ubuntu 24)".into()));
+        assert_eq!(name(HostOs::Linux, "Linux\n@@r 6.8.0-45-generic\n"), Some("Linux 6.8".into()), "no os-release");
+        assert_eq!(name(HostOs::Linux, "Linux\n@@r 6.1.0\n@@d Debian GNU/Linux 12\n"), Some("Linux 6.1 (Debian GNU/Linux 12)".into()));
+        assert_eq!(name(HostOs::Illumos, "SunOS\n@@r 5.11\n@@v omnios-r151058-3b4c5d6e7f\n"), Some("illumos omnios-r151058".into()));
+        assert_eq!(name(HostOs::Other, "Darwin\n@@r 23.1\n"), None);
+        assert_eq!(name(HostOs::Linux, "Linux\n"), None, "nothing to name it by");
+    }
+
+    #[test]
+    fn the_detection_asks_for_the_release_in_the_same_round_trip() {
+        let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
+        runner.sysctl = out("Linux\n@@r 6.8.0-45-generic\n@@d Ubuntu 24.04\n", "", 0);
+        let HostProbe::Reached { os_name, .. } = probe_host(&runner, true) else { panic!() };
+        assert_eq!(os_name.as_deref(), Some("Linux 6.8 (Ubuntu 24)"));
+        assert_eq!(runner.unprivileged.lock().unwrap().len(), 1);
+        assert!(DETECT_SCRIPT.starts_with("uname -s;"), "the first line stays the OS word");
     }
 
     #[test]
