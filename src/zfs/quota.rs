@@ -65,7 +65,8 @@ pub enum Tier {
 
 /// Whether setting `key` to `new` (`None` = remove) may go ahead, and how carefully.
 pub fn check(key: &str, new: Option<u64>, facts: &Facts) -> Result<Tier, String> {
-    let size = |n: u64| format_size(n);
+    // Messages show sizes the way the rest of the screen does (95.1M), not as raw bytes.
+    let size = crate::zfs::disk::human_size;
     if facts.is_volume && matches!(key, "quota" | "refquota") {
         return Err(format!("{key} does not apply to a volume: it has its volsize and the reservations"));
     }
