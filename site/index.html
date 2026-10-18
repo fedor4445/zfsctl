@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zfsctl: ZFS management in your terminal</title>
+<meta name="description" content="zfsctl is a terminal UI and daemon for managing ZFS pools, datasets, snapshots, replication and backups on FreeBSD, Linux and illumos.">
+<meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<div class="bar"><span><b>zfsctl</b> 0.2 · in development</span><span>BSD-2-Clause · FreeBSD · Linux · illumos</span></div>
+<nav><a href="book/">book</a><a href="book/04-installing.html">install</a><a href="book/18-safety.html">safety</a><a href="book/20-reference-keys.html">keys</a></nav>
+
+<h1 class="prompt cursor">zfsctl</h1>
+<p>A terminal UI and daemon for managing ZFS. One screen for pools, datasets, snapshots, disks, shares and boot environments; a daemon that runs your snapshot, replication, backup and scrub jobs and tells you when something needs attention. It manages other machines over ssh, with no agent to install on them.</p>
+
+<h2 data-rule="──────────────────────────────">the dashboard</h2>
+<p class="dim">A real capture from a running zfsctl, not a mock-up.</p>
+<pre> Dashboard  ·  Sun 18 Oct 16:15                                                                                                    ✖ 1 issue
+
+ NEEDS ATTENTION ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ✖ issue omnios  tank 96% full
+
+ HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Host      State            OS                      Pools  Capacity             Memory             CPU              Load  Scrub    Errors
+  local     ● ok             FreeBSD 15.1            3      ━━━━╌╌╌╌╌╌ 42%       ━━╌╌╌╌╌╌╌╌ 16%     ?                2.54  9 d ago  0
+  fbsd16    ● ok             FreeBSD 16.0            1      ━━━━━━╌╌╌╌ 61%       ━━╌╌╌╌╌╌╌╌ 18%     ?                0.07  today    0
+  fbsd16t1  ● ok             FreeBSD 15.1            2      ━━━━━╌╌╌╌╌ 53%       ━━━━━╌╌╌╌╌ 48%     ?                0.40  today    0
+  fbsd16t2  ● ok             FreeBSD 15.1            2      ━━━━━━━╌╌╌ 74%       ━━━━━╌╌╌╌╌ 48%     ?                0.43  today    0
+  ub24      ● ok             Linux 6.8 (Ubuntu 24)   1      ╌╌╌╌╌╌╌╌╌╌ 0%        ╌╌╌╌╌╌╌╌╌╌ 4%      ?                0.00  today    0
+  omnios    ✖ tank 96% full  illumos omnios-r151058  2      ━━━━━━━━━━ 96%       ━╌╌╌╌╌╌╌╌╌ 14%     ?                0.02  today    0
+
+ DAEMON AND JOBS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ● daemon  running (pid 70948), heartbeat 0s ago
+   ● jobs    scrub 2/2 ok
+
+ CLOUD ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     Provider          Remote      Jobs     Last run  Next run         In bucket
+   ○ Backblaze B2      b2          no jobs  -         -                -
+   ○ SFTP              t1          no jobs  -         -                -
+   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -
+
+ ALERTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ● monitor on · last alert omnios tank 96% full (51m ago) · report 2026-10-18
+</pre>
+
+<h2 data-rule="──────────────────────────────">what it does</h2>
+<ul>
+<li>Pools, vdevs, datasets, properties, quotas, snapshots, disks and SMART, NFS and SMB shares, boot environments.</li>
+<li>Scheduled jobs: snapshots with retention, host-to-host and stream-file replication (raw sends for encrypted datasets), restic backups, rclone cloud mirrors.</li>
+<li>Native encryption: create encrypted datasets, load, unload and change keys. Passphrases never appear in an argument, a log or a file.</li>
+<li>Alerts and a daily report by mail or hook, and a Dashboard that shows what needs attention first.</li>
+<li>Every change asks twice (<code>y</code>, then <code>Enter</code>); what cannot be undone makes you type the name.</li>
+<li>Hosts run FreeBSD, Linux or illumos. Root only through a sudoers file you read first (<code>zfsctl print-sudoers</code>).</li>
+</ul>
+
+<h2 data-rule="──────────────────────────────">install</h2>
+<p>From source, on the FreeBSD hub that will run it (a Rust toolchain is the only requirement):</p>
+<pre class="cmd"><span class="c"># build</span>
+cargo build --release
+<span class="c"># install and start the daemon</span>
+install -m 755 target/release/zfsctl /usr/local/bin/zfsctl
+install -m 555 contrib/rc.d/zfsctl /usr/local/etc/rc.d/zfsctl
+sysrc zfsctl_enable=YES &amp;&amp; service zfsctl start
+<span class="c"># the screen</span>
+sudo zfsctl</pre>
+<p>The book covers configuration, the sudoers rules for remote hosts, and every screen: <a href="book/04-installing.html">installing</a>, <a href="book/05-remote-hosts.html">remote hosts</a>, <a href="book/17-recipes.html">recipes</a>.</p>
+
+<h2 data-rule="──────────────────────────────">status</h2>
+<p><span class="warn">in development.</span> The first public release is not out yet; the name <code>zfsctl</code> is reserved on crates.io.</p>
+
+<footer>BSD 2-Clause. Copyright (c) 2026, fedor4445. This page loads one stylesheet and nothing else.</footer>
+</main>
+</body>
+</html>

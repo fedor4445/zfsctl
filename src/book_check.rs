@@ -39,6 +39,13 @@ fn the_toc_lists_every_chapter_file_in_order_and_nothing_else() {
 }
 
 #[test]
+fn the_mdbook_summary_lists_the_same_chapters_as_the_readme() {
+    let summary = std::fs::read_to_string(book_dir().join("SUMMARY.md")).expect("docs/book/SUMMARY.md exists");
+    let linked: Vec<String> = summary.lines().filter_map(|l| l.split_once("](")).filter_map(|(_, r)| r.split_once(')')).map(|(file, _)| file.to_string()).filter(|f| f.ends_with(".md") && f != "README.md").collect();
+    assert_eq!(linked, toc_links(), "docs/book/SUMMARY.md (for mdBook) must list the chapters in the same order as the README");
+}
+
+#[test]
 fn chapters_one_to_nineteen_have_the_standard_shape() {
     for (name, text) in chapters() {
         let number: u32 = name[..2].parse().unwrap();

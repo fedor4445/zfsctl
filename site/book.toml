@@ -1,0 +1,23 @@
+[book]
+title = "The zfsctl Book"
+language = "en"
+src = "../docs/book"
+
+[build]
+build-dir = "public/book"
+create-missing = false
+
+[output.html]
+default-theme = "coal"
+preferred-dark-theme = "coal"
+additional-css = ["theme/terminal.css"]
+git-repository-icon = "fa-github"
+no-section-label = true
+smart-punctuation = false
+
+[output.html.search]
+enable = true
+limit-results = 20
+
+[output.html.print]
+enable = false
