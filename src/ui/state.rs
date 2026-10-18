@@ -320,6 +320,9 @@ pub struct App {
     pub settings_table: TableState,
     /// What the daemon's daily disk check found (`smart.json`), reloaded with the Dashboard.
     pub smart: crate::daemon::smart_check::SmartFile,
+    pub shares_check: crate::daemon::shares_check::SharesFile,
+    /// The check that is running now (a fresh `checks-running.json`), if any.
+    pub checks_marker: Option<crate::daemon::checks::Marker>,
     /// How often the list on screen reloads by itself; `None` is off. Set from `[ui]` at start and after a save in Settings.
     pub auto_refresh_interval: Option<Duration>,
     last_alerts_refresh: Option<Instant>,
@@ -523,6 +526,8 @@ impl App {
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
             smart: crate::daemon::smart_check::SmartFile::default(),
+            shares_check: crate::daemon::shares_check::SharesFile::default(),
+            checks_marker: None,
             auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
             done_note: None,
@@ -915,11 +920,19 @@ impl App {
         }
     }
 
+    /// Re-reads the marker of a running check. Cheap (one small file), so it is also done every pass of the event loop while the
+    /// Dashboard is open: the red notice must appear and vanish with the check, not with the next 60-second refresh.
+    pub fn refresh_checks_marker(&mut self) {
+        self.checks_marker = crate::daemon::checks::fresh_marker(&self.state_dir, chrono::Utc::now());
+    }
+
     /// Reloads everything the Dashboard shows that is not a host probe: the jobs, the alert settings, the cloud remotes and the
     /// `[dashboard]` thresholds (an unreadable `config.toml` means the defaults). Probes arrive on their own every 30 s.
     pub fn refresh_dashboard(&mut self) {
         self.dashboard_thresholds = crate::config::Config::load(&self.config_path).map(|c| c.dashboard.resolve()).unwrap_or_default();
         self.smart = crate::daemon::smart_check::SmartFile::load(&self.state_dir.join("smart.json"));
+        self.shares_check = crate::daemon::shares_check::SharesFile::load(&self.state_dir.join("shares.json"));
+        self.refresh_checks_marker();
         self.refresh_alerts();
         self.refresh_cloud();
     }
@@ -952,6 +965,8 @@ impl App {
             alerts: &self.alerts_view,
             thresholds: &self.dashboard_thresholds,
             smart: &self.smart,
+            shares: &self.shares_check,
+            running: self.checks_marker.as_ref(),
             now: chrono::Utc::now(),
         })
     }
@@ -2115,7 +2130,7 @@ impl App {
                         self.pane_focus = PaneFocus::Middle;
                     }
                     match (item.goto, item.target) {
-                        (Section::Hosts | Section::Pools | Section::Disks, Some(name)) => {
+                        (Section::Hosts | Section::Pools | Section::Disks | Section::Shares, Some(name)) => {
                             if let Some(index) = self.hosts.iter().position(|h| *h == name) {
                                 self.selected_host = index;
                             }

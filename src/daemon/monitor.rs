@@ -220,7 +220,7 @@ impl Monitor {
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
             let since = self.last_report_at.unwrap_or(now - chrono::Duration::hours(24));
-            let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::disk_lines(&super::smart_check::SmartFile::load(&self.state_dir.join("smart.json"))));
+            let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir));
             if sink.send(&msg) {
                 self.last_report_at = Some(now);
                 self.mark_report_sent(local.date(), true);

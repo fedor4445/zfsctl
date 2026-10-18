@@ -282,7 +282,9 @@ fn component_lines(d: &Dashboard, width: usize, compact: bool, theme: &Theme) ->
 
 /// The screen with a given attention cap, in the full or the compact layout.
 fn assemble(d: &Dashboard, selected: Option<usize>, width: usize, now: &str, theme: &Theme, cap: usize, compact: bool) -> Vec<Line<'static>> {
-    let mut lines = vec![header(d, width, now, theme), Line::raw("")];
+    // The line under the header is blank, or the red notice that a check is running (the screen keeps its height).
+    let notice = d.running.as_ref().map_or_else(|| Line::raw(""), |text| Line::styled(cut(&format!("  ▶ {text}"), width), theme.err));
+    let mut lines = vec![header(d, width, now, theme), notice];
     lines.extend(attention_lines(d, selected, width, cap, theme));
     lines.push(Line::raw(""));
     lines.extend(host_lines(d, width, theme));
@@ -364,6 +366,21 @@ mod tests {
         app.host_probes.insert("fbsd16t1".into(), HostProbeState { last: Some(HostProbe::Disconnected), ..HostProbeState::default() });
         heartbeat(&mut app);
         app
+    }
+
+    #[test]
+    fn the_running_notice_sits_under_the_header_in_the_error_style_and_costs_no_extra_line() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let quiet = screen_lines(&app.dashboard(), None, 100, 40, "Sat", &app.theme);
+        let dir = tempfile::tempdir().unwrap();
+        app.state_dir = dir.path().to_path_buf();
+        let _guard = crate::daemon::checks::RunGuard::start(dir.path(), "tui", Some("fbsd16"));
+        app.refresh_checks_marker();
+        let lines = screen_lines(&app.dashboard(), None, 100, 40, "Sat", &app.theme);
+        let text: String = lines[1].spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("▶ checking fbsd16: disks and shares since"), "{text}");
+        assert_eq!(lines[1].style, app.theme.err);
+        assert_eq!(lines.len(), quiet.len(), "the notice replaces the blank line under the header");
     }
 
     #[test]
