@@ -411,9 +411,15 @@ impl App {
         if job.kind != crate::jobs::KIND_REPLICATE && job.kind != crate::jobs::KIND_MIRROR {
             return None;
         }
+        // A raw replication sends an encrypted source as it is: nothing to refuse.
+        if job.raw {
+            return None;
+        }
         let dataset = job.dataset.as_deref()?;
         // A disabled job may be saved (to switch off one that now fails).
-        (job.enabled && self.hosts.get(self.encryption_for) == Some(&job.host) && self.encryption.contains_key(dataset)).then(|| crate::daemon::guard::not_allowed(dataset))
+        (job.enabled && self.hosts.get(self.encryption_for) == Some(&job.host) && self.encryption.contains_key(dataset)).then(|| {
+            if job.kind == crate::jobs::KIND_REPLICATE { crate::daemon::guard::not_allowed_replication(dataset) } else { crate::daemon::guard::not_allowed(dataset) }
+        })
     }
 
     /// Puts the confirm for `action` over `form`; declining hands the form back with what was typed.

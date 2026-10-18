@@ -7931,6 +7931,24 @@ fn a_replication_or_mirror_of_an_encrypted_dataset_is_not_saved() {
 }
 
 #[test]
+fn a_replication_of_an_encrypted_dataset_says_to_turn_raw_on_and_saves_once_it_is_on() {
+    let mut app = keep_form_app("");
+    encrypted(&mut app, "tank/data", 0);
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(matches!(app.modal, Some(Modal::Form { .. })));
+    assert!(app.status_message.as_deref().unwrap_or("").contains("Turn Raw on"), "{:?}", app.status_message);
+    // The Raw field is the tenth one.
+    let Some(Modal::Form { fields, focused, .. }) = app.modal.as_mut() else { panic!() };
+    fields.resize_with(10, || FormField { label: String::new(), value: String::new() });
+    fields[9].value = "y".into();
+    *focused = 9;
+    app.status_message = None;
+    let action = app.handle_modal_key(KeyCode::Enter);
+    assert!(action.is_some() || !matches!(app.modal, Some(Modal::Form { .. })), "a raw job saves: {:?} {:?}", app.modal, app.status_message);
+    assert!(!app.status_is_error(), "{:?}", app.status_message);
+}
+
+#[test]
 fn a_disabled_job_on_an_encrypted_dataset_can_still_be_saved() {
     let mut app = keep_form_app("");
     encrypted(&mut app, "tank/data", 0);
