@@ -1162,10 +1162,10 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let (nfs_text, smb_text) = (format!("NFS unavailable: {nfs} not running"), format!("SMB unavailable: {smb} not running"));
     if app.nfs_available == Some(false) {
-        hints.push(&nfs_text);
+        hints.push(nfs_text.as_str());
     }
     if app.samba_available == Some(false) {
-        hints.push(&smb_text);
+        hints.push(smb_text.as_str());
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
     let actions = match app.host_os(app.selected_host) {
