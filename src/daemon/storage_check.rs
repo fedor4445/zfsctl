@@ -28,6 +28,9 @@ pub struct StorageResult {
     /// Pools with something to say about their special, dedup, log or cache devices (quiet pools are not stored).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pools: Vec<PoolClasses>,
+    /// The host's OpenZFS version (`2.4.2-1-FreeBSD_g...`), when `zfs version` says it (OmniOS has no such command).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zfs_version: Option<String>,
     /// Why the latest check did not happen; the rest is then from the last one that did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -113,7 +116,7 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
                 .filter(crate::exec::CommandOutput::success)
                 .map(|o| parse_classes(&o.stdout).into_iter().filter(|p| !p.is_quiet()).collect())
                 .unwrap_or_default();
-            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, error: None })
+            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version: None, error: None })
         }
     }
 }
@@ -272,7 +275,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, error: None });
         file
     }
 
@@ -317,7 +320,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
