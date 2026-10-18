@@ -44,13 +44,26 @@ pub fn parse(output: &str) -> BTreeMap<String, Enc> {
     seen.into_iter().filter(|(name, _)| encrypted.contains(name)).collect()
 }
 
-/// Every encrypted dataset of the host; empty when the host cannot say (an old `zfs`, a refusal, a dropped connection).
-pub fn list(runner: &dyn CommandRunner) -> BTreeMap<String, Enc> {
-    runner.run("zfs", &GET_ARGS).ok().filter(crate::exec::CommandOutput::success).map(|o| parse(&o.stdout)).unwrap_or_default()
+/// Every encrypted dataset of the host. `None` when the host could not be asked (a failed runner, ssh's 255): the caller keeps
+/// what it knew. An error answer (an old `zfs` without the properties, a refusal) is an empty list.
+pub fn list(runner: &dyn CommandRunner) -> Option<BTreeMap<String, Enc>> {
+    match runner.run("zfs", &GET_ARGS) {
+        Err(_) => None,
+        Ok(o) if o.status == 255 => None,
+        Ok(o) if o.success() => Some(parse(&o.stdout)),
+        Ok(_) => Some(BTreeMap::new()),
+    }
 }
 
-/// One dataset's encryption. `Err` only when the host could not be asked at all (the runner failed or ssh said 255); an
-/// error answer (an old `zfs` without these properties, a refusal) is `Ok(None)`, as is a dataset that is not encrypted.
+/// Whether a failed `zfs get` says the host's `zfs` does not know these properties (so nothing is encrypted there).
+fn unknown_property(stderr: &str) -> bool {
+    let text = stderr.to_lowercase();
+    text.contains("bad property list") || text.contains("invalid property") || text.contains("unknown property")
+}
+
+/// One dataset's encryption. `Ok(None)` for a dataset that is not encrypted and for a `zfs` that says it does not know the
+/// properties. Anything else that went wrong (the runner failed, ssh's 255, a signal, a refusal, an unrecognised error) is `Err`:
+/// the caller must not read "could not ask" as "not encrypted".
 pub fn query(runner: &dyn CommandRunner, dataset: &str) -> std::result::Result<Option<Enc>, String> {
     if dataset.starts_with('-') {
         return Err(format!("not a dataset name: {dataset}"));
@@ -59,7 +72,8 @@ pub fn query(runner: &dyn CommandRunner, dataset: &str) -> std::result::Result<O
     match runner.run("zfs", &args) {
         Err(e) => Err(e.to_string()),
         Ok(o) if o.status == 255 => Err(o.stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("could not reach the host").to_string()),
-        Ok(o) if !o.success() => Ok(None),
+        Ok(o) if !o.success() && unknown_property(&o.stderr) => Ok(None),
+        Ok(o) if !o.success() => Err(o.stderr.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("zfs get failed (status {})", o.status), str::to_string)),
         Ok(o) => Ok(parse(&o.stdout).remove(dataset)),
     }
 }
@@ -117,6 +131,8 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         assert!(query(&Broken, "tank/a").unwrap_err().contains("ssh to the host failed"));
         assert_eq!(query(&FakeRunner::failing("Connection closed", 255), "tank/a").unwrap_err(), "Connection closed");
         assert_eq!(query(&FakeRunner::failing("bad property list: invalid property 'keystatus'", 1), "tank/a"), Ok(None));
+        assert!(query(&FakeRunner::failing("", -1), "tank/a").unwrap_err().contains("status -1"), "killed by a signal: could not ask");
+        assert!(query(&FakeRunner::failing("sudo: a password is required", 1), "tank/a").is_err(), "a refusal is not an answer either");
         assert_eq!(query(&FakeRunner::new(CAPTURE), "tank/plain"), Ok(None));
         assert!(query(&FakeRunner::new(CAPTURE), "tank/secure").unwrap().is_some());
         assert!(query(&FakeRunner::new(""), "-evil").is_err());
@@ -124,8 +140,9 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
 
     #[test]
     fn list_is_empty_when_the_host_cannot_say() {
-        assert!(list(&FakeRunner::failing("no", 1)).is_empty());
-        assert_eq!(list(&FakeRunner::new(CAPTURE)).len(), 2);
+        assert_eq!(list(&FakeRunner::failing("no", 1)), Some(BTreeMap::new()), "an error answer is an empty list");
+        assert_eq!(list(&FakeRunner::failing("closed", 255)), None, "a lost connection is not an answer");
+        assert_eq!(list(&FakeRunner::new(CAPTURE)).unwrap().len(), 2);
     }
 
     #[test]

@@ -382,7 +382,8 @@ impl App {
             return None;
         }
         let dataset = job.dataset.as_deref()?;
-        (self.hosts.get(self.encryption_for) == Some(&job.host) && self.encryption.contains_key(dataset)).then(|| crate::daemon::guard::not_allowed(dataset))
+        // A disabled job may be saved (to switch off one that now fails).
+        (job.enabled && self.hosts.get(self.encryption_for) == Some(&job.host) && self.encryption.contains_key(dataset)).then(|| crate::daemon::guard::not_allowed(dataset))
     }
 
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.

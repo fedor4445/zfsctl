@@ -122,7 +122,7 @@ A pool whose special or dedup vdev is a single disk gets a red line (`tank speci
 
 A dataset whose checksum is off, and a pool with dedup on for a week that saves almost nothing, are yellow lines (`dedup_min_ratio` in `[dashboard]` sets "almost nothing").
 
-A locked (encrypted, key not loaded) dataset that a replication, backup or mirror job uses, or that is shared, is a yellow line (`tank/secure is locked (a job uses it)`): it is something that will fail.
+A locked (encrypted, key not loaded) dataset that a restic backup reads, that a replication writes into, or that is shared over NFS (or over SMB on illumos; a FreeBSD Samba share is not seen) is a yellow line (`tank/secure is locked (a job uses it)`): it is something that will fail.
 
 A dataset that uses 90% or more of its quota (or refquota) is listed too, one line per host naming the fullest one (`tank/home 94% of its 100G quota (+1 more)`), red from 98%; the daemon re-reads quotas every ten minutes.
 

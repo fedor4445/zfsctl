@@ -7931,6 +7931,16 @@ fn a_replication_or_mirror_of_an_encrypted_dataset_is_not_saved() {
 }
 
 #[test]
+fn a_disabled_job_on_an_encrypted_dataset_can_still_be_saved() {
+    let mut app = keep_form_app("");
+    encrypted(&mut app, "tank/data", 0);
+    let Some(Modal::Form { fields, .. }) = app.modal.as_mut() else { panic!() };
+    fields[7].value = "n".into();
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(!matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+}
+
+#[test]
 fn the_save_time_guard_only_trusts_a_list_read_for_the_jobs_own_host_and_never_blocks_without_one() {
     let mut app = keep_form_app("");
     encrypted(&mut app, "tank/data", 1);

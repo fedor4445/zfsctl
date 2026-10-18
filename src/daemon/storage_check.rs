@@ -223,7 +223,8 @@ pub fn locked_problems(file: &StorageFile, jobs: &[crate::jobs::Job]) -> Vec<Sto
         .filter_map(|(host, result)| {
             let uses = |locked: &str| {
                 jobs.iter().filter(|j| j.enabled && matches!(j.kind.as_str(), KIND_REPLICATE | KIND_BACKUP | KIND_MIRROR)).any(|j| {
-                    let reads = j.host == *host && j.dataset.as_deref().is_some_and(|d| locked == d || (j.recursive && locked.strip_prefix(d).is_some_and(|rest| rest.starts_with('/'))));
+                    // A replication or mirror source is refused when encrypted, key or no key: loading the key would not help.
+                    let reads = j.kind == KIND_BACKUP && j.host == *host && j.dataset.as_deref().is_some_and(|d| locked == d || (j.recursive && locked.strip_prefix(d).is_some_and(|rest| rest.starts_with('/'))));
                     let writes = j.dest_host.as_deref() == Some(host.as_str()) && j.dest_dataset.as_deref() == Some(locked);
                     reads || writes
                 })
@@ -862,6 +863,9 @@ tank/open\tkeystatus\tavailable\ntank/open\tsharenfs\ton\ntank/plain\tkeystatus\
         assert!(locked_problems(&file, &[disabled]).is_empty());
         let snapshot = on_hub(Job::test_snapshot("s", "tank/secure/kid", "p", 3));
         assert!(locked_problems(&file, &[snapshot]).is_empty(), "snapshots work on a locked dataset");
+        let mut from = Job::test_replicate("r2", "tank/secure/kid", "p", "elsewhere", "x/y");
+        from.host = "hub".into();
+        assert!(locked_problems(&file, &[from]).is_empty(), "a replication source is refused whatever the key state");
         let into = Job::test_replicate("r", "tank/src", "p", "hub", "tank/secure/kid");
         assert_eq!(locked_problems(&file, &[into]).len(), 1, "a receive into a locked destination fails");
     }

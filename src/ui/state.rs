@@ -1425,6 +1425,7 @@ impl App {
         self.metrics = crate::ui::metrics::MetricsView::default();
         self.pools.clear();
         self.datasets.clear();
+        self.encryption.clear();
         self.snapshots.clear();
         self.snapshots_loaded = false;
         self.pools_table.select(None);
@@ -3020,7 +3021,10 @@ impl App {
         self.begin_refresh(Section::Datasets, host);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(WorkerMsg::Encryption(host, crate::zfs::encryption::list(runner.as_ref())));
+            // Not sent when the host could not be asked: the Lock column and the save-time guard keep what they knew.
+            if let Some(found) = crate::zfs::encryption::list(runner.as_ref()) {
+                let _ = tx.send(WorkerMsg::Encryption(host, found));
+            }
             let result = crate::zfs::dataset::list_datasets(runner.as_ref());
             let _ = tx.send(WorkerMsg::Datasets(host, result));
         });
