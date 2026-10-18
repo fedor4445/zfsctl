@@ -115,6 +115,17 @@ Every change to one of these four asks for `y` then `Enter` first, showing the e
 
 When any dataset on the host has a limit, the Datasets list gets a **Quota** column (`96% of 10G`, yellow from 90%, red from 98%); it is the first column to go on a narrow terminal. The Dashboard lists, per host, the dataset nearest to its limit in Needs attention, and the daily report repeats it; the percentages are `quota_warn` and `quota_crit` under `[dashboard]` (or Settings). The daemon re-reads quotas every ten minutes, and `c` in Hosts does it on demand.
 
+## Checksum and deduplication
+
+`checksum` is how ZFS notices damaged data, and `dedup` stores identical blocks once. `Enter` on either row opens a form; `F2` lists the choices (checksum: `on`, `off`, `fletcher2`, `fletcher4`, `sha256`, `sha512`, `skein`, `edonr`, `blake3`; dedup: `off`, `on`, `verify` and the algorithm names, with or without `,verify`). The value is checked before anything is sent: an unknown word is refused with the list, and `blake3` is refused on a host that is known to run OpenZFS older than 2.2 (a host whose version is not known is left to answer for itself).
+
+Both properties only affect data written afterwards. zfsctl says so, and asks:
+
+- **`checksum=off`** asks you to **type the dataset's name**: with the checksum off, silent corruption in that dataset is not detected and a scrub cannot repair it. Any other checksum change asks for `y` then `Enter` and reminds you to run a scrub afterwards.
+- **Turning `dedup` on** asks you to **type the dataset's name** too: deduplication keeps a table of every block in memory (a rule of thumb is 1 to 5 GB of RAM per TB of deduplicated data), the question shows how much RAM the host has and warns when that is under 16 GiB, and switching it off later does not undeduplicate what is already stored. Turning it off, or changing the algorithm, asks `y` then `Enter`.
+
+The panel under the list shows `Checksum` and `Dedup` only when they are not the defaults. Needs attention lists a host that has a dataset with its checksum off (`tank/scratch checksum is off`, up to three names) and a pool that has dedup on but saves less than `dedup_min_ratio` (default 1.10x) once it holds more than 10 GiB (`tank dedup is on but saves only 1.02x`): paying memory for nothing. The illumos dump device (`rpool/dump`) has its checksum off by design and is not listed.
+
 ## Create a dataset
 
 Press `n` and give the new dataset's name, including its pool: `tank/media`. Press `Enter`. It is created and mounted under its parent's mountpoint at once, and it inherits its parent's properties.
