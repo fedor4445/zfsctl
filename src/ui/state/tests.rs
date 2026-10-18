@@ -9238,3 +9238,23 @@ fn capital_x_on_a_data_device_says_it_is_not_offered_and_the_hint_follows_the_ro
     app.vdevs_table.select(Some(3));
     assert!(keys(&app).contains(&"X".to_string()));
 }
+
+#[test]
+fn special_small_blocks_is_a_guided_form_that_warns_when_it_reaches_the_recordsize() {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    app.dataset_properties.push(Property { name: "special_small_blocks".into(), value: "0".into(), source: PropertySource::Default });
+    app.dataset_properties.push(Property { name: "recordsize".into(), value: "131072".into(), source: PropertySource::Default });
+    open_property(&mut app, "special_small_blocks");
+    let Some(crate::ui::modal::Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[0].value, "0");
+    assert!(submit_value(&mut app, "3K").is_none() && app.status_error.as_deref().is_some_and(|m| m.contains("power of two")), "{:?}", app.status_error);
+    assert!(submit_value(&mut app, "32K").is_none());
+    let action = confirm_limit_change(&mut app);
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "special_small_blocks".into(), value: "32768".into() });
+    open_property(&mut app, "special_small_blocks");
+    assert!(submit_value(&mut app, "128K").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("ALL of this dataset's data"), "{prompt}"),
+        other => panic!("{other:?}"),
+    }
+}

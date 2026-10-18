@@ -1530,12 +1530,15 @@ impl App {
             {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
-                        let guided = crate::zfs::quota::KEYS.contains(&prop.name.as_str());
+                        let blocks = prop.name == "special_small_blocks";
+                        let guided = crate::zfs::quota::KEYS.contains(&prop.name.as_str()) || blocks;
                         if guided && matches!(prop.name.as_str(), "quota" | "refquota") && self.dataset_properties.iter().any(|p| p.name == "type" && p.value == "volume") {
                             self.status_message = Some(format!("'{}' does not apply to a volume: it has its volsize and the reservations", prop.name));
                         } else if prop.source.is_editable() {
                             // A size is shown as 10G (or none) and typed the same way; the exact bytes are sent.
-                            let (label, value) = if guided {
+                            let (label, value) = if blocks {
+                                ("special_small_blocks (0, 4K, 32K ... 1M)".to_string(), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "0".to_string(), crate::zfs::quota::format_size))
+                            } else if guided {
                                 (format!("{} (10G, 500M, none)", prop.name), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "none".to_string(), crate::zfs::quota::format_size))
                             } else {
                                 (prop.name.clone(), prop.value.clone())

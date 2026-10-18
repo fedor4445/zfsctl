@@ -159,6 +159,16 @@ pub fn check_raw_spec(spec: &[String]) -> Result<Role, String> {
     seen.into_iter().max_by_key(|r| r.risk()).ok_or_else(|| "the vdev spec is empty".to_string())
 }
 
+/// `special_small_blocks`: `0` (none) or a power of two from 512 to 16M, as `32K`, `1M` or plain bytes.
+pub fn parse_small_blocks(text: &str) -> Result<u64, String> {
+    let bad = || format!("'{}' is not a block size: use 0 or a power of two from 512 to 16M, such as 32K", text.trim());
+    let bytes = match super::quota::parse_size(text) {
+        Ok(Some(n)) => n,
+        _ => return Err(bad()),
+    };
+    if bytes == 0 || ((512..=(16 << 20)).contains(&bytes) && bytes.is_power_of_two()) { Ok(bytes) } else { Err(bad()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +232,16 @@ mod tests {
         assert_eq!(s(&["/root/f1", "/root/f2"]), Ok(Role::Data), "file-backed vdevs are disks too");
         assert_eq!(s(&["mirror", "a", "b", "log", "c"]), Ok(Role::Data), "the riskiest role decides the confirm");
         assert_eq!(s(&["log", "a", "special", "mirror", "b", "c"]), Ok(Role::Special));
+    }
+
+    #[test]
+    fn parse_small_blocks_takes_zero_or_a_power_of_two_in_range() {
+        for (text, want) in [("0", 0), ("512", 512), ("4K", 4096), ("32k", 32768), ("1M", 1 << 20), ("16M", 16 << 20)] {
+            assert_eq!(parse_small_blocks(text), Ok(want), "{text}");
+        }
+        for bad in ["3K", "100", "32M", "none", "", "256", "-4K", "1.5K"] {
+            assert!(parse_small_blocks(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
