@@ -867,15 +867,21 @@ impl App {
         state.in_flight = true;
         state.started_at = Some(Instant::now());
         let detect_kind = state.kind.is_none();
+        let known_os = state.os;
         let want_offset = state.utc_offset_secs.is_none();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref(), detect_kind);
             let reached = matches!(probe, crate::zfs::host_health::HostProbe::Reached { .. });
+            // A probe that did not ask for the OS again (it is read once) leaves it to what the app already knows.
+            let os = match &probe {
+                crate::zfs::host_health::HostProbe::Reached { os, .. } => os.or(known_os),
+                _ => None,
+            };
             let _ = tx.send(WorkerMsg::HostHealth(name.clone(), probe));
             // The Dashboard's readings are TUI-only (the daemon's monitor probes without them) and only asked of a host that answered.
             let (resources, offset) = if reached {
-                (crate::zfs::host_resources::probe_resources(runner.as_ref()), want_offset.then(|| crate::zfs::host_resources::utc_offset_secs(runner.as_ref())).flatten())
+                (crate::zfs::host_resources::probe_resources(runner.as_ref(), os), want_offset.then(|| crate::zfs::host_resources::utc_offset_secs(runner.as_ref())).flatten())
             } else {
                 (None, None)
             };
