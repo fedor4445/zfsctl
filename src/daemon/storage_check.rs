@@ -10,6 +10,32 @@ use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Datasets whose `checksum` is off and pools with deduplication in use, as the host said (set here or received, never inherited).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Integrity {
+    #[serde(default)]
+    pub checksum_off: Vec<String>,
+    /// Pools that have a dataset with `dedup` on (any algorithm).
+    #[serde(default)]
+    pub dedup_pools: Vec<String>,
+    /// Every pool's allocated bytes and dedup ratio in hundredths (`1.02x` is 102), for the dedup line.
+    #[serde(default)]
+    pub pools: Vec<PoolSpace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PoolSpace {
+    pub name: String,
+    pub allocated: u64,
+    pub ratio_x100: u32,
+}
+
+impl Integrity {
+    fn is_empty(&self) -> bool {
+        *self == Integrity::default()
+    }
+}
+
 /// A dataset that has a `quota` or a `refquota` (the others are not stored).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LimitedDataset {
@@ -28,6 +54,9 @@ pub struct StorageResult {
     /// Pools with something to say about their special, dedup, log or cache devices (quiet pools are not stored).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pools: Vec<PoolClasses>,
+    /// What the integrity settings look like on this host (`zfs get -s local,received checksum,dedup`, `zpool list`).
+    #[serde(default, skip_serializing_if = "Integrity::is_empty")]
+    pub integrity: Integrity,
     /// The host's OpenZFS version (`2.4.2-1-FreeBSD_g...`), when `zfs version` says it (OmniOS has no such command).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zfs_version: Option<String>,
@@ -101,6 +130,43 @@ fn parse_limited(output: &str) -> Vec<LimitedDataset> {
         .collect()
 }
 
+/// `zfs get -H -p -s local,received -t filesystem,volume -o name,property,value checksum,dedup` and `zpool list -H -p -o
+/// name,allocated,dedupratio` read together. Illumos's dump device (`<pool>/dump`) has its checksum off by design: not listed.
+fn parse_integrity(settings: &str, pools: &str) -> Integrity {
+    let mut out = Integrity::default();
+    for line in settings.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let &[name, property, value] = f.as_slice() else { continue };
+        let pool = name.split('/').next().unwrap_or(name).to_string();
+        match (property, value) {
+            ("checksum", "off") if !name.ends_with("/dump") => out.checksum_off.push(name.to_string()),
+            ("dedup", v) if v != "off" && v != "-" => {
+                if !out.dedup_pools.contains(&pool) {
+                    out.dedup_pools.push(pool);
+                }
+            }
+            _ => {}
+        }
+    }
+    for line in pools.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let &[name, allocated, ratio] = f.as_slice() else { continue };
+        let ratio = ratio.trim_end_matches('x').parse::<f64>().ok().filter(|r| *r >= 1.0);
+        if let (Ok(allocated), Some(ratio)) = (allocated.trim().parse::<u64>(), ratio) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small positive ratio times 100
+            out.pools.push(PoolSpace { name: name.to_string(), allocated, ratio_x100: (ratio * 100.0).round() as u32 });
+        }
+    }
+    out
+}
+
+/// The first line of `zfs version` without its `zfs-` prefix (`2.4.2-1-FreeBSD_g6330a45b0`).
+fn parse_version(output: &str) -> Option<String> {
+    let first = output.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let version = first.strip_prefix("zfs-").unwrap_or(first);
+    version.starts_with(|c: char| c.is_ascii_digit()).then(|| version.to_string())
+}
+
 /// Asks one host which of its datasets have a quota and how full they are.
 pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
     match runner.run("zfs", LIST_ARGS) {
@@ -116,7 +182,12 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
                 .filter(crate::exec::CommandOutput::success)
                 .map(|o| parse_classes(&o.stdout).into_iter().filter(|p| !p.is_quiet()).collect())
                 .unwrap_or_default();
-            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version: None, error: None })
+            // Each of these may fail on its own (sudo, an old zfs): the rest is still worth having.
+            let text = |cmd: &str, args: &[&str]| runner.run(cmd, args).ok().filter(crate::exec::CommandOutput::success).map(|o| o.stdout).unwrap_or_default();
+            let settings = text("zfs", &["get", "-H", "-p", "-s", "local,received", "-t", "filesystem,volume", "-o", "name,property,value", "checksum,dedup"]);
+            let pool_list = text("zpool", &["list", "-H", "-p", "-o", "name,allocated,dedupratio"]);
+            let zfs_version = parse_version(&text("zfs", &["version"]));
+            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version, integrity: parse_integrity(&settings, &pool_list), error: None })
         }
     }
 }
@@ -275,7 +346,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, integrity: Default::default(), error: None });
         file
     }
 
@@ -320,7 +391,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, integrity: Default::default(), error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
@@ -485,6 +556,41 @@ mod tests {
         assert_eq!(pool_problems(&file)[0].severity, Severity::Watch);
         file.hosts.get_mut("hub").unwrap().pools.clear();
         assert!(pool_problems(&file).is_empty());
+    }
+
+    #[test]
+    fn integrity_facts_are_read_from_real_shaped_output() {
+        let settings = "tpool/ck\tchecksum\toff\ntpool/ck\tdedup\ton\nrpool/dump\tchecksum\toff\nrpool/dump\tdedup\toff\ntank/a\tdedup\tsha256,verify\ntank/b\tdedup\tverify\nodd\tline\n";
+        let pools = "rpool\t10434462720\t1.00\ntank\t26843545600\t1.02x\nweird\t5\t-\nbad\tx\t1.5\n";
+        let i = parse_integrity(settings, pools);
+        assert_eq!(i.checksum_off, ["tpool/ck"], "the dump device is skipped");
+        assert_eq!(i.dedup_pools, ["tpool", "tank"], "one entry per pool, and `off` is not dedup");
+        assert_eq!(i.pools, [PoolSpace { name: "rpool".into(), allocated: 10_434_462_720, ratio_x100: 100 }, PoolSpace { name: "tank".into(), allocated: 26_843_545_600, ratio_x100: 102 }]);
+        assert_eq!(parse_integrity("", ""), Integrity::default());
+    }
+
+    #[test]
+    fn the_version_is_the_first_line_without_the_prefix() {
+        assert_eq!(parse_version("zfs-2.4.2-1-FreeBSD_g6330a45b0\nzfs-kmod-2.4.2-1-FreeBSD_g6330a45b0\n").as_deref(), Some("2.4.2-1-FreeBSD_g6330a45b0"));
+        assert_eq!(parse_version("zfs-2.2.2-0ubuntu9.5\n").as_deref(), Some("2.2.2-0ubuntu9.5"));
+        assert_eq!(parse_version("unrecognized command 'version'\nusage: zfs command args ...\n"), None);
+        assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn each_integrity_command_may_fail_alone_and_asks_with_options_first() {
+        let runner = FakeRunner::new("")
+            .route("zfs", "list", "a\t9\t9\t10\t0\tfilesystem\n")
+            .route("zfs", "get", "tank/x\tchecksum\toff\n")
+            .route_failure("zpool", "list", "no pools available", 1)
+            .route_failure("zfs", "version", "unrecognized command", 1);
+        let Outcome::Checked(r) = check_host(&runner, at(NOW)) else { panic!() };
+        assert_eq!((r.integrity.checksum_off.clone(), r.integrity.pools.len(), r.zfs_version.clone(), r.datasets.len()), (vec!["tank/x".to_string()], 0, None, 1));
+        let calls = runner.calls.lock().unwrap().clone();
+        let get = calls.iter().find(|c| c.0 == "zfs" && c.1.first().map(String::as_str) == Some("get")).unwrap();
+        assert_eq!(get.1, ["get", "-H", "-p", "-s", "local,received", "-t", "filesystem,volume", "-o", "name,property,value", "checksum,dedup"].map(String::from));
+        let list = calls.iter().find(|c| c.0 == "zpool" && c.1.first().map(String::as_str) == Some("list")).unwrap();
+        assert_eq!(list.1, ["list", "-H", "-p", "-o", "name,allocated,dedupratio"].map(String::from));
     }
 
     #[test]

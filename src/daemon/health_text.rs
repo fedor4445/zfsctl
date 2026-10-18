@@ -325,7 +325,7 @@ mod tests {
         use crate::daemon::storage_check::{LimitedDataset, StorageFile, StorageResult};
         let mut file = StorageFile::default();
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
-        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, error: None });
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, integrity: Default::default(), error: None });
         let lines = storage_lines(&file, (90, 98));
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/home 94% of its 100 quota (checked "), "{}", lines[0]);
