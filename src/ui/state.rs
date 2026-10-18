@@ -978,6 +978,11 @@ impl App {
         crate::ui::support::supports(self.host_os(self.selected_host), section)
     }
 
+    /// Boot environments of this host can be listed but not changed (illumos, until `beadm` mutations are built).
+    pub fn bootenvs_read_only(&self) -> bool {
+        crate::ui::support::bootenvs_read_only(self.host_os(self.selected_host))
+    }
+
     pub fn current_section_supported(&self) -> bool {
         self.section_supported(self.current_section())
     }
@@ -1383,7 +1388,8 @@ impl App {
                     || self.key_lists_and_snapshots(key)
                     || self.key_jobs(key)
                     || self.key_alerts_and_shares(key)
-                    || self.key_bootenvs(key)
+                    // read-only on illumos for now: no key may start a `bectl` change there
+                    || (!self.bootenvs_read_only() && self.key_bootenvs(key))
                     || self.key_disks(key)));
     }
 
@@ -2960,9 +2966,9 @@ impl App {
             return;
         }
         self.begin_refresh(Section::BootEnvs, host);
-        let tx = self.tx.clone();
+        let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            let result = crate::zfs::bootenv::list(runner.as_ref());
+            let result = crate::zfs::bootenv::list_for(runner.as_ref(), os);
             let _ = tx.send(WorkerMsg::BootEnvs(host, result));
         });
     }

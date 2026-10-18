@@ -7,7 +7,15 @@ use crate::zfs::host_health::HostOs;
 
 /// Whether `section` works on a host running `os` (`None`: not read yet).
 pub fn supports(os: Option<HostOs>, section: Section) -> bool {
-    !matches!((os, section), (Some(HostOs::Linux | HostOs::Illumos), Section::BootEnvs | Section::Shares | Section::DatasetAcl))
+    match (os, section) {
+        (Some(HostOs::Linux), Section::BootEnvs | Section::Shares | Section::DatasetAcl) | (Some(HostOs::Illumos), Section::Shares | Section::DatasetAcl) => false,
+        _ => true,
+    }
+}
+
+/// Boot environments can be listed on illumos (`beadm list`) but not yet changed: the section is read-only there.
+pub fn bootenvs_read_only(os: Option<HostOs>) -> bool {
+    os == Some(HostOs::Illumos)
 }
 
 /// The name of a section as the sidebar and the messages call it.
@@ -55,20 +63,29 @@ mod tests {
     }
 
     #[test]
-    fn linux_and_illumos_support_disks_but_not_boot_envs_shares_or_acl() {
-        for os in [HostOs::Linux, HostOs::Illumos] {
-            assert!(supports(Some(os), Section::Disks), "{os:?}");
-            for gated in [Section::BootEnvs, Section::Shares, Section::DatasetAcl] {
-                assert!(!supports(Some(os), gated), "{os:?} {gated:?}");
-            }
+    fn linux_supports_disks_but_not_boot_envs_shares_or_acl_and_illumos_adds_boot_envs() {
+        assert!(supports(Some(HostOs::Linux), Section::Disks) && supports(Some(HostOs::Illumos), Section::Disks));
+        for gated in [Section::BootEnvs, Section::Shares, Section::DatasetAcl] {
+            assert!(!supports(Some(HostOs::Linux), gated), "Linux {gated:?}");
+        }
+        assert!(supports(Some(HostOs::Illumos), Section::BootEnvs), "beadm list works on illumos");
+        for gated in [Section::Shares, Section::DatasetAcl] {
+            assert!(!supports(Some(HostOs::Illumos), gated), "illumos {gated:?}");
         }
     }
 
     #[test]
     fn only_those_sections_are_ever_gated() {
-        for os in [HostOs::Linux, HostOs::Illumos] {
-            let gated: Vec<Section> = ALL.iter().copied().filter(|s| !supports(Some(os), *s)).collect();
-            assert_eq!(gated, [Section::Shares, Section::BootEnvs, Section::DatasetAcl], "{os:?}");
+        let gated = |os| ALL.iter().copied().filter(|s| !supports(Some(os), *s)).collect::<Vec<Section>>();
+        assert_eq!(gated(HostOs::Linux), [Section::Shares, Section::BootEnvs, Section::DatasetAcl]);
+        assert_eq!(gated(HostOs::Illumos), [Section::Shares, Section::DatasetAcl]);
+    }
+
+    #[test]
+    fn boot_environments_are_read_only_on_illumos_only() {
+        assert!(bootenvs_read_only(Some(HostOs::Illumos)));
+        for os in [None, Some(HostOs::FreeBsd), Some(HostOs::Linux), Some(HostOs::Other)] {
+            assert!(!bootenvs_read_only(os), "{os:?}");
         }
     }
 
