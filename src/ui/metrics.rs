@@ -566,8 +566,17 @@ fn dataset_lines(s: &DatasetSpace) -> Vec<Line<'static>> {
         Line::from(format!("Data    {}   Snaps {}", human_size(s.by_dataset), human_size(s.by_snapshots))),
         Line::from(format!("Kids    {}   Refres {}", human_size(s.by_children), human_size(s.by_refreservation))),
         Line::from(format!("Compr   {} {:.2}x   Rec {}", s.compression, s.compress_ratio, unset_or_size(s.recordsize))),
-        Line::from(format!("Quota   {}   Ref {}", unset_or_size(s.quota), unset_or_size(s.refquota))),
+        Line::from(format!("Quota   {}   Ref {}", limit_use(s.quota, s.used), limit_use(s.refquota, s.referenced))),
     ]
+}
+
+/// A limit with how much of it is used (`10G 96%`), or `-` when there is none. `quota` counts the dataset, its children and
+/// snapshots (`used`); `refquota` only the dataset itself (`referenced`).
+fn limit_use(limit: u64, used: u64) -> String {
+    if limit == 0 {
+        return unset_or_size(limit);
+    }
+    format!("{} {}", unset_or_size(limit), percent(used, limit))
 }
 
 /// The samples a graph `width` cells wide shows: the newest two per cell. The peak is taken over the same window,
@@ -794,6 +803,16 @@ mod tests {
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
         Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None, disk: None, share: None, contents: None })
+    }
+
+    #[test]
+    fn the_quota_line_says_how_much_of_each_limit_is_used() {
+        let g: u64 = 1 << 30;
+        let space = DatasetSpace { used: 96 * g / 10, referenced: 3 * g, quota: 10 * g, refquota: 4 * g, ..DatasetSpace::default() };
+        let text: String = dataset_lines(&space).last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text, "Quota   10.0G 96%   Ref 4.0G 75%");
+        let none: String = dataset_lines(&DatasetSpace::default()).last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(none, "Quota   -   Ref -");
     }
 
     #[test]
