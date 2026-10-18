@@ -2,6 +2,10 @@
 
 A guide to running ZFS with zfsctl: a terminal tool that shows your pools, datasets, snapshots, disks and shares, runs your scheduled snapshots, replication and backups, and tells you when something needs attention.
 
+## How it was made
+
+zfsctl and this book were written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code), and directed and tested by the author on real machines. The screens are real captures, not drawings.
+
 ## Who this is for
 
 You run ZFS on FreeBSD, Linux or illumos, on one machine or several. The book assumes you can use a terminal and install a package. FreeBSD-specific parts (`rc.conf`, `geom`, `bectl`, `pkg`) are explained where they come up.

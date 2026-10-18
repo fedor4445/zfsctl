@@ -2,6 +2,8 @@
 
 A terminal UI for managing ZFS storage on FreeBSD.
 
+> **Built with Claude.** zfsctl was written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code): the design, code, tests and documentation were produced in conversation with it, and directed and tested by the author on real machines.
+
 **Documentation: [The zfsctl Book](docs/book/README.md)**, with real screens and a chapter for each part of the tool. This README is the reference for the details.
 
 ## Requirements
