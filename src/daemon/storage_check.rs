@@ -50,6 +50,14 @@ pub struct LimitedDataset {
     pub refquota: u64,
 }
 
+/// An encrypted dataset whose key is not loaded, and whether it is shared (`sharenfs` / `sharesmb` on).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LockedDataset {
+    pub name: String,
+    #[serde(default)]
+    pub shared: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageResult {
     pub checked_at: DateTime<Utc>,
@@ -61,8 +69,11 @@ pub struct StorageResult {
     /// What the integrity settings look like on this host (`zfs get -s local,received checksum,dedup`, `zpool list`).
     #[serde(default, skip_serializing_if = "Integrity::is_empty")]
     pub integrity: Integrity,
-    /// An integrity command could not be asked (ssh dropped), so `integrity` and `zfs_version` are not this pass's: `apply`
-    /// keeps the last good ones. Not stored.
+    /// Encrypted datasets whose key is not loaded (`zfs get keystatus,sharenfs,sharesmb`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locked: Vec<LockedDataset>,
+    /// An integrity or key command could not be asked (ssh dropped), so `integrity`, `zfs_version` and `locked` are not this
+    /// pass's: `apply` keeps the last good ones. Not stored.
     #[serde(skip)]
     pub integrity_stale: bool,
     /// The host's OpenZFS version (`2.4.2-1-FreeBSD_g...`), when `zfs version` says it (OmniOS has no such command).
@@ -103,6 +114,7 @@ impl StorageFile {
                     if let Some(old) = old {
                         result.integrity = old.integrity.clone();
                         result.zfs_version.clone_from(&old.zfs_version);
+                        result.locked.clone_from(&old.locked);
                     }
                 } else {
                     // Remember since when each pool has had dedup on; a pool seen for the first time starts now.
@@ -186,6 +198,58 @@ fn parse_integrity(settings: &str, pools: &str) -> Integrity {
     out
 }
 
+/// `zfs get -H -t filesystem -o name,property,value keystatus,sharenfs,sharesmb`: the datasets whose key is not loaded.
+fn parse_locked(output: &str) -> Vec<LockedDataset> {
+    let mut seen: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
+    for line in output.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let &[name, property, value] = f.as_slice() else { continue };
+        let entry = seen.entry(name).or_default();
+        match property {
+            "keystatus" => entry.0 = value == "unavailable",
+            "sharenfs" | "sharesmb" if !matches!(value, "off" | "-") => entry.1 = true,
+            _ => {}
+        }
+    }
+    seen.into_iter().filter(|(_, (locked, _))| *locked).map(|(name, (_, shared))| LockedDataset { name: name.to_string(), shared }).collect()
+}
+
+/// What one host adds to Needs attention for locked datasets that something depends on: a dataset a replication, backup or
+/// mirror job reads (or writes) on that host, or one that is shared. A locked dataset nobody uses is not a problem.
+pub fn locked_problems(file: &StorageFile, jobs: &[crate::jobs::Job]) -> Vec<StorageProblem> {
+    use crate::jobs::{KIND_BACKUP, KIND_MIRROR, KIND_REPLICATE};
+    file.hosts
+        .iter()
+        .filter_map(|(host, result)| {
+            let uses = |locked: &str| {
+                jobs.iter().filter(|j| j.enabled && matches!(j.kind.as_str(), KIND_REPLICATE | KIND_BACKUP | KIND_MIRROR)).any(|j| {
+                    let reads = j.host == *host && j.dataset.as_deref().is_some_and(|d| locked == d || (j.recursive && locked.strip_prefix(d).is_some_and(|rest| rest.starts_with('/'))));
+                    let writes = j.dest_host.as_deref() == Some(host.as_str()) && j.dest_dataset.as_deref() == Some(locked);
+                    reads || writes
+                })
+            };
+            let mut texts: Vec<String> = result
+                .locked
+                .iter()
+                .filter_map(|l| {
+                    let (job, shared) = (uses(&l.name), l.shared);
+                    let why = match (job, shared) {
+                        (false, false) => return None,
+                        (true, false) => "a job uses it",
+                        (false, true) => "shared",
+                        (true, true) => "a job uses it, shared",
+                    };
+                    Some(format!("{} is locked ({why})", l.name))
+                })
+                .collect();
+            let more = texts.len().saturating_sub(2);
+            texts.truncate(2);
+            let text = format!("{}{}", texts.join("; "), if more > 0 { format!(" (+{more} more)") } else { String::new() });
+            (!texts.is_empty()).then(|| StorageProblem { host: host.clone(), severity: Severity::Watch, text, checked_at: result.checked_at })
+        })
+        .collect()
+}
+
 /// The first line of `zfs version` without its `zfs-` prefix (`2.4.2-1-FreeBSD_g6330a45b0`).
 fn parse_version(output: &str) -> Option<String> {
     let first = output.lines().map(str::trim).find(|l| !l.is_empty())?;
@@ -227,7 +291,8 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
             let settings = text("zfs", &["get", "-H", "-p", "-s", "local,received", "-t", "filesystem,volume", "-o", "name,property,value", "checksum,dedup"]);
             let pool_list = text("zpool", &["list", "-H", "-p", "-o", "name,allocated,dedupratio"]);
             let zfs_version = parse_version(&text("zfs", &["version"]));
-            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version, integrity: parse_integrity(&settings, &pool_list), integrity_stale: lost, error: None })
+            let keys = text("zfs", &["get", "-H", "-t", "filesystem", "-o", "name,property,value", "keystatus,sharenfs,sharesmb"]);
+            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version, locked: parse_locked(&keys), integrity: parse_integrity(&settings, &pool_list), integrity_stale: lost, error: None })
         }
     }
 }
@@ -416,7 +481,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None });
         file
     }
 
@@ -461,7 +526,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
@@ -692,7 +757,7 @@ mod tests {
     fn a_pool_that_only_just_started_deduplicating_is_not_judged_until_the_grace_has_passed() {
         const GIB: u64 = 1 << 30;
         let mut file = StorageFile::default();
-        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: Default::default() }, integrity_stale: false, error: None };
+        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: Default::default() }, integrity_stale: false, error: None };
         file.apply("hub", Outcome::Checked(answer(true)), at(NOW));
         assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW), "first seen now");
         assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(1)).is_empty(), "2 TiB of old data, ratio 1.00x, one day after enabling: not yet");
@@ -742,6 +807,84 @@ mod tests {
         assert!(!unsupported.integrity_stale);
         file.apply("hub", Outcome::Checked(unsupported), at(NOW));
         assert!(file.hosts["hub"].integrity.checksum_off.is_empty());
+    }
+
+    const KEYS: &str = "tank/secure\tkeystatus\tunavailable\ntank/secure\tsharenfs\ton\ntank/secure\tsharesmb\toff\n\
+tank/secure/kid\tkeystatus\tunavailable\ntank/secure/kid\tsharenfs\t-\ntank/secure/kid\tsharesmb\t-\n\
+tank/open\tkeystatus\tavailable\ntank/open\tsharenfs\ton\ntank/plain\tkeystatus\t-\ntank/plain\tsharesmb\tname=x\n";
+
+    #[test]
+    fn parse_locked_lists_locked_datasets_and_whether_they_are_shared() {
+        assert_eq!(parse_locked(KEYS), [LockedDataset { name: "tank/secure".into(), shared: true }, LockedDataset { name: "tank/secure/kid".into(), shared: false }]);
+        assert!(parse_locked("").is_empty());
+        assert!(parse_locked("tank\tkeystatus\n\nnonsense").is_empty());
+    }
+
+    fn locked_file(host: &str, locked: &[(&str, bool)]) -> StorageFile {
+        let mut file = file_with(host, vec![]);
+        file.hosts.get_mut(host).unwrap().locked = locked.iter().map(|(n, shared)| LockedDataset { name: (*n).into(), shared: *shared }).collect();
+        file
+    }
+
+    #[test]
+    fn a_locked_dataset_is_a_problem_only_when_a_job_or_a_share_uses_it() {
+        use crate::jobs::Job;
+        let nothing = locked_file("hub", &[("tank/secure", false)]);
+        assert!(locked_problems(&nothing, &[]).is_empty(), "nobody uses it");
+        let job = Job::test_backup("b", "tank/secure", "hourly", "/r", "/p");
+        let got = locked_problems(&nothing, std::slice::from_ref(&job));
+        assert!(got.is_empty(), "job host is `local`, the file's host is `hub`");
+        let mut on_hub = job.clone();
+        on_hub.host = "hub".into();
+        let got = locked_problems(&nothing, std::slice::from_ref(&on_hub));
+        assert_eq!((got.len(), got[0].text.as_str(), got[0].severity), (1, "tank/secure is locked (a job uses it)", Severity::Watch));
+        let shared = locked_file("hub", &[("tank/secure", true)]);
+        assert_eq!(locked_problems(&shared, &[])[0].text, "tank/secure is locked (shared)");
+        assert_eq!(locked_problems(&shared, std::slice::from_ref(&on_hub))[0].text, "tank/secure is locked (a job uses it, shared)");
+    }
+
+    #[test]
+    fn which_jobs_use_a_locked_dataset_is_exact_recursive_destination_and_enabled_only() {
+        use crate::jobs::Job;
+        let file = locked_file("hub", &[("tank/secure/kid", false)]);
+        let on_hub = |mut j: Job| {
+            j.host = "hub".into();
+            j
+        };
+        let backup = |dataset: &str| on_hub(Job::test_backup("b", dataset, "p", "/r", "/pw"));
+        assert!(locked_problems(&file, &[backup("tank/sec")]).is_empty(), "a name prefix is not an ancestor");
+        assert!(locked_problems(&file, &[backup("tank/secure")]).is_empty(), "a parent without recursion reads only itself");
+        let mut recursive = backup("tank/secure");
+        recursive.recursive = true;
+        assert_eq!(locked_problems(&file, std::slice::from_ref(&recursive)).len(), 1);
+        let mut disabled = backup("tank/secure/kid");
+        disabled.enabled = false;
+        assert!(locked_problems(&file, &[disabled]).is_empty());
+        let snapshot = on_hub(Job::test_snapshot("s", "tank/secure/kid", "p", 3));
+        assert!(locked_problems(&file, &[snapshot]).is_empty(), "snapshots work on a locked dataset");
+        let into = Job::test_replicate("r", "tank/src", "p", "hub", "tank/secure/kid");
+        assert_eq!(locked_problems(&file, &[into]).len(), 1, "a receive into a locked destination fails");
+    }
+
+    #[test]
+    fn several_locked_datasets_show_two_names_and_a_count() {
+        let mut file = locked_file("hub", &[("a", true), ("b", true), ("c", true), ("d", true)]);
+        let got = locked_problems(&file, &[]);
+        assert_eq!(got[0].text, "a is locked (shared); b is locked (shared) (+2 more)");
+        file.hosts.get_mut("hub").unwrap().locked.clear();
+        assert!(locked_problems(&file, &[]).is_empty());
+    }
+
+    #[test]
+    fn check_host_reads_locked_datasets_and_keeps_the_last_ones_when_the_connection_drops() {
+        let Outcome::Checked(got) = check_host(&FakeRunner::new("").route("zfs", "get", KEYS), at(NOW)) else { panic!() };
+        assert_eq!(got.locked.len(), 2);
+        let mut file = locked_file("hub", &[("tank/old", false)]);
+        file.hosts.get_mut("hub").unwrap().locked = got.locked.clone();
+        let Outcome::Checked(lost) = check_host(&FakeRunner::new("").route_failure("zfs", "get", "Connection closed", 255), at(NOW)) else { panic!("the list answered") };
+        assert!(lost.integrity_stale && lost.locked.is_empty());
+        file.apply("hub", Outcome::Checked(lost), at(NOW));
+        assert_eq!(file.hosts["hub"].locked.len(), 2, "kept");
     }
 
     #[test]

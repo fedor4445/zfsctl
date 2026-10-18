@@ -435,6 +435,10 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
         items.push(Item { level: Level::Watch, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
     }
+    for found in crate::daemon::storage_check::locked_problems(inputs.storage, &inputs.jobs.jobs).into_iter().filter(|p| reached(&p.host)) {
+        let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
+        items.push(Item { level: Level::Watch, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
+    }
     for found in crate::daemon::storage_check::pool_problems(inputs.storage).into_iter().filter(|p| reached(&p.host)) {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
@@ -1038,7 +1042,7 @@ mod tests {
 
     fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
         use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None }
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None }
     }
 
     #[test]
@@ -1067,6 +1071,22 @@ mod tests {
         let items: Vec<Item> = fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("checksum is off")).collect();
         assert_eq!((items.len(), items[0].level, items[0].goto), (1, Level::Watch, Section::Datasets));
         assert!(items[0].what.starts_with("tank/scratch checksum is off"), "{}", items[0].what);
+    }
+
+    #[test]
+    fn a_locked_dataset_that_a_job_uses_is_a_watch_line_that_goes_to_datasets() {
+        let mut job = Job::test_backup("b", "tank/secure", "hourly", "/r", "/p");
+        job.host = "h".into();
+        let mut fx = Fixture::new(view(vec![job], &[], beat(1)));
+        let mut entry = storage_entry(2, "tank/x", 10);
+        entry.locked = vec![crate::daemon::storage_check::LockedDataset { name: "tank/secure".into(), shared: false }, crate::daemon::storage_check::LockedDataset { name: "tank/idle".into(), shared: false }];
+        fx.storage.hosts.insert("h".into(), entry.clone());
+        fx.storage.hosts.insert("gone".into(), entry);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let items: Vec<Item> = fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("is locked")).collect();
+        assert_eq!((items.len(), items[0].level, items[0].goto), (1, Level::Watch, Section::Datasets));
+        assert!(items[0].what.starts_with("tank/secure is locked (a job uses it)   (checked 2m ago)") && !items[0].what.contains("idle"), "{}", items[0].what);
     }
 
     #[test]
