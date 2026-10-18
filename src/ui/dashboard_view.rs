@@ -123,6 +123,7 @@ fn attention_lines(d: &Dashboard, selected: Option<usize>, width: usize, cap: us
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Col {
+    Os,
     Pools,
     Space,
     Memory,
@@ -135,6 +136,7 @@ enum Col {
 impl Col {
     fn title(self) -> &'static str {
         match self {
+            Col::Os => "OS",
             Col::Pools => "Pools",
             Col::Space => "Capacity",
             Col::Memory => "Memory",
@@ -147,6 +149,7 @@ impl Col {
 
     fn cell(self, row: &HostRow) -> &Cell {
         match self {
+            Col::Os => &row.os,
             Col::Pools => &row.pools,
             Col::Space => &row.space,
             Col::Memory => &row.memory,
@@ -162,8 +165,8 @@ impl Col {
     }
 }
 
-/// Columns, in display order, and the order they are given up as the screen narrows: first the gauges, then these.
-const COLUMNS: [Col; 7] = [Col::Pools, Col::Space, Col::Memory, Col::Cpu, Col::Load, Col::Scrub, Col::Errors];
+/// Columns, in display order, and the order they are given up as the screen narrows: first the OS name, then the gauges, then these.
+const COLUMNS: [Col; 8] = [Col::Os, Col::Pools, Col::Space, Col::Memory, Col::Cpu, Col::Load, Col::Scrub, Col::Errors];
 const DROP_ORDER: [Col; 5] = [Col::Load, Col::Cpu, Col::Scrub, Col::Errors, Col::Pools];
 
 struct Plan {
@@ -196,7 +199,9 @@ fn plan(hosts: &[HostRow], width: usize) -> Plan {
         state_w: (longest(|h| h.state.text.chars().count()) + 2).clamp(10, 30),
     };
     while plan.total(hosts) > width {
-        if plan.gauges {
+        if plan.columns.contains(&Col::Os) {
+            plan.columns.retain(|c| *c != Col::Os);
+        } else if plan.gauges {
             plan.gauges = false;
         } else if let Some(col) = DROP_ORDER.iter().find(|c| plan.columns.contains(c)) {
             plan.columns.retain(|c| c != col);
@@ -366,6 +371,18 @@ mod tests {
         app.host_probes.insert("fbsd16t1".into(), HostProbeState { last: Some(HostProbe::Disconnected), ..HostProbeState::default() });
         heartbeat(&mut app);
         app
+    }
+
+    #[test]
+    fn the_hosts_table_names_the_os_and_gives_that_column_up_before_anything_else() {
+        let mut app = mixed_app();
+        app.host_probes.get_mut("local").unwrap().os_name = Some("FreeBSD 16.0".into());
+        let text = |width| screen_lines(&app.dashboard(), None, width, 40, "Sat", &app.theme).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let wide = text(140);
+        assert!(wide.contains(" OS ") && wide.contains("FreeBSD 16.0"), "{wide}");
+        // the width at which the OS column is the only thing short: everything else is still there without it
+        let narrow = text(100);
+        assert!(!narrow.contains("FreeBSD 16.0") && narrow.contains("Capacity") && narrow.contains("Memory") && narrow.contains("Errors"), "{narrow}");
     }
 
     #[test]

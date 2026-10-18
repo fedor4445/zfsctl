@@ -1043,6 +1043,7 @@ impl App {
                     probe: self.host_probes.get(name).and_then(|s| s.last.as_ref()).filter(|_| !gave_up),
                     resources: self.host_resources(name).filter(|_| !gave_up),
                     utc_offset_secs: self.host_probes.get(name).and_then(|s| s.utc_offset_secs),
+                    os_name: self.host_probes.get(name).and_then(|s| s.os_name.as_deref()),
                 }
             })
             .collect();
