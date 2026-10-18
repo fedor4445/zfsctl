@@ -23,14 +23,33 @@ Without any change to zfsctl, with the two hosts added to `config.toml`:
   Boot Envs (`bectl list`) fail with "sudo: a password is required", which is true but means nothing to the user; Shares
   says "NFS unavailable: nfsd not running; SMB unavailable" (FreeBSD `service` semantics), which is wrong on both.
 
+## Adaptive sections (decided 2026-10-18 at the user's request)
+
+A section stays in the sidebar for every host, and **its backend is chosen by the host's OS**: where the OS has an
+equivalent, the section works with it (same screen, same keys where the meaning is the same); only where there is no
+equivalent does it say `not supported on <OS> yet`. Equivalents found on the test hosts (all readable without sudo):
+
+| Section | FreeBSD (today) | Linux (Ubuntu) | illumos (OmniOS) |
+|---|---|---|---|
+| Disks | `geom disk list` | `lsblk -b -d -n -P -o NAME,SIZE,TYPE,MODEL,SERIAL,ROTA` | `iostat -En` (vendor, product, serial, size); `diskinfo` needs root |
+| Boot Envs | `bectl` | none by default (not supported) | `beadm list -H` (readable without sudo; create/activate/destroy need a sudoers entry for `beadm`) |
+| Shares: service state | `service nfsd/samba_server onestatus` | `systemctl is-active nfs-server smbd` | `svcs -H -o state svc:/network/nfs/server svc:/network/smb/server` |
+| Shares: the shares | `sharenfs` + managed `smb4.conf` | `sharenfs` + Samba (`smb.conf`), later | `sharenfs` and native `sharesmb`, later |
+| ACL | `getfacl`/`setfacl` (NFSv4 on ZFS) | `getfacl`/`setfacl` (POSIX) | `ls -V`, `chmod A...` (NFSv4), later |
+
+Phase A builds the seam and the first three rows' read side (Disks, Boot Envs list, service state); creating and changing
+things through an equivalent (for example `beadm create`) follows once its listing works. Rows marked "later" are not in
+phase A and show `not supported on <OS> yet` until built.
+
 ## Goals
 
 1. **Phase A: know the OS.** Detect each host's OS once (`uname -s`: `FreeBSD`, `Linux`, `SunOS`) and keep it with the
    host's probe state. Everything OS-specific keys off it.
-2. **Phase A: say what is not supported.** A section whose commands do not exist for the host's OS (today: Disks, Boot
-   Envs, Shares, ACL on Linux and illumos) shows `not supported on <OS> yet` instead of a command error, its keys are not
-   offered in the hint bar, and no privileged command that cannot work is run (so no `sudo` errors in logs). The daily
-   shares check skips such hosts silently.
+2. **Phase A: one backend per OS for each section, and an honest fallback.** The section code asks a per-OS backend
+   (a function of the host's OS and the section) for its data. Where the backend exists it is used (table above);
+   where it does not, the section shows `not supported on <OS> yet`, its keys are not offered in the hint bar, and no
+   command that cannot work is run (so no `sudo` errors in the TUI or the daemon log). The daily shares check uses the
+   service-state backend of the host's OS and is silent where there is none.
 3. **Phase A: sudoers by OS.** `print-sudoers` and `check-host` choose the default feature set from the host's OS (Linux
    and illumos: `core` only for now; FreeBSD: as today), print the right install path (`/etc/sudoers.d/zfsctl` on Linux
    and OmniOS), and say which features do not apply to that OS if asked for.
@@ -42,12 +61,10 @@ Without any change to zfsctl, with the two hosts added to `config.toml`:
 
 ## Non-goals (later phases, each its own design)
 
-- Phase C: Disks on Linux (`lsblk`) and illumos (`format`/`iostat -En`), SMART on both (`smartctl` and its JSON are the
-  same; only the sudoers path and the scan differ).
-- Phase D: file sharing on Linux (`systemctl` for `nfs-server` and `smbd`) and illumos (`svcs`, `sharectl`), the daily
-  shares check per OS.
-- Phase E: boot environments (`beadm` on illumos; none or ZFSBootMenu on Linux), ACLs (NFSv4 on illumos, POSIX on
-  Linux), jobs (scrub, snapshot, replication, restic, rclone) on these hosts, a Linux or illumos *hub*.
+- Phase C: SMART on both (`smartctl` and its JSON are the same; only the sudoers path and the scan differ), changing
+  boot environments with `beadm`, managing shares on Linux (Samba, `exportfs`) and illumos (`sharesmb`, `sharectl`).
+- Phase D: ACLs on illumos (NFSv4 through `ls -V`/`chmod`) and Linux (POSIX), jobs (scrub, snapshot, replication,
+  restic, rclone) on these hosts, a Linux or illumos *hub*.
 - No change to how FreeBSD hosts behave. No new privileged commands in phases A and B.
 
 ## Constraints
@@ -71,7 +88,8 @@ short chapter or appendix section "Linux and illumos"; the sudoers part), README
 
 ## Done means
 
-Spec, plan, implementation with tests, whole-branch review, live check on `ub24` and `omnios` (Dashboard and Hosts rows
-show real memory, CPU, load, swap; Disks, Boot Envs and Shares say "not supported on Linux yet" / "...illumos..."; no
+Spec, plan, implementation with tests, whole-branch review, live check on `ub24` and `omnios` (Disks lists the real
+disks on both; Boot Envs lists the OmniOS boot environments and says "not supported on Linux yet" on Ubuntu; Shares shows
+the right service state on both; Dashboard and Hosts rows show real memory, CPU, load, swap once phase B is done; no
 sudo errors in the TUI or the daemon log), `print-sudoers` and `check-host` verified against both hosts, book updated,
 merged and installed.
