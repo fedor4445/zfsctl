@@ -154,6 +154,10 @@ Everything outside the block, such as your own `[homes]` share, stays exactly as
 
 > **Tip:** zfsctl does not insist on its way. Shares you wrote by hand stay yours, and you can ignore this section and manage NFS and Samba with your own tools; zfsctl only manages what is inside its block.
 
+## On the Dashboard
+
+You do not have to open Shares on every host to find out that NFS or Samba has stopped. Once a day the daemon asks each host whether the NFS server and Samba run where the host has shares for them, and the Dashboard shows a red line for a host where they do not (chapter 6). `c` in the Hosts section checks one host right now.
+
 ## Try it
 
 Share the practice dataset over NFS to your home network: Shares (once), Datasets, select it, `N`, enter your network. From another machine run `showmount -e <host>` and see it listed. Then remove it from Shares with `d`.

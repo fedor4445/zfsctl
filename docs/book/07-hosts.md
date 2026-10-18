@@ -130,6 +130,10 @@ On the left is the system: operating system, uptime and round trip, load average
 
 When the panel is wide enough (about 90 columns) it also shows two graphs, **Read** and **Write**, with the peak of what is drawn: they plot the whole host's disk activity over the most recent samples (roughly one every second or two). On a narrower terminal, as in the capture above, the panel keeps the figures and shows the rates as one line.
 
+## Checking one host now
+
+`c` in Hosts checks the selected host's disks (`smartctl`) and its file sharing services (NFS, Samba) right now, in the background, and says what it found (`fbsd16: disks fine, shares fine`). Use it after you replace a disk or restart a service, instead of waiting for the daily check (03:30). The answer is written where the daily check writes it, so the Dashboard shows it too, and a problem that is gone clears. If the host cannot be reached the old answer stays, with a note. Only reads: no self-test is started and nothing is changed on the host. While another check is running (the daemon's pass, or one of yours) `c` waits and says who is running it.
+
 ## Adding a host
 
 Press `n`, fill in the **Name** (any label), the **SSH target** (`user@address`, the unprivileged account) and, if you like, a **Tag**, and press `Enter` on the last field. zfsctl first checks that it can reach the host (it runs a harmless `true` over ssh) and, if that works, adds it at once and saves it to `config.toml`: a new `[[hosts]]` block is added next to the others and nothing else in the file changes. If the check fails you see ssh's own message and can try again. Setting the host up on its side is [chapter 5](05-remote-hosts.md).
