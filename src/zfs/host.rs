@@ -225,6 +225,10 @@ pub fn sample_host(runner: &dyn CommandRunner, host_os: Option<crate::zfs::host_
     let pools: Vec<Pool> = rows.into_iter().map(|(p, _)| p).collect();
     let started = Instant::now();
     let os = stdout_of(runner.run_unprivileged("uname", &["-sr"])).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let os = match host_os {
+        Some(crate::zfs::host_health::HostOs::Other) => os.map(|s| format!("{s} (unrecognised OS: FreeBSD tools are tried)")),
+        _ => os,
+    };
     let rtt_ms = os.is_some().then(|| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     // Linux and illumos have their own readers for the rest (no `sysctl` there).
     if let Some(other @ (crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos)) = host_os {
@@ -485,6 +489,16 @@ mod tests {
         assert_eq!(s.arc.map(|a| (a.size, a.max)), Some((100, 200)));
         let calls = runner.calls.lock().unwrap().clone();
         assert!(calls.iter().all(|c| !c.starts_with("sysctl") && !c.starts_with("swapinfo")), "{calls:?}");
+    }
+
+    #[test]
+    fn an_os_we_do_not_recognise_is_marked_in_the_panel() {
+        use crate::zfs::host_health::HostOs;
+        let runner = full_host().on("uname", "Darwin 23.1.0\n");
+        let (s, _) = sample_host(&runner, Some(HostOs::Other)).unwrap();
+        assert_eq!(s.os.as_deref(), Some("Darwin 23.1.0 (unrecognised OS: FreeBSD tools are tried)"));
+        let (known, _) = sample_host(&full_host(), Some(HostOs::FreeBsd)).unwrap();
+        assert_eq!(known.os.as_deref(), Some("FreeBSD 15.1-RELEASE-p4"));
     }
 
     #[test]

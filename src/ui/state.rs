@@ -2862,6 +2862,17 @@ impl App {
     /// clears it on submit) — this only executes the mutation itself.
     pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
         let PendingAction { host, section, call } = action;
+        // The keys already hold back what a host's OS cannot do; this is the last gate before a command is sent, so a path
+        // that forgot one (or a host whose OS has not been read yet) still sends nothing FreeBSD-specific.
+        let os = self.host_os(host);
+        let refused = match &call {
+            MutationCall::SetSmbShare { .. } | MutationCall::RemoveSmbShare { .. } => !crate::ui::support::shares_editable(os),
+            _ => section == Section::BootEnvs && !crate::ui::support::supports(os, Section::BootEnvs),
+        };
+        if refused {
+            self.status_message = Some(format!("Not sent: this is not supported on {} hosts{}.", os.map_or("unread", crate::zfs::host_health::HostOs::word), if os.is_none() { " (the host's OS has not been read yet)" } else { "" }));
+            return;
+        }
         if let Some(note) = call.done_note() {
             self.done_note = Some(note);
         }

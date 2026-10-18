@@ -103,7 +103,7 @@ Twelve programs may run as root through sudo; each is there for a feature, so a 
 | `readlink` | backup jobs with a path (comes with `--with restic`) |
 | `smartctl` | the daily disk health check (add with `--with smart`) |
 
-Eight small read-only programs run over ssh **without** sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount`. They need no entry, unless the ssh key on that host is locked to a single forced command, in which case that command must allow them.
+Small read-only programs run over ssh **without** sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` (FreeBSD), and `sh` (one `sh -c` that reads `/proc`, `/sys` or `kstat`, and detects the OS), `lsblk` (Linux disks), `systemctl`, `svcs` and `pgrep` (service state on Linux and illumos), and `stat` (restic). They need no entry, unless the ssh key on that host is locked to a single forced command, in which case that command must allow them.
 
 The `cat` and `tee` entries are pinned to one file on purpose: a bare `sudo cat` would let the account read any file as root.
 

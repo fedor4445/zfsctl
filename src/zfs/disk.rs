@@ -185,6 +185,27 @@ pub fn list_disks(runner: &dyn CommandRunner, os: Option<HostOs>) -> Result<Vec<
 
 /// `lsblk -P` lines (`KEY="value" KEY="value" ...`; a value may hold spaces): only `TYPE="disk"` entries, so loop devices,
 /// optical drives and partitions are left out. `ROTA` 1 is a rotating disk (its speed is not known: `Hdd(0)`), 0 an SSD.
+/// `lsblk -P` writes unusual characters as `\xNN` (a space in a model is `\x20`).
+fn unescape_lsblk(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'\\' && bytes.get(i + 1) == Some(&b'x')).then(|| text.get(i + 2..i + 4)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(b) => {
+                out.push(b);
+                i += 4;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn parse_lsblk(output: &str) -> Vec<DiskInfo> {
     output
         .lines()
@@ -198,12 +219,13 @@ fn parse_lsblk(output: &str) -> Vec<DiskInfo> {
                 rest = &after[end + 1..];
             }
             let get = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+            let text = |key: &str| get(key).map(unescape_lsblk);
             (get("TYPE")? == "disk").then(|| DiskInfo {
                 name: get("NAME").unwrap_or_default().to_string(),
                 size: get("SIZE").and_then(|s| s.parse().ok()).unwrap_or(0),
                 membership: DiskMembership::Available,
-                model: get("MODEL").and_then(clean_identity),
-                serial: get("SERIAL").and_then(clean_identity),
+                model: text("MODEL").and_then(|m| clean_identity(&m)),
+                serial: text("SERIAL").and_then(|s| clean_identity(&s)),
                 media: match get("ROTA") {
                     Some("1") => DiskMedia::Hdd(0),
                     Some("0") => DiskMedia::Ssd,
@@ -408,6 +430,13 @@ Providers:
 
     const LSBLK_UBUNTU: &str = include_str!("disk_fixtures/lsblk_ubuntu.txt");
     const IOSTAT_EN_OMNIOS: &str = include_str!("disk_fixtures/iostat_en_omnios.txt");
+
+    #[test]
+    fn lsblk_hex_escapes_in_the_model_are_decoded() {
+        let disks = parse_lsblk("NAME=\"sda\" SIZE=\"4000787030016\" TYPE=\"disk\" MODEL=\"WDC\\x20WD40EFRX\\x2d68N32N0\" SERIAL=\"WD-WCC7K1234567\" ROTA=\"1\"\n");
+        assert_eq!(disks[0].model.as_deref(), Some("WDC WD40EFRX-68N32N0"));
+        assert_eq!(unescape_lsblk("a\\x2"), "a\\x2", "a truncated escape is left alone");
+    }
 
     #[test]
     fn lsblk_skips_zvols_zram_and_nbd_devices_that_are_not_real_disks() {
