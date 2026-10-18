@@ -25,6 +25,7 @@ impl App {
                 WorkerMsg::Encryption(host, found) => {
                     if host == self.selected_host {
                         self.encryption = found;
+                        self.encryption_for = host;
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),

@@ -303,6 +303,8 @@ pub struct App {
     pub datasets: Vec<Dataset>,
     /// The selected host's encrypted datasets (the Lock column, the save-time job guard); empty when none or not read.
     pub encryption: std::collections::BTreeMap<String, crate::zfs::encryption::Enc>,
+    /// The host index `encryption` was read for (a job form may be for another host).
+    pub encryption_for: usize,
     pub snapshots: Vec<Snapshot>,
     /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
     /// snapshots can say "unknown" instead of a misleading 0.
@@ -526,6 +528,7 @@ impl App {
             pools: Vec::new(),
             datasets: Vec::new(),
             encryption: std::collections::BTreeMap::new(),
+            encryption_for: 0,
             snapshots: Vec::new(),
             snapshots_loaded: false,
             pools_table: TableState::default(),
