@@ -190,7 +190,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("s", "Snapshot", 2));
                 // Always advertised: when a share can't be created the key
                 // explains why (status message) instead of silently vanishing.
-                if app.section_supported(Section::Shares) {
+                if app.shares_editable() {
                     v.push(h("N", "NFS share", 3));
                     v.push(h("M", "SMB share", 3));
                 }
@@ -266,7 +266,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if !app.shares.is_empty() {
                 v.push(h("↑↓", "Move", 1));
             }
-            if app.shares_table.selected().is_some() {
+            if app.shares_table.selected().is_some() && app.shares_editable() {
                 v.push(h("Enter", "Edit", 1));
                 v.push(h("d", "Remove", 2).tone(Tone::Warn));
             }

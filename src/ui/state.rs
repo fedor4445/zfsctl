@@ -978,6 +978,11 @@ impl App {
         crate::ui::support::supports(self.host_os(self.selected_host), section)
     }
 
+    /// Whether shares can be created, edited and removed on the selected host (FreeBSD's tools only; see `ui::support`).
+    pub fn shares_editable(&self) -> bool {
+        crate::ui::support::shares_editable(self.host_os(self.selected_host))
+    }
+
     /// Whether `key` of the Boot Envs section is offered for the selected host's OS (see `ui::support`).
     pub fn bootenv_key_offered(&self, key: char) -> bool {
         crate::ui::support::bootenv_key_offered(self.host_os(self.selected_host), key)
@@ -1961,7 +1966,7 @@ impl App {
                 }
             }
             // Sharing is FreeBSD's (see `ui::support`): on a host whose OS has no equivalent yet the keys do nothing.
-            KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle && self.section_supported(Section::Shares) => {
+            KeyCode::Char('N') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle && self.shares_editable() => {
                 // Only act (or explain) when a dataset row is selected; with no
                 // selection the key is not advertised and must be inert.
                 let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return true; };
@@ -1982,7 +1987,7 @@ impl App {
                     self.modal = Some(share_edit_modal(existing.unwrap_or(&placeholder), self.selected_host));
                 }
             }
-            KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle && self.section_supported(Section::Shares) => {
+            KeyCode::Char('M') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle && self.shares_editable() => {
                 let Some(ds) = self.datasets_table.selected().and_then(|i| self.datasets.get(i)).cloned() else { return true; };
                 if !self.shares_loaded {
                     self.status_message = Some("Press 'r' in the Shares section at least once (to load current share state) before creating/editing a share here".to_string());
@@ -2248,14 +2253,14 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Jobs => {
                 move_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len(), false);
             }
-            KeyCode::Enter if self.current_section() == Section::Shares => {
+            KeyCode::Enter if self.current_section() == Section::Shares && self.shares_editable() => {
                 if let Some(i) = self.shares_table.selected() {
                     if let Some(share) = self.shares.get(i) {
                         self.modal = Some(share_edit_modal(share, self.selected_host));
                     }
                 }
             }
-            KeyCode::Char('d') if self.current_section() == Section::Shares => {
+            KeyCode::Char('d') if self.current_section() == Section::Shares && self.shares_editable() => {
                 if let Some(i) = self.shares_table.selected() {
                     if let Some(share) = self.shares.get(i) {
                         let (prompt, call) = match share {
@@ -2947,9 +2952,9 @@ impl App {
             return;
         }
         self.begin_refresh(Section::Shares, host);
-        let tx = self.tx.clone();
+        let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            let result = crate::zfs::share::list_shares_with_availability(runner.as_ref());
+            let result = crate::zfs::share::list_shares_for(runner.as_ref(), os);
             let _ = tx.send(WorkerMsg::Shares(host, result));
         });
     }

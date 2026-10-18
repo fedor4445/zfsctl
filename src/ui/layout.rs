@@ -1162,7 +1162,11 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
         hints.push("SMB unavailable: smbd not running");
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
-    let title = format!("Shares — {} ('r' refresh, Enter edit, 'd' remove){hint_suffix}", app.active_host_name());
+    let actions = match app.host_os(app.selected_host) {
+        Some(os) if !app.shares_editable() => format!("'r' refresh; read-only on {}", os.word()),
+        _ => "'r' refresh, Enter edit, 'd' remove".to_string(),
+    };
+    let title = format!("Shares — {} ({actions}){hint_suffix}", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Dataset", "Protocol", "Details"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
@@ -2041,8 +2045,8 @@ mod tests {
         };
         let dim = app.theme.dim();
         let dimmed = |label: &str| style_of(label).0 == dim.fg.unwrap_or(ratatui::style::Color::Reset) && style_of(label).1.contains(dim.add_modifier | Modifier::empty());
-        assert!(dimmed("Boot Envs") && dimmed("Shares"), "unsupported entries are dimmed");
-        assert!(!dimmed("Disks") && !dimmed("Pools") && !dimmed("Jobs"), "supported ones are not");
+        assert!(dimmed("Boot Envs"), "unsupported entries are dimmed");
+        assert!(!dimmed("Disks") && !dimmed("Shares") && !dimmed("Pools") && !dimmed("Jobs"), "supported ones are not");
         app.selected_host = 0;
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf2 = terminal.backend().buffer().clone();
@@ -2054,7 +2058,7 @@ mod tests {
     #[test]
     fn a_dimmed_section_says_why_in_its_body() {
         let mut app = linux_host_app();
-        for (section, text) in [(Section::BootEnvs, "Boot Envs is not supported on Linux hosts yet."), (Section::Shares, "Shares is not supported on Linux hosts yet.")] {
+        for (section, text) in [(Section::BootEnvs, "Boot Envs is not supported on Linux hosts yet.")] {
             app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
             let screen = render(&mut app, 120, 20).join("\n");
             assert!(screen.contains(text), "{screen}");
