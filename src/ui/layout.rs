@@ -692,11 +692,11 @@ fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
         DatasetDetailTab::Properties => {}
     }
     let rows = app.dataset_properties.iter().map(|p| {
-        Row::new(vec![p.name.clone(), p.value.clone(), p.source.to_string()]).style(read_only_property_style(&theme, p))
+        Row::new(vec![crate::zfs::property::property_label(&p.name), p.value.clone(), p.source.to_string()]).style(read_only_property_style(&theme, p))
     });
     let widths = [Constraint::Length(16), Constraint::Length(property_value_width(&app.dataset_properties)), Constraint::Min(10)];
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
-    let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, ← back)");
+    let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, * fixed at creation, ← back)");
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Property", "Value", "Source"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))

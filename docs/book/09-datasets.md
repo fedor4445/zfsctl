@@ -129,11 +129,17 @@ The panel under the list shows `Checksum` and `Dedup` only when they are not the
 
 ## Encrypted datasets
 
-ZFS can encrypt a dataset (`encryption=aes-256-gcm` and the like), but only when the dataset is created; the key is then loaded and unloaded. zfsctl shows which datasets are locked and loads, unloads and changes passphrase keys; it does not yet create encrypted datasets:
+ZFS can encrypt a dataset (`encryption=aes-256-gcm` and the like), but only when the dataset is created; the key is then loaded and unloaded. zfsctl shows which datasets are locked and loads, unloads and changes passphrase keys; it also creates them (`E`, below):
 
 - When any dataset on the host is encrypted, the Datasets list gets a **Lock** column: blank for a plain dataset, `open` when the key is loaded and **`LOCKED`** (red) when it is not. A locked dataset cannot be read or mounted. The panel adds the `Encrypt` line described above.
 - A locked dataset that a restic backup reads, that a replication writes into, or that is shared over NFS (or over SMB on illumos; a FreeBSD Samba share is not seen) is a yellow line in Needs attention (`tank/secure is locked (a job uses it)`) and in the daily report: it is something that will fail. A locked dataset nobody uses gets no line.
 - **Jobs and encryption:** a replication (to a host or to stream files) and a cloud mirror **refuse an encrypted source**. Without ZFS's raw option a send delivers the data decrypted, and zfsctl does not send data in the clear without being told to. The form refuses to save such a job when it already knows the dataset is encrypted, and a job whose source became encrypted later fails with the same reason (red on the Dashboard). A **restic backup is allowed**: restic encrypts the files with its own key, so an open encrypted dataset is backed up as usual, while a locked one fails with `tank/secure is locked (key not loaded): load the key first`.
+
+### Create an encrypted dataset: `E`
+
+`E` opens a form for a new **encrypted** dataset: its full name (with the pool), the cipher (`aes-256-gcm` unless you change it; `aes-128/192/256-gcm` and `-ccm` also exist) and a passphrase typed twice (8 characters or more, shown as `*`). Then you **type the dataset's name** to confirm, under a warning you should take literally: **if you lose the passphrase the data cannot be recovered by anyone**, zfsctl included, because zfsctl stores no key anywhere. Encryption can only be chosen now; it cannot be added to or removed from a dataset later. The key is a passphrase asked at the prompt (`keylocation=prompt`), which is what `L` and `C` work with.
+
+Everything created under an encrypted dataset with the plain `n` is encrypted with the same key; `E` refuses a name under one, because it would start a second key. The Properties tab marks the properties that can only be set at creation with a `*` (`encryption`, `keyformat`, `casesensitivity`, `normalization`, `utf8only`, `volblocksize`). An older `zfs` without native encryption answers with its own error.
 
 ### Keys: `L`, `U`, `C`
 

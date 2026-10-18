@@ -21,6 +21,8 @@ pub enum MutationCall {
     ReplaceDisk { pool: String, old_disk: String, new_disk: String },
     SetPoolProperty { pool: String, key: String, value: String },
     CreateDataset { name: String },
+    /// `zfs create` of a passphrase-encrypted dataset; the passphrase goes in on stdin.
+    CreateEncryptedDataset { name: String, cipher: String, passphrase: Secret },
     DestroyDataset { name: String },
     DestroyDatasetRecursive { name: String },
     SetDatasetProperty { dataset: String, key: String, value: String },
@@ -119,6 +121,7 @@ impl MutationCall {
             | MutationCall::RemoveSmbShare { .. }
             | MutationCall::UnloadKey { .. }
             | MutationCall::ChangeKey { .. }
+            | MutationCall::CreateEncryptedDataset { .. }
             | MutationCall::ActivateBootEnv { temporary: false, .. }
             | MutationCall::DeleteJob { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
@@ -172,6 +175,7 @@ impl MutationCall {
             MutationCall::RemoveAclEntry { .. } => "REMOVE ACL ENTRY",
             MutationCall::SetSmbShare { .. } => "SET SMB SHARE",
             MutationCall::RemoveSmbShare { .. } => "REMOVE SMB SHARE",
+            MutationCall::CreateEncryptedDataset { .. } => "CREATE ENCRYPTED DATASET",
             MutationCall::LoadKey { .. } => "LOAD KEY",
             MutationCall::UnloadKey { .. } => "UNLOAD KEY",
             MutationCall::ChangeKey { .. } => "CHANGE KEY",
@@ -241,6 +245,7 @@ impl MutationCall {
             }
             MutationCall::RemoveSmbShare { dataset } => crate::zfs::smb::remove_share(runner, dataset),
             MutationCall::LoadKey { dataset, passphrase, mount } => crate::zfs::encryption::load_key_and_mount(runner, dataset, &passphrase.0, *mount),
+            MutationCall::CreateEncryptedDataset { name, cipher, passphrase } => crate::zfs::encryption::create_encrypted(runner, name, cipher, &passphrase.0),
             MutationCall::UnloadKey { dataset } => crate::zfs::encryption::unload_key(runner, dataset),
             MutationCall::ChangeKey { dataset, passphrase } => crate::zfs::encryption::change_key(runner, dataset, &passphrase.0),
             MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref(), os),
@@ -329,6 +334,8 @@ pub enum FormKind {
     EditPoolProperty { host: usize, pool: String, key: String },
     /// Fields: `[name]`.
     CreateDataset { host: usize },
+    /// Fields: `[name, cipher, passphrase, repeat]`; the last two are masked.
+    CreateEncrypted { host: usize },
     /// Fields: `[value]` — pre-filled with the property's current value.
     EditDatasetProperty { host: usize, dataset: String, key: String },
     /// Fields: `[name]` — the snapshot's name; the dataset is fixed at
@@ -398,6 +405,7 @@ impl FormKind {
         match self {
             FormKind::ShareSmb { .. } => index == 2,
             FormKind::LoadKey { .. } => index == 0,
+            FormKind::CreateEncrypted { .. } => index >= 2,
             FormKind::ChangeKey { .. } => index <= 1,
             _ => false,
         }

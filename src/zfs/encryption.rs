@@ -196,6 +196,34 @@ pub fn load_key_and_mount(runner: &dyn CommandRunner, dataset: &str, passphrase:
     })
 }
 
+/// The ciphers `zfs create -o encryption=` takes (OpenZFS), `aes-256-gcm` first because it is the default. A host's `zfs`
+/// refuses one it does not know with its own message.
+pub const CIPHERS: [&str; 7] = ["aes-256-gcm", "aes-192-gcm", "aes-128-gcm", "aes-256-ccm", "aes-192-ccm", "aes-128-ccm", "on"];
+
+/// `zfs create` of an encrypted dataset with a passphrase key read from the prompt (stdin, once). The key is stored nowhere
+/// by zfsctl; `keylocation=prompt` is what `L` and `C` need later.
+pub fn create_encrypted(runner: &dyn CommandRunner, name: &str, cipher: &str, passphrase: &str) -> crate::error::Result<()> {
+    use crate::error::AppError;
+    if name.starts_with('-') || name.is_empty() {
+        return Err(AppError::Parse(format!("not a dataset name: {name}")));
+    }
+    if !CIPHERS.contains(&cipher) {
+        return Err(AppError::Parse(format!("unknown cipher {cipher}")));
+    }
+    check_passphrase(passphrase, true).map_err(AppError::Parse)?;
+    let encryption = format!("encryption={cipher}");
+    let args = ["create", "-o", encryption.as_str(), "-o", "keyformat=passphrase", "-o", "keylocation=prompt", "--", name];
+    let out = runner.run_with_stdin("zfs", &args, zeroize::Zeroizing::new(format!("{passphrase}\n")).as_str())?;
+    if out.success() {
+        return Ok(());
+    }
+    let mut stderr = out.stderr;
+    if unknown_property(&stderr) {
+        stderr = format!("{}\nThis host's zfs does not know native encryption.", stderr.trim_end());
+    }
+    Err(AppError::CommandFailed { cmd: format!("zfs create {name} (encrypted)"), status: out.status, stderr })
+}
+
 /// `zfs unload-key`: zfs refuses while the dataset is mounted, and its message is passed on.
 pub fn unload_key(runner: &dyn CommandRunner, dataset: &str) -> crate::error::Result<()> {
     key_command(runner, "unload-key", dataset, None)
@@ -377,5 +405,31 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         let blank = FakeRunner::new("");
         assert!(load_key(&blank, "tank/s", "pass phrase").is_err(), "an empty answer is not an answer");
         assert!(blank.stdin_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_encrypted_dataset_is_created_with_the_passphrase_on_stdin_only() {
+        let runner = FakeRunner::new("");
+        create_encrypted(&runner, "tank/secure", "aes-256-gcm", "correct horse battery").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1, ["create", "-o", "encryption=aes-256-gcm", "-o", "keyformat=passphrase", "-o", "keylocation=prompt", "--", "tank/secure"]);
+        assert!(calls[0].1.iter().all(|a| !a.contains("horse")));
+        assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), "correct horse battery\n".to_string())]);
+    }
+
+    #[test]
+    fn a_bad_create_sends_nothing() {
+        let runner = FakeRunner::new("");
+        assert!(create_encrypted(&runner, "-x", "aes-256-gcm", "long enough").is_err());
+        assert!(create_encrypted(&runner, "tank/a", "rot13", "long enough").is_err());
+        assert!(create_encrypted(&runner, "tank/a", "aes-256-gcm", "short").is_err());
+        assert!(runner.calls.lock().unwrap().is_empty() && runner.stdin_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_zfs_without_encryption_says_so() {
+        let runner = FakeRunner::failing("cannot create 'tank/a': invalid property 'encryption'", 2);
+        let msg = create_encrypted(&runner, "tank/a", "aes-256-gcm", "long enough").unwrap_err().to_string();
+        assert!(msg.contains("invalid property") && msg.contains("does not know native encryption") && !msg.contains("long enough"), "{msg}");
     }
 }

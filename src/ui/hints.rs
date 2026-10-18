@@ -187,6 +187,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             v.push(h("→", "Details", 2));
             v.push(h("n", "New", 2));
+            v.push(h("E", "New encrypted", 3));
             if selected {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("D", "Destroy recursively", 3).tone(Tone::Danger));

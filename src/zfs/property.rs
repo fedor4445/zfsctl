@@ -251,3 +251,23 @@ tank/data\treadonly\toff\tinherited from tank
         assert_eq!(PropertySource::Other("-".to_string()).to_string(), "-");
     }
 }
+
+/// Dataset properties that can only be chosen when the dataset is created.
+pub const FIXED_AT_CREATION: [&str; 6] = ["encryption", "keyformat", "casesensitivity", "normalization", "utf8only", "volblocksize"];
+
+/// The name as the Properties table shows it: a `*` after a property that cannot be changed once the dataset exists.
+pub fn property_label(name: &str) -> String {
+    if FIXED_AT_CREATION.contains(&name) { format!("{name}*") } else { name.to_string() }
+}
+
+#[cfg(test)]
+mod fixed_tests {
+    use super::*;
+
+    #[test]
+    fn properties_that_cannot_change_after_creation_are_starred_and_fit_the_column() {
+        assert_eq!(property_label("encryption"), "encryption*");
+        assert_eq!(property_label("atime"), "atime");
+        assert!(FIXED_AT_CREATION.iter().all(|n| property_label(n).chars().count() <= 16), "the Property column is 16 wide");
+    }
+}
