@@ -54,10 +54,16 @@ pub enum MutationCall {
     SendTestMessage { settings: Box<crate::config::NotifySettings>, hook: Option<String> },
 }
 
-/// A password held only until it is piped to `smbpasswd`. `Debug` never
-/// prints it, so a logged or panicking `PendingAction` can't leak it.
+/// A password or passphrase held only until it is piped to the command that needs it (`smbpasswd`, `zfs load-key`).
+/// `Debug` never prints it, so a logged or panicking `PendingAction` can't leak it, and the memory is zeroed when it drops.
 #[derive(Clone, PartialEq)]
 pub struct Secret(pub String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -446,6 +452,11 @@ mod tests {
         let runner = FakeRunner::new("");
         MutationCall::RemoveSmbShare { dataset: "tank/none".into() }.run(&runner).unwrap_err(); // nothing managed there
         assert_eq!(MutationCall::RemoveSmbShare { dataset: "x".into() }.tone(), Tone::Warn);
+    }
+
+    #[test]
+    fn a_secret_is_wiped_when_it_drops() {
+        assert!(std::mem::needs_drop::<Secret>(), "Secret must have a Drop that zeroes the text");
     }
 
     #[test]
