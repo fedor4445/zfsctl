@@ -62,6 +62,8 @@ When the Dashboard turns a reading yellow ("to watch") and red ("issue"). All ke
 | `memory_crit` | number | `97` | memory in use, in percent, from which it turns red |
 | `swap_warn` | number | `50` | swap in use, in percent, from which it turns yellow |
 | `swap_crit` | number | `90` | swap in use, in percent, from which it turns red |
+| `quota_warn` | number | `90` | how much of its quota (or refquota) a dataset uses, in percent, from which Needs attention lists it in yellow |
+| `quota_crit` | number | `98` | the same, from which it turns red |
 | `cpu_warn` | number | `95` | CPU busy, in percent, from which it turns yellow, measured between the last two probes (about 30 seconds); the CPU alone never turns red |
 | `scrub_warn_days` | number | `35` | days since a pool's last finished scrub from which it turns yellow (a pool never scrubbed is yellow too) |
 | `scrub_crit_days` | number | `90` | days since the last scrub from which it turns red |

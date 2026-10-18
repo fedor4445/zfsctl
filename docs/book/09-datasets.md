@@ -52,7 +52,7 @@ With a dataset selected, the panel under the list shows where its space goes:
 | **Data**, **Snaps** | space held by the data itself, and by its snapshots |
 | **Kids**, **Refres** | space used by child datasets, and by a reservation |
 | **Compr** and **Rec** | compression and its ratio, and the record size |
-| **Quota**, **Ref** | the quota and the refquota, if any |
+| **Quota**, **Ref** | the quota and the refquota, if any, each with how much of it is used (`10.0G 96%`) |
 | **Pool** | the pool's health |
 
 ## Properties
@@ -99,6 +99,21 @@ Each row is a property with its **value** and its **source**: `local` (set on th
 > **Safety:** shrinking a volume's `volsize` can destroy the data past the new size, so zfsctl shows the exact command and asks the two-key question first. Changing `mountpoint` on a dataset that is in use can disconnect programs using it.
 
 > **Coming from Linux:** `quota` is like a per-directory quota without a quota daemon, and `compression=lz4` replaces any thought of compressing files yourself. **Coming from Windows:** `quota` is NTFS disk quotas for a folder, but per filesystem.
+
+## Quotas and reservations
+
+Four properties cap or protect a dataset's space: `quota` and `refquota` are ceilings, `reservation` and `refreservation` are space kept back for it. The `quota` and `reservation` count the dataset, its children and its snapshots; the `ref` versions count only the dataset's own data.
+
+`Enter` on one of these rows (Properties tab) opens a size form. Type `10G`, `500M`, `1.5T` (powers of 1024; `none` removes the limit). zfsctl checks before it sends anything:
+
+- a quota below what the dataset already uses is refused (`quota` is compared with *used*, `refquota` with *referenced*, which leaves out snapshots);
+- a reservation larger than the quota, or a quota below the reservation, is refused;
+- a reservation the pool cannot back (more than the space still available) is refused;
+- a volume has no quota: `quota` and `refquota` say they do not apply, while `reservation` and `refreservation` work.
+
+Every change to one of these four asks for `y` then `Enter` first, showing the exact `zfs set` command; one that leaves less than 10% room over what is used now, or raises a reservation by more than a tenth of the free space, says so in the question.
+
+When any dataset on the host has a limit, the Datasets list gets a **Quota** column (`96% of 10G`, yellow from 90%, red from 98%); it is the first column to go on a narrow terminal. The Dashboard lists, per host, the dataset nearest to its limit in Needs attention, and the daily report repeats it; the percentages are `quota_warn` and `quota_crit` under `[dashboard]` (or Settings). The daemon re-reads quotas every ten minutes, and `c` in Hosts does it on demand.
 
 ## Create a dataset
 

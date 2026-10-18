@@ -10,6 +10,7 @@ pub enum Setting {
     AutoRefresh,
     Memory,
     Swap,
+    Quota,
     Cpu,
     Scrub,
     ScrubIgnore,
@@ -68,6 +69,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
         ),
         row(THRESHOLDS, Setting::Memory, "Memory warn / crit", format!("{} / {} %", t.memory.0, t.memory.1), t.memory == d.memory, vec![text(dash.memory_warn.map(u64::from)), text(dash.memory_crit.map(u64::from))]),
         row(THRESHOLDS, Setting::Swap, "Swap warn / crit", format!("{} / {} %", t.swap.0, t.swap.1), t.swap == d.swap, vec![text(dash.swap_warn.map(u64::from)), text(dash.swap_crit.map(u64::from))]),
+        row(THRESHOLDS, Setting::Quota, "Quota warn / crit", format!("{} / {} %", t.quota.0, t.quota.1), t.quota == d.quota, vec![text(dash.quota_warn.map(u64::from)), text(dash.quota_crit.map(u64::from))]),
         row(THRESHOLDS, Setting::Cpu, "CPU warn", format!("{} %", t.cpu_warn), t.cpu_warn == d.cpu_warn, vec![text(dash.cpu_warn.map(u64::from))]),
         row(THRESHOLDS, Setting::Scrub, "Scrub warn / crit", format!("{} / {} days", t.scrub_days.0, t.scrub_days.1), t.scrub_days == d.scrub_days, vec![text(dash.scrub_warn_days.map(u64::from)), text(dash.scrub_crit_days.map(u64::from))]),
         row(THRESHOLDS, Setting::ScrubIgnore, "Scrub ignore", if t.scrub_ignore.is_empty() { "(none)".to_string() } else { t.scrub_ignore.join(", ") }, t.scrub_ignore.is_empty(), vec![t.scrub_ignore.join(", ")]),
@@ -87,7 +89,7 @@ pub fn form_fields(row: &Row) -> Vec<(String, String)> {
     let labels: Vec<String> = match row.setting {
         Setting::Theme => vec![format!("Theme ({})", crate::ui::theme::THEME_NAMES.join(", "))],
         Setting::AutoRefresh => vec!["Seconds between refreshes (0 = off)".to_string()],
-        Setting::Memory | Setting::Swap => vec!["Warn at (%)".to_string(), "Critical at (%)".to_string()],
+        Setting::Memory | Setting::Swap | Setting::Quota => vec!["Warn at (%)".to_string(), "Critical at (%)".to_string()],
         Setting::Cpu => vec!["Warn at (%)".to_string()],
         Setting::Scrub => vec!["Warn after (days)".to_string(), "Critical after (days)".to_string()],
         Setting::ScrubIgnore => vec!["Pools to skip (comma-separated)".to_string()],
@@ -140,6 +142,7 @@ pub fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>
         Setting::AutoRefresh => vec![Change::set(&["ui", "auto_refresh_secs"], number(3600, 0, "Auto-refresh")? as i64)],
         Setting::Memory => pair_changes(values, ["memory_warn", "memory_crit"], 100, (90, 97))?,
         Setting::Swap => pair_changes(values, ["swap_warn", "swap_crit"], 100, (50, 90))?,
+        Setting::Quota => pair_changes(values, ["quota_warn", "quota_crit"], 100, (90, 98))?,
         Setting::Scrub => pair_changes(values, ["scrub_warn_days", "scrub_crit_days"], u32::MAX, (35, 90))?,
         Setting::Cpu if first.is_empty() => vec![Change::remove(&dashboard("cpu_warn"))],
         Setting::Cpu => {
@@ -172,6 +175,7 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
         Setting::AutoRefresh => ("Auto-refresh", " s"),
         Setting::Memory => ("Memory warn / crit", " %"),
         Setting::Swap => ("Swap warn / crit", " %"),
+        Setting::Quota => ("Quota warn / crit", " %"),
         Setting::Cpu => ("CPU warn", " %"),
         Setting::Scrub => ("Scrub warn / crit", " days"),
         Setting::ScrubIgnore => ("Scrub ignore", ""),
@@ -207,7 +211,7 @@ mod tests {
     fn load_lists_the_groups_in_order_with_defaults_marked() {
         let v = view("", &[], false);
         let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "CPU warn", "Scrub warn / crit", "Scrub ignore"]);
+        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "CPU warn", "Scrub warn / crit", "Scrub ignore"]);
         assert!(v.loaded && v.problem.is_none() && v.rows.iter().all(|r| r.is_default), "{v:?}");
         assert_eq!(row(&v, "Theme").value, "ansi");
         assert_eq!(row(&v, "Auto-refresh").value, "10 s");
@@ -265,6 +269,14 @@ mod tests {
         assert_eq!(sets(&build_changes(&Setting::Memory, &values(&["90", "97"])).unwrap()), reset);
         assert_eq!(sets(&build_changes(&Setting::Memory, &values(&["", ""])).unwrap()), reset);
         assert_eq!(sets(&build_changes(&Setting::Scrub, &values(&["30", "60"])).unwrap()), ["set dashboard.scrub_warn_days 30", "set dashboard.scrub_crit_days 60"]);
+    }
+
+    #[test]
+    fn the_quota_thresholds_are_a_pair_like_memory_and_swap() {
+        assert_eq!(sets(&build_changes(&Setting::Quota, &values(&["85", "95"])).unwrap()), ["set dashboard.quota_warn 85", "set dashboard.quota_crit 95"]);
+        assert_eq!(sets(&build_changes(&Setting::Quota, &values(&["90", "98"])).unwrap()), ["remove dashboard.quota_warn", "remove dashboard.quota_crit"]);
+        assert!(build_changes(&Setting::Quota, &values(&["98", "90"])).is_err());
+        assert_eq!(describe(&Setting::Quota, &values(&["85", "95"])), "Quota warn / crit: 85 / 95 %");
     }
 
     #[test]

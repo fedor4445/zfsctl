@@ -13,7 +13,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "notify_command", "daily_check",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
-        "memory_warn", "memory_crit", "swap_warn", "swap_crit", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
+        "memory_warn", "memory_crit", "swap_warn", "swap_crit", "quota_warn", "quota_crit", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -50,6 +50,10 @@ pub struct DashboardConfig {
     #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
     pub swap_crit: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub quota_warn: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
+    pub quota_crit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
     pub cpu_warn: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "lenient")]
     pub scrub_warn_days: Option<u32>,
@@ -67,6 +71,8 @@ pub struct Thresholds {
     pub memory: (u8, u8),
     /// Swap in use, percent: (watch, issue).
     pub swap: (u8, u8),
+    /// A dataset's use of its quota, percent: (watch, issue).
+    pub quota: (u8, u8),
     /// CPU busy, percent, over the ~30 s between the last two probes: watch only, never an issue.
     pub cpu_warn: u8,
     /// Days since the last scrub: (watch, issue).
@@ -76,7 +82,7 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Self {
-        Thresholds { memory: (90, 97), swap: (50, 90), cpu_warn: 95, scrub_days: (35, 90), scrub_ignore: Vec::new() }
+        Thresholds { memory: (90, 97), swap: (50, 90), quota: (90, 98), cpu_warn: 95, scrub_days: (35, 90), scrub_ignore: Vec::new() }
     }
 }
 
@@ -95,6 +101,7 @@ impl DashboardConfig {
         Thresholds {
             memory: percent_pair(self.memory_warn, self.memory_crit, d.memory),
             swap: percent_pair(self.swap_warn, self.swap_crit, d.swap),
+            quota: percent_pair(self.quota_warn, self.quota_crit, d.quota),
             cpu_warn: self.cpu_warn.filter(|c| (1..=100).contains(c)).unwrap_or(d.cpu_warn),
             scrub_days: if days.0 > 0 && days.0 < days.1 { days } else { d.scrub_days },
             scrub_ignore: self.scrub_ignore.clone(),
@@ -665,6 +672,8 @@ mod tests {
             memory_crit: Some(97),
             swap_warn: Some(50),
             swap_crit: Some(90),
+            quota_warn: Some(90),
+            quota_crit: Some(98),
             cpu_warn: Some(95),
             scrub_warn_days: Some(35),
             scrub_crit_days: Some(90),
@@ -704,6 +713,15 @@ mod tests {
         assert_eq!((t.memory, t.swap, t.cpu_warn, t.scrub_days), ((90, 97), (50, 90), 95, (35, 90)));
         assert!(t.scrub_ignore.is_empty());
         assert_eq!(Config::default().dashboard.resolve(), t, "no [dashboard] section means the defaults");
+    }
+
+    #[test]
+    fn quota_thresholds_default_to_90_and_98_and_fall_back_when_invalid() {
+        assert_eq!(Thresholds::default().quota, (90, 98));
+        let c: Config = toml::from_str("[dashboard]\nquota_warn = 80\nquota_crit = 95\n").unwrap();
+        assert_eq!(c.dashboard.resolve().quota, (80, 95));
+        let bad: Config = toml::from_str("[dashboard]\nquota_warn = 99\nquota_crit = 95\n").unwrap();
+        assert_eq!(bad.dashboard.resolve().quota, (90, 98), "warn above crit falls back");
     }
 
     #[test]

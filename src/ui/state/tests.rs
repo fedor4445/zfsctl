@@ -45,7 +45,7 @@ fn flatten_permissions_snapshot_produces_one_row_per_entry_in_a_stable_order() {
 #[test]
 fn refresh_dataset_permissions_populates_app_state_from_fake_runner() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(
         "---- Permissions on tank/data -------------------------------------\nLocal+Descendent permissions:\n        user fb snapshot\n",
@@ -73,7 +73,7 @@ fn dataset_permissions_result_for_a_stale_dataset_is_discarded() {
     app.tx
         .send(WorkerMsg::DatasetPermissions(0, "tank/old".to_string(), Ok(crate::zfs::permission::PermissionsSnapshot::default())))
         .unwrap();
-    app.datasets = vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.drain_worker_messages();
     assert_eq!(app.dataset_permissions_for, None, "a result for a dataset that's no longer selected must not populate the pane");
@@ -126,7 +126,7 @@ fn bracket_keys_cycle_through_all_three_dataset_detail_tabs() {
 #[test]
 fn refresh_dataset_acl_populates_app_state_from_fake_runner() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new(
         "# file: /tank/data\n# owner: root\n# group: wheel\n            owner@:read_data/write_data/execute::allow\n",
@@ -157,7 +157,7 @@ fn refresh_dataset_acl_populates_app_state_from_fake_runner() {
 fn acl_result_for_a_stale_mountpoint_is_discarded() {
     let mut app = App::new(vec!["local".to_string()]);
     app.tx.send(WorkerMsg::DatasetAcl(0, "/tank/old".to_string(), Ok(vec![]))).unwrap();
-    app.datasets = vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/new".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/new".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.acl_entries_for = Some("placeholder".to_string());
     app.drain_worker_messages();
@@ -169,7 +169,7 @@ fn datasets_list_refresh_that_repoints_selection_clears_stale_acl_entries() {
     // Same class of bug Permissions' final review caught for
     // dataset_permissions_for -- built in from the start here.
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/old".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/old".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/old".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/old".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.acl_entries = vec![crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow }];
     app.acl_entries_table.select(Some(0));
@@ -178,7 +178,7 @@ fn datasets_list_refresh_that_repoints_selection_clears_stale_acl_entries() {
     app.tx
         .send(WorkerMsg::Datasets(
             0,
-            Ok(vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/new".to_string()) }]),
+            Ok(vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/new".to_string()), quota: 0, refquota: 0 }]),
         ))
         .unwrap();
     app.drain_worker_messages();
@@ -241,7 +241,7 @@ fn handle_key_n_on_pools_is_noop_while_right_focused() {
 #[test]
 fn handle_key_n_on_datasets_is_noop_while_right_focused() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
     app.datasets_table.select(Some(0));
@@ -253,7 +253,7 @@ fn handle_key_n_on_datasets_is_noop_while_right_focused() {
 #[test]
 fn handle_key_d_on_datasets_is_noop_while_right_focused() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
     app.datasets_table.select(Some(0));
@@ -265,7 +265,7 @@ fn handle_key_d_on_datasets_is_noop_while_right_focused() {
 #[test]
 fn handle_key_s_on_datasets_is_noop_while_right_focused() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
     app.datasets_table.select(Some(0));
@@ -711,7 +711,7 @@ fn switching_selected_host_clears_pane_data() {
         used: 1,
         available: 2,
         referenced: 1,
-        mountpoint: None,
+        mountpoint: None, quota: 0, refquota: 0,
     }];
     app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "snap1".to_string(), used: 1 }];
     app.pools_table.select(Some(0));
@@ -778,8 +778,8 @@ fn drain_worker_messages_clamps_selected_pool_row_when_list_shrinks() {
 fn handle_key_navigates_dataset_rows_and_wraps() {
     let mut app = App::new(vec!["local".to_string()]);
     app.datasets = vec![
-        Dataset { name: "a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
-        Dataset { name: "b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+        Dataset { name: "a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
+        Dataset { name: "b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
     ];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // Hosts -> Pools -> Datasets
@@ -802,7 +802,7 @@ fn drain_worker_messages_clamps_selected_dataset_row_when_list_shrinks() {
             used: 0,
             available: 0,
             referenced: 0,
-            mountpoint: None,
+            mountpoint: None, quota: 0, refquota: 0,
         }])))
         .unwrap();
     app.drain_worker_messages();
@@ -1086,7 +1086,7 @@ fn pool_properties_result_for_a_different_pool_than_selected_is_discarded() {
 #[test]
 fn refresh_dataset_properties_populates_from_fake_runner() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data\tcompression\tlz4\tlocal\n"));
     app.refresh_dataset_properties(runner, "tank/data".to_string());
@@ -1106,7 +1106,7 @@ fn refresh_dataset_properties_populates_from_fake_runner() {
 #[test]
 fn dataset_properties_result_for_a_different_dataset_than_selected_is_discarded() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/other".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/other".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.tx
         .send(WorkerMsg::DatasetProperties(0, "tank/data".to_string(), Ok(vec![Property { name: "x".to_string(), value: "y".to_string(), source: PropertySource::Local }])))
@@ -1271,7 +1271,7 @@ fn handle_key_d_on_datasets_opens_destroy_confirm_typed_modal() {
         used: 0,
         available: 0,
         referenced: 0,
-        mountpoint: None,
+        mountpoint: None, quota: 0, refquota: 0,
     }];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
@@ -1295,7 +1295,7 @@ fn handle_key_s_on_datasets_opens_create_snapshot_form_with_implied_dataset() {
         used: 0,
         available: 0,
         referenced: 0,
-        mountpoint: None,
+        mountpoint: None, quota: 0, refquota: 0,
     }];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
@@ -1319,7 +1319,7 @@ fn handle_modal_key_create_snapshot_form_submits_with_implied_dataset() {
         used: 0,
         available: 0,
         referenced: 0,
-        mountpoint: None,
+        mountpoint: None, quota: 0, refquota: 0,
     }];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
@@ -1454,7 +1454,7 @@ fn handle_modal_key_form_up_and_down_move_focus_the_same_as_backtab_and_tab() {
 #[test]
 fn failed_submission_resets_focus_to_the_first_field_so_an_invalid_earlier_field_is_visible_without_tabbing_through_everything() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     app.acl_entries_for = Some("/tank/data".to_string());
@@ -1845,8 +1845,8 @@ fn up_down_on_datasets_middle_focus_clears_properties_on_row_change() {
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
     app.datasets = vec![
-        Dataset { name: "a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
-        Dataset { name: "b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+        Dataset { name: "a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
+        Dataset { name: "b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
     ];
     app.dataset_properties = vec![Property { name: "x".to_string(), value: "y".to_string(), source: PropertySource::Local }];
     app.dataset_properties_table.select(Some(0));
@@ -1860,7 +1860,7 @@ fn up_down_on_datasets_right_focus_moves_properties_table() {
     let mut app = App::new(vec!["local".to_string()]);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Right);
     app.dataset_properties = vec![Property { name: "p1".to_string(), value: "v1".to_string(), source: PropertySource::Local }];
@@ -1993,7 +1993,7 @@ fn datasets_list_refresh_that_repoints_selection_clears_stale_permissions() {
     // title — or worse, acted on by 'd'/'x' against the wrong
     // dataset.
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/old".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/old".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.dataset_permissions = vec![PermissionRow::Set { name: "admin".to_string(), perms: vec!["snapshot".to_string()] }];
     app.dataset_permissions_table.select(Some(0));
@@ -2002,7 +2002,7 @@ fn datasets_list_refresh_that_repoints_selection_clears_stale_permissions() {
     app.tx
         .send(WorkerMsg::Datasets(
             0,
-            Ok(vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }]),
+            Ok(vec![Dataset { name: "tank/new".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }]),
         ))
         .unwrap();
     app.drain_worker_messages();
@@ -2017,7 +2017,7 @@ fn selected_pool_name_and_selected_dataset_name_helpers() {
     app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
     app.pools_table.select(Some(0));
     assert_eq!(app.selected_pool_name(), Some("tank".to_string()));
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     assert_eq!(app.selected_dataset_name(), Some("tank/data".to_string()));
     assert_eq!(App::new(vec!["local".to_string()]).selected_pool_name(), None);
@@ -2078,8 +2078,8 @@ fn pools_list_replacement_that_re_points_selected_index_at_a_different_pool_clea
 fn datasets_list_replacement_that_re_points_selected_index_at_a_different_dataset_clears_stale_properties() {
     let mut app = App::new(vec!["local".to_string()]);
     app.datasets = vec![
-        Dataset { name: "tank/aa".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
-        Dataset { name: "tank/b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+        Dataset { name: "tank/aa".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
+        Dataset { name: "tank/b".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
     ];
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
@@ -2102,8 +2102,8 @@ fn datasets_list_replacement_that_re_points_selected_index_at_a_different_datase
         .send(WorkerMsg::Datasets(
             0,
             Ok(vec![
-                Dataset { name: "tank/aaa".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
-                Dataset { name: "tank/different".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None },
+                Dataset { name: "tank/aaa".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
+                Dataset { name: "tank/different".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 },
             ]),
         ))
         .unwrap();
@@ -2249,7 +2249,7 @@ fn enter_on_right_focused_dataset_property_opens_prefilled_edit_form() {
     let mut app = App::new(vec!["local".to_string()]);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Right);
     app.dataset_properties = vec![Property { name: "compression".to_string(), value: "lz4".to_string(), source: PropertySource::Local }];
@@ -2273,7 +2273,7 @@ fn enter_on_right_focused_read_only_dataset_property_does_not_open_modal() {
     let mut app = App::new(vec!["local".to_string()]);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Right);
     app.dataset_properties = vec![Property { name: "used".to_string(), value: "1234567".to_string(), source: PropertySource::Other("-".to_string()) }];
@@ -2288,7 +2288,7 @@ fn handle_modal_key_edit_dataset_property_form_submits_with_new_value() {
     let mut app = App::new(vec!["local".to_string()]);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Right);
     app.dataset_properties = vec![Property { name: "compression".to_string(), value: "lz4".to_string(), source: PropertySource::Local }];
@@ -2767,7 +2767,7 @@ fn datasets_app_with_mount(mountpoint: Option<&str>) -> App {
     app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd); // shares are edited only on a host known to be FreeBSD
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "tank/media".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string) }];
+    app.datasets = vec![Dataset { name: "tank/media".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.shares_loaded = true;
     app.samba_available = Some(true);
@@ -3012,7 +3012,7 @@ fn handle_key_shift_n_on_datasets_opens_blank_share_nfs_form_when_not_yet_shared
     app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.nfs_available = Some(true);
     app.shares_loaded = true;
@@ -3039,7 +3039,7 @@ fn handle_key_shift_n_on_datasets_sets_hint_when_nfs_unavailable() {
     app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.nfs_available = Some(false);
     app.shares_loaded = true;
@@ -3054,7 +3054,7 @@ fn handle_key_shift_n_with_unloaded_shares_names_the_fix() {
     app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Char('N'));
     assert!(app.modal.is_none());
@@ -3067,7 +3067,7 @@ fn handle_key_shift_n_on_datasets_sets_hint_when_shares_not_yet_loaded() {
     app.set_os_for_test("local", crate::zfs::host_health::HostOs::FreeBsd);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.nfs_available = Some(true); // availability known, but the share list itself was never refreshed
     app.handle_key(KeyCode::Char('N'));
@@ -3372,7 +3372,7 @@ fn handle_key_n_on_permissions_tab_with_no_dataset_selected_does_not_panic_or_op
 #[test]
 fn handle_key_n_on_permissions_tab_opens_grant_permission_form() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_permissions_tab(&mut app);
     app.handle_key(KeyCode::Char('n'));
@@ -3388,7 +3388,7 @@ fn handle_key_n_on_permissions_tab_opens_grant_permission_form() {
 #[test]
 fn handle_key_s_on_permissions_tab_opens_grant_permission_set_form() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_permissions_tab(&mut app);
     app.handle_key(KeyCode::Char('s'));
@@ -3404,7 +3404,7 @@ fn handle_key_s_on_permissions_tab_opens_grant_permission_set_form() {
 #[test]
 fn handle_key_c_on_permissions_tab_opens_create_time_form() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_permissions_tab(&mut app);
     app.handle_key(KeyCode::Char('c'));
@@ -3420,7 +3420,7 @@ fn handle_key_c_on_permissions_tab_opens_create_time_form() {
 #[test]
 fn handle_key_d_and_x_on_permissions_tab_with_no_row_selected_do_not_panic() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_permissions_tab(&mut app);
     app.handle_key(KeyCode::Char('d'));
@@ -3432,7 +3432,7 @@ fn handle_key_d_and_x_on_permissions_tab_with_no_row_selected_do_not_panic() {
 #[test]
 fn handle_key_d_on_selected_permission_row_opens_full_revoke_confirm() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_permissions_tab(&mut app);
     app.dataset_permissions = vec![PermissionRow::Set { name: "admin".to_string(), perms: vec!["snapshot".to_string()] }];
@@ -3457,7 +3457,7 @@ fn handle_key_d_on_selected_grant_row_revokes_only_that_rows_own_permissions() {
     // "snapshot" -- it must only ever touch exactly the permissions
     // that row displays, not everything for that recipient+scope.
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_permissions_tab(&mut app);
     app.dataset_permissions = vec![PermissionRow::Grant {
@@ -3489,7 +3489,7 @@ fn handle_key_d_on_selected_grant_row_revokes_only_that_rows_own_permissions() {
 #[test]
 fn handle_key_x_on_selected_permission_row_opens_revoke_specific_form() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_permissions_tab(&mut app);
     app.dataset_permissions = vec![PermissionRow::Grant {
@@ -3532,7 +3532,7 @@ fn handle_key_n_on_hosts_section_opens_add_host_form() {
 fn open_grant_permission_form(app: &mut App) {
     app.handle_key(KeyCode::Tab); // -> Pools
     app.handle_key(KeyCode::Tab); // -> Datasets
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Right); // Right focus, Properties tab
     app.handle_key(KeyCode::Char(']')); // Permissions tab
@@ -3602,7 +3602,7 @@ fn space_toggles_a_value_in_a_multi_select_picker() {
 #[test]
 fn space_is_a_no_op_in_a_single_select_picker() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
@@ -3649,7 +3649,7 @@ fn enter_on_a_multi_select_picker_joins_checked_values_into_the_field_and_closes
 #[test]
 fn enter_on_a_single_select_picker_writes_the_highlighted_value_and_closes_it() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
@@ -3674,7 +3674,7 @@ fn enter_on_a_single_select_picker_writes_the_highlighted_value_and_closes_it() 
 #[test]
 fn enter_on_an_empty_filtered_single_select_picker_is_a_no_op() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
@@ -4494,7 +4494,7 @@ fn handle_key_n_on_acl_tab_with_no_dataset_selected_does_not_panic_or_open_form(
 #[test]
 fn handle_key_n_on_acl_tab_with_no_mountpoint_does_not_panic_or_open_form() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/vol".to_string(), kind: crate::zfs::dataset::DatasetKind::Volume, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets = vec![Dataset { name: "tank/vol".to_string(), kind: crate::zfs::dataset::DatasetKind::Volume, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     app.handle_key(KeyCode::Char('n'));
@@ -4504,7 +4504,7 @@ fn handle_key_n_on_acl_tab_with_no_mountpoint_does_not_panic_or_open_form() {
 #[test]
 fn handle_key_n_on_acl_tab_opens_add_acl_entry_form_appending_at_the_current_count() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     app.acl_entries = vec![
@@ -4531,7 +4531,7 @@ fn submitting_any_form_with_invalid_input_sets_a_status_message_explaining_why()
     // shared fallback every form's failed submission goes through
     // (not ACL-specific), so the fix and its test live here.
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     app.acl_entries_for = Some("/tank/data".to_string());
@@ -4560,7 +4560,7 @@ fn handle_key_n_on_acl_tab_before_acl_has_loaded_shows_status_and_does_not_open_
     // puts the new entry FIRST, ahead of every existing entry,
     // confirmed live. Must refuse until acl_entries_for matches.
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     // acl_entries is empty and acl_entries_for is None -- never refreshed.
@@ -4572,7 +4572,7 @@ fn handle_key_n_on_acl_tab_before_acl_has_loaded_shows_status_and_does_not_open_
 #[test]
 fn handle_key_d_on_acl_tab_with_no_row_selected_does_not_panic() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     app.handle_key(KeyCode::Char('d'));
@@ -4582,7 +4582,7 @@ fn handle_key_d_on_acl_tab_with_no_row_selected_does_not_panic() {
 #[test]
 fn handle_key_d_on_selected_acl_row_opens_remove_confirm_with_its_position() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     app.acl_entries = vec![
@@ -4967,7 +4967,7 @@ fn a_disk_refresh_drops_selected_disks_that_are_missing_or_no_longer_available()
 
 fn app_with_dataset_detail_for(selected: &str) -> App {
     let mut app = App::new(vec!["local".to_string()]);
-    let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{n}")) };
+    let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{n}")), quota: 0, refquota: 0 };
     app.datasets = vec![ds("tank/a"), ds("tank/b")];
     app.datasets_table.select(Some(usize::from(selected != "tank/a")));
     app.dataset_properties = vec![Property { name: "atime".to_string(), value: "on".to_string(), source: PropertySource::Local }];
@@ -4987,7 +4987,7 @@ fn app_with_dataset_detail_for(selected: &str) -> App {
 #[test]
 fn a_dataset_list_refresh_keeps_right_pane_data_that_still_belongs_to_the_selection() {
     let mut app = app_with_dataset_detail_for("tank/a");
-    let same = vec![Dataset { name: "tank/a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/a".to_string()) }];
+    let same = vec![Dataset { name: "tank/a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/a".to_string()), quota: 0, refquota: 0 }];
     app.tx.send(WorkerMsg::Datasets(0, Ok(same))).unwrap();
     app.drain_worker_messages();
     assert_eq!(app.dataset_properties.len(), 1);
@@ -4999,7 +4999,7 @@ fn a_dataset_list_refresh_keeps_right_pane_data_that_still_belongs_to_the_select
 #[test]
 fn a_dataset_list_refresh_that_moves_the_selection_clears_each_right_pane_cache() {
     let mut app = app_with_dataset_detail_for("tank/a");
-    let moved = vec![Dataset { name: "tank/z".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/z".to_string()) }];
+    let moved = vec![Dataset { name: "tank/z".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/z".to_string()), quota: 0, refquota: 0 }];
     app.tx.send(WorkerMsg::Datasets(0, Ok(moved))).unwrap();
     app.drain_worker_messages();
     assert!(app.dataset_properties.is_empty() && app.dataset_properties_for.is_none());
@@ -5638,7 +5638,7 @@ fn up_and_down_move_the_pool_property_rows_in_the_right_pane() {
 #[test]
 fn up_and_down_move_the_row_list_of_the_active_dataset_detail_tab() {
     let mut app = in_section(Section::Datasets);
-    let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{n}")) };
+    let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{n}")), quota: 0, refquota: 0 };
     app.datasets = vec![ds("tank/a"), ds("tank/b")];
     app.dataset_properties = two_props();
     app.dataset_permissions = vec![
@@ -5710,7 +5710,7 @@ fn n_and_a_only_ask_for_a_disk_selection_in_the_disks_section() {
 #[test]
 fn removing_an_acl_entry_needs_the_selection_to_be_inside_the_list() {
     let mut app = in_section(Section::Datasets);
-    app.datasets = vec![Dataset { name: "tank/a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/a".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/a".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some("/tank/a".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.pane_focus = PaneFocus::Right;
     app.dataset_detail_tab = DatasetDetailTab::Acl;
@@ -5872,7 +5872,7 @@ fn a_refresh_falls_back_to_clamping_when_the_selected_item_is_gone() {
 
 #[test]
 fn selection_is_pinned_by_identity_in_datasets_snapshots_and_disks_too() {
-    let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: None };
+    let ds = |n: &str| Dataset { name: n.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: None, quota: 0, refquota: 0 };
     let mut app = in_section(Section::Datasets);
     app.datasets = vec![ds("tank/a"), ds("tank/b")];
     app.datasets_table.select(Some(1));
@@ -6773,7 +6773,7 @@ fn destroy_app() -> App {
     let mut app = App::new(vec!["local".to_string()]);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab); // -> Datasets
-    let ds = |name: &str| crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None };
+    let ds = |name: &str| crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 };
     app.datasets = vec![ds("tank/data"), ds("tank/data/a"), ds("tank/data/b"), ds("tank/data2"), ds("tank/other")];
     app.datasets_table.select(Some(0));
     let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 0 };
@@ -7017,7 +7017,7 @@ fn each_form_problem_says_which_field_is_wrong() {
 
 fn acl_app_with_acltype(value: Option<&str>) -> App {
     let mut app = App::new(vec!["local".to_string()]);
-    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()) }];
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: Some("/tank/data".to_string()), quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     enter_datasets_acl_tab(&mut app);
     app.acl_entries = vec![crate::acl::AclEntry { tag: crate::acl::AclTag::Owner, permissions: vec!["read_data".to_string()], flags: vec![], entry_type: crate::acl::AclEntryType::Allow }];
@@ -7089,7 +7089,7 @@ fn uppercase_y_and_n_also_only_select_so_caps_lock_cannot_leave_the_user_stuck()
 }
 
 fn ds_named(name: &str, mountpoint: Option<&str>) -> crate::zfs::dataset::Dataset {
-    crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string) }
+    crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: mountpoint.map(str::to_string), quota: 0, refquota: 0 }
 }
 
 fn datasets_app_selecting(datasets: Vec<crate::zfs::dataset::Dataset>, selected: &str) -> App {
@@ -8677,6 +8677,7 @@ fn c_in_hosts_checks_the_selected_host_and_says_what_it_found() {
     assert_eq!(app.status_message.as_deref(), Some("fbsd16: disks fine, shares fine"));
     assert!(crate::daemon::smart_check::SmartFile::load(&dir.path().join("smart.json")).hosts.contains_key("fbsd16"));
     assert!(crate::daemon::shares_check::SharesFile::load(&dir.path().join("shares.json")).hosts.contains_key("fbsd16"));
+    assert!(crate::daemon::storage_check::StorageFile::load(&dir.path().join("storage.json")).hosts.contains_key("fbsd16"), "`c` also refreshes the quota reading");
     assert!(crate::daemon::checks::read_marker(dir.path()).is_none(), "the marker is gone when the check is done");
 }
 
@@ -8944,4 +8945,151 @@ fn shares_on_illumos_are_listed_read_only_with_the_service_state_and_no_freebsd_
     assert!(keys.contains(&"↑↓") && keys.contains(&"r") && !keys.contains(&"Enter") && !keys.contains(&"d"), "{keys:?}");
     app.selected_host = 0;
     assert!(app.shares_editable());
+}
+
+/// Datasets with the Properties tab focused on a filesystem (or volume) that uses 5G (3G of its own), has 100G available
+/// and the given limits (bytes, `0` = none).
+fn quota_app(volume: bool, quota: u64, refquota: u64, reservation: u64, refreservation: u64) -> App {
+    let g: u64 = 1 << 30;
+    let mut app = App::new(vec!["local".to_string()]);
+    app.handle_key(KeyCode::Tab);
+    app.handle_key(KeyCode::Tab); // -> Datasets
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
+    app.datasets_table.select(Some(0));
+    app.handle_key(KeyCode::Right);
+    let prop = |name: &str, value: u64| Property { name: name.to_string(), value: value.to_string(), source: PropertySource::Local };
+    app.dataset_properties = vec![
+        prop("quota", quota),
+        prop("refquota", refquota),
+        prop("reservation", reservation),
+        prop("refreservation", refreservation),
+        Property { name: "used".into(), value: (5 * g).to_string(), source: PropertySource::Other("-".into()) },
+        Property { name: "referenced".into(), value: (3 * g).to_string(), source: PropertySource::Other("-".into()) },
+        Property { name: "available".into(), value: (100 * g).to_string(), source: PropertySource::Other("-".into()) },
+        Property { name: "type".into(), value: if volume { "volume" } else { "filesystem" }.into(), source: PropertySource::Other("-".into()) },
+    ];
+    app
+}
+
+/// Opens the edit form on the property `name` (selects its row, presses Enter).
+fn open_property(app: &mut App, name: &str) {
+    let row = app.dataset_properties.iter().position(|p| p.name == name).unwrap();
+    app.dataset_properties_table.select(Some(row));
+    app.handle_key(KeyCode::Enter);
+}
+
+/// Replaces the single field's text and presses Enter; returns what the form gave back.
+fn submit_value(app: &mut App, text: &str) -> Option<PendingAction> {
+    for _ in 0..40 {
+        app.handle_modal_key(KeyCode::Backspace);
+    }
+    for c in text.chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    app.handle_modal_key(KeyCode::Enter)
+}
+
+/// A limit change always asks first: takes the Confirm the form raised and answers y then Enter.
+fn confirm_limit_change(app: &mut App) -> PendingAction {
+    match app.modal.take() {
+        Some(crate::ui::modal::Modal::Confirm { action, prompt, .. }) => {
+            assert!(prompt.contains("zfs set"), "{prompt}");
+            action
+        }
+        other => panic!("expected a Confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn enter_on_a_quota_row_prefills_a_human_size_and_none_for_unset() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 10 * g, 0, 0, 0);
+    open_property(&mut app, "quota");
+    let Some(crate::ui::modal::Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[0].value, "10G");
+    app.modal = None;
+    open_property(&mut app, "refquota");
+    let Some(crate::ui::modal::Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[0].value, "none");
+}
+
+#[test]
+fn a_quota_below_use_keeps_the_form_open_with_our_message() {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(submit_value(&mut app, "4G").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "the form stays open");
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("already use")), "{:?}", app.status_error);
+    assert!(submit_value(&mut app, "ten gigs").is_none() && app.status_error.as_deref().is_some_and(|m| m.contains("not a size")));
+}
+
+#[test]
+fn every_limit_change_asks_first_and_sends_exact_bytes_and_none_as_none() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(submit_value(&mut app, "20G").is_none(), "even a roomy quota is confirmed");
+    let action = confirm_limit_change(&mut app);
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: (20 * g).to_string() });
+    let mut app = quota_app(false, 20 * g, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(submit_value(&mut app, "none").is_none(), "removing a limit is confirmed too");
+    let action = confirm_limit_change(&mut app);
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: "none".into() });
+}
+
+#[test]
+fn a_quota_with_under_ten_percent_headroom_asks_y_then_enter() {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(submit_value(&mut app, "5G").is_none(), "5G is exactly what is used: writes would fail at once");
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, action, choice: None }) => {
+            assert!(prompt.contains("tank/data") && prompt.contains("quota"), "{prompt}");
+            assert!(matches!(&action.call, MutationCall::SetDatasetProperty { key, .. } if key == "quota"));
+        }
+        other => panic!("expected a Confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_volume_refuses_quota_and_still_takes_the_reservations() {
+    let mut app = quota_app(true, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(app.modal.is_none(), "no form for a volume's quota");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("volume")), "{:?}", app.status_message);
+    for key in ["refreservation", "reservation"] {
+        open_property(&mut app, key);
+        assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "{key}");
+        app.modal = None;
+    }
+}
+
+#[test]
+fn a_reservation_above_the_quota_is_refused_with_the_quota_named() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 10 * g, 0, 0, 0);
+    open_property(&mut app, "reservation");
+    assert!(submit_value(&mut app, "12G").is_none());
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("larger than the quota")), "{:?}", app.status_error);
+}
+
+#[test]
+fn zero_means_none_in_the_quota_form_and_the_prompt_shows_a_readable_size() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 20 * g, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(submit_value(&mut app, "0").is_none());
+    let action = confirm_limit_change(&mut app);
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: "none".into() });
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    app.dataset_properties_for = Some("tank/other".to_string());
+    assert!(submit_value(&mut app, "20G").is_none(), "facts of another dataset must not validate this one");
+    app.dataset_properties_for = Some("tank/data".to_string());
+    assert!(submit_value(&mut app, "5G").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("quota=5368709120 (5G)"), "{prompt}"),
+        other => panic!("expected a Confirm, got {other:?}"),
+    }
 }

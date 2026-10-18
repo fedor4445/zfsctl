@@ -327,6 +327,7 @@ pub struct App {
     /// What the daemon's daily disk check found (`smart.json`), reloaded with the Dashboard.
     pub smart: crate::daemon::smart_check::SmartFile,
     pub shares_check: crate::daemon::shares_check::SharesFile,
+    pub storage_check: crate::daemon::storage_check::StorageFile,
     /// The check that is running now (a fresh `checks-running.json`), if any.
     pub checks_marker: Option<crate::daemon::checks::Marker>,
     /// How often the list on screen reloads by itself; `None` is off. Set from `[ui]` at start and after a save in Settings.
@@ -537,6 +538,7 @@ impl App {
             settings_table: TableState::default(),
             smart: crate::daemon::smart_check::SmartFile::default(),
             shares_check: crate::daemon::shares_check::SharesFile::default(),
+            storage_check: crate::daemon::storage_check::StorageFile::default(),
             checks_marker: None,
             auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
@@ -972,7 +974,14 @@ impl App {
                 let Some(_running) = crate::daemon::checks::RunGuard::start(&state_dir, "tui", Some(&host)) else {
                     return format!("{host}: another check is running; try again in a moment");
                 };
+                // The quota reading rides along, at the same time and within the same deadline (one `zfs list`, merged into
+                // storage.json like the other two), so a host that hangs holds neither.
+                let storage = {
+                    let (dir, one, runner) = (state_dir.clone(), host.clone(), Arc::clone(&runner));
+                    std::thread::spawn(move || crate::daemon::storage_check::run_pass(&dir, &[(one, runner)], chrono::Utc::now(), deadline))
+                };
                 let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], chrono::Utc::now(), deadline);
+                let _ = storage.join();
                 done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe(&host, checks))
             }))
             .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
@@ -1015,6 +1024,7 @@ impl App {
     fn reload_check_files(&mut self) {
         self.smart = crate::daemon::smart_check::SmartFile::load(&self.state_dir.join("smart.json"));
         self.shares_check = crate::daemon::shares_check::SharesFile::load(&self.state_dir.join("shares.json"));
+        self.storage_check = crate::daemon::storage_check::StorageFile::load(&self.state_dir.join("storage.json"));
         self.refresh_checks_marker();
     }
 
@@ -1063,6 +1073,7 @@ impl App {
             thresholds: &self.dashboard_thresholds,
             smart: &self.smart,
             shares: &self.shares_check,
+            storage: &self.storage_check,
             running: self.checks_marker.as_ref(),
             now: chrono::Utc::now(),
         })
@@ -1493,10 +1504,19 @@ impl App {
             {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
-                        if prop.source.is_editable() {
+                        let guided = crate::zfs::quota::KEYS.contains(&prop.name.as_str());
+                        if guided && matches!(prop.name.as_str(), "quota" | "refquota") && self.dataset_properties.iter().any(|p| p.name == "type" && p.value == "volume") {
+                            self.status_message = Some(format!("'{}' does not apply to a volume: it has its volsize and the reservations", prop.name));
+                        } else if prop.source.is_editable() {
+                            // A size is shown as 10G (or none) and typed the same way; the exact bytes are sent.
+                            let (label, value) = if guided {
+                                (format!("{} (10G, 500M, none)", prop.name), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "none".to_string(), crate::zfs::quota::format_size))
+                            } else {
+                                (prop.name.clone(), prop.value.clone())
+                            };
                             self.modal = Some(Modal::Form {
                                 title: format!("Edit '{}' on dataset '{dataset}'", prop.name),
-                                fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
+                                fields: vec![FormField { label, value }],
                                 focused: 0,
                                 description: crate::zfs::property::describe(&prop.name).map(str::to_string),
                                 kind: FormKind::EditDatasetProperty { host: self.selected_host, dataset, key: prop.name.clone() },

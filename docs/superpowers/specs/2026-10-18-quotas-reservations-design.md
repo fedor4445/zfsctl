@@ -41,7 +41,7 @@ hard to do wrong.
 ## Constraints
 
 - Works through `zfs set`/`zfs get`/`zfs list` only: no new sudoers entry, works on FreeBSD, Linux and illumos hosts.
-- Raising or removing a limit is a plain confirm; **lowering a quota or raising a reservation** gets the two-key confirm
+- (Superseded 2026-10-18 by the user: **every** limit change is confirmed with y then Enter; the headroom and reservation-size rule only decides what the question warns about.) Raising or removing a limit is a plain confirm; **lowering a quota or raising a reservation** gets the two-key confirm
   (the user's data-safety rule), because they can make writes fail for the people using the dataset.
 - Value parsing and the arithmetic live in one pure module with tests; the form is thin.
 - The general property form keeps working for every other property and for these four if someone prefers it.
@@ -68,8 +68,9 @@ Spec, plan, tests, whole-branch review, live check on the hub and a VM (set a 1G
   reservation) must be <= the dataset's `available`.
 - **Confirm tiers.** A change that leaves under 10% headroom over current use (writes would soon fail), or raises a reservation
   by more than 10% of the pool's available space, is the two-key confirm. Everything else is plain. Removing a limit is plain.
-- **Volumes.** Offered: `refreservation` (`none` is allowed and normal for sparse volumes). `reservation` and the quotas are
-  not offered for volumes; verify on a VM whether `reservation` is settable on one and relax if so.
+- **Volumes (verified on the hub, FreeBSD OpenZFS).** `reservation` and `refreservation` are settable on a volume (`none` is
+  normal for sparse ones); `quota` and `refquota` are not (`does not apply to datasets of this type`). The limit pairs ZFS
+  rejects match the refusal matrix above, and a reservation larger than the refquota is allowed.
 - **Where.** The guided edit is `Enter` on these rows of the dataset Properties tab (the pool root dataset included). The
   Datasets panel's Quota line shows only `quota` today; it is extended to show `refquota`.
 

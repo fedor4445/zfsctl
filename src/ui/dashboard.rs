@@ -310,6 +310,8 @@ pub struct Inputs<'a> {
     pub smart: &'a crate::daemon::smart_check::SmartFile,
     /// What the daily check found about file sharing (`shares.json`).
     pub shares: &'a crate::daemon::shares_check::SharesFile,
+    /// What the storage check found: datasets near their quota (`storage.json`).
+    pub storage: &'a crate::daemon::storage_check::StorageFile,
     /// The check that is running now, if any (a fresh marker).
     pub running: Option<&'a crate::daemon::checks::Marker>,
     pub now: DateTime<Utc>,
@@ -423,6 +425,17 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Shares, target: Some(found.host) });
+    }
+    for found in crate::daemon::storage_check::problems(inputs.storage, inputs.thresholds.quota).into_iter().filter(|p| reached(&p.host)) {
+        let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
+        let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
+        items.push(Item { level, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
+    }
+    // The storage check runs every ten minutes: silent for three times that is a loop that stopped.
+    if let (true, Some(last)) = (daemon_running, inputs.storage.ran_at) {
+        if inputs.now - last > chrono::Duration::minutes(30) {
+            items.push(Item { level: Level::Watch, subject: "checks".to_string(), what: format!("the quota check last ran {}", age_text(inputs.now, last)), goto: Section::Jobs, target: None });
+        }
     }
     // The newest answer over both files: a file that is missing is no data, not "never checked".
     let newest = [inputs.smart.newest_check(), inputs.shares.newest_check()].into_iter().flatten().max();
@@ -804,16 +817,17 @@ mod tests {
         thresholds: Thresholds,
         smart: crate::daemon::smart_check::SmartFile,
         shares: crate::daemon::shares_check::SharesFile,
+        storage: crate::daemon::storage_check::StorageFile,
         marker: Option<crate::daemon::checks::Marker>,
     }
 
     impl Fixture {
         fn new(view: JobsView) -> Fixture {
-            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default(), shares: Default::default(), marker: None }
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
         }
 
         fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, shares: &self.shares, running: self.marker.as_ref(), now: now() })
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
         }
     }
 
@@ -1004,6 +1018,58 @@ mod tests {
         let probe = reached(vec![]);
         let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
         fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Shares).collect()
+    }
+
+    fn quota_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Datasets).collect()
+    }
+
+    fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
+        use crate::daemon::storage_check::{LimitedDataset, StorageResult};
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], error: None }
+    }
+
+    #[test]
+    fn a_dataset_near_its_quota_is_a_line_that_goes_to_datasets_and_an_unreached_host_has_none() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.storage.hosts.insert("h".into(), storage_entry(4, "tank/home", 94));
+        fx.storage.hosts.insert("red".into(), storage_entry(4, "tank/db", 99));
+        fx.storage.hosts.insert("gone".into(), storage_entry(4, "tank/x", 99));
+        let items = quota_items(&fx, &["h", "red"]);
+        assert_eq!(items.len(), 2, "{items:?}");
+        let by = |s: &str| items.iter().find(|i| i.subject == s).unwrap();
+        assert_eq!((by("h").level, by("red").level), (Level::Watch, Level::Issue));
+        assert!(by("h").what.starts_with("tank/home 94% of its 100 quota") && by("h").what.contains("checked 4m ago"), "{}", by("h").what);
+        assert_eq!(by("h").target.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn a_quota_check_that_stopped_running_is_one_yellow_line_but_only_while_the_daemon_runs() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.storage.ran_at = Some(now() - Duration::minutes(12));
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let stale = |fx: &Fixture| -> Vec<Item> { fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("quota check")).collect() };
+        assert!(stale(&fx).is_empty(), "12 minutes is within the 10-minute cadence's slack");
+        fx.storage.ran_at = Some(now() - Duration::minutes(45));
+        let items = stale(&fx);
+        assert_eq!((items.len(), items[0].level), (1, Level::Watch));
+        assert!(items[0].what.contains("45m"), "{}", items[0].what);
+        let mut down = Fixture::new(view(vec![], &[], beat(1000)));
+        down.storage.ran_at = Some(now() - Duration::minutes(45));
+        assert!(stale(&down).is_empty(), "no daemon, no complaint about the daemon's check");
+    }
+
+    #[test]
+    fn the_quota_thresholds_come_from_the_dashboard_settings() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.storage.hosts.insert("h".into(), storage_entry(1, "tank/home", 85));
+        assert!(quota_items(&fx, &["h"]).is_empty(), "85% is under the default 90");
+        fx.thresholds.quota = (80, 95);
+        assert_eq!(quota_items(&fx, &["h"]).len(), 1);
     }
 
     #[test]

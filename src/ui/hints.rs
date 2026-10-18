@@ -460,7 +460,7 @@ mod tests {
     }
 
     fn dataset(name: &str) -> Dataset {
-        Dataset { name: name.to_string(), kind: DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{name}")) }
+        Dataset { name: name.to_string(), kind: DatasetKind::Filesystem, used: 1, available: 1, referenced: 1, mountpoint: Some(format!("/{name}")), quota: 0, refquota: 0 }
     }
 
     fn prop(name: &str) -> Property {
