@@ -1155,14 +1155,24 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     });
     let widths = [Constraint::Length(24), Constraint::Length(8), Constraint::Min(20)];
     let mut hints = Vec::new();
+    // The services' own names: FreeBSD's `nfsd` and `smbd`, `nfs-server` and `smbd` on Linux, SMF's `nfs/server` and `smb/server`.
+    let (nfs, smb) = match app.host_os(app.selected_host) {
+        Some(os @ (crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos)) => (crate::zfs::share::nfs_name(os), crate::zfs::share::smb_name(os)),
+        _ => ("nfsd", "smbd"),
+    };
+    let (nfs_text, smb_text) = (format!("NFS unavailable: {nfs} not running"), format!("SMB unavailable: {smb} not running"));
     if app.nfs_available == Some(false) {
-        hints.push("NFS unavailable: nfsd not running");
+        hints.push(nfs_text.as_str());
     }
     if app.samba_available == Some(false) {
-        hints.push("SMB unavailable: smbd not running");
+        hints.push(smb_text.as_str());
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
-    let title = format!("Shares — {} ('r' refresh, Enter edit, 'd' remove){hint_suffix}", app.active_host_name());
+    let actions = match app.host_os(app.selected_host) {
+        Some(os) if !app.shares_editable() => format!("'r' refresh; read-only on {}", os.word()),
+        _ => "'r' refresh, Enter edit, 'd' remove".to_string(),
+    };
+    let title = format!("Shares — {} ({actions}){hint_suffix}", app.active_host_name());
     let table = Table::new(rows, widths)
         .header(Row::new(vec!["Dataset", "Protocol", "Details"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
@@ -2041,8 +2051,8 @@ mod tests {
         };
         let dim = app.theme.dim();
         let dimmed = |label: &str| style_of(label).0 == dim.fg.unwrap_or(ratatui::style::Color::Reset) && style_of(label).1.contains(dim.add_modifier | Modifier::empty());
-        assert!(dimmed("Boot Envs") && dimmed("Shares"), "unsupported entries are dimmed");
-        assert!(!dimmed("Disks") && !dimmed("Pools") && !dimmed("Jobs"), "supported ones are not");
+        assert!(dimmed("Boot Envs"), "unsupported entries are dimmed");
+        assert!(!dimmed("Disks") && !dimmed("Shares") && !dimmed("Pools") && !dimmed("Jobs"), "supported ones are not");
         app.selected_host = 0;
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf2 = terminal.backend().buffer().clone();
@@ -2054,11 +2064,23 @@ mod tests {
     #[test]
     fn a_dimmed_section_says_why_in_its_body() {
         let mut app = linux_host_app();
-        for (section, text) in [(Section::BootEnvs, "Boot Envs is not supported on Linux hosts yet."), (Section::Shares, "Shares is not supported on Linux hosts yet.")] {
+        for (section, text) in [(Section::BootEnvs, "Boot Envs is not supported on Linux hosts yet.")] {
             app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
             let screen = render(&mut app, 120, 20).join("\n");
             assert!(screen.contains(text), "{screen}");
         }
+    }
+
+    #[test]
+    fn the_shares_title_names_the_services_of_the_hosts_os() {
+        let mut app = linux_host_app();
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+        (app.nfs_available, app.samba_available) = (Some(false), Some(false));
+        let screen = render(&mut app, 160, 12).join("\n");
+        assert!(screen.contains("NFS unavailable: nfs-server not running") && screen.contains("read-only on Linux"), "{screen}");
+        app.selected_host = 0;
+        let screen = render(&mut app, 160, 12).join("\n");
+        assert!(screen.contains("NFS unavailable: nfsd not running"), "{screen}");
     }
 
     #[test]

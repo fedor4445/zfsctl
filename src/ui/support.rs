@@ -8,9 +8,15 @@ use crate::zfs::host_health::HostOs;
 /// Whether `section` works on a host running `os` (`None`: not read yet).
 pub fn supports(os: Option<HostOs>, section: Section) -> bool {
     match (os, section) {
-        (Some(HostOs::Linux), Section::BootEnvs | Section::Shares | Section::DatasetAcl) | (Some(HostOs::Illumos), Section::Shares | Section::DatasetAcl) => false,
+        (Some(HostOs::Linux), Section::BootEnvs | Section::DatasetAcl) | (Some(HostOs::Illumos), Section::DatasetAcl) => false,
         _ => true,
     }
+}
+
+/// Shares are listed everywhere but created, edited and removed only with FreeBSD's tools (the `exports(5)` syntax of
+/// `sharenfs`, the managed Samba block, `service`): on Linux and illumos the section is read-only.
+pub fn shares_editable(os: Option<HostOs>) -> bool {
+    !matches!(os, Some(HostOs::Linux | HostOs::Illumos))
 }
 
 /// Whether a key of the Boot Envs section is offered on a host running `os`: on illumos `beadm` has no equivalent of
@@ -64,22 +70,26 @@ mod tests {
     }
 
     #[test]
-    fn linux_supports_disks_but_not_boot_envs_shares_or_acl_and_illumos_adds_boot_envs() {
-        assert!(supports(Some(HostOs::Linux), Section::Disks) && supports(Some(HostOs::Illumos), Section::Disks));
-        for gated in [Section::BootEnvs, Section::Shares, Section::DatasetAcl] {
-            assert!(!supports(Some(HostOs::Linux), gated), "Linux {gated:?}");
+    fn linux_supports_disks_and_shares_but_not_boot_envs_or_acl_and_illumos_adds_boot_envs() {
+        for os in [HostOs::Linux, HostOs::Illumos] {
+            assert!(supports(Some(os), Section::Disks) && supports(Some(os), Section::Shares), "{os:?}");
+            assert!(!supports(Some(os), Section::DatasetAcl), "{os:?}");
         }
+        assert!(!supports(Some(HostOs::Linux), Section::BootEnvs));
         assert!(supports(Some(HostOs::Illumos), Section::BootEnvs), "beadm list works on illumos");
-        for gated in [Section::Shares, Section::DatasetAcl] {
-            assert!(!supports(Some(HostOs::Illumos), gated), "illumos {gated:?}");
-        }
     }
 
     #[test]
     fn only_those_sections_are_ever_gated() {
         let gated = |os| ALL.iter().copied().filter(|s| !supports(Some(os), *s)).collect::<Vec<Section>>();
-        assert_eq!(gated(HostOs::Linux), [Section::Shares, Section::BootEnvs, Section::DatasetAcl]);
-        assert_eq!(gated(HostOs::Illumos), [Section::Shares, Section::DatasetAcl]);
+        assert_eq!(gated(HostOs::Linux), [Section::BootEnvs, Section::DatasetAcl]);
+        assert_eq!(gated(HostOs::Illumos), [Section::DatasetAcl]);
+    }
+
+    #[test]
+    fn shares_can_be_changed_only_where_the_freebsd_tools_exist() {
+        assert!(shares_editable(None) && shares_editable(Some(HostOs::FreeBsd)) && shares_editable(Some(HostOs::Other)));
+        assert!(!shares_editable(Some(HostOs::Linux)) && !shares_editable(Some(HostOs::Illumos)));
     }
 
     #[test]

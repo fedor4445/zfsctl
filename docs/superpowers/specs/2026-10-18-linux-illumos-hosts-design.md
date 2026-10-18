@@ -94,3 +94,17 @@ disks on both; Boot Envs lists the OmniOS boot environments and says "not suppor
 the right service state on both; Dashboard and Hosts rows show real memory, CPU, load, swap once phase B is done; no
 sudo errors in the TUI or the daemon log), `print-sudoers` and `check-host` verified against both hosts, book updated,
 merged and installed.
+
+## Step 4: Shares on Linux and illumos (decided 2026-10-18)
+
+- **Service state** with each OS's own tool, no sudo: Linux `systemctl show -p LoadState -p ActiveState <unit>` (`nfs-server`,
+  `smbd`; `LoadState=not-found` is "not installed"), illumos `svcs -H -o state svc:/network/nfs/server:default` and
+  `svc:/network/smb/server:default` (`online` is running; a pattern that matches nothing is "not installed").
+- **The Shares section works read-only** on both: it lists the datasets that have `sharenfs` set (the raw value; FreeBSD's
+  `exports(5)` field parsing does not apply) and, on illumos, `sharesmb` (native SMB); the title shows the service state.
+  Creating, editing and removing shares is FreeBSD-only for now: `Enter`, `d`, `N` and `M` are not offered elsewhere.
+- **The daily check** (and `c` in Hosts) uses the same states: NFS shares while the NFS service is not running is red, on
+  both OSes; SMB shares are counted only on illumos (`sharesmb`; on Linux Samba shares live in `smb.conf`, which zfsctl
+  does not read yet). A service that is not installed counts as not running when the host has shares for it.
+- Support table: Shares yes (read-only) on Linux and illumos; the dataset ACL tab and Boot Envs on Linux stay unsupported.
+- Not in scope: managing shares on Linux (`exportfs`, Samba) and illumos (`sharectl`).

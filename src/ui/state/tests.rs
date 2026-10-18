@@ -8559,7 +8559,7 @@ fn enter_on_a_resilver_line_selects_that_host_in_pools() {
 fn enter_on_a_share_line_selects_that_host_in_shares_and_the_marker_reaches_the_dashboard() {
     let (mut app, dir) = dash_app();
     let mut file = crate::daemon::shares_check::SharesFile::default();
-    file.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: chrono::Utc::now(), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None });
+    file.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: chrono::Utc::now(), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None, nfs_name: None, smb_name: None });
     file.save(&dir.path().join("shares.json")).unwrap();
     app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
     app.refresh_dashboard();
@@ -8773,8 +8773,8 @@ fn selecting_a_linux_host_dims_boot_envs_and_a_freebsd_host_restores_it() {
     app.selected_host = 0;
     assert!(app.section_supported(Section::BootEnvs));
     app.selected_host = 1;
-    assert!(!app.section_supported(Section::BootEnvs) && !app.section_supported(Section::Shares) && !app.section_supported(Section::DatasetAcl));
-    assert!(app.section_supported(Section::Disks) && app.section_supported(Section::Pools));
+    assert!(!app.section_supported(Section::BootEnvs) && !app.section_supported(Section::DatasetAcl));
+    assert!(app.section_supported(Section::Disks) && app.section_supported(Section::Shares) && app.section_supported(Section::Pools));
     go_to(&mut app, Section::BootEnvs);
     assert!(!app.current_section_supported());
     app.selected_host = 0;
@@ -8786,14 +8786,12 @@ fn a_dimmed_section_runs_no_command_when_refreshed_and_shows_no_stale_rows() {
     let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
     app.selected_host = 1;
     app.bootenvs = vec![be("left-from-the-hub", true, true, false, None)];
-    app.shares = vec![crate::zfs::share::Share::Nfs { dataset: "tank/x".into(), raw: "on".into(), networks: vec![], hosts: vec![], read_only: false, root: None }];
     let runner: std::sync::Arc<dyn crate::exec::CommandRunner> = std::sync::Arc::new(NoCalls);
     app.refresh_bootenvs(runner.clone());
-    app.refresh_shares(runner.clone());
     app.refresh_dataset_acl(runner, "/tank/x".to_string());
     std::thread::sleep(Duration::from_millis(100));
     app.drain_worker_messages();
-    assert!(app.bootenvs.is_empty() && app.shares.is_empty(), "the other host's rows are gone");
+    assert!(app.bootenvs.is_empty(), "the other host's rows are gone");
     assert!(app.acl_unsupported().is_none() || app.acl_unsupported().is_some_and(|t| t.contains("Linux")));
 }
 
@@ -8814,7 +8812,7 @@ fn the_acl_tab_says_why_on_linux_and_keys_of_a_dimmed_section_are_inert() {
 }
 
 #[test]
-fn the_share_keys_in_datasets_do_nothing_on_a_host_without_shares_support_and_are_not_advertised() {
+fn the_share_keys_in_datasets_do_nothing_on_a_host_where_shares_are_read_only_and_are_not_advertised() {
     let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
     app.selected_host = 1;
     go_to(&mut app, Section::Datasets);
@@ -8826,9 +8824,6 @@ fn the_share_keys_in_datasets_do_nothing_on_a_host_without_shares_support_and_ar
     app.handle_key(KeyCode::Char('M'));
     assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "no share form, no zfs set sharenfs on an illumos host: {:?}", app.modal);
     assert!(!crate::ui::hints::hints(&app).iter().any(|h| h.key == "N" || h.key == "M"), "the keys are not offered");
-    // a refresh of the dimmed section forgets what the other host's screen had loaded
-    app.refresh_shares(std::sync::Arc::new(NoCalls));
-    assert!(!app.shares_loaded);
     // and the FreeBSD host still gets them
     app.selected_host = 0;
     assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "N"));
@@ -8881,4 +8876,41 @@ fn boot_envs_on_illumos_are_listed_with_beadm_and_offer_the_keys_beadm_can_serve
     assert!(app.modal.is_some(), "creating a boot environment opens its form on illumos too");
     app.selected_host = 0;
     assert!(app.bootenv_key_offered('m'), "the FreeBSD host keeps every key");
+}
+
+#[test]
+fn shares_on_illumos_are_listed_read_only_with_the_service_state_and_no_freebsd_tool() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+    app.selected_host = 1;
+    go_to(&mut app, Section::Shares);
+    assert!(app.current_section_supported() && !app.shares_editable());
+    let zfs_get = "rpool/export/nfs-test\tsharenfs\ton\tlocal\ntank/alice\tsharesmb\tname=alice\tlocal\n";
+    let runner = crate::exec::test_support::FakeRunner::new("").route("zfs", "get", zfs_get).route("svcs", "-H", "online\n");
+    app.refresh_shares(std::sync::Arc::new(runner));
+    for _ in 0..100 {
+        app.drain_worker_messages();
+        if app.shares_loaded {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(app.shares.len(), 2, "{:?}", app.shares);
+    assert_eq!((app.nfs_available, app.samba_available), (Some(true), Some(true)));
+    app.shares_table.select(Some(0));
+    for key in [KeyCode::Enter, KeyCode::Char('d')] {
+        app.handle_key(key);
+        assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "{key:?} must not edit a share on illumos");
+    }
+    go_to(&mut app, Section::Datasets);
+    app.datasets = vec![ds_named("tank/alice", Some("/tank/alice"))];
+    app.datasets_table.select(Some(0));
+    for key in ['N', 'M'] {
+        app.handle_key(KeyCode::Char(key));
+        assert!(app.modal.is_none(), "{key} creates FreeBSD-style shares");
+    }
+    go_to(&mut app, Section::Shares);
+    let keys: Vec<&str> = crate::ui::hints::hints(&app).iter().map(|h| h.key).collect();
+    assert!(keys.contains(&"↑↓") && keys.contains(&"r") && !keys.contains(&"Enter") && !keys.contains(&"d"), "{keys:?}");
+    app.selected_host = 0;
+    assert!(app.shares_editable());
 }

@@ -992,7 +992,7 @@ mod tests {
     }
 
     fn shares_entry(hours_ago: i64, nfs_running: bool, nfs_shares: usize, samba_running: bool, smb_shares: usize, smb_error: Option<&str>) -> crate::daemon::shares_check::SharesResult {
-        crate::daemon::shares_check::SharesResult { checked_at: now() - Duration::hours(hours_ago), nfs_running, samba_running, nfs_shares, smb_shares, smb_error: smb_error.map(str::to_string), error: None }
+        crate::daemon::shares_check::SharesResult { checked_at: now() - Duration::hours(hours_ago), nfs_running, samba_running, nfs_shares, smb_shares, smb_error: smb_error.map(str::to_string), error: None, nfs_name: None, smb_name: None }
     }
 
     fn share_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {

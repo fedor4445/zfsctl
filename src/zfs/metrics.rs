@@ -256,7 +256,7 @@ pub struct TargetSample {
 }
 
 /// One full panel refresh. Blocks for about a second; run it off the UI thread.
-pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget, with_contents: bool) -> Result<TargetSample> {
+pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget, with_contents: bool, os: Option<super::host_health::HostOs>) -> Result<TargetSample> {
     let Some(pool_name) = target.pool() else {
         let mut sample = TargetSample { pool: PoolSample::default(), space: None, host: None, snapshot: None, disk: None, share: None, contents: None };
         if let MetricsTarget::Snapshot(name) = target {
@@ -278,7 +278,7 @@ pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget, with_co
         _ => None,
     };
     let share = match target {
-        MetricsTarget::Share { dataset, smb_name } => Some(super::share_detail::sample_share(runner, dataset, smb_name.as_deref())),
+        MetricsTarget::Share { dataset, smb_name } => Some(super::share_detail::sample_share(runner, dataset, smb_name.as_deref(), os)),
         _ => None,
     };
     let contents = match target {
@@ -307,8 +307,8 @@ mod tests {
             .route("zpool", "iostat", IOSTAT_BUSY)
             .route("zpool", "list", "tank\t3000\t1000\t2000\t12\t1.00\n")
             .route("zpool", "status", "config:\n\ttank ONLINE 0 0 0\n");
-        assert!(sample_target(&runner, &MetricsTarget::Pool("tank".into()), false).unwrap().space.is_none());
-        let s = sample_target(&runner, &MetricsTarget::Dataset("tank/data".into()), false).unwrap();
+        assert!(sample_target(&runner, &MetricsTarget::Pool("tank".into()), false, None).unwrap().space.is_none());
+        let s = sample_target(&runner, &MetricsTarget::Dataset("tank/data".into()), false, None).unwrap();
         assert_eq!(s.space.unwrap().used, 105_234_432);
         assert_eq!(s.pool.io.read_ops, 840);
     }
@@ -334,10 +334,10 @@ mod tests {
             .route("zpool", "status", "config:\n\ttank ONLINE 0 0 0\n")
             .route("zfs", "list", "filesystem\nsnapshot\nsnapshot\n");
         let pool = MetricsTarget::Pool("tank".into());
-        assert!(sample_target(&runner, &pool, false).unwrap().contents.is_none());
-        let with = sample_target(&runner, &pool, true).unwrap().contents.unwrap().unwrap();
+        assert!(sample_target(&runner, &pool, false, None).unwrap().contents.is_none());
+        let with = sample_target(&runner, &pool, true, None).unwrap().contents.unwrap().unwrap();
         assert_eq!((with.filesystems, with.snapshots), (1, 2));
-        assert!(sample_target(&runner, &MetricsTarget::Dataset("tank/data".into()), true).unwrap().contents.is_none());
+        assert!(sample_target(&runner, &MetricsTarget::Dataset("tank/data".into()), true, None).unwrap().contents.is_none());
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
             .route("zpool", "list", "tank\t3000\t1000\t2000\t12\t1.00\n")
             .route("zpool", "status", "config:\n\ttank ONLINE 0 0 0\n")
             .route_failure("zfs", "list", "cannot open", 1);
-        let s = sample_target(&runner, &MetricsTarget::Pool("tank".into()), true).unwrap();
+        let s = sample_target(&runner, &MetricsTarget::Pool("tank".into()), true, None).unwrap();
         assert!(s.contents.unwrap().is_err());
         assert_eq!(s.pool.io.read_ops, 840, "the I/O sample is unaffected");
     }
