@@ -370,16 +370,32 @@ fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
     descendant.strip_prefix(ancestor).is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// Whether two enabled, well-formed snapshot jobs would prune each other's snapshots: same host and
-/// prefix, and datasets that are equal or where a recursive job covers the other's dataset (a
-/// recursive job sees, and destroys with `-r`, the same-named snapshots of its descendants).
+/// What an enabled, well-formed job that takes snapshots of its own prunes: its dataset, the prefix of those snapshots
+/// and whether it also covers descendants. A snapshot job takes `<prefix>-<stamp>`; a backup or cloud mirror whose source is
+/// `new` takes `zit-<job id>-<stamp>` (on its dataset only) and keeps only the newest few of them.
+fn snapshot_taker(j: &Job) -> Option<(&str, &str, bool)> {
+    if !j.enabled {
+        return None;
+    }
+    let dataset = j.dataset.as_deref().unwrap_or("");
+    match j.kind.as_str() {
+        KIND_SNAPSHOT if check_snapshot_fields(j).is_ok() => Some((dataset, effective_prefix(j), j.recursive)),
+        KIND_BACKUP if check_backup_fields(j).is_ok() && matches!(backup_source(j), BackupSource::Fresh) => Some((dataset, "", false)),
+        KIND_MIRROR if check_mirror_fields(j).is_ok() && matches!(backup_source(j), BackupSource::Fresh) => Some((dataset, "", false)),
+        _ => None,
+    }
+}
+
+/// Whether two enabled, well-formed jobs would prune each other's snapshots: same host and prefix, and datasets that are
+/// equal or where a recursive job covers the other's dataset (a recursive job sees, and destroys with `-r`, the
+/// same-named snapshots of its descendants). A backup or mirror that takes fresh snapshots counts, with its own prefix.
 fn clashes(a: &Job, b: &Job) -> bool {
-    let live = |j: &Job| j.enabled && j.kind == KIND_SNAPSHOT && check_snapshot_fields(j).is_ok();
-    if !live(a) || !live(b) || a.host != b.host || effective_prefix(a) != effective_prefix(b) {
+    let (Some((da, pa, ra)), Some((db, pb, rb))) = (snapshot_taker(a), snapshot_taker(b)) else { return false };
+    let prefix = |j: &Job, own: &str| if own.is_empty() { fresh_prefix(&j.id) } else { own.to_string() };
+    if a.host != b.host || prefix(a, pa) != prefix(b, pb) {
         return false;
     }
-    let (da, db) = (a.dataset.as_deref().unwrap_or(""), b.dataset.as_deref().unwrap_or(""));
-    da == db || (a.recursive && is_ancestor(da, db)) || (b.recursive && is_ancestor(db, da))
+    da == db || (ra && is_ancestor(da, db)) || (rb && is_ancestor(db, da))
 }
 
 /// Whether two enabled, well-formed replicate jobs write to the same place: their incrementals
@@ -776,6 +792,37 @@ mod tests {
         let mut edited = a.clone();
         edited.keep = Some(9);
         assert!(clashing_job(&[a], &edited).is_none(), "a job never clashes with itself");
+    }
+
+    #[test]
+    fn a_snapshot_job_with_the_prefix_a_backup_or_mirror_uses_for_its_own_snapshots_clashes_with_it() {
+        let mut backup = Job::test_backup("b1", "tank/data", "x", "/repo", "/pw");
+        backup.source = Some(SOURCE_NEW.into());
+        let mut mirror = Job::test_mirror("m1", "tank/data", "x", "b2:bucket/photos");
+        mirror.source = Some(SOURCE_NEW.into());
+        for fresh in [&backup, &mirror] {
+            let same = Job::test_snapshot("s", "tank/data", &fresh_prefix(&fresh.id), 5);
+            assert_eq!(clashing_job(std::slice::from_ref(fresh), &same).map(|j| j.id.as_str()), Some(fresh.id.as_str()), "{}", fresh.id);
+            assert_eq!(clashing_job(std::slice::from_ref(&same), fresh).map(|j| j.id.as_str()), Some("s"), "both ways: {}", fresh.id);
+            let reason = clash_reason(fresh, &same).expect("a reason");
+            assert!(reason.contains(&format!("'{}'", fresh.id)), "{reason}");
+            // not the same prefix, not the same dataset, a disabled job and another host do not clash
+            assert!(clashing_job(std::slice::from_ref(fresh), &Job::test_snapshot("s", "tank/data", "hourly", 5)).is_none());
+            assert!(clashing_job(std::slice::from_ref(fresh), &Job::test_snapshot("s", "tank/other", &fresh_prefix(&fresh.id), 5)).is_none());
+            let mut off = same.clone();
+            off.enabled = false;
+            assert!(clashing_job(std::slice::from_ref(fresh), &off).is_none());
+            let mut elsewhere = same.clone();
+            elsewhere.host = "fbsd16".into();
+            assert!(clashing_job(std::slice::from_ref(fresh), &elsewhere).is_none());
+            // a recursive snapshot job on the parent also prunes the descendant's `zit-` snapshots
+            let mut parent = Job::test_snapshot("p", "tank", &fresh_prefix(&fresh.id), 5);
+            parent.recursive = true;
+            assert!(clashing_job(std::slice::from_ref(fresh), &parent).is_some());
+        }
+        // a backup that reads the newest `<prefix>-` snapshots takes none of its own
+        let reading = Job::test_backup("b2", "tank/data", "hourly", "/repo", "/pw");
+        assert!(clashing_job(std::slice::from_ref(&reading), &Job::test_snapshot("s", "tank/data", "zit-b2", 5)).is_none());
     }
 
     #[test]
