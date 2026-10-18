@@ -63,32 +63,32 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 17 Oct 20:00                                                                                                 ▲ 4 to watch
+┌zfsctl────────────────┐ Dashboard  ·  Sun 18 Oct 16:15                                                                                                    ✖ 1 issue
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Pools                 │   ▲ watch fbsd16    zroot never scrubbed
-│Datasets              │   ▲ watch fbsd16t1  zroot never scrubbed
-│Snapshots             │   ▲ watch fbsd16t2  zroot never scrubbed
-│Disks                 │   ▲ watch local     zroot last scrub 41 d ago
-│Shares                │
-│Boot Envs             │ HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Jobs                  │  Host      State                        Pools  Capacity             Memory             CPU              Load  Scrub     Errors
-│Cloud                 │  local     ▲ zroot last scrub 41 d ago  3      ━━━━╌╌╌╌╌╌ 42%       ━╌╌╌╌╌╌╌╌╌ 14%     ╌╌╌╌╌╌╌╌╌╌ 0%    1.02  41 d ago  0
-│Alerts                │  fbsd16    ▲ zroot never scrubbed       1      ━━━━━━╌╌╌╌ 61%       ━━╌╌╌╌╌╌╌╌ 18%     ╌╌╌╌╌╌╌╌╌╌ 1%    0.14  never     0
-│Settings              │  fbsd16t1  ▲ zroot never scrubbed       2      ━━━━━╌╌╌╌╌ 53%       ━━━━╌╌╌╌╌╌ 43%     ╌╌╌╌╌╌╌╌╌╌ 2%    0.38  never     0
-│                      │  fbsd16t2  ▲ zroot never scrubbed       2      ━━━━━━━╌╌╌ 74%       ━━━━━╌╌╌╌╌ 48%     ╌╌╌╌╌╌╌╌╌╌ 2%    0.62  never     0
+│Pools                 │   ✖ issue omnios  tank 96% full
+│Datasets              │
+│Snapshots             │ HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Disks                 │  Host      State            OS                      Pools  Capacity             Memory             CPU              Load  Scrub    Errors
+│Shares                │  local     ● ok             FreeBSD 15.1            3      ━━━━╌╌╌╌╌╌ 42%       ━━╌╌╌╌╌╌╌╌ 16%     ?                2.54  9 d ago  0
+│Boot Envs             │  fbsd16    ● ok             FreeBSD 16.0            1      ━━━━━━╌╌╌╌ 61%       ━━╌╌╌╌╌╌╌╌ 18%     ?                0.07  today    0
+│Jobs                  │  fbsd16t1  ● ok             FreeBSD 15.1            2      ━━━━━╌╌╌╌╌ 53%       ━━━━━╌╌╌╌╌ 48%     ?                0.40  today    0
+│Cloud                 │  fbsd16t2  ● ok             FreeBSD 15.1            2      ━━━━━━━╌╌╌ 74%       ━━━━━╌╌╌╌╌ 48%     ?                0.43  today    0
+│Alerts                │  ub24      ● ok             Linux 6.8 (Ubuntu 24)   1      ╌╌╌╌╌╌╌╌╌╌ 0%        ╌╌╌╌╌╌╌╌╌╌ 4%      ?                0.00  today    0
+│Settings              │  omnios    ✖ tank 96% full  illumos omnios-r151058  2      ━━━━━━━━━━ 96%       ━╌╌╌╌╌╌╌╌╌ 14%     ?                0.02  today    0
 │                      │
 │                      │ DAEMON AND JOBS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 25859), heartbeat 1s ago
+│                      │   ● daemon  running (pid 70948), heartbeat 0s ago
 │                      │   ● jobs    scrub 2/2 ok
 │                      │
 │                      │ CLOUD ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ○ Backblaze B2      b2          no jobs
-│                      │   ○ SFTP              t1          no jobs
-│                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs
+│                      │     Provider          Remote      Jobs     Last run  Next run         In bucket
+│                      │   ○ Backblaze B2      b2          no jobs  -         -                -
+│                      │   ○ SFTP              t1          no jobs  -         -                -
+│                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -
 │                      │
 │                      │ ALERTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert fbsd16 zroot 86% full (6d ago) · report 2026-10-17
+│                      │   ● monitor on · last alert omnios tank 96% full (51m ago) · report 2026-10-18
 │                      │
 │                      │
 │                      │
@@ -104,7 +104,8 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 - **The header** names the screen and gives the verdict on the right: `all quiet`, or how many things need attention (`1 issue, 1 to watch`). Until every host has answered its first probe it says `checking...`, because a screen that does not know yet must not say all is quiet.
 - **Needs attention** lists the problems, worst first. `✖ issue` (red) is wrong now; `▲ watch` (yellow) is an early warning from today's numbers, such as a pool at 85% or a memory reading that is too high. When all is well it says `nothing needs attention`. It shows six lines and counts the rest (`+3 more`).
 - **Hosts** has a row per host. **OS** (the short name, `Linux 6.8 (Ubuntu 24)`) is the first column to go when the terminal is narrow, before the gauges. State is the same verdict as in the Hosts section, raised (never lowered) by the readings that only the Dashboard has. **Capacity** is how full the fullest pool. **Memory** is memory in use *not counting* free pages, inactive pages and the ZFS cache: on FreeBSD the cache fills most of the RAM by design and gives it back when asked, so counting it would make the screen alarm all the time. **CPU** is the busy share between the last two probes (about 30 seconds). **Load** is the one-minute average and is never coloured. **Scrub** is how long since the last finished scrub (a resilver does not count). **Errors** is the read, write and checksum errors ZFS has counted.
-- **Daemon and jobs, Cloud, Alerts** are one line each: whether the daemon runs and how fresh its heartbeat is, how many jobs of each kind are fine (`backup 0/1 FAILED`), each cloud remote, the provider's name first (`Backblaze B2`, `SFTP`...), with its last result (a bucket's size appears only if you measured it in Cloud), and whether the alert monitor can send mail.
+- **Daemon and jobs** and **Alerts** are one line each: whether the daemon runs and how fresh its heartbeat is, how many jobs of each kind are fine (`backup 0/1 FAILED`), and whether the alert monitor can send mail.
+- **Cloud** has one line per rclone remote under a dimmed header that names the columns: **Provider** (`Backblaze B2`, `SFTP`...), **Remote**, **Jobs** (how many use it, or `no jobs`), **Last run** (the last result and its age), **Next run** (the soonest of its enabled jobs) and **In bucket** (the size from the last time you measured it with `s` in Cloud, with the plan cap if you set one). Measuring lists the bucket and costs requests, so the Dashboard never does it: it shows the last value, which survives a restart, and a measurement that fails leaves the last good value in place. A failed job turns its line red, and a bucket near its cap turns it yellow.
 - **Resilvering and disk health.** A pool that is resilvering (a replaced disk catching up) gets a yellow line, `tank resilvering 42%`, until it finishes, because its redundancy is reduced meanwhile. A host whose disks have a SMART problem gets one line with the disks and the age of the check, `da1 reallocated sectors 8; ada4 SSD wear 87%   (checked 6h ago)`: red if a drive says its own health check FAILED, yellow for reallocated, pending or uncorrectable sectors, an SSD worn to 80% or more, a low spare, or 60 degrees and up. Healthy hosts add nothing. The daemon asks `smartctl` once a day (03:30 by default; `daily_check` in `[daemon]` changes or stops it), so these lines are as old as the last check; if the check stops happening for three days, one more line says so (it counts the newest answer of the disk and the shares checks together). A host without `smartctl`, without the `smart` sudoers entry, or with virtual disks that report nothing, is left out without a word. Enter on a resilver line goes to that host's Pools, on a disk line to its Disks, on a shares line to its Shares.
 - **File sharing.** The same daily pass asks each host whether its NFS server and Samba are running where it has shares for them. A host with NFS shares while `nfsd` is stopped, or with Samba shares while `smbd` is stopped, gets a red line (`NFS: 2 shares but nfsd is not running   (checked 3h ago)`); a Samba block that cannot be read is yellow. Hosts with healthy sharing, with no shares, or without the `shares`/`samba` sudoers entries add nothing. While a check runs (the daemon's, or one you started with `c` in Hosts) a red line under the header says so (`▶ checking: daily disk and shares check since 03:30`); it is a notice, not a problem, and it goes when the check is done. A check that crashed leaves it for at most three minutes.
 - **Unknown is never green.** A host that has not answered, or a reading that cannot be taken yet (the first CPU figure needs two probes), is shown as `?` in dim text. Every status has a glyph and a word as well as a colour, so the `mono` theme reads the same.

@@ -292,6 +292,8 @@ pub struct Dashboard {
     /// Ids of the enabled jobs whose latest run failed.
     pub failed_jobs: Vec<String>,
     pub cloud: Vec<Line>,
+    /// The names of the cloud lines' columns, spaced like them (empty when there are no remotes).
+    pub cloud_header: String,
     pub alerts: Line,
     /// While a check runs: what to tell the operator (shown in red under the header). Not a problem, so not in `attention`.
     pub running: Option<String>,
@@ -359,16 +361,36 @@ fn cloud_label(row: &cloud::Row) -> String {
     if row.host == "local" { row.name.clone() } else { format!("{}:{}", row.host, row.name) }
 }
 
-/// `remote_width` is the width of the widest remote, so the columns after it line up.
-fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, remote_width: usize) -> Line {
+/// The widths of the cloud block's columns (each as wide as its widest cell or its name), so the lines and the header line up.
+struct CloudWidths {
+    remote: usize,
+    last: usize,
+}
+
+const CLOUD_PROVIDER_W: usize = 16;
+const CLOUD_JOBS_W: usize = 7;
+const CLOUD_NEXT_W: usize = 15;
+
+/// The line's columns, two spaces apart: Provider, Remote, Jobs, Last run, Next run, In bucket.
+fn cloud_columns(w: &CloudWidths, provider: &str, remote: &str, jobs: &str, last: &str, next: &str, bucket: &str) -> String {
+    format!("{provider:<CLOUD_PROVIDER_W$}  {remote:<rw$}  {jobs:<CLOUD_JOBS_W$}  {last:<lw$}  {next:<CLOUD_NEXT_W$}  {bucket}", rw = w.remote, lw = w.last).trim_end().to_string()
+}
+
+fn cloud_header(w: &CloudWidths) -> String {
+    cloud_columns(w, "Provider", "Remote", "Jobs", "Last run", "Next run", "In bucket")
+}
+
+/// What the "Last run" cell says for a row: the last result and its age, or `-` for a remote no job uses.
+fn cloud_last(row: &cloud::Row, view: &JobsView, now: DateTime<Utc>) -> String {
+    if row.job_ids.is_empty() { "-".to_string() } else { crate::ui::jobs::last_result_text(cloud::last_run(row, view), now) }
+}
+
+fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidths) -> Line {
     let cells = cloud::cells(row, view, inputs.cloud_sizes, inputs.cloud_caps, inputs.now);
-    // Columns, two spaces apart: the provider's name, then the remote (each padded so the next column lines up).
-    let name = format!("{:<16}  {:<remote_width$}", cloud::provider_name(row.kind.as_deref()), cloud_label(row));
-    let name = name.as_str();
+    let provider = cloud::provider_name(row.kind.as_deref());
     if row.job_ids.is_empty() {
-        return Line { level: Level::Unknown, text: format!("{name}  no jobs") };
+        return Line { level: Level::Unknown, text: cloud_columns(w, &provider, &cloud_label(row), "no jobs", "-", "-", "-") };
     }
-    let bucket = if cells[5] == "-" { String::new() } else { format!("  {}", cells[5]) };
     let level = if cloud::failed(row, view) {
         Level::Issue
     } else {
@@ -378,7 +400,9 @@ fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, remote_width: 
             _ => Level::Fine,
         }
     };
-    Line { level, text: format!("{name}  {} job{}  last {}{bucket}", cells[3], if cells[3] == "1" { "" } else { "s" }, cells[4]) }
+    let jobs_text = format!("{} job{}", cells[3], if cells[3] == "1" { "" } else { "s" });
+    let next = cloud::next_run_text(row, view, &inputs.now.with_timezone(&chrono::Local));
+    Line { level, text: cloud_columns(w, &provider, &cloud_label(row), &jobs_text, &cells[4], &next, &cells[5]) }
 }
 
 fn alerts_line(alerts: &AlertsView, daemon_running: bool, now: DateTime<Utc>) -> Line {
@@ -475,8 +499,12 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
     let daemon = daemon_line(inputs.jobs, now);
     let (jobs, failed_jobs) = jobs_line(inputs.jobs);
-    let remote_width = inputs.cloud_rows.iter().map(|r| cloud_label(r).chars().count()).max().unwrap_or(0);
-    let cloud: Vec<Line> = inputs.cloud_rows.iter().map(|r| cloud_line(r, inputs.jobs, inputs, remote_width)).collect();
+    let widths = CloudWidths {
+        remote: inputs.cloud_rows.iter().map(|r| cloud_label(r).chars().count()).max().unwrap_or(0).max("Remote".len()),
+        last: inputs.cloud_rows.iter().map(|r| cloud_last(r, inputs.jobs, inputs.now).chars().count()).max().unwrap_or(0).max("Last run".len()),
+    };
+    let cloud: Vec<Line> = inputs.cloud_rows.iter().map(|r| cloud_line(r, inputs.jobs, inputs, &widths)).collect();
+    let cloud_header = if cloud.is_empty() { String::new() } else { cloud_header(&widths) };
     let alerts = alerts_line(inputs.alerts, daemon.level == Level::Fine, now);
 
     let mut attention: Vec<Item> = Vec::new();
@@ -540,7 +568,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, hosts, daemon, jobs, failed_jobs, cloud, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 
@@ -892,7 +920,7 @@ mod tests {
         let d = fx.build(vec![]);
         assert_eq!(d.cloud.len(), 2);
         assert_eq!(d.cloud[0].level, Level::Fine);
-        assert!(d.cloud[0].text.contains("b2") && d.cloud[0].text.contains("last ok 2h ago") && !d.cloud[0].text.contains("MiB"), "{}", d.cloud[0].text);
+        assert!(d.cloud[0].text.contains("b2") && d.cloud[0].text.contains("ok 2h ago") && !d.cloud[0].text.contains("MiB"), "{}", d.cloud[0].text);
         assert_eq!((d.cloud[1].level, d.cloud[1].text.contains("no jobs")), (Level::Unknown, true), "a remote nobody uses");
         // measured this session: the size shows, with the cap when there is one.
         fx.sizes.insert("m1".into(), crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: now(), problem: None });
@@ -917,10 +945,31 @@ mod tests {
         let texts: Vec<&str> = d.cloud.iter().map(|l| l.text.as_str()).collect();
         // two spaces between the columns; the remote column is as wide as the longest remote (`fbsd16:aws`, 10)
         let cols = |provider: &str, remote: &str, rest: &str| format!("{provider:<16}  {remote:<10}  {rest}");
-        assert!(texts[0].starts_with(&cols("Backblaze B2", "b2", "1 job  last ok")), "{texts:?}");
-        assert!(texts.iter().any(|t| t.starts_with(&cols("SFTP", "t1", "no jobs"))), "{texts:?}");
-        assert!(texts.iter().any(|t| t.starts_with(&cols("Amazon S3 (etc.)", "fbsd16:aws", "no jobs"))), "{texts:?}");
+        assert!(texts[0].starts_with(&cols("Backblaze B2", "b2", "1 job    ok")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with(&cols("SFTP", "t1", "no jobs  -"))), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with(&cols("Amazon S3 (etc.)", "fbsd16:aws", "no jobs  -"))), "{texts:?}");
+        // The header names the columns in the same places.
+        let header = &d.cloud_header;
+        let at = |name: &str| header.find(name).unwrap_or_else(|| panic!("{name} missing from {header:?}"));
+        assert!(header.starts_with("Provider") && at("Remote") == 18 && at("Jobs") == 30 && at("Last run") > at("Jobs") && at("Next run") > at("Last run") && at("In bucket") > at("Next run"), "{header:?}");
+        assert_eq!(&texts[0][18..28], "b2        ", "the remote starts under its header");
         assert!(texts.iter().all(|t| !t.contains("(b2)") && !t.contains("(sftp)")), "the raw type in parentheses is gone: {texts:?}");
+    }
+
+    #[test]
+    fn the_next_run_cell_is_the_soonest_enabled_job_and_a_dash_when_none() {
+        let jobs = vec![mirror("m1", "b2:zfsctl/photos")];
+        let mut known = crate::ui::cloud::Known::new();
+        known.insert("local".into(), vec![("b2".into(), "b2".into())]);
+        let rows = crate::ui::cloud::rows(&jobs, &known);
+        let fx = Fixture::new(view(jobs.clone(), &[("m1", RunResult::Ok, "ok")], beat(1)));
+        let schedule = jobs[0].schedule.clone();
+        let want = crate::daemon::cron::Schedule::parse(&schedule).unwrap().next_after(&now()).unwrap().format("%a %m-%d %H:%M").to_string();
+        assert_eq!(crate::ui::cloud::next_run_text(&rows[0], &fx.view, &now()), want);
+        let mut off = jobs.clone();
+        off[0].enabled = false;
+        let view_off = view(off, &[("m1", RunResult::Ok, "ok")], beat(1));
+        assert_eq!(crate::ui::cloud::next_run_text(&rows[0], &view_off, &now()), "-", "a disabled job has no next run");
     }
 
     #[test]

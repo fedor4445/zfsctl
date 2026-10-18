@@ -53,7 +53,7 @@ pub fn rows(jobs: &[Job], known: &Known) -> Vec<Row> {
 }
 
 /// What `s` measured for one cloud mirror job.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Size {
     /// `(files, bytes)` of `<remote>/current`.
     pub current: Option<(u64, u64)>,
@@ -93,6 +93,28 @@ fn size_of(runner: &dyn CommandRunner, host: &str, remote: &str, folder: &str) -
     }
 }
 
+/// Where the last measurements are kept, so a restart still shows them (a measurement lists the bucket and costs requests:
+/// nothing re-measures on its own).
+const SIZES_FILE: &str = "cloud-sizes.json";
+
+/// The measurements saved by an earlier session; empty when there are none or the file cannot be read.
+pub fn load_sizes(state_dir: &std::path::Path) -> HashMap<String, Size> {
+    std::fs::read_to_string(state_dir.join(SIZES_FILE)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+/// Saves the measurements next to the other state files. Best effort, and only into a state directory that exists.
+pub fn save_sizes(state_dir: &std::path::Path, sizes: &HashMap<String, Size>) {
+    if !state_dir.is_dir() {
+        return;
+    }
+    let (path, tmp) = (state_dir.join(SIZES_FILE), state_dir.join("cloud-sizes.json.tmp"));
+    if let Ok(text) = serde_json::to_string_pretty(sizes) {
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
 /// Measures `<remote>/current` and `<remote>/old` with `rclone size` (read-only; it lists the bucket, so it costs
 /// requests, which is why it only runs when asked).
 pub fn measure(runner: &dyn CommandRunner, host: &str, remote: &str, now: DateTime<Utc>) -> Size {
@@ -113,6 +135,16 @@ fn jobs_of<'a>(row: &Row, view: &'a JobsView) -> Vec<&'a Job> {
 /// The newest run among the row's jobs.
 pub fn last_run<'a>(row: &Row, view: &'a JobsView) -> Option<&'a Run> {
     row.job_ids.iter().filter_map(|id| view.last_run(id)).max_by_key(|r| r.started_at)
+}
+
+/// When the soonest of the row's enabled jobs runs next, in `now`'s zone (`Sun 10-18 14:30`), or `-` when none is enabled
+/// or none has a next time.
+pub fn next_run_text<Tz: chrono::TimeZone>(row: &Row, view: &JobsView, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let soonest = jobs_of(row, view).into_iter().filter(|j| j.enabled).filter_map(|j| crate::daemon::cron::Schedule::parse(&j.schedule).ok()?.next_after(now)).min();
+    soonest.map_or_else(|| "-".to_string(), |t| t.format("%a %m-%d %H:%M").to_string())
 }
 
 /// Whether the latest run of any of the row's enabled jobs failed.
