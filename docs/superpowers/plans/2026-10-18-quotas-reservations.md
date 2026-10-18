@@ -92,3 +92,5 @@
 - [ ] **Step 2: Live check** (hub build via the usual tar+cargo, a VM `fbsd16t1` scratch pool): set a 1G quota on a scratch dataset through the TUI, fill it past 90% (`dd`) and see the Dashboard line and the column, over 98% red; remove the quota and see the line go within one scan (or `c`); try the refusals (quota below use; reservation above quota; volume). Verify empirically on the VM which pairs ZFS itself rejects and record it in the spec if different.
 - [ ] **Step 3:** Whole-branch subagent review with the Review Focus list; fix Critical/Important test-first.
 - [ ] **Step 4:** Ask the user before merge + install; then update memory.
+
+- NOTE (task 3): the spec/plan claimed the panel Used line ignores quota; wrong: ZFS `available` already reflects quota, so Used% is right. Only the Quota line gained percentages.
