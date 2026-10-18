@@ -567,6 +567,21 @@ pub(super) fn build_notify_action(fields: &[FormField], config_path: &std::path:
     Ok((PendingAction { host: 0, section: Section::Alerts, call: MutationCall::SaveNotify { config_path: config_path.to_path_buf(), section } }, prompt))
 }
 
+/// What the quota checks need, from the selected dataset's property list (`zfs get all -p`: sizes in bytes, `-` or `0` unset).
+pub(super) fn quota_facts(props: &[crate::zfs::property::Property]) -> crate::zfs::quota::Facts {
+    let num = |name: &str| props.iter().find(|p| p.name == name).and_then(|p| p.value.parse::<u64>().ok()).unwrap_or(0);
+    crate::zfs::quota::Facts {
+        used: num("used"),
+        referenced: num("referenced"),
+        available: num("available"),
+        quota: num("quota"),
+        refquota: num("refquota"),
+        reservation: num("reservation"),
+        refreservation: num("refreservation"),
+        is_volume: props.iter().any(|p| p.name == "type" && p.value == "volume"),
+    }
+}
+
 /// The text of form field `index`; a missing field reads as empty, which every caller
 /// already treats as "not filled in" (forms are built with a fixed field count per kind).
 pub(super) fn field_value(fields: &[FormField], index: usize) -> &str {

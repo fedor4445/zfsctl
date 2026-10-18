@@ -8945,3 +8945,114 @@ fn shares_on_illumos_are_listed_read_only_with_the_service_state_and_no_freebsd_
     app.selected_host = 0;
     assert!(app.shares_editable());
 }
+
+/// Datasets with the Properties tab focused on a filesystem (or volume) that uses 5G (3G of its own), has 100G available
+/// and the given limits (bytes, `0` = none).
+fn quota_app(volume: bool, quota: u64, refquota: u64, reservation: u64, refreservation: u64) -> App {
+    let g: u64 = 1 << 30;
+    let mut app = App::new(vec!["local".to_string()]);
+    app.handle_key(KeyCode::Tab);
+    app.handle_key(KeyCode::Tab); // -> Datasets
+    app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None }];
+    app.datasets_table.select(Some(0));
+    app.handle_key(KeyCode::Right);
+    let prop = |name: &str, value: u64| Property { name: name.to_string(), value: value.to_string(), source: PropertySource::Local };
+    app.dataset_properties = vec![
+        prop("quota", quota),
+        prop("refquota", refquota),
+        prop("reservation", reservation),
+        prop("refreservation", refreservation),
+        Property { name: "used".into(), value: (5 * g).to_string(), source: PropertySource::Other("-".into()) },
+        Property { name: "referenced".into(), value: (3 * g).to_string(), source: PropertySource::Other("-".into()) },
+        Property { name: "available".into(), value: (100 * g).to_string(), source: PropertySource::Other("-".into()) },
+        Property { name: "type".into(), value: if volume { "volume" } else { "filesystem" }.into(), source: PropertySource::Other("-".into()) },
+    ];
+    app
+}
+
+/// Opens the edit form on the property `name` (selects its row, presses Enter).
+fn open_property(app: &mut App, name: &str) {
+    let row = app.dataset_properties.iter().position(|p| p.name == name).unwrap();
+    app.dataset_properties_table.select(Some(row));
+    app.handle_key(KeyCode::Enter);
+}
+
+/// Replaces the single field's text and presses Enter; returns what the form gave back.
+fn submit_value(app: &mut App, text: &str) -> Option<PendingAction> {
+    for _ in 0..40 {
+        app.handle_modal_key(KeyCode::Backspace);
+    }
+    for c in text.chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    app.handle_modal_key(KeyCode::Enter)
+}
+
+#[test]
+fn enter_on_a_quota_row_prefills_a_human_size_and_none_for_unset() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 10 * g, 0, 0, 0);
+    open_property(&mut app, "quota");
+    let Some(crate::ui::modal::Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[0].value, "10G");
+    app.modal = None;
+    open_property(&mut app, "refquota");
+    let Some(crate::ui::modal::Modal::Form { fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(fields[0].value, "none");
+}
+
+#[test]
+fn a_quota_below_use_keeps_the_form_open_with_our_message() {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(submit_value(&mut app, "4G").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "the form stays open");
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("already use")), "{:?}", app.status_error);
+    assert!(submit_value(&mut app, "ten gigs").is_none() && app.status_error.as_deref().is_some_and(|m| m.contains("not a size")));
+}
+
+#[test]
+fn a_safe_quota_change_applies_directly_with_exact_bytes_and_none_is_sent_as_none() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    let action = submit_value(&mut app, "20G").expect("a roomy quota needs no extra confirm");
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: (20 * g).to_string() });
+    let mut app = quota_app(false, 20 * g, 0, 0, 0);
+    open_property(&mut app, "quota");
+    let action = submit_value(&mut app, "none").unwrap();
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: "none".into() });
+}
+
+#[test]
+fn a_quota_with_under_ten_percent_headroom_asks_y_then_enter() {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(submit_value(&mut app, "5G").is_none(), "5G is exactly what is used: writes would fail at once");
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, action, choice: None }) => {
+            assert!(prompt.contains("tank/data") && prompt.contains("quota"), "{prompt}");
+            assert!(matches!(&action.call, MutationCall::SetDatasetProperty { key, .. } if key == "quota"));
+        }
+        other => panic!("expected a Confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_volume_refuses_quota_and_still_takes_refreservation() {
+    let mut app = quota_app(true, 0, 0, 0, 0);
+    open_property(&mut app, "quota");
+    assert!(app.modal.is_none(), "no form for a volume's quota");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("volume")), "{:?}", app.status_message);
+    open_property(&mut app, "refreservation");
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })));
+}
+
+#[test]
+fn a_reservation_above_the_quota_is_refused_with_the_quota_named() {
+    let g: u64 = 1 << 30;
+    let mut app = quota_app(false, 10 * g, 0, 0, 0);
+    open_property(&mut app, "reservation");
+    assert!(submit_value(&mut app, "12G").is_none());
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("larger than the quota")), "{:?}", app.status_error);
+}

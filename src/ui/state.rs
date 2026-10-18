@@ -1493,10 +1493,19 @@ impl App {
             {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
-                        if prop.source.is_editable() {
+                        let guided = crate::zfs::quota::KEYS.contains(&prop.name.as_str());
+                        if guided && prop.name != "refreservation" && self.dataset_properties.iter().any(|p| p.name == "type" && p.value == "volume") {
+                            self.status_message = Some(format!("'{}' is not offered for volumes: a volume has its volsize and refreservation", prop.name));
+                        } else if prop.source.is_editable() {
+                            // A size is shown as 10G (or none) and typed the same way; the exact bytes are sent.
+                            let (label, value) = if guided {
+                                (format!("{} (10G, 500M, none)", prop.name), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "none".to_string(), crate::zfs::quota::format_size))
+                            } else {
+                                (prop.name.clone(), prop.value.clone())
+                            };
                             self.modal = Some(Modal::Form {
                                 title: format!("Edit '{}' on dataset '{dataset}'", prop.name),
-                                fields: vec![FormField { label: prop.name.clone(), value: prop.value.clone() }],
+                                fields: vec![FormField { label, value }],
                                 focused: 0,
                                 description: crate::zfs::property::describe(&prop.name).map(str::to_string),
                                 kind: FormKind::EditDatasetProperty { host: self.selected_host, dataset, key: prop.name.clone() },

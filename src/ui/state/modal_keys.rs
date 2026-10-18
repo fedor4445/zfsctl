@@ -178,12 +178,42 @@ impl App {
                 }
                 Err(msg) => self.reject(form, msg),
             },
+            FormKind::EditDatasetProperty { ref key, .. } if crate::zfs::quota::KEYS.contains(&key.as_str()) => self.submit_quota_form(form),
             FormKind::ShareSmb { .. } => match build_smb_action(&form.kind, &form.fields, &self.shares) {
                 Ok(action) => Some(action),
                 Err(msg) => self.reject(form, msg),
             },
             _ => self.submit_plain_form(form),
         }
+    }
+
+    /// The guided form for `quota`, `refquota`, `reservation` and `refreservation`: the size is parsed and checked against what
+    /// the dataset uses and the pool has before anything is sent; a change that leaves little headroom needs y then Enter.
+    fn submit_quota_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        use crate::zfs::quota::{check, parse_size, Tier};
+        let FormKind::EditDatasetProperty { host, dataset, key } = form.kind.clone() else { return None };
+        let new = match parse_size(field_value(&form.fields, 0)) {
+            Ok(new) => new,
+            Err(msg) => return self.reject(form, msg),
+        };
+        if self.dataset_properties.is_empty() {
+            return self.reject(form, "the dataset's properties are not loaded yet: press r and try again".to_string());
+        }
+        let facts = super::forms::quota_facts(&self.dataset_properties);
+        let tier = match check(&key, new, &facts) {
+            Ok(tier) => tier,
+            Err(msg) => return self.reject(form, msg),
+        };
+        let value = new.map_or_else(|| "none".to_string(), |n| n.to_string());
+        let action = PendingAction { host, section: crate::ui::Section::DatasetProperties, call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: key.clone(), value: value.clone() } };
+        if tier == Tier::Direct {
+            return Some(action);
+        }
+        let why = if key.ends_with("reservation") { "This takes a large share of the pool's free space away from everything else." } else { "That leaves little room: writes to this dataset may start to fail soon." };
+        let prompt = format!("On {}:\n  zfs set {key}={value} {dataset}\n\n{why} Set it? (y/n)", self.hosts.get(host).map_or("?", String::as_str));
+        self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+        None
     }
 
     fn submit_notify_form(&mut self, form: FormParts) -> Option<PendingAction> {
