@@ -713,6 +713,14 @@ pub(super) fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> O
             format!("zpool set {key}={value} {pool}"),
             "Enabling a pool feature cannot be undone and can make the pool unreadable by older systems. Set it?",
         ),
+        MutationCall::UnloadKey { dataset } => ask(
+            format!("zfs unload-key {dataset}"),
+            "The data under it cannot be read again until its key is loaded with the passphrase; without the passphrase it stays locked for good. zfs refuses while the dataset (or one under it) is mounted. Unload the key?",
+        ),
+        MutationCall::ChangeKey { dataset, .. } => ask(
+            format!("zfs change-key {dataset}"),
+            "The old passphrase stops loading this key from now on. The data is not re-encrypted: copies sent elsewhere earlier (raw replicas, snapshots) still need the old passphrase. Keep the new one safe: nothing else stores it. Change the key?",
+        ),
         _ => None,
     }
 }
@@ -981,7 +989,7 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::NotifySettings | FormKind::Setting { .. } | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::NotifySettings | FormKind::Setting { .. } | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::LoadKey { .. } | FormKind::ChangeKey { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
     }
 }
 
@@ -1053,6 +1061,78 @@ pub(super) fn smb_edit_modal(existing: Option<&crate::zfs::share::Share>, datase
         focused: 0,
         description: Some(format!("Shares {path} as \\\\<host>\\<name>. The Valid user must already be a Unix account; the password is its separate Samba password. Setting a password replaces that user's Samba password for every share they use. Blank user + guest n: any Samba user may connect. Guest y: anonymous access with no password (needs a blank user).")),
         kind: FormKind::ShareSmb { host, dataset: dataset.to_string(), path: path.to_string(), existing_user },
+    }
+}
+
+/// Which key operation `L`, `U` or `C` asks for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum KeyOp {
+    Load,
+    Unload,
+    Change,
+}
+
+/// The dataset a key operation acts on (the encryption root of `name`), or why it cannot be done. Passphrase keys only:
+/// a raw or hex key lives in a file, which zfsctl does not handle yet.
+pub(super) fn key_target(encryption: &std::collections::BTreeMap<String, crate::zfs::encryption::Enc>, name: &str, op: KeyOp) -> std::result::Result<String, String> {
+    let Some(enc) = encryption.get(name) else {
+        return Err(format!("{name} is not encrypted (if it just became one, press r to read it again)"));
+    };
+    if enc.key_format != "passphrase" {
+        return Err(format!("{name} has a {} key kept in a file: load it at the shell with zfs load-key (key files are not handled here yet)", enc.key_format));
+    }
+    match op {
+        KeyOp::Load if !enc.locked => Err(format!("The key of {} is already loaded", enc.root)),
+        KeyOp::Unload if enc.locked => Err(format!("The key of {} is already locked", enc.root)),
+        KeyOp::Change if enc.locked => Err(format!("{} is locked: load the key first, then change it", enc.root)),
+        KeyOp::Change if enc.root != name => Err(format!("{name} uses the key of {root}: change the key on {root}", root = enc.root)),
+        _ => Ok(enc.root.clone()),
+    }
+}
+
+pub(super) fn load_key_form(host: usize, root: &str) -> Modal {
+    Modal::Form {
+        title: format!("Load key: '{root}'"),
+        fields: vec![
+            FormField { label: "Passphrase".to_string(), value: String::new() },
+            FormField { label: "Mount it after loading (y/n)".to_string(), value: "y".to_string() },
+        ],
+        focused: 0,
+        description: Some(format!("Loads the key of {root}; the datasets under it that use the same key unlock with it. The passphrase goes to zfs on its input, never in a command line, and is not kept.")),
+        kind: FormKind::LoadKey { host, dataset: root.to_string() },
+    }
+}
+
+pub(super) fn change_key_form(host: usize, root: &str) -> Modal {
+    Modal::Form {
+        title: format!("Change key: '{root}'"),
+        fields: vec![
+            FormField { label: "New passphrase (8 or more characters)".to_string(), value: String::new() },
+            FormField { label: "Repeat".to_string(), value: String::new() },
+        ],
+        focused: 0,
+        description: Some("Sets a new passphrase for this dataset and the ones that use its key. Nothing is stored by zfsctl: lose it and the data cannot be recovered.".to_string()),
+        kind: FormKind::ChangeKey { host, dataset: root.to_string() },
+    }
+}
+
+pub(super) fn build_key_action(kind: &FormKind, fields: &[FormField]) -> std::result::Result<PendingAction, String> {
+    match kind {
+        FormKind::LoadKey { host, dataset } => {
+            let passphrase = field_value(fields, 0);
+            crate::zfs::encryption::check_passphrase(passphrase, false)?;
+            let mount = field_value(fields, 1).trim().to_lowercase().starts_with('y');
+            Ok(PendingAction { host: *host, section: Section::Datasets, call: MutationCall::LoadKey { dataset: dataset.clone(), passphrase: crate::ui::modal::Secret(passphrase.to_string()), mount } })
+        }
+        FormKind::ChangeKey { host, dataset } => {
+            let passphrase = field_value(fields, 0);
+            crate::zfs::encryption::check_passphrase(passphrase, true)?;
+            if passphrase != field_value(fields, 1) {
+                return Err("The two passphrases do not match".to_string());
+            }
+            Ok(PendingAction { host: *host, section: Section::Datasets, call: MutationCall::ChangeKey { dataset: dataset.clone(), passphrase: crate::ui::modal::Secret(passphrase.to_string()) } })
+        }
+        _ => Err("not a key form".to_string()),
     }
 }
 

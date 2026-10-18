@@ -9529,3 +9529,137 @@ fn dedup_on_without_a_known_current_value_still_asks_for_the_name() {
     assert!(submit_value(&mut app, "on").is_none());
     assert!(matches!(app.modal, Some(crate::ui::modal::Modal::ConfirmTyped { .. })), "{:?}", app.modal);
 }
+
+const PASS: &str = "correct horse battery";
+
+/// A Datasets screen with `tank/s` (an encryption root) and `tank/s/kid` (uses its key) selected on the first row.
+fn key_app(locked: bool, key_format: &str) -> App {
+    let mut app = App::new(vec!["local".to_string()]);
+    go_to(&mut app, Section::Datasets);
+    let ds = |name: &str| crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 };
+    app.datasets = vec![ds("tank/s"), ds("tank/s/kid"), ds("tank/plain")];
+    app.datasets_table.select(Some(0));
+    for name in ["tank/s", "tank/s/kid"] {
+        app.encryption.insert(name.into(), crate::zfs::encryption::Enc { cipher: "aes-256-gcm".into(), key_format: key_format.into(), root: "tank/s".into(), locked });
+    }
+    app.encryption_for = 0;
+    app
+}
+
+fn type_into(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+}
+
+#[test]
+fn big_l_on_a_locked_dataset_opens_a_masked_passphrase_form_for_the_root() {
+    let mut app = key_app(true, "passphrase");
+    app.datasets_table.select(Some(1)); // the child: the key belongs to tank/s
+    app.handle_key(KeyCode::Char('L'));
+    let Some(Modal::Form { title, fields, kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(title.contains("tank/s") && !title.contains("kid"), "{title}");
+    assert_eq!(fields.len(), 2);
+    assert!(kind.masks_field(0) && !kind.masks_field(1));
+    assert_eq!(fields[1].value, "y", "mount after loading is the default");
+}
+
+#[test]
+fn the_key_keys_say_why_they_do_nothing() {
+    let says = |app: &mut App, key: char, text: &str| {
+        app.status_message = None;
+        app.handle_key(KeyCode::Char(key));
+        assert!(app.modal.is_none(), "{:?}", app.modal);
+        let got = app.status_message.clone().unwrap_or_default();
+        assert!(got.contains(text), "{key}: wanted '{text}' in '{got}'");
+    };
+    let mut open = key_app(false, "passphrase");
+    says(&mut open, 'L', "already loaded");
+    open.datasets_table.select(Some(1));
+    says(&mut open, 'C', "change the key on tank/s");
+    open.datasets_table.select(Some(2));
+    says(&mut open, 'L', "not encrypted");
+    says(&mut open, 'U', "not encrypted");
+    let mut locked = key_app(true, "passphrase");
+    says(&mut locked, 'U', "already locked");
+    says(&mut locked, 'C', "load the key first");
+    let mut raw = key_app(true, "raw");
+    says(&mut raw, 'L', "raw key");
+}
+
+#[test]
+fn loading_a_key_sends_the_passphrase_to_the_dispatcher_and_nowhere_else() {
+    let mut app = key_app(true, "passphrase");
+    app.handle_key(KeyCode::Char('L'));
+    type_into(&mut app, PASS);
+    app.handle_modal_key(KeyCode::Tab);
+    app.handle_modal_key(KeyCode::Backspace);
+    type_into(&mut app, "n");
+    let action = app.handle_modal_key(KeyCode::Enter).expect("the form submits");
+    assert_eq!(action.section, Section::Datasets);
+    let MutationCall::LoadKey { dataset, passphrase, mount } = &action.call else { panic!("{:?}", action.call) };
+    assert_eq!((dataset.as_str(), passphrase.0.as_str(), *mount), ("tank/s", PASS, false));
+    assert!(app.modal.is_none());
+    assert!(!format!("{app_status:?}{action:?}", app_status = app.status_message).contains(PASS));
+}
+
+#[test]
+fn a_bad_load_form_stays_open_and_a_cancelled_one_is_gone() {
+    let mut app = key_app(true, "passphrase");
+    app.handle_key(KeyCode::Char('L'));
+    app.handle_modal_key(KeyCode::Enter); // to the last field
+    app.handle_modal_key(KeyCode::Enter); // submit
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "an empty passphrase keeps the form: {:?}", app.modal);
+    assert!(app.status_is_error() && app.status_message.as_deref().unwrap_or("").contains("passphrase"), "{:?}", app.status_message);
+    app.handle_modal_key(KeyCode::Esc);
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn unloading_a_key_needs_y_then_enter_and_says_what_it_means() {
+    let mut app = key_app(false, "passphrase");
+    app.handle_key(KeyCode::Char('U'));
+    let Some(Modal::Confirm { prompt, action, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("zfs unload-key tank/s") && prompt.contains("cannot be read") && prompt.contains("mounted"), "{prompt}");
+    assert_eq!(action.call, MutationCall::UnloadKey { dataset: "tank/s".into() });
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none(), "Enter alone does nothing");
+    app.handle_modal_key(KeyCode::Char('y'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_some());
+}
+
+#[test]
+fn changing_a_key_checks_the_repeat_then_asks_with_the_warnings() {
+    let mut app = key_app(false, "passphrase");
+    app.handle_key(KeyCode::Char('C'));
+    type_into(&mut app, "new passphrase");
+    app.handle_modal_key(KeyCode::Tab);
+    type_into(&mut app, "new passphrasX");
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(app.status_message.as_deref().unwrap_or("").contains("do not match"), "{:?}", app.status_message);
+    app.handle_modal_key(KeyCode::Tab); // a rejected form puts the cursor back on the first field
+    app.handle_modal_key(KeyCode::Backspace);
+    type_into(&mut app, "e");
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    let Some(Modal::Confirm { prompt, action, .. }) = app.modal.clone() else { panic!("{:?}", app.modal) };
+    for want in ["zfs change-key tank/s", "old passphrase stops", "not re-encrypted", "sent elsewhere", "Keep the new"] {
+        assert!(prompt.contains(want), "'{want}' missing: {prompt}");
+    }
+    assert!(!prompt.contains("new passphrase"), "the confirm must not show the passphrase");
+    assert!(matches!(&action.call, MutationCall::ChangeKey { passphrase, .. } if passphrase.0 == "new passphrase"));
+    // Declining hands the form back, so nothing typed is lost.
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn a_new_key_must_be_eight_characters() {
+    let mut app = key_app(false, "passphrase");
+    app.handle_key(KeyCode::Char('C'));
+    type_into(&mut app, "short");
+    app.handle_modal_key(KeyCode::Tab);
+    type_into(&mut app, "short");
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(app.status_message.as_deref().unwrap_or("").contains("8 characters"), "{:?}", app.status_message);
+}

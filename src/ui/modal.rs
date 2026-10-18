@@ -283,6 +283,13 @@ pub struct FormField {
     pub value: String,
 }
 
+impl Drop for FormField {
+    /// A form is closed by dropping it: what was typed (a passphrase, in the key forms) is zeroed, not left in freed memory.
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
 /// Which mutation a `Modal::Form` is collecting input for, plus the
 /// context (host, and any row data fixed at modal-open time) that
 /// doesn't come from the form's fields themselves. Field values are
@@ -360,6 +367,10 @@ pub enum FormKind {
     /// the existing Samba password (only valid when the user is
     /// unchanged, see `existing_user`). The password field is masked.
     ShareSmb { host: usize, dataset: String, path: String, existing_user: Option<String> },
+    /// Fields: `[passphrase, mount after loading (y/n)]`; `dataset` is the encryption root. The passphrase field is masked.
+    LoadKey { host: usize, dataset: String },
+    /// Fields: `[new passphrase, repeat]`; `dataset` is the encryption root. Both fields are masked.
+    ChangeKey { host: usize, dataset: String },
     /// Fields: `[name, clone_from]` -- a blank `clone_from` clones the running boot environment
     /// (bectl's default). `existing` is every current name, for the duplicate check and the F2 picker.
     CreateBootEnv { host: usize, existing: Vec<String> },
@@ -384,7 +395,12 @@ pub enum FormKind {
 impl FormKind {
     /// Whether the form field at `index` must be shown as `*` characters.
     pub fn masks_field(&self, index: usize) -> bool {
-        matches!(self, FormKind::ShareSmb { .. }) && index == 2
+        match self {
+            FormKind::ShareSmb { .. } => index == 2,
+            FormKind::LoadKey { .. } => index == 0,
+            FormKind::ChangeKey { .. } => index <= 1,
+            _ => false,
+        }
     }
 }
 

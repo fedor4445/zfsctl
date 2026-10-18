@@ -2,7 +2,7 @@
 
 use super::forms::{
     build_backup_job_action, build_bootenv_action, build_job_action, build_mirror_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
-    irreversible_prompt,
+    build_key_action, irreversible_prompt,
 };
 use super::{App, Instant, Modal, MutationCall, PendingAction};
 use crate::ui::modal::{FormField, FormKind};
@@ -187,6 +187,14 @@ impl App {
             FormKind::EditDatasetProperty { ref key, .. } if crate::zfs::quota::KEYS.contains(&key.as_str()) => self.submit_quota_form(form),
             FormKind::EditDatasetProperty { ref key, .. } if key == "special_small_blocks" => self.submit_small_blocks_form(form),
             FormKind::EditDatasetProperty { ref key, .. } if key == "checksum" || key == "dedup" => self.submit_integrity_form(form),
+            FormKind::LoadKey { .. } => match build_key_action(&form.kind, &form.fields) {
+                Ok(action) => Some(action),
+                Err(msg) => self.reject(form, msg),
+            },
+            FormKind::ChangeKey { .. } => match build_key_action(&form.kind, &form.fields) {
+                Ok(action) => self.confirm_from_form(form, action),
+                Err(msg) => self.reject(form, msg),
+            },
             FormKind::ShareSmb { .. } => match build_smb_action(&form.kind, &form.fields, &self.shares) {
                 Ok(action) => Some(action),
                 Err(msg) => self.reject(form, msg),
@@ -384,6 +392,15 @@ impl App {
         let dataset = job.dataset.as_deref()?;
         // A disabled job may be saved (to switch off one that now fails).
         (job.enabled && self.hosts.get(self.encryption_for) == Some(&job.host) && self.encryption.contains_key(dataset)).then(|| crate::daemon::guard::not_allowed(dataset))
+    }
+
+    /// Puts the confirm for `action` over `form`; declining hands the form back with what was typed.
+    fn confirm_from_form(&mut self, form: FormParts, action: PendingAction) -> Option<PendingAction> {
+        let Some(prompt) = irreversible_prompt(&self.hosts, &action) else { return Some(action) };
+        let modal = form.into_modal();
+        self.confirm_restore = Some((prompt.clone(), modal));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+        None
     }
 
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.
