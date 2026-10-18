@@ -152,7 +152,25 @@ Type a **name** and a **vdev spec**: the layout followed by the disks, for examp
 
 ## Add a vdev, replace a disk, offline and online
 
-- **Add a vdev** (`a` inside a pool): another group of disks, for example `mirror da2 da3`, joins the pool and its space is available at once. The question warns that a vdev added to a pool usually cannot be removed again: think about it before you say yes, because a pool with one weak vdev is only as safe as that vdev.
+- **Add a vdev** (`a` inside a pool): another group of disks, for example `mirror da2 da3`, joins the pool and its space is available at once. The question shows the exact `zpool add` command and, a moment later, the layout `zpool add -n` says the pool would have (the host answers; if it refuses the add, you get the form back with its message). A vdev added to a pool usually cannot be removed again: think about it before you say yes, because a pool with one weak vdev is only as safe as that vdev.
+
+## Fast disks next to slow ones: log, cache, special, dedup, spare
+
+A *hybrid* pool puts a few fast devices beside the big slow ones. Start the spec with the role's word:
+
+| Role | Spec | What it does | Removable again? |
+|---|---|---|---|
+| **log** (SLOG) | `log da4` or `log mirror da4 da5` | takes the synchronous writes (databases, NFS), so they finish before the slow disks do | yes |
+| **cache** (L2ARC) | `cache da5 da6` | a second-level read cache on fast disks; each disk is its own device, never mirrored | yes |
+| **special** | `special mirror da6 da7` | holds metadata (and, with `special_small_blocks`, small blocks) | no |
+| **dedup** | `dedup mirror da8 da9` | holds the dedup table | no |
+| **spare** | `spare da9` | steps in when a disk fails | yes |
+
+From the Disks section the same choice is the **Role** field of the Add vdev form (`a` on the marked disks; `F2` lists the roles).
+
+> **Safety:** a **special** or **dedup** vdev holds data the pool cannot do without: if it is lost, the whole pool is lost. zfsctl therefore refuses one disk for either (use a mirror of two or more), and the Dashboard shows a red line, `tank special vdev has no redundancy`, for a pool that has such a vdev anyway. A log or cache device that goes bad is only a yellow line (`tank log device faulted`): the pool keeps working.
+
+Inside a pool, `X` removes the selected **log**, **cache** or **spare** device (a log mirror goes as a whole). Data, special and dedup vdevs cannot be removed here, and the leaves of a log mirror are not offered. In the dataset's Properties tab, `Enter` on `special_small_blocks` opens a size form (`0`, `4K`, `32K` ... up to `16M`, a power of two); the question warns when the size reaches the recordsize, because then *all* of that dataset's data lands on the special vdev. It only affects data written afterwards.
 - **Replace a disk** (`x` on the failed disk): type the new device and confirm; the pool resilvers onto it. The question warns that the new disk is overwritten.
 - **Offline / online** (`o` / `O`): take a disk out of service (before pulling it, or to stop a failing disk from slowing the pool), then bring it back.
 

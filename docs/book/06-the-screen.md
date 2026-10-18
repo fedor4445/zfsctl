@@ -118,6 +118,8 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 | Last scrub | 35 days, or never | 90 days |
 | Host does not answer | | unreachable |
 
+A pool whose special or dedup vdev is a single disk gets a red line (`tank special vdev has no redundancy`: losing it loses the pool), and a faulted log or cache device a yellow one; the same ten-minute check reads them.
+
 A dataset that uses 90% or more of its quota (or refquota) is listed too, one line per host naming the fullest one (`tank/home 94% of its 100G quota (+1 more)`), red from 98%; the daemon re-reads quotas every ten minutes.
 
 These defaults can be changed under `[dashboard]` in `config.toml` (see the configuration reference). To stop a pool nobody scrubs, such as a scratch pool, from keeping the screen yellow, list it in `scrub_ignore = ["scratch"]`.
