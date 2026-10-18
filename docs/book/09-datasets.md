@@ -220,6 +220,24 @@ Each row has a position (`#`), a target (the owner, the group, everyone, or a na
 
 Make a dataset for practice on the practice pool from chapter 2: Datasets, `n`, `bookdemo/notes`, `Enter`. Press `Right` and look at its properties. Set `quota` to `10M` with `Enter`. Put a file in it from the shell, look at the panel, then destroy it with `d`, typing `bookdemo/notes`.
 
+## Try encryption
+
+Seven steps on the practice pool (`bookdemo`), from a new encrypted dataset to a changed passphrase. Nothing here touches real data. Keep the passphrases somewhere you can read: zfsctl stores none.
+
+1. **Create.** Press `E`. Name `bookdemo/vault`, cipher `aes-256-gcm` (the default), passphrase `correct horse battery` twice. Press `Enter` on the last field, then type `bookdemo/vault` and press `Enter`. The list shows `bookdemo/vault` with `open` in the Lock column. Press `Right`: the Properties tab shows `encryption*` as `aes-256-gcm` (the `*` marks what can never change).
+2. **Put something in it.** Press `n` and create `bookdemo/vault/docs`. It uses the same key: its Lock column also says `open`. Write a file into `/bookdemo/vault` from the shell if you like.
+3. **Lock it.** Select `bookdemo/vault`, press `U`, then `y`, then `Enter`. ZFS refuses with `is busy`: the dataset is mounted, and zfsctl never unmounts for you. At the shell run `zfs unmount bookdemo/vault/docs` (it may already be unmounted) and then `zfs unmount bookdemo/vault`. Press `U`, `y`, `Enter` again. Both rows turn red **LOCKED**, and the files cannot be read.
+4. **Try the guards while it is locked.**
+   - Press `L` on the child `bookdemo/vault/docs`. The form is titled `Load key: 'bookdemo/vault'`: the key belongs to the top dataset, so that is what is loaded. Press `Esc`.
+   - Press `U` or `C` on a locked row: the status line says it is already locked, or to load the key first.
+   - Press `E` and try the name `bookdemo/vault/other`: refused, because it is under an encrypted dataset (use `n` there).
+   - Try to save a replication or cloud-mirror job whose source is `bookdemo/vault` (Jobs, see [Jobs](14-jobs.md)): refused with `is encrypted`.
+5. **Unlock it.** Press `L` on `bookdemo/vault`. Type a wrong passphrase and press `Enter` twice (once to leave the field, once to submit): ZFS answers `Incorrect key provided`. Press `L` again with the right one and leave `Mount it after loading` at `y`. Both rows go back to `open` and `bookdemo/vault` is mounted again.
+6. **Change the passphrase.** Select `bookdemo/vault`, press `C`, type `a brand new pass` twice and press `Enter`. Read the question (the old passphrase stops working; nothing is re-encrypted; keep the new one safe), press `y`, then `Enter`. Lock it again as in step 3 and press `L`: the old passphrase is now refused and the new one works.
+7. **Clean up.** Select `bookdemo/vault/docs` and press `d`, typing its name; then do the same for `bookdemo/vault`. (Or `D` on `bookdemo/vault` to remove both at once.)
+
+If a restic backup job reads a dataset while it is locked, the Dashboard shows `bookdemo/vault is locked (a job uses it)` after the next storage check (`c` in Hosts runs it at once).
+
 ## Where next
 
 - [Snapshots](10-snapshots.md): protecting what is in a dataset.
