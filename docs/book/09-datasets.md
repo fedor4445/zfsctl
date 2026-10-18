@@ -129,13 +129,21 @@ The panel under the list shows `Checksum` and `Dedup` only when they are not the
 
 ## Encrypted datasets
 
-ZFS can encrypt a dataset (`encryption=aes-256-gcm` and the like), but only when the dataset is created; the key is then loaded and unloaded. zfsctl shows this much today and does not yet create or unlock encrypted datasets:
+ZFS can encrypt a dataset (`encryption=aes-256-gcm` and the like), but only when the dataset is created; the key is then loaded and unloaded. zfsctl shows which datasets are locked and loads, unloads and changes passphrase keys; it does not yet create encrypted datasets:
 
 - When any dataset on the host is encrypted, the Datasets list gets a **Lock** column: blank for a plain dataset, `open` when the key is loaded and **`LOCKED`** (red) when it is not. A locked dataset cannot be read or mounted. The panel adds the `Encrypt` line described above.
 - A locked dataset that a restic backup reads, that a replication writes into, or that is shared over NFS (or over SMB on illumos; a FreeBSD Samba share is not seen) is a yellow line in Needs attention (`tank/secure is locked (a job uses it)`) and in the daily report: it is something that will fail. A locked dataset nobody uses gets no line.
 - **Jobs and encryption:** a replication (to a host or to stream files) and a cloud mirror **refuse an encrypted source**. Without ZFS's raw option a send delivers the data decrypted, and zfsctl does not send data in the clear without being told to. The form refuses to save such a job when it already knows the dataset is encrypted, and a job whose source became encrypted later fails with the same reason (red on the Dashboard). A **restic backup is allowed**: restic encrypts the files with its own key, so an open encrypted dataset is backed up as usual, while a locked one fails with `tank/secure is locked (key not loaded): load the key first`.
 
-Load the key with `zfs load-key tank/secure` on the host (zfsctl will do it for you in a later version).
+### Keys: `L`, `U`, `C`
+
+Three keys act on the selected encrypted dataset (a child that shares its parent's key acts on the **encryption root**, the dataset whose key it is; the form names it). The row's state decides which one is offered.
+
+- `L` **loads the key** of a locked dataset. A form asks for the passphrase (shown as `*`) and whether to mount the dataset afterwards (`y` by default). The passphrase is passed to `zfs load-key` on its input, never in a command line, and zfsctl does not keep it. A wrong passphrase is ZFS's `Incorrect key provided`, and the form is not re-filled.
+- `U` **unloads the key**. After it the data cannot be read until you load the key again, so you press `y` then `Enter`. ZFS refuses while the dataset, or one under it, is still mounted; unmount it first at the shell (zfsctl shows ZFS's message and says so).
+- `C` **changes the passphrase** of an open encryption root: the new one twice (8 characters or more), then `y` and `Enter` on a question that says the old passphrase stops working, that the data is not re-encrypted (copies sent elsewhere earlier, such as raw replicas, still need the old passphrase) and that nothing else keeps the new one. On a child that uses its parent's key the key says so and does nothing, because a change there would give the child a key of its own.
+
+Datasets with a key in a file (`keyformat=raw` or `hex`) are shown but not handled yet: load those at the shell with `zfs load-key`.
 
 ## Create a dataset
 

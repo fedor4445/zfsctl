@@ -11,6 +11,7 @@
 - **Typed names for the worst actions.** Destroying a pool, a dataset, a snapshot or a boot environment, and rolling back, make you type the name.
 - **The exact command is shown** before a form that can destroy something runs.
 - **Refusals instead of broad actions.** Recursive destroy refuses a pool's root; nothing destroys the running boot environment; a backup job never creates a repository, and its form warns when the password file is in a home or temporary directory or readable by other users; a replication never touches the source.
+- **Keys stay out of sight.** A passphrase typed for `L` or `C` goes to `zfs` on its input only: never in a command line, a log, the status line or a file, and it is wiped from memory when the form closes. Unloading or changing a key needs `y` then `Enter`.
 - **No decrypted sends.** A replication or cloud mirror of an encrypted dataset is refused when it runs (and already when you save it, if that host's Datasets list has been loaded), instead of sending the data in the clear; a restic backup of a locked dataset fails with a clear message.
 - **Narrow privileges.** The programs allowed on a remote host are named in its sudoers entry; `zfsctl check-host` warns about `TOO BROAD`.
 - **No secrets stored.** Jobs hold the path of a password file, not the password; the repository string may not contain credentials.
