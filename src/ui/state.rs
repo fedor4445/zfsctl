@@ -1505,8 +1505,8 @@ impl App {
                 if let (Some(dataset), Some(i)) = (self.selected_dataset_name(), self.dataset_properties_table.selected()) {
                     if let Some(prop) = self.dataset_properties.get(i) {
                         let guided = crate::zfs::quota::KEYS.contains(&prop.name.as_str());
-                        if guided && prop.name != "refreservation" && self.dataset_properties.iter().any(|p| p.name == "type" && p.value == "volume") {
-                            self.status_message = Some(format!("'{}' is not offered for volumes: a volume has its volsize and refreservation", prop.name));
+                        if guided && matches!(prop.name.as_str(), "quota" | "refquota") && self.dataset_properties.iter().any(|p| p.name == "type" && p.value == "volume") {
+                            self.status_message = Some(format!("'{}' does not apply to a volume: it has its volsize and the reservations", prop.name));
                         } else if prop.source.is_editable() {
                             // A size is shown as 10G (or none) and typed the same way; the exact bytes are sent.
                             let (label, value) = if guided {

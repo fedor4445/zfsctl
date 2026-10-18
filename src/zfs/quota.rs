@@ -66,8 +66,8 @@ pub enum Tier {
 /// Whether setting `key` to `new` (`None` = remove) may go ahead, and how carefully.
 pub fn check(key: &str, new: Option<u64>, facts: &Facts) -> Result<Tier, String> {
     let size = |n: u64| format_size(n);
-    if facts.is_volume && key != "refreservation" {
-        return Err(format!("{key} is not offered for volumes: a volume has its volsize and refreservation"));
+    if facts.is_volume && matches!(key, "quota" | "refquota") {
+        return Err(format!("{key} does not apply to a volume: it has its volsize and the reservations"));
     }
     let Some(new) = new else { return Ok(Tier::Direct) };
     let set = |n: u64| (n > 0).then_some(n);
@@ -199,11 +199,13 @@ mod tests {
     }
 
     #[test]
-    fn volumes_take_only_refreservation() {
+    fn volumes_take_the_reservations_but_not_the_quotas() {
+        // verified on the hub: `zfs set reservation=` works on a volume, `quota=` says it does not apply to its type
         let v = Facts { is_volume: true, ..facts() };
-        for key in ["quota", "refquota", "reservation"] {
+        for key in ["quota", "refquota"] {
             assert!(check(key, Some(10 * G), &v).unwrap_err().contains("volume"), "{key}");
         }
+        assert!(check("reservation", Some(10 * G), &v).is_ok());
         assert!(check("refreservation", Some(10 * G), &v).is_ok());
         assert!(check("refreservation", None, &v).is_ok(), "a sparse volume has none, and that is normal");
     }

@@ -109,7 +109,7 @@ Four properties cap or protect a dataset's space: `quota` and `refquota` are cei
 - a quota below what the dataset already uses is refused (`quota` is compared with *used*, `refquota` with *referenced*, which leaves out snapshots);
 - a reservation larger than the quota, or a quota below the reservation, is refused;
 - a reservation the pool cannot back (more than the space still available) is refused;
-- a volume only takes `refreservation`; its other three rows say so.
+- a volume has no quota: `quota` and `refquota` say they do not apply, while `reservation` and `refreservation` work.
 
 A change that leaves less than 10% room over what is used now, or raises a reservation by more than a tenth of the free space, asks for `y` then `Enter`; anything else applies at once. Removing a limit applies at once.
 

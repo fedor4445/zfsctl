@@ -9040,13 +9040,16 @@ fn a_quota_with_under_ten_percent_headroom_asks_y_then_enter() {
 }
 
 #[test]
-fn a_volume_refuses_quota_and_still_takes_refreservation() {
+fn a_volume_refuses_quota_and_still_takes_the_reservations() {
     let mut app = quota_app(true, 0, 0, 0, 0);
     open_property(&mut app, "quota");
     assert!(app.modal.is_none(), "no form for a volume's quota");
     assert!(app.status_message.as_deref().is_some_and(|m| m.contains("volume")), "{:?}", app.status_message);
-    open_property(&mut app, "refreservation");
-    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })));
+    for key in ["refreservation", "reservation"] {
+        open_property(&mut app, key);
+        assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "{key}");
+        app.modal = None;
+    }
 }
 
 #[test]

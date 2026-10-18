@@ -68,8 +68,9 @@ Spec, plan, tests, whole-branch review, live check on the hub and a VM (set a 1G
   reservation) must be <= the dataset's `available`.
 - **Confirm tiers.** A change that leaves under 10% headroom over current use (writes would soon fail), or raises a reservation
   by more than 10% of the pool's available space, is the two-key confirm. Everything else is plain. Removing a limit is plain.
-- **Volumes.** Offered: `refreservation` (`none` is allowed and normal for sparse volumes). `reservation` and the quotas are
-  not offered for volumes; verify on a VM whether `reservation` is settable on one and relax if so.
+- **Volumes (verified on the hub, FreeBSD OpenZFS).** `reservation` and `refreservation` are settable on a volume (`none` is
+  normal for sparse ones); `quota` and `refquota` are not (`does not apply to datasets of this type`). The limit pairs ZFS
+  rejects match the refusal matrix above, and a reservation larger than the refquota is allowed.
 - **Where.** The guided edit is `Enter` on these rows of the dataset Properties tab (the pool root dataset included). The
   Datasets panel's Quota line shows only `quota` today; it is extended to show `refquota`.
 
