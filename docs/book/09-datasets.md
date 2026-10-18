@@ -99,8 +99,6 @@ Each row is a property with its **value** and its **source**: `local` (set on th
 
 > **Safety:** shrinking a volume's `volsize` can destroy the data past the new size, so zfsctl shows the exact command and asks the two-key question first. Changing `mountpoint` on a dataset that is in use can disconnect programs using it.
 
-> **Coming from Linux:** `quota` is like a per-directory quota without a quota daemon, and `compression=lz4` replaces any thought of compressing files yourself. **Coming from Windows:** `quota` is NTFS disk quotas for a folder, but per filesystem.
-
 ## Quotas and reservations
 
 Four properties cap or protect a dataset's space: `quota` and `refquota` are ceilings, `reservation` and `refreservation` are space kept back for it. The `quota` and `reservation` count the dataset, its children and its snapshots; the `ref` versions count only the dataset's own data.
@@ -213,8 +211,6 @@ The ACL tab lists the **file access control list** of the dataset's mount point:
 ```
 
 Each row has a position (`#`), a target (the owner, the group, everyone, or a named user or group), the permissions, any flags and the type (`Allow` or `Deny`). `n` adds an entry (always at the end) and `d` removes the selected one by position. This tab edits **NFSv4 ACLs**, the kind FreeBSD uses on ZFS with `acltype=nfsv4`; if the dataset has `acltype=posix`, the title says so and the tab does not edit it.
-
-> **Coming from Linux:** NFSv4 ACLs are richer than POSIX ACLs (`setfacl`); the permissions have names like `read_data`. **Coming from Windows:** these are very close to NTFS permissions, which is why Samba maps onto them so well.
 
 ## Try it
 

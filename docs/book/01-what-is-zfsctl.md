@@ -12,10 +12,6 @@ ZFS is wonderful and its tools are plain: `zpool`, `zfs`, and a handful of other
 
 zfsctl is one terminal program that puts that map on a screen. It shows every pool, dataset, snapshot, disk and share on the machines you give it, lets you create and change them with confirmations in the right places, runs your scheduled snapshots, replication and backups, and sends you an email when something needs attention. It changes your data only when you ask, and it asks twice for anything you could not undo.
 
-> **Coming from Windows:** think of it as Disk Management, Task Scheduler and a backup tool combined into one console program, for machines that run ZFS. You work in a terminal, but you never have to remember a command line: every action is a key shown at the bottom of the screen.
-
-> **Coming from Linux:** if you have used Cockpit, webmin or a ZFS dashboard, the idea is the same, but zfsctl lives in your terminal over ssh and does not need a web server. If you have written cron + `zfs snapshot` + `zfs send` scripts (or used tools like sanoid or znapzend), zfsctl covers the same ground with a screen on top and safety checks built in.
-
 ## The hub and its hosts
 
 ```text

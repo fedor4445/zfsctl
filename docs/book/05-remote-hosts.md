@@ -14,8 +14,6 @@ This means a stolen ssh key does not hand over the machine: it is worth only wha
 
 > **Safety:** the sudoers entry is the whole privilege boundary, so it is worth understanding. `zfs`, `bectl` and `restic` are, in practice, as powerful as root (for example `zfs` can mount over directories and `restic` can read and write any file), so grant them only to hosts you trust zfsctl with.
 
-> **Coming from Linux:** this is the same idea as a `NOPASSWD` sudoers drop-in for a service account. **Coming from Windows:** think of a dedicated service account with exactly the rights it needs, not Administrator.
-
 ## Setting up a host, step by step
 
 On the host (the machine to be managed), as root:

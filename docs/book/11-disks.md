@@ -62,8 +62,6 @@ Select a disk and the panel shows what you need to identify it: its **model** an
 
 > **Safety:** before you replace, offline or build a pool from a disk, check its **serial number** against the label on the physical drive. Device names (`ada3`) can change when cables move; serial numbers do not. A pool built from the wrong disk overwrites it.
 
-> **Coming from Linux:** this is `lsblk` plus `smartctl -i` (model and serial) plus `zpool status` in one place, and `/dev/disk/by-id` is replaced by the serial. **Coming from Windows:** it is Disk Management's list, with the ZFS membership added.
-
 ## Build a pool from disks
 
 Instead of typing disk names, select them. `Space` toggles the mark on the selected disk (`[x]`), `Esc` clears all marks, and then:

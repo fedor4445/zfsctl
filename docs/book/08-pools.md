@@ -149,8 +149,6 @@ Type a **name** and a **vdev spec**: the layout followed by the disks, for examp
 
 > **Safety:** creating a pool **overwrites whatever is on those disks**. Check the names against the Disks section (chapter 11), where each disk's size, model and serial number are shown, before you press `y`. If you are practising, use files instead of disks (chapter 2).
 
-> **Coming from Linux:** `mirror da0 da1` is `zpool create tank mirror /dev/da0 /dev/da1` without the `/dev/`. **Coming from Windows:** this is "New Storage Pool", with the redundancy chosen in the same step.
-
 ## Add a vdev, replace a disk, offline and online
 
 - **Add a vdev** (`a` inside a pool): another group of disks, for example `mirror da2 da3`, joins the pool and its space is available at once. The question shows the exact `zpool add` command and, a moment later, the layout `zpool add -n` says the pool would have (the host answers; if it refuses the add, you get the form back with its message). A vdev added to a pool usually cannot be removed again: think about it before you say yes, because a pool with one weak vdev is only as safe as that vdev.

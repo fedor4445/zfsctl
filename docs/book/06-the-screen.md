@@ -54,10 +54,6 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 - **The panel** (bottom right) shows live details of whatever is selected: space, health, counts, and two graphs of read and write activity. It disappears on a very short terminal so that the list keeps room.
 - **The hint bar** is the last line of the screen. It lists exactly the keys that work right now, and it changes as you move: a key that would do nothing is not shown. When there is a message for you (a result, an error), it appears on the line just above.
 
-> **Coming from Windows:** the sidebar is like the tree on the left of Disk Management or an MMC console; the list is the main window; the panel is the status area.
-
-> **Coming from Linux:** the movement keys are the ones you know from tools like `htop` or `k9s`, minus the vi bindings: arrows and `Tab`.
-
 ## The Dashboard
 
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.

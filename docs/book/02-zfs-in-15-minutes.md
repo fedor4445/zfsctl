@@ -3,12 +3,11 @@
 ## What you will learn
 
 - The handful of ideas that make ZFS different: pools, vdevs, datasets, snapshots, send/receive and scrub.
-- How those ideas map to what you already know from Linux or Windows.
 - A first hands-on pass using a practice pool made of ordinary files, so nothing real is at risk.
 
 ## Why ZFS
 
-ZFS combines three jobs that other systems split apart: the volume manager (what Linux does with LVM or mdadm, and Windows with Storage Spaces), the filesystem (ext4, xfs, NTFS), and the snapshot and copy machinery. Because one system sees everything, it can do things the separate layers cannot:
+ZFS combines three jobs that are usually separate layers: the volume manager, the filesystem, and the snapshot and copy machinery. Because one system sees everything, it can do things the separate layers cannot:
 
 - **It checksums everything.** Every block of data and metadata has a checksum; a read that does not match is detected, and if you have redundancy ZFS repairs it from the good copy. Silent corruption ("bit rot") does not stay silent.
 - **It never overwrites in place** (copy-on-write). A crash cannot leave a half-written block, and snapshots are nearly free: a snapshot just remembers the old blocks.
@@ -43,10 +42,6 @@ A pool can also have *log* (a fast device for synchronous writes), *cache* (a se
 **Scrub and resilver.** A *scrub* reads everything in the pool and checks it against the checksums, repairing what it can. A *resilver* is the repair after a disk is replaced or comes back. Run a scrub regularly (monthly is common) so problems are found while you still have redundancy.
 
 **ARC.** The *adaptive replacement cache*: ZFS uses spare RAM as a read cache, so free memory looks low on a ZFS machine. That is normal.
-
-> **Coming from Linux:** with ext4 on LVM on mdadm you manage three layers; ZFS is one. `lvcreate --snapshot` becomes `zfs snapshot` (instant, and no fixed snapshot size to run out of); `rsync -a` to another machine becomes `zfs send | zfs receive`, which only sends changed blocks and preserves everything exactly. There is no `fsck`: scrub is the check, and it runs online.
-
-> **Coming from Windows:** a pool is like a Storage Spaces pool and a dataset like a volume that you can create in a second. A snapshot is what Volume Shadow Copy (Previous Versions) gives you, but you can make thousands and keep them for years. Replication plays the part of `robocopy /MIR` or File History, but exact and incremental.
 
 ## A worked example
 

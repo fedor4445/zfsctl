@@ -2,15 +2,15 @@
 
 ## What you will learn
 
-- What the words in this book mean, with the Linux or Windows equivalent where there is one.
+- What the words in this book mean.
 
 Terms are in alphabetical order.
 
-**ACL**: access control list: the rules saying who may read, write or execute a file. FreeBSD ZFS uses NFSv4 ACLs. (Windows: NTFS permissions; Linux: `setfacl`)
+**ACL**: access control list: the rules saying who may read, write or execute a file. FreeBSD ZFS uses NFSv4 ACLs.
 
 **alert**: a message sent when a host turns bad on two checks in a row; see chapter 16.
 
-**ARC**: adaptive replacement cache: ZFS's memory cache of recently used data; shown in the host panel. (Linux: the page cache, but smarter)
+**ARC**: adaptive replacement cache: ZFS's memory cache of recently used data; shown in the host panel.
 
 **backup**: a separate copy of your data, elsewhere, that you can restore from by itself; chapter 15.
 
@@ -34,7 +34,7 @@ Terms are in alphabetical order.
 
 **daemon**: a program that runs in the background; `zfsctl daemon` runs the jobs and the health monitor.
 
-**dataset**: a filesystem or volume inside a pool; chapter 9. (Linux: a mounted filesystem; Windows: a volume or folder with its own settings)
+**dataset**: a filesystem or volume inside a pool; chapter 9.
 
 **dedup**: deduplication: storing identical blocks once; costly in memory and rarely worth it.
 
@@ -90,7 +90,7 @@ Terms are in alphabetical order.
 
 **offline**: a disk taken out of service on purpose.
 
-**pool**: one or more vdevs presented as a single store of space; chapter 8. (Linux: roughly a volume group; Windows: a Storage Pool)
+**pool**: one or more vdevs presented as a single store of space; chapter 8.
 
 **prefix**: the start of the name of snapshots a job makes and uses, such as `hourly`.
 
@@ -136,7 +136,7 @@ Terms are in alphabetical order.
 
 **SMB**: the Windows file-sharing protocol, served by Samba.
 
-**snapshot**: a read-only picture of a dataset at one moment; chapter 10. (Windows: a Previous Version; Linux: an LVM or Btrfs snapshot, but cheaper)
+**snapshot**: a read-only picture of a dataset at one moment; chapter 10.
 
 **source**: where a property's value comes from: local, inherited or default.
 

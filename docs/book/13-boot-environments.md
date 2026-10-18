@@ -10,8 +10,6 @@
 
 A *boot environment* is a bootable copy of the operating system, kept as a ZFS clone. Before you upgrade FreeBSD or change something risky, you make one; if the result is bad, you boot the old one and you are back where you were. It costs almost no space until the two diverge.
 
-> **Coming from Linux:** this is what Btrfs-based "snapper rollback" or a distro's snapshot-boot feature does, and it is built into FreeBSD's loader. **Coming from Windows:** think of System Restore points that you can actually boot from.
-
 ## The list
 
 ```screen

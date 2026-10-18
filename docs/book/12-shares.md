@@ -49,8 +49,6 @@ The Shares section lists what the host is sharing, from both protocols:
 
 Each row is a dataset, the protocol (`NFS` or `SMB`) and the details: for NFS the export options (here, the networks allowed), for SMB the share name and who may use it. `Enter` edits the selected share, `d` removes it (after a yes/no question), `r` refreshes.
 
-> **Coming from Windows:** SMB is the "file sharing" you know (`\\host\share`); NFS is its Unix counterpart. **Coming from Linux:** NFS here is the `/etc/exports` you know, written for you.
-
 ## NFS shares
 
 In Datasets, select a dataset and press `N`. (Visit the Shares section once first, so zfsctl has the current state of the host's shares; it tells you if you have not.)

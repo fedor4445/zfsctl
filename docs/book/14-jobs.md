@@ -57,8 +57,6 @@ A schedule is five fields, `minute hour day-of-month month day-of-week`, with `*
 
 **Catch up** (`y` by default) means: if the hub was off at the scheduled time, run the job once when the daemon comes back. A catch-up never reaches back before the job was created.
 
-> **Coming from Linux:** this is cron with a history and a screen. **Coming from Windows:** this is Task Scheduler, with the log next to the task.
-
 ## A scrub job
 
 Press `n` in Jobs, or `J` on a pool in Pools:

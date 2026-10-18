@@ -11,8 +11,6 @@
 
 Snapshots live in the same pool as the data: if the pool dies, so do they. Replication ([chapter 14](14-jobs.md)) puts a copy on another machine, which is good, but it copies your mistakes too. A real backup is **a separate copy, in a different place, in a different format, that you can restore from by itself**. zfsctl's backup job uses [restic](https://restic.net), a well-regarded open-source backup tool: encrypted, deduplicated, and able to store its repository on a USB disk, another machine over sftp, or a cloud service.
 
-> **Coming from Linux:** you may already use restic or borg; this runs restic for you on a schedule, from a snapshot. **Coming from Windows:** this is File History or Windows Backup, but encrypted and stored where you choose.
-
 ## One-time setup
 
 On the host that will run the backup (the hub, in the running example):
