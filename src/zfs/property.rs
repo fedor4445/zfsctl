@@ -253,7 +253,7 @@ tank/data\treadonly\toff\tinherited from tank
 }
 
 /// Dataset properties that can only be chosen when the dataset is created.
-pub const FIXED_AT_CREATION: [&str; 6] = ["encryption", "keyformat", "casesensitivity", "normalization", "utf8only", "volblocksize"];
+pub const FIXED_AT_CREATION: [&str; 5] = ["encryption", "casesensitivity", "normalization", "utf8only", "volblocksize"];
 
 /// The name as the Properties table shows it: a `*` after a property that cannot be changed once the dataset exists.
 pub fn property_label(name: &str) -> String {

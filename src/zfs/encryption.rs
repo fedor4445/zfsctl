@@ -198,7 +198,7 @@ pub fn load_key_and_mount(runner: &dyn CommandRunner, dataset: &str, passphrase:
 
 /// The ciphers `zfs create -o encryption=` takes (OpenZFS), `aes-256-gcm` first because it is the default. A host's `zfs`
 /// refuses one it does not know with its own message.
-pub const CIPHERS: [&str; 7] = ["aes-256-gcm", "aes-192-gcm", "aes-128-gcm", "aes-256-ccm", "aes-192-ccm", "aes-128-ccm", "on"];
+pub const CIPHERS: [&str; 6] = ["aes-256-gcm", "aes-192-gcm", "aes-128-gcm", "aes-256-ccm", "aes-192-ccm", "aes-128-ccm"];
 
 /// `zfs create` of an encrypted dataset with a passphrase key read from the prompt (stdin, once). The key is stored nowhere
 /// by zfsctl; `keylocation=prompt` is what `L` and `C` need later.
@@ -211,6 +211,14 @@ pub fn create_encrypted(runner: &dyn CommandRunner, name: &str, cipher: &str, pa
         return Err(AppError::Parse(format!("unknown cipher {cipher}")));
     }
     check_passphrase(passphrase, true).map_err(AppError::Parse)?;
+    // Asked again now (the screen's list may be old or not read yet): under an encrypted parent this would start a second key.
+    if let Some((parent, _)) = name.rsplit_once('/') {
+        match query(runner, parent) {
+            Ok(None) => {}
+            Ok(Some(_)) => return Err(AppError::Parse(format!("{parent} is encrypted: what is created under it uses its key already. Use n for a plain new dataset there"))),
+            Err(e) => return Err(AppError::Parse(format!("could not check whether {parent} is encrypted: {e}"))),
+        }
+    }
     let encryption = format!("encryption={cipher}");
     let args = ["create", "-o", encryption.as_str(), "-o", "keyformat=passphrase", "-o", "keylocation=prompt", "--", name];
     let out = runner.run_with_stdin("zfs", &args, zeroize::Zeroizing::new(format!("{passphrase}\n")).as_str())?;
@@ -412,9 +420,21 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         let runner = FakeRunner::new("");
         create_encrypted(&runner, "tank/secure", "aes-256-gcm", "correct horse battery").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0].1, ["create", "-o", "encryption=aes-256-gcm", "-o", "keyformat=passphrase", "-o", "keylocation=prompt", "--", "tank/secure"]);
-        assert!(calls[0].1.iter().all(|a| !a.contains("horse")));
+        assert_eq!(calls[0].1[0], "get", "the parent is asked first");
+        assert_eq!(calls[1].1, ["create", "-o", "encryption=aes-256-gcm", "-o", "keyformat=passphrase", "-o", "keylocation=prompt", "--", "tank/secure"]);
+        assert!(calls.iter().all(|c| c.1.iter().all(|a| !a.contains("horse"))));
         assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), "correct horse battery\n".to_string())]);
+    }
+
+    #[test]
+    fn a_create_under_an_encrypted_parent_or_an_unanswering_host_sends_nothing() {
+        let under = FakeRunner::new("").route("zfs", "get", "tank/s\tencryption\taes-256-gcm\ntank/s\tkeyformat\tpassphrase\ntank/s\tkeystatus\tavailable\ntank/s\tencryptionroot\ttank/s\n");
+        assert!(create_encrypted(&under, "tank/s/new", "aes-256-gcm", "long enough").unwrap_err().to_string().contains("tank/s is encrypted"));
+        let down = FakeRunner::failing("ssh: connection refused", 255);
+        assert!(create_encrypted(&down, "tank/s/new", "aes-256-gcm", "long enough").unwrap_err().to_string().contains("could not check"));
+        for r in [&under, &down] {
+            assert!(r.stdin_calls.lock().unwrap().is_empty());
+        }
     }
 
     #[test]
