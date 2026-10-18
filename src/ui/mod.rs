@@ -193,7 +193,10 @@ fn apply_pending_add_checks(app: &mut App, inventory: &HostInventory) {
     for check in std::mem::take(&mut app.pending_add_checks) {
         match inventory.hosts.get(check.host) {
             Some(h) => app.start_add_check(check, h.runner.clone()),
-            None => app.set_error(format!("unknown host #{}", check.host)),
+            None => {
+                let why = format!("unknown host #{}", check.host);
+                app.on_add_checked(check, Err(why));
+            }
         }
     }
 }

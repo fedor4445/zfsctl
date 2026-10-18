@@ -605,16 +605,58 @@ pub(super) fn add_vdev_request(kind: &FormKind, fields: &[FormField]) -> Result<
     }
 }
 
+/// What the confirm says while the host has not shown the layout yet.
+pub(super) const CHECKING_LAYOUT: &str = "Checking the resulting layout";
+
+/// The part of `zpool add -n`'s output worth reading: the header, the pool line, and what the add changes: the class heading
+/// of the role being added with its devices, or, for data, the last of the data vdevs. The whole tree of a big pool would push
+/// the new vdev off the screen.
+pub(super) fn layout_excerpt(text: &str, role: crate::zfs::vdev_role::Role) -> String {
+    use crate::zfs::vdev_role::Role;
+    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    // header, then the pool line (the first indented line); the rest is the vdev tree
+    let Some(pool_at) = lines.iter().position(|l| indent(l) > 0) else { return lines.join("\n") };
+    let (head, tree) = (&lines[..=pool_at], &lines[pool_at + 1..]);
+    let level = indent(lines[pool_at]);
+    let heading = |l: &&str| indent(l) == level && matches!(l.trim(), "logs" | "cache" | "spares" | "special" | "dedup");
+    let wanted = match role {
+        Role::Log => Some("logs"),
+        Role::Cache => Some("cache"),
+        Role::Spare => Some("spares"),
+        Role::Special => Some("special"),
+        Role::Dedup => Some("dedup"),
+        Role::Data => None,
+    };
+    let shown: Vec<&str> = match wanted.and_then(|w| tree.iter().position(|l| l.trim() == w && indent(l) == level)) {
+        Some(start) => {
+            let end = tree[start + 1..].iter().position(|l| heading(l)).map_or(tree.len(), |n| start + 1 + n);
+            let mut out = vec!["  ..."];
+            out.extend(&tree[start..end]);
+            out
+        }
+        None => {
+            let data_end = tree.iter().position(|l| heading(l)).unwrap_or(tree.len());
+            let data = &tree[..data_end];
+            let mut out = Vec::new();
+            if data.len() > 10 {
+                out.push("  ...");
+            }
+            out.extend(&data[data.len().saturating_sub(10)..]);
+            out
+        }
+    };
+    let mut all: Vec<&str> = head.to_vec();
+    all.extend(shown);
+    all.join("\n")
+}
+
 /// The confirmation for adding vdevs: the exact command, the layout `zpool add -n` says it would give (once the host has
 /// answered), and what the role means for undoing it.
 pub(super) fn add_vdev_prompt(host: &str, pool: &str, spec: &[String], role: crate::zfs::vdev_role::Role, layout: Option<&str>) -> String {
     let shown = match layout {
-        None => "\n\nChecking the resulting layout...".to_string(),
-        Some(text) => {
-            let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
-            let cut = if lines.len() > 12 { format!("{}\n  ... {} more lines", lines[..12].join("\n"), lines.len() - 12) } else { lines.join("\n") };
-            format!("\n\n{cut}")
-        }
+        None => format!("\n\n{CHECKING_LAYOUT}..."),
+        Some(text) => format!("\n\n{}", layout_excerpt(text, role)),
     };
     let why = if role.irreversible() {
         "A vdev added to a pool usually cannot be removed again. Add it?".to_string()

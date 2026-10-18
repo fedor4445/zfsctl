@@ -41,8 +41,11 @@ pub fn parse_pool_layout(status: &str) -> PoolLayout {
     let lines = super::pool::parse_pool_status_vdevs(status);
     let mut layout = PoolLayout::default();
     let mut class: &'static str = "data";
+    let pool_line = lines.iter().position(|l| l.depth == 0);
     for (i, line) in lines.iter().enumerate() {
         match (line.depth, line.name.as_str()) {
+            // The pool's own line (a pool may be called `cache` or `special`).
+            (0, _) if Some(i) == pool_line => {}
             (0, "logs") => class = "log",
             (0, "cache") => class = "cache",
             (0, "spares") => class = "spare",

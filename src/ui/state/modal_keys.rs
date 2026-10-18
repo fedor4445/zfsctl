@@ -46,6 +46,12 @@ impl App {
     // Enter with nothing selected, and every other key, change nothing.
     fn confirm_key(&mut self, key: KeyCode, prompt: String, action: PendingAction, choice: Option<bool>) -> Option<PendingAction> {
         match (key, choice) {
+            // An add whose layout the host has not shown yet waits: the question is about what the pool will look like.
+            (KeyCode::Enter, Some(true)) if matches!(action.call, MutationCall::AddVdev { .. }) && prompt.contains(super::forms::CHECKING_LAYOUT) => {
+                self.status_message = Some("Waiting for the host to show the resulting layout; press Enter again in a moment".to_string());
+                self.modal = Some(Modal::Confirm { prompt, action, choice: Some(true) });
+                None
+            }
             (KeyCode::Enter, Some(true)) => {
                 self.confirm_restore = None;
                 Some(action)
@@ -336,7 +342,8 @@ impl App {
             self.confirm_restore = Some((prompt.clone(), modal.clone()));
             // The host is asked what the layout would be; the confirm shows it when it answers.
             if let Some((pool, spec, role)) = adding {
-                self.pending_add_checks.push(super::AddCheck { host: action.host, pool, spec, role, form: modal });
+                self.add_check_ids += 1;
+                self.pending_add_checks.push(super::AddCheck { id: self.add_check_ids, host: action.host, pool, spec, role, form: modal });
             }
             self.modal = Some(Modal::Confirm { choice: None, prompt, action });
             return None;

@@ -288,7 +288,9 @@ pub fn removable_device(lines: &[VdevLine], index: usize) -> Option<(String, &'s
     if line.depth != 1 {
         return None;
     }
-    let class = lines[..index].iter().rev().find(|l| l.depth == 0).map(|l| l.name.as_str())?;
+    // The first depth-0 line is the pool itself (a pool may be called `cache` or `special`); only later ones are class headings.
+    let pool_line = lines.iter().position(|l| l.depth == 0)?;
+    let class = lines[..index].iter().enumerate().rev().find(|(i, l)| l.depth == 0 && *i > pool_line).map(|(_, l)| l.name.as_str())?;
     let class = match class {
         "logs" => "log",
         "cache" => "cache",
@@ -683,6 +685,17 @@ errors: No known data errors
             assert_eq!(removable_device(&v, at(no)), None, "{no} is not offered");
         }
         assert_eq!(removable_device(&v, 99), None);
+    }
+
+    #[test]
+    fn a_pool_named_like_a_class_heading_is_not_mistaken_for_one() {
+        for name in ["cache", "logs", "special", "dedup", "spares"] {
+            let v = lines(&[(0, name), (1, "da0"), (1, "da1")]);
+            assert_eq!(removable_device(&v, 1), None, "a data disk of pool '{name}'");
+            assert_eq!(removable_device(&v, 2), None);
+        }
+        let v = lines(&[(0, "cache"), (1, "da0"), (0, "logs"), (1, "da4")]);
+        assert_eq!(removable_device(&v, 3), Some(("da4".to_string(), "log")), "a real log of a pool called cache");
     }
 
     #[test]

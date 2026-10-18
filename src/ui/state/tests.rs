@@ -7267,6 +7267,11 @@ fn a_probe_that_never_answers_is_flagged_instead_of_showing_its_last_good_result
 /// Enter on a finished irreversible form, then the confirmation's `y` and Enter.
 fn submit_and_confirm(app: &mut App) -> Option<PendingAction> {
     assert_eq!(app.handle_modal_key(KeyCode::Enter), None);
+    // a vdev add waits for the host's layout before the question can be answered
+    if !app.pending_add_checks.is_empty() {
+        let check = app.pending_add_checks.remove(0);
+        app.on_add_checked(check, Ok("would update 'tank' to the following configuration:\n\n\ttank\n".to_string()));
+    }
     app.handle_modal_key(KeyCode::Char('y'));
     app.handle_modal_key(KeyCode::Enter)
 }
@@ -7300,6 +7305,9 @@ fn add_vdev_shows_the_exact_command_and_runs_only_after_y_then_enter() {
     }
     let prompt = submit_to_confirm(&mut app);
     assert!(prompt.contains("zpool add tank mirror da2 da3"), "{prompt}");
+    // the host shows the layout first; only then can the question be answered
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Ok("would update 'tank' to the following configuration:\n\n\ttank\n\t  mirror-0\n\t  mirror\n".to_string()));
     assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter with nothing selected does nothing");
     assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
     let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter runs it");
@@ -9154,7 +9162,7 @@ fn the_dry_run_answer_puts_the_layout_into_the_confirm_and_a_special_stays_irrev
     // declining still returns to the form
     app.handle_modal_key(KeyCode::Char('n'));
     app.handle_modal_key(KeyCode::Enter);
-    assert!(matches!(app.modal, Some(Modal::Form { .. })) || app.modal.is_none());
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "declining after the layout arrived still gives the form back: {:?}", app.modal);
 }
 
 #[test]
@@ -9257,4 +9265,83 @@ fn special_small_blocks_is_a_guided_form_that_warns_when_it_reaches_the_recordsi
         Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("ALL of this dataset's data"), "{prompt}"),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn y_then_enter_waits_until_the_host_has_shown_the_layout() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    app.handle_modal_key(KeyCode::Char('y'));
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "no layout yet: the add does not go");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("Waiting for the host")), "{:?}", app.status_message);
+    assert!(matches!(app.modal, Some(Modal::Confirm { choice: Some(true), .. })), "the y stays selected");
+    let check = app.pending_add_checks.remove(0);
+    app.on_add_checked(check, Ok("would update 'tank'".to_string()));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "once the layout is on screen, Enter sends it");
+}
+
+#[test]
+fn a_host_that_never_answers_the_layout_check_gives_the_form_back_after_the_deadline() {
+    struct Hang;
+    impl CommandRunner for Hang {
+        fn run(&self, _: &str, _: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+        fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(c, a)
+        }
+    }
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let check = app.pending_add_checks.remove(0);
+    app.start_add_check_with(check, Arc::new(Hang), Duration::from_millis(100));
+    let end = Instant::now() + Duration::from_secs(2);
+    while matches!(app.modal, Some(Modal::Confirm { .. })) && Instant::now() < end {
+        app.drain_worker_messages();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("did not answer")), "{:?}", app.status_error);
+}
+
+#[test]
+fn a_refusal_with_several_lines_is_one_status_line_and_a_repeated_ask_is_told_apart_by_its_id() {
+    let mut app = add_from_disks(&["da4"], "log", "");
+    submit_to_confirm(&mut app);
+    let first = app.pending_add_checks.remove(0);
+    // decline and submit the same thing again: a new ask with a new id
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    app.handle_modal_key(KeyCode::Enter);
+    let second = app.pending_add_checks.remove(0);
+    assert_ne!(first.id, second.id);
+    app.on_add_checked(first, Err("stale".to_string()));
+    assert!(matches!(app.modal, Some(Modal::Confirm { .. })), "the first ask's answer must not touch the second confirm");
+    app.on_add_checked(second, Err("invalid vdev specification\nuse '-f' to override the following errors:\nmismatched replication level".to_string()));
+    assert_eq!(app.status_error.as_deref(), Some("invalid vdev specification | use '-f' to override the following errors: | mismatched replication level"));
+}
+
+#[test]
+fn the_layout_excerpt_shows_what_the_add_changes_not_the_whole_tree() {
+    use crate::zfs::vdev_role::Role;
+    let mut text = String::from("would update 'tank' to the following configuration:\n\n\ttank\n");
+    for i in 0..4 {
+        text.push_str(&format!("\t  raidz2-{i}\n"));
+        for d in 0..6 {
+            text.push_str(&format!("\t    da{}\n", i * 6 + d));
+        }
+    }
+    text.push_str("\tspecial\n\t  mirror\n\t    da30\n\t    da31\n\tcache\n\t  da40\n");
+    let special = super::forms::layout_excerpt(&text, Role::Special);
+    assert!(special.contains("would update 'tank'") && special.contains("special") && special.contains("da31"), "{special}");
+    assert!(!special.contains("raidz2-0") && !special.contains("da40"), "only the special section: {special}");
+    let cache = super::forms::layout_excerpt(&text, Role::Cache);
+    assert!(cache.contains("cache") && cache.contains("da40") && !cache.contains("da30"), "{cache}");
+    let data = super::forms::layout_excerpt(&text, Role::Data);
+    assert!(data.contains("raidz2-3") && data.contains("...") && !data.contains("special"), "the tail of the data vdevs: {data}");
+    assert_eq!(super::forms::layout_excerpt("no tabs here", Role::Log), "no tabs here");
 }

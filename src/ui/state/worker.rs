@@ -57,9 +57,10 @@ impl App {
     /// The dry run of a vdev add answered. If its confirm is still on screen it now shows the layout; if the host refused the
     /// add, the confirm gives way to the form again with the host's own message. A confirm that is gone (declined, or another
     /// one opened) ignores a late answer.
-    pub(super) fn on_add_checked(&mut self, check: super::AddCheck, result: std::result::Result<String, String>) {
+    pub fn on_add_checked(&mut self, check: super::AddCheck, result: std::result::Result<String, String>) {
         let still_asked = matches!(&self.modal, Some(Modal::Confirm { action, .. })
-            if matches!(&action.call, crate::ui::modal::MutationCall::AddVdev { pool, vdev_spec } if *pool == check.pool && *vdev_spec == check.spec) && action.host == check.host);
+            if matches!(&action.call, crate::ui::modal::MutationCall::AddVdev { pool, vdev_spec } if *pool == check.pool && *vdev_spec == check.spec) && action.host == check.host)
+            && self.add_check_ids == check.id;
         if !still_asked {
             return;
         }
@@ -77,7 +78,9 @@ impl App {
             Err(message) => {
                 self.modal = Some(check.form);
                 self.confirm_restore = None;
-                self.set_error(message);
+                // zpool's refusals run over several lines ("invalid vdev specification / use '-f' to override ..."): one line
+                // keeps the hint on the status bar.
+                self.set_error(message.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | "));
             }
         }
     }

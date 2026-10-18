@@ -115,6 +115,7 @@ pub fn check_raw_spec(spec: &[String]) -> Result<Role, String> {
             "mirror" | "raidz1" => 2,
             "raidz2" => 3,
             "raidz3" => 4,
+            "raidz" => 2,
             _ => 1,
         };
         if n < least && role != Role::Data {
@@ -131,10 +132,14 @@ pub fn check_raw_spec(spec: &[String]) -> Result<Role, String> {
             skip_value = true;
             continue;
         }
+        if token == "-n" {
+            return Err("-n is a dry run: leave it out (zfsctl already shows the dry run before it adds)".to_string());
+        }
         if token.starts_with('-') {
             continue;
         }
-        if let Some(next) = Role::parse(token).filter(|r| *r != Role::Data) {
+        // zpool is case-sensitive: `Log` is a device name to it, not the log class.
+        if let Some(next) = Role::ALL.into_iter().find(|r| *r != Role::Data && r.word() == token) {
             flush(role, &mut group)?;
             role = next;
             continue;
@@ -228,6 +233,9 @@ mod tests {
         assert!(s(&[]).is_err());
         assert!(s(&["special", "mirror", "a", "b", "dedup", "c"]).is_err(), "the dedup disk is alone");
         assert!(s(&["cache", "mirror", "a", "b"]).is_err());
+        assert!(s(&["special", "raidz", "da0"]).is_err(), "a bare raidz needs two disks");
+        assert!(s(&["-n", "log", "da4"]).unwrap_err().contains("dry run"), "-n would make the real add a dry run");
+        assert_eq!(s(&["Log", "da0"]), Ok(Role::Data), "zpool is case-sensitive: `Log` is a device name");
         assert!(s(&["log", "raidz1", "a", "b", "c"]).is_err());
         assert_eq!(s(&["/root/f1", "/root/f2"]), Ok(Role::Data), "file-backed vdevs are disks too");
         assert_eq!(s(&["mirror", "a", "b", "log", "c"]), Ok(Role::Data), "the riskiest role decides the confirm");

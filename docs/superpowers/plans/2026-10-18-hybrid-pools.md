@@ -91,3 +91,11 @@
 - [ ] **Step 2: Live check on the hub** with file-backed vdevs (`mkfile`/`truncate` 128M files under `/root/hyb/`): create pool `hyb` on `f1`; via the TUI Pools -> vdev drill-down -> add raw `log /root/hyb/f2`, `cache /root/hyb/f3`, `spare /root/hyb/f4`, `special mirror /root/hyb/f5 /root/hyb/f6`; try `special /root/hyb/f7` (refused); see the Pools panel counts; remove the log, cache and spare with `x`; check the Dashboard line by creating a pool with a lone special disk (`zpool create -f hyb2 f8 special f9`) and `c` in Hosts; clean up (`zpool destroy hyb hyb2`, delete files). Verify empirically on `omnios` (`zpool add -n` with `log`/`cache`) and record anything that differs.
 - [ ] **Step 3:** Whole-branch subagent review with the Review Focus list; fix Critical/Important test-first.
 - [ ] **Step 4:** Ask the user before merge + install; update memory.
+
+## Review fixes (2026-10-18)
+
+- A pool's own first line is never read as a class heading (`removable_device`, `classes_of`, `parse_pool_layout`).
+- The add confirm waits for the host's `zpool add -n` layout (Enter after y is held until it arrives; 30 s deadline gives the form back; each ask has an id); the layout is cut to the class being added, not the whole tree; multi-line refusals become one status line.
+- Verified on the hub: a mirrored special or log on a raidz or mirror pool needs no `-f`; only a single-disk data pool ("pool uses file/disk and new vdev is mirror") needs `-f`, which the raw form takes as a leading `-f`.
+- Raw specs: `-n` refused, bare `raidz` needs two disks, role words are case-sensitive like zpool's.
+- Left as is: the Disks form still offers the Redundancy picker for cache/spare (refused on submit); `special_small_blocks` for a zvol does not use volblocksize in its warning.

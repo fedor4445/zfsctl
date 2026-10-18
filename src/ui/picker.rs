@@ -171,7 +171,7 @@ pub fn vocabulary_for(kind: &FormKind, field_index: usize) -> Option<(&'static [
         (FormKind::AddAclEntry { .. }, 2) => Some((ACL_FLAGS, true)),
         (FormKind::AddAclEntry { .. }, 3) => Some((ACL_TYPES, false)),
         (FormKind::EditPoolProperty { key, .. }, 0) => pool_property_values(key).map(|v| (v, false)),
-        (FormKind::CreatePoolFromDisks { .. } | FormKind::AddVdevFromDisks { .. }, 1) if matches!(kind, FormKind::CreatePoolFromDisks { .. }) => Some((REDUNDANCY, false)),
+        (FormKind::CreatePoolFromDisks { .. }, 1) => Some((REDUNDANCY, false)),
         (FormKind::AddVdevFromDisks { .. }, 1) => Some((ROLES, false)),
         (FormKind::AddVdevFromDisks { .. }, 2) => Some((REDUNDANCY, false)),
         _ => None,

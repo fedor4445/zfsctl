@@ -41,7 +41,12 @@ fn classes_of(name: String, block: &str) -> PoolClasses {
     let lines = parse_pool_status_vdevs(block);
     let mut out = PoolClasses { name, ..PoolClasses::default() };
     let mut class = "data";
+    let pool_line = lines.iter().position(|l| l.depth == 0);
     for (i, line) in lines.iter().enumerate() {
+        // The first depth-0 line is the pool itself: a pool may be called `special` or `cache`.
+        if line.depth == 0 && Some(i) == pool_line {
+            continue;
+        }
         if line.depth == 0 {
             class = match line.name.as_str() {
                 "logs" => "log",
@@ -89,6 +94,14 @@ mod tests {
         let fragile = &parse_classes(TWO_POOLS)[1];
         assert_eq!(fragile.unprotected, ["dedup", "special"]);
         assert!(fragile.cache_bad && !fragile.log_bad);
+    }
+
+    #[test]
+    fn a_pool_named_special_or_cache_is_not_a_class() {
+        for name in ["special", "dedup", "cache", "logs"] {
+            let status = format!("  pool: {name}\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\t{name}     ONLINE       0     0     0\n\t  da0       ONLINE       0     0     0\n\nerrors: No known data errors\n");
+            assert!(parse_classes(&status)[0].is_quiet(), "{name}");
+        }
     }
 
     #[test]

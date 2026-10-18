@@ -118,12 +118,17 @@ fn flatten_permissions_snapshot(snapshot: &crate::zfs::permission::PermissionsSn
 /// back when the host refuses it).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddCheck {
+    /// Tells two asks with the same host, pool and spec apart (decline, change nothing, submit again).
+    pub id: u64,
     pub host: usize,
     pub pool: String,
     pub spec: Vec<String>,
     pub role: crate::zfs::vdev_role::Role,
     pub form: Modal,
 }
+
+/// How long a confirm waits for the host's `zpool add -n` layout.
+const ADD_CHECK_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Each variant carries the index (into `App::hosts`) of the host the
 /// result is *about*, so a slow result for a host the user has since
@@ -476,6 +481,7 @@ pub struct App {
     pub pending_host_checks: Vec<String>,
     /// Vdev adds whose dry run the event loop hands a runner (see `start_add_check`).
     pub pending_add_checks: Vec<AddCheck>,
+    pub add_check_ids: u64,
     /// A check of one host is running from here.
     pub host_check_running: bool,
     /// Lowercased names currently being probed (submitted, not yet
@@ -611,6 +617,7 @@ impl App {
             pending_prune_check: Vec::new(),
             pending_host_checks: Vec::new(),
             pending_add_checks: Vec::new(),
+            add_check_ids: 0,
             host_check_running: false,
             pending_probes: HashSet::new(),
             in_flight: HashSet::new(),
@@ -975,19 +982,36 @@ impl App {
         self.pending_host_checks.push(host);
     }
 
-    /// Runs both checks on `host` in the background, with the same code as the daemon's daily pass, and merges the answers
-    /// into `smart.json` and `shares.json`. A running marker tells the Dashboard (and the daemon) meanwhile; a host that
-    /// does not answer within the daemon's per-host deadline is given up on, so `c` and the daemon are never held up.
-    /// Runs `zpool add -n` for a queued vdev add on a worker thread; the answer reaches `on_add_checked`.
+    /// Runs `zpool add -n` for a queued vdev add on a worker thread; the answer reaches `on_add_checked`. A host that does not
+    /// answer within `ADD_CHECK_DEADLINE` gives the form back with that said, so a confirm never waits for its layout forever.
     pub fn start_add_check(&mut self, check: AddCheck, runner: Arc<dyn CommandRunner>) {
+        self.start_add_check_with(check, runner, ADD_CHECK_DEADLINE);
+    }
+
+    pub fn start_add_check_with(&mut self, check: AddCheck, runner: Arc<dyn CommandRunner>, deadline: Duration) {
+        let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let (tx, check, answered) = (self.tx.clone(), check.clone(), Arc::clone(&answered));
+            std::thread::spawn(move || {
+                std::thread::sleep(deadline);
+                if !answered.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let _ = tx.send(WorkerMsg::AddChecked(check, Err(format!("the host did not answer the layout check within {} s", deadline.as_secs().max(1)))));
+                }
+            });
+        }
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let spec: Vec<&str> = check.spec.iter().map(String::as_str).collect();
             let result = crate::zfs::pool::add_vdev_dry_run(runner.as_ref(), &check.pool, &spec).map_err(|e| e.to_string());
-            let _ = tx.send(WorkerMsg::AddChecked(check, result));
+            if !answered.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let _ = tx.send(WorkerMsg::AddChecked(check, result));
+            }
         });
     }
 
+    /// Runs both checks on `host` in the background, with the same code as the daemon's daily pass, and merges the answers
+    /// into `smart.json` and `shares.json`. A running marker tells the Dashboard (and the daemon) meanwhile; a host that
+    /// does not answer within the daemon's per-host deadline is given up on, so `c` and the daemon are never held up.
     pub fn start_host_check(&mut self, host: String, runner: Arc<dyn CommandRunner>) {
         self.start_host_check_with(host, runner, crate::daemon::smart_check::HOST_DEADLINE);
     }
@@ -1537,7 +1561,7 @@ impl App {
                         } else if prop.source.is_editable() {
                             // A size is shown as 10G (or none) and typed the same way; the exact bytes are sent.
                             let (label, value) = if blocks {
-                                ("special_small_blocks (0, 4K, 32K ... 1M)".to_string(), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "0".to_string(), crate::zfs::quota::format_size))
+                                ("special_small_blocks (0, 4K, 32K ... 16M)".to_string(), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "0".to_string(), crate::zfs::quota::format_size))
                             } else if guided {
                                 (format!("{} (10G, 500M, none)", prop.name), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "none".to_string(), crate::zfs::quota::format_size))
                             } else {
