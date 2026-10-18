@@ -8989,6 +8989,17 @@ fn submit_value(app: &mut App, text: &str) -> Option<PendingAction> {
     app.handle_modal_key(KeyCode::Enter)
 }
 
+/// A limit change always asks first: takes the Confirm the form raised and answers y then Enter.
+fn confirm_limit_change(app: &mut App) -> PendingAction {
+    match app.modal.take() {
+        Some(crate::ui::modal::Modal::Confirm { action, prompt, .. }) => {
+            assert!(prompt.contains("zfs set"), "{prompt}");
+            action
+        }
+        other => panic!("expected a Confirm, got {other:?}"),
+    }
+}
+
 #[test]
 fn enter_on_a_quota_row_prefills_a_human_size_and_none_for_unset() {
     let g: u64 = 1 << 30;
@@ -9013,15 +9024,17 @@ fn a_quota_below_use_keeps_the_form_open_with_our_message() {
 }
 
 #[test]
-fn a_safe_quota_change_applies_directly_with_exact_bytes_and_none_is_sent_as_none() {
+fn every_limit_change_asks_first_and_sends_exact_bytes_and_none_as_none() {
     let g: u64 = 1 << 30;
     let mut app = quota_app(false, 0, 0, 0, 0);
     open_property(&mut app, "quota");
-    let action = submit_value(&mut app, "20G").expect("a roomy quota needs no extra confirm");
+    assert!(submit_value(&mut app, "20G").is_none(), "even a roomy quota is confirmed");
+    let action = confirm_limit_change(&mut app);
     assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: (20 * g).to_string() });
     let mut app = quota_app(false, 20 * g, 0, 0, 0);
     open_property(&mut app, "quota");
-    let action = submit_value(&mut app, "none").unwrap();
+    assert!(submit_value(&mut app, "none").is_none(), "removing a limit is confirmed too");
+    let action = confirm_limit_change(&mut app);
     assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: "none".into() });
 }
 
@@ -9066,7 +9079,8 @@ fn zero_means_none_in_the_quota_form_and_the_prompt_shows_a_readable_size() {
     let g: u64 = 1 << 30;
     let mut app = quota_app(false, 20 * g, 0, 0, 0);
     open_property(&mut app, "quota");
-    let action = submit_value(&mut app, "0").expect("0 removes the limit, as in ZFS");
+    assert!(submit_value(&mut app, "0").is_none());
+    let action = confirm_limit_change(&mut app);
     assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "quota".into(), value: "none".into() });
     let mut app = quota_app(false, 0, 0, 0, 0);
     open_property(&mut app, "quota");

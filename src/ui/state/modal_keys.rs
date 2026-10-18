@@ -208,10 +208,13 @@ impl App {
         };
         let value = new.map_or_else(|| "none".to_string(), |n| n.to_string());
         let action = PendingAction { host, section: crate::ui::Section::DatasetProperties, call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: key.clone(), value: value.clone() } };
-        if tier == Tier::Direct {
-            return Some(action);
-        }
-        let why = if key.ends_with("reservation") { "This takes a large share of the pool's free space away from everything else." } else { "That leaves little room: writes to this dataset may start to fail soon." };
+        // Every limit change is confirmed (y then Enter); the text says more when it is the risky kind.
+        let why = match (tier, key.ends_with("reservation")) {
+            (Tier::TwoKey, true) => "This takes a large share of the pool's free space away from everything else.",
+            (Tier::TwoKey, false) => "That leaves little room: writes to this dataset may start to fail soon.",
+            (Tier::Direct, _) if new.is_none() => "The limit is removed.",
+            (Tier::Direct, _) => "The new limit applies at once.",
+        };
         let shown = new.map_or_else(String::new, |n| format!(" ({})", crate::zfs::quota::format_size(n)));
         let prompt = format!("On {}:\n  zfs set {key}={value}{shown} {dataset}\n\n{why} Set it? (y/n)", self.hosts.get(host).map_or("?", String::as_str));
         self.confirm_restore = Some((prompt.clone(), form.into_modal()));

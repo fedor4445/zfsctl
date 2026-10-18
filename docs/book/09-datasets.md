@@ -111,7 +111,7 @@ Four properties cap or protect a dataset's space: `quota` and `refquota` are cei
 - a reservation the pool cannot back (more than the space still available) is refused;
 - a volume has no quota: `quota` and `refquota` say they do not apply, while `reservation` and `refreservation` work.
 
-A change that leaves less than 10% room over what is used now, or raises a reservation by more than a tenth of the free space, asks for `y` then `Enter`; anything else applies at once. Removing a limit applies at once.
+Every change to one of these four asks for `y` then `Enter` first, showing the exact `zfs set` command; one that leaves less than 10% room over what is used now, or raises a reservation by more than a tenth of the free space, says so in the question.
 
 When any dataset on the host has a limit, the Datasets list gets a **Quota** column (`96% of 10G`, yellow from 90%, red from 98%); it is the first column to go on a narrow terminal. The Dashboard lists, per host, the dataset nearest to its limit in Needs attention, and the daily report repeats it; the percentages are `quota_warn` and `quota_crit` under `[dashboard]` (or Settings). The daemon re-reads quotas every ten minutes, and `c` in Hosts does it on demand.
 
