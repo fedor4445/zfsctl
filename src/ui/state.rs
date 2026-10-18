@@ -1686,7 +1686,7 @@ impl App {
                 let Some(pool) = self.drilled_pool.clone() else { return true };
                 self.modal = Some(Modal::Form {
                     title: format!("Add vdev to pool '{pool}'"),
-                    fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3, log da4, cache da5, special mirror da6 da7, spare da8)".to_string(), value: String::new() }],
+                    fields: vec![FormField { label: "Vdev spec (e.g. mirror da2 da3, log da4, cache da5, special mirror da6 da7, spare da8; -f first to force)".to_string(), value: String::new() }],
                     focused: 0,
                     description: None,
                     kind: FormKind::AddVdev { host: self.selected_host, pool },
