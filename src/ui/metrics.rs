@@ -560,14 +560,28 @@ fn draw_pool_rows(f: &mut Frame, rows: &[Line<'static>], area: Rect) {
 
 fn dataset_lines(s: &DatasetSpace) -> Vec<Line<'static>> {
     let total = s.used.saturating_add(s.available);
-    vec![
+    let mut lines = vec![
         Line::from(format!("Used    {}  {} of {}", percent(s.used, total), human_size(s.used), human_size(total))),
         Line::from(format!("Refer   {}   Logical {}", human_size(s.referenced), human_size(s.logical_used))),
         Line::from(format!("Data    {}   Snaps {}", human_size(s.by_dataset), human_size(s.by_snapshots))),
         Line::from(format!("Kids    {}   Refres {}", human_size(s.by_children), human_size(s.by_refreservation))),
         Line::from(format!("Compr   {} {:.2}x   Rec {}", s.compression, s.compress_ratio, unset_or_size(s.recordsize))),
         Line::from(format!("Quota   {}   Ref {}", limit_use(s.quota, s.used), limit_use(s.refquota, s.referenced))),
-    ]
+    ];
+    // Only what is not the default: a plain dataset has no extra line.
+    let checksum = Some(s.checksum.as_str()).filter(|c| !matches!(*c, "" | "on" | "fletcher4"));
+    let dedup = Some(s.dedup.as_str()).filter(|d| !matches!(*d, "" | "off"));
+    if checksum.is_some() || dedup.is_some() {
+        let mut parts = Vec::new();
+        if let Some(c) = checksum {
+            parts.push(format!("Checksum {c}"));
+        }
+        if let Some(d) = dedup {
+            parts.push(format!("Dedup {d}"));
+        }
+        lines.push(Line::from(parts.join("   ")));
+    }
+    lines
 }
 
 /// A limit with how much of it is used (`10G 96%`), or `-` when there is none. `quota` counts the dataset, its children and
@@ -803,6 +817,18 @@ mod tests {
     fn sample(read_bps: u64) -> Result<TargetSample> {
         let io = PoolIo { read_bps, ..PoolIo::default() };
         Ok(TargetSample { pool: PoolSample { io, facts: PoolFacts::default() }, space: None, host: None, snapshot: None, disk: None, share: None, contents: None })
+    }
+
+    #[test]
+    fn the_panel_adds_a_line_only_for_a_non_default_checksum_or_dedup() {
+        let text = |s: &DatasetSpace| -> Vec<String> { dataset_lines(s).iter().map(|l| l.spans.iter().map(|sp| sp.content.to_string()).collect()).collect() };
+        assert_eq!(text(&DatasetSpace::default()).len(), 6, "nothing extra for a plain dataset");
+        assert_eq!(text(&DatasetSpace { checksum: "on".into(), dedup: "off".into(), ..DatasetSpace::default() }).len(), 6);
+        assert_eq!(text(&DatasetSpace { checksum: "fletcher4".into(), dedup: "off".into(), ..DatasetSpace::default() }).len(), 6);
+        let off = text(&DatasetSpace { checksum: "off".into(), ..DatasetSpace::default() });
+        assert_eq!(off.last().unwrap(), "Checksum off");
+        let both = text(&DatasetSpace { checksum: "sha256".into(), dedup: "sha256,verify".into(), ..DatasetSpace::default() });
+        assert_eq!(both.last().unwrap(), "Checksum sha256   Dedup sha256,verify");
     }
 
     #[test]

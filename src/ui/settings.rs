@@ -11,6 +11,7 @@ pub enum Setting {
     Memory,
     Swap,
     Quota,
+    DedupRatio,
     Cpu,
     Scrub,
     ScrubIgnore,
@@ -70,6 +71,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
         row(THRESHOLDS, Setting::Memory, "Memory warn / crit", format!("{} / {} %", t.memory.0, t.memory.1), t.memory == d.memory, vec![text(dash.memory_warn.map(u64::from)), text(dash.memory_crit.map(u64::from))]),
         row(THRESHOLDS, Setting::Swap, "Swap warn / crit", format!("{} / {} %", t.swap.0, t.swap.1), t.swap == d.swap, vec![text(dash.swap_warn.map(u64::from)), text(dash.swap_crit.map(u64::from))]),
         row(THRESHOLDS, Setting::Quota, "Quota warn / crit", format!("{} / {} %", t.quota.0, t.quota.1), t.quota == d.quota, vec![text(dash.quota_warn.map(u64::from)), text(dash.quota_crit.map(u64::from))]),
+        row(THRESHOLDS, Setting::DedupRatio, "Dedup warn below", format!("{:.2}x", f64::from(t.dedup_ratio) / 100.0), t.dedup_ratio == d.dedup_ratio, vec![dash.dedup_min_ratio.map_or_else(String::new, |r| format!("{r:.2}"))]),
         row(THRESHOLDS, Setting::Cpu, "CPU warn", format!("{} %", t.cpu_warn), t.cpu_warn == d.cpu_warn, vec![text(dash.cpu_warn.map(u64::from))]),
         row(THRESHOLDS, Setting::Scrub, "Scrub warn / crit", format!("{} / {} days", t.scrub_days.0, t.scrub_days.1), t.scrub_days == d.scrub_days, vec![text(dash.scrub_warn_days.map(u64::from)), text(dash.scrub_crit_days.map(u64::from))]),
         row(THRESHOLDS, Setting::ScrubIgnore, "Scrub ignore", if t.scrub_ignore.is_empty() { "(none)".to_string() } else { t.scrub_ignore.join(", ") }, t.scrub_ignore.is_empty(), vec![t.scrub_ignore.join(", ")]),
@@ -91,6 +93,7 @@ pub fn form_fields(row: &Row) -> Vec<(String, String)> {
         Setting::AutoRefresh => vec!["Seconds between refreshes (0 = off)".to_string()],
         Setting::Memory | Setting::Swap | Setting::Quota => vec!["Warn at (%)".to_string(), "Critical at (%)".to_string()],
         Setting::Cpu => vec!["Warn at (%)".to_string()],
+        Setting::DedupRatio => vec!["Warn when dedup saves less than (x, 1.00 to 10.00)".to_string()],
         Setting::Scrub => vec!["Warn after (days)".to_string(), "Critical after (days)".to_string()],
         Setting::ScrubIgnore => vec!["Pools to skip (comma-separated)".to_string()],
         Setting::Cap(_) => vec!["Plan size (such as 10G or 5T)".to_string()],
@@ -144,6 +147,11 @@ pub fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>
         Setting::Swap => pair_changes(values, ["swap_warn", "swap_crit"], 100, (50, 90))?,
         Setting::Quota => pair_changes(values, ["quota_warn", "quota_crit"], 100, (90, 98))?,
         Setting::Scrub => pair_changes(values, ["scrub_warn_days", "scrub_crit_days"], u32::MAX, (35, 90))?,
+        Setting::DedupRatio if first.is_empty() => vec![Change::remove(&dashboard("dedup_min_ratio"))],
+        Setting::DedupRatio => {
+            let ratio = first.trim_end_matches('x').parse::<f64>().ok().filter(|r| (1.0..=10.0).contains(r)).ok_or("Dedup warn must be a number from 1.00 to 10.00, such as 1.10")?;
+            if (ratio - 1.10).abs() < 1e-9 { vec![Change::remove(&dashboard("dedup_min_ratio"))] } else { vec![Change::set(&dashboard("dedup_min_ratio"), (ratio * 100.0).round() / 100.0)] }
+        }
         Setting::Cpu if first.is_empty() => vec![Change::remove(&dashboard("cpu_warn"))],
         Setting::Cpu => {
             let n = number(100, 1, "CPU warn")?;
@@ -176,11 +184,15 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
         Setting::Memory => ("Memory warn / crit", " %"),
         Setting::Swap => ("Swap warn / crit", " %"),
         Setting::Quota => ("Quota warn / crit", " %"),
+        Setting::DedupRatio => ("Dedup warn below", "x"),
         Setting::Cpu => ("CPU warn", " %"),
         Setting::Scrub => ("Scrub warn / crit", " days"),
         Setting::ScrubIgnore => ("Scrub ignore", ""),
         Setting::Cap(name) => return format!("Cap of {name}: {}", if v(0).is_empty() { "none" } else { v(0) }),
     };
+    // `1.25x` is accepted when typed; the unit is added once.
+    let values: Vec<String> = if matches!(setting, Setting::DedupRatio) { values.iter().map(|v| v.trim().trim_end_matches('x').to_string()).collect() } else { values.to_vec() };
+    let v = |i: usize| values.get(i).map_or("", |v| v.trim());
     if values.iter().all(|x| x.trim().is_empty()) {
         return format!("{label}: back to the default");
     }
@@ -211,7 +223,7 @@ mod tests {
     fn load_lists_the_groups_in_order_with_defaults_marked() {
         let v = view("", &[], false);
         let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "CPU warn", "Scrub warn / crit", "Scrub ignore"]);
+        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore"]);
         assert!(v.loaded && v.problem.is_none() && v.rows.iter().all(|r| r.is_default), "{v:?}");
         assert_eq!(row(&v, "Theme").value, "ansi");
         assert_eq!(row(&v, "Auto-refresh").value, "10 s");
@@ -280,6 +292,16 @@ mod tests {
     }
 
     #[test]
+    fn the_dedup_threshold_is_one_number_from_1_to_10_and_the_default_removes_the_key() {
+        assert_eq!(sets(&build_changes(&Setting::DedupRatio, &values(&["1.25"])).unwrap()), ["set dashboard.dedup_min_ratio 1.25"]);
+        assert_eq!(sets(&build_changes(&Setting::DedupRatio, &values(&["1.10"])).unwrap()), ["remove dashboard.dedup_min_ratio"]);
+        assert_eq!(sets(&build_changes(&Setting::DedupRatio, &values(&[""])).unwrap()), ["remove dashboard.dedup_min_ratio"]);
+        for bad in ["0.9", "11", "abc", "-1"] {
+            assert!(build_changes(&Setting::DedupRatio, &values(&[bad])).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn a_pair_with_warn_not_below_crit_or_half_filled_is_refused() {
         for bad in [["97", "90"], ["0", "50"], ["50", "101"], ["abc", "95"], ["85", ""], ["", "95"]] {
             assert!(build_changes(&Setting::Swap, &values(&bad)).is_err(), "{bad:?}");
@@ -322,5 +344,6 @@ mod tests {
         assert_eq!(describe(&Setting::Memory, &values(&["85", "95"])), "Memory warn / crit: 85 / 95 %");
         assert_eq!(describe(&Setting::Cap("b2".to_string()), &values(&[""])), "Cap of b2: none");
         assert_eq!(describe(&Setting::Theme, &values(&[""])), "Theme: back to the default");
+        assert_eq!(describe(&Setting::DedupRatio, &values(&["1.25x"])), "Dedup warn below: 1.25x", "the unit is not doubled");
     }
 }

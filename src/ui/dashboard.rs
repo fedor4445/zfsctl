@@ -431,6 +431,10 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
     }
+    for found in crate::daemon::storage_check::integrity_problems(inputs.storage, inputs.thresholds.dedup_ratio, inputs.now).into_iter().filter(|p| reached(&p.host)) {
+        let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
+        items.push(Item { level: Level::Watch, subject: found.host.clone(), what, goto: Section::Datasets, target: Some(found.host) });
+    }
     for found in crate::daemon::storage_check::pool_problems(inputs.storage).into_iter().filter(|p| reached(&p.host)) {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.text, age_text(inputs.now, found.checked_at));
@@ -1034,7 +1038,7 @@ mod tests {
 
     fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
         use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], error: None }
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, integrity: Default::default(), integrity_stale: false, error: None }
     }
 
     #[test]
@@ -1049,6 +1053,20 @@ mod tests {
         assert_eq!((by("h").level, by("red").level), (Level::Watch, Level::Issue));
         assert!(by("h").what.starts_with("tank/home 94% of its 100 quota") && by("h").what.contains("checked 4m ago"), "{}", by("h").what);
         assert_eq!(by("h").target.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn checksum_off_is_a_watch_line_that_goes_to_datasets_for_reached_hosts_only() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        let mut entry = storage_entry(2, "tank/x", 10);
+        entry.integrity.checksum_off = vec!["tank/scratch".into()];
+        fx.storage.hosts.insert("h".into(), entry.clone());
+        fx.storage.hosts.insert("gone".into(), entry);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let items: Vec<Item> = fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("checksum is off")).collect();
+        assert_eq!((items.len(), items[0].level, items[0].goto), (1, Level::Watch, Section::Datasets));
+        assert!(items[0].what.starts_with("tank/scratch checksum is off"), "{}", items[0].what);
     }
 
     #[test]

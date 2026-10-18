@@ -8975,6 +8975,7 @@ fn quota_app(volume: bool, quota: u64, refquota: u64, reservation: u64, refreser
     app.datasets = vec![Dataset { name: "tank/data".to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 }];
     app.datasets_table.select(Some(0));
     app.handle_key(KeyCode::Right);
+    app.dataset_properties_for = Some("tank/data".to_string());
     let prop = |name: &str, value: u64| Property { name: name.to_string(), value: value.to_string(), source: PropertySource::Local };
     app.dataset_properties = vec![
         prop("quota", quota),
@@ -9344,4 +9345,132 @@ fn the_layout_excerpt_shows_what_the_add_changes_not_the_whole_tree() {
     let data = super::forms::layout_excerpt(&text, Role::Data);
     assert!(data.contains("raidz2-3") && data.contains("...") && !data.contains("special"), "the tail of the data vdevs: {data}");
     assert_eq!(super::forms::layout_excerpt("no tabs here", Role::Log), "no tabs here");
+}
+
+/// `quota_app` with a checksum and a dedup property on the dataset.
+fn integrity_app(checksum: &str, dedup: &str) -> App {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    app.dataset_properties.push(Property { name: "checksum".into(), value: checksum.into(), source: PropertySource::Default });
+    app.dataset_properties.push(Property { name: "dedup".into(), value: dedup.into(), source: PropertySource::Default });
+    app
+}
+
+fn version_of(app: &mut App, version: &str) {
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), integrity: Default::default(), integrity_stale: false, error: None });
+}
+
+#[test]
+fn enter_on_checksum_and_dedup_open_a_form_and_f2_lists_the_values() {
+    let mut app = integrity_app("on", "off");
+    open_property(&mut app, "checksum");
+    let Some(crate::ui::modal::Modal::Form { fields, kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(fields[0].label.contains("F2"), "{}", fields[0].label);
+    assert_eq!(fields[0].value, "on");
+    let list = crate::ui::picker::vocabulary_for(kind, 0).unwrap().0;
+    assert!(list.contains(&"fletcher4") && list.contains(&"blake3") && list.contains(&"off"));
+    app.modal = None;
+    open_property(&mut app, "dedup");
+    let Some(crate::ui::modal::Modal::Form { kind, .. }) = &app.modal else { panic!() };
+    assert!(crate::ui::picker::vocabulary_for(kind, 0).unwrap().0.contains(&"sha256,verify"));
+}
+
+#[test]
+fn an_unknown_value_keeps_the_form_open_with_the_list_and_an_old_host_refuses_blake3() {
+    let mut app = integrity_app("on", "off");
+    open_property(&mut app, "checksum");
+    assert!(submit_value(&mut app, "sha3").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })) && app.status_error.as_deref().is_some_and(|m| m.contains("fletcher4")), "{:?}", app.status_error);
+    version_of(&mut app, "2.1.14-1");
+    assert!(submit_value(&mut app, "blake3").is_none());
+    assert!(app.status_error.as_deref().is_some_and(|m| m.contains("2.2") && m.contains("2.1")), "{:?}", app.status_error);
+    version_of(&mut app, "2.4.2-1-FreeBSD_gabc");
+    assert!(submit_value(&mut app, "blake3").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Confirm { .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn checksum_off_asks_for_the_dataset_name_and_says_what_it_means() {
+    let mut app = integrity_app("on", "off");
+    open_property(&mut app, "checksum");
+    assert!(submit_value(&mut app, "off").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::ConfirmTyped { prompt, expected, action, .. }) => {
+            assert_eq!(expected, "tank/data");
+            assert!(prompt.contains("silent corruption") && prompt.contains("zfs set checksum=off tank/data") && prompt.contains("Existing data"), "{prompt}");
+            assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "checksum".into(), value: "off".into() });
+        }
+        other => panic!("{other:?}"),
+    }
+    for c in "tank/dat".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "a partial name does nothing");
+    app.handle_modal_key(KeyCode::Char('a'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "the full name sends it");
+}
+
+#[test]
+fn another_checksum_asks_y_enter_with_the_scrub_reminder_and_sends_the_normalized_value() {
+    let mut app = integrity_app("on", "off");
+    open_property(&mut app, "checksum");
+    assert!(submit_value(&mut app, " SHA256 ").is_none());
+    let action = match app.modal.take() {
+        Some(crate::ui::modal::Modal::Confirm { prompt, action, .. }) => {
+            assert!(prompt.contains("written from now on") && prompt.contains("scrub"), "{prompt}");
+            action
+        }
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "checksum".into(), value: "sha256".into() });
+}
+
+#[test]
+fn dedup_on_asks_for_the_name_and_warns_about_ram_and_off_is_a_plain_confirm() {
+    let mut app = integrity_app("on", "off");
+    open_property(&mut app, "dedup");
+    assert!(submit_value(&mut app, "SHA256, Verify").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::ConfirmTyped { prompt, action, .. }) => {
+            assert!(prompt.contains("RAM") && prompt.contains("does not undeduplicate") && prompt.contains("RAM is not known"), "{prompt}");
+            assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "dedup".into(), value: "sha256,verify".into() });
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut app = integrity_app("on", "on");
+    open_property(&mut app, "dedup");
+    assert!(submit_value(&mut app, "off").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Confirm { .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn a_value_the_dataset_already_has_is_said_and_sends_nothing() {
+    let mut app = integrity_app("sha256", "off");
+    open_property(&mut app, "checksum");
+    assert!(submit_value(&mut app, "sha256").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })) && app.status_error.as_deref().is_some_and(|m| m.contains("already sha256")), "{:?}", app.status_error);
+}
+
+#[test]
+fn turning_the_checksum_back_on_says_a_scrub_cannot_verify_what_was_written_while_it_was_off() {
+    let mut app = integrity_app("off", "off");
+    open_property(&mut app, "checksum");
+    assert!(submit_value(&mut app, "on").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => assert!(prompt.contains("has none") && prompt.contains("rewriting"), "{prompt}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn dedup_on_without_a_known_current_value_still_asks_for_the_name() {
+    let mut app = integrity_app("on", "off");
+    app.dataset_properties.retain(|p| p.name != "dedup");
+    app.dataset_properties.push(Property { name: "compression".into(), value: "on".into(), source: PropertySource::Default });
+    // open the form on a row that exists, then point it at dedup: the list has no dedup row, so `current` is empty
+    open_property(&mut app, "checksum");
+    if let Some(crate::ui::modal::Modal::Form { kind, .. }) = &mut app.modal {
+        *kind = crate::ui::modal::FormKind::EditDatasetProperty { host: 0, dataset: "tank/data".into(), key: "dedup".into() };
+    }
+    assert!(submit_value(&mut app, "on").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::ConfirmTyped { .. })), "{:?}", app.modal);
 }

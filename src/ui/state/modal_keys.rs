@@ -186,6 +186,7 @@ impl App {
             },
             FormKind::EditDatasetProperty { ref key, .. } if crate::zfs::quota::KEYS.contains(&key.as_str()) => self.submit_quota_form(form),
             FormKind::EditDatasetProperty { ref key, .. } if key == "special_small_blocks" => self.submit_small_blocks_form(form),
+            FormKind::EditDatasetProperty { ref key, .. } if key == "checksum" || key == "dedup" => self.submit_integrity_form(form),
             FormKind::ShareSmb { .. } => match build_smb_action(&form.kind, &form.fields, &self.shares) {
                 Ok(action) => Some(action),
                 Err(msg) => self.reject(form, msg),
@@ -205,7 +206,7 @@ impl App {
             Err(msg) => return self.reject(form, msg),
         };
         // The facts must be the form's own dataset's: a refresh may have moved the selection while the form was open.
-        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref().is_some_and(|d| d != dataset) {
+        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref() != Some(dataset.as_str()) {
             return self.reject(form, "the dataset's properties are not loaded yet: press r and try again".to_string());
         }
         let facts = super::forms::quota_facts(&self.dataset_properties);
@@ -226,6 +227,49 @@ impl App {
         let prompt = format!("On {}:\n  zfs set {key}={value}{shown} {dataset}\n\n{why} Set it? (y/n)", self.hosts.get(host).map_or("?", String::as_str));
         self.confirm_restore = Some((prompt.clone(), form.into_modal()));
         self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+        None
+    }
+
+    /// `checksum` and `dedup`: the value is checked against the list (and the host's OpenZFS version when it is known); turning
+    /// the checksum off or dedup on asks for the dataset's name, every other change for y then Enter, each saying what it means.
+    fn submit_integrity_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        use crate::zfs::integrity::{check_checksum, check_dedup, checksum_confirm, dedup_confirm, Confirm};
+        let FormKind::EditDatasetProperty { host, dataset, key } = form.kind.clone() else { return None };
+        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref() != Some(dataset.as_str()) {
+            return self.reject(form, "the dataset's properties are not loaded yet: press r and try again".to_string());
+        }
+        let host_name = self.hosts.get(host).cloned().unwrap_or_default();
+        let version = self.storage_check.hosts.get(&host_name).and_then(|r| r.zfs_version.clone());
+        let typed = field_value(&form.fields, 0);
+        let new = match if key == "checksum" { check_checksum(typed, version.as_deref()) } else { check_dedup(typed, version.as_deref()) } {
+            Ok(new) => new,
+            Err(msg) => return self.reject(form, msg),
+        };
+        let current = self.dataset_properties.iter().find(|p| p.name == key).map(|p| p.value.clone()).unwrap_or_default();
+        if new == current {
+            return self.reject(form, format!("{key} is already {current}"));
+        }
+        let confirm = if key == "checksum" { checksum_confirm(&new) } else { dedup_confirm(&current, &new) };
+        let action = PendingAction { host, section: crate::ui::Section::DatasetProperties, call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: key.clone(), value: new.clone() } };
+        let command = format!("On {host_name}:\n  zfs set {key}={new} {dataset}\n\n");
+        let ram = self.host_resources(&host_name).map(|(r, _)| r.physical);
+        let text = match (key.as_str(), &confirm) {
+            ("checksum", Confirm::Typed) => format!("{command}With the checksum off, ZFS stops checking the integrity of what is written to this dataset from now on: silent corruption will not be detected, and a scrub cannot repair it. Existing data keeps its old checksums.\nType the dataset name to confirm:"),
+            ("checksum", Confirm::Plain) if current == "off" => format!("{command}Only data written from now on is checksummed with {new}. What was written while the checksum was off has none: a scrub cannot verify or repair it, only rewriting that data does. Set it? (y/n)"),
+            ("checksum", Confirm::Plain) => format!("{command}Only data written from now on uses {new}; existing data keeps its old checksum. Run a scrub afterwards to verify the pool. Set it? (y/n)"),
+            ("dedup", Confirm::Typed) => {
+                let memory = ram.map_or_else(|| "this host's RAM is not known".to_string(), |r| format!("this host has {} of RAM", crate::zfs::disk::human_size(r)));
+                let low = if ram.is_some_and(|r| r < 16 << 30) { " That is little for deduplication: expect it to be slow, or to stall, once the table outgrows memory." } else { "" };
+                format!("{command}Deduplication keeps a table of every block in memory (a rule of thumb is 1 to 5 GB of RAM per TB of deduplicated data); {memory}.{low} Turning it off later does not undeduplicate what is already stored, and the table stays until that data is rewritten or deleted.\nType the dataset name to confirm:")
+            }
+            _ => format!("{command}The new setting applies to data written from now on; what is stored stays as it is. Set it? (y/n)"),
+        };
+        if confirm == Confirm::Typed {
+            self.modal = Some(Modal::ConfirmTyped { prompt: text, expected: dataset, input: String::new(), action });
+        } else {
+            self.confirm_restore = Some((text.clone(), form.into_modal()));
+            self.modal = Some(Modal::Confirm { choice: None, prompt: text, action });
+        }
         None
     }
 

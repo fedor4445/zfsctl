@@ -171,6 +171,8 @@ pub fn vocabulary_for(kind: &FormKind, field_index: usize) -> Option<(&'static [
         (FormKind::AddAclEntry { .. }, 2) => Some((ACL_FLAGS, true)),
         (FormKind::AddAclEntry { .. }, 3) => Some((ACL_TYPES, false)),
         (FormKind::EditPoolProperty { key, .. }, 0) => pool_property_values(key).map(|v| (v, false)),
+        (FormKind::EditDatasetProperty { key, .. }, 0) if key == "checksum" => Some((&crate::zfs::integrity::CHECKSUMS[..], false)),
+        (FormKind::EditDatasetProperty { key, .. }, 0) if key == "dedup" => Some((&crate::zfs::integrity::DEDUPS[..], false)),
         (FormKind::CreatePoolFromDisks { .. }, 1) => Some((REDUNDANCY, false)),
         (FormKind::AddVdevFromDisks { .. }, 1) => Some((ROLES, false)),
         (FormKind::AddVdevFromDisks { .. }, 2) => Some((REDUNDANCY, false)),
