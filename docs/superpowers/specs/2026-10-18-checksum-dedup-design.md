@@ -17,7 +17,9 @@ before they commit.
    common ones and let the command's own error stand). `Enter` on `dedup` opens: `off`, `on`, `verify`, `sha256`,
    `sha256,verify`, `sha512`, `sha512,verify`, `skein`, `skein,verify`, `edonr,verify`, `blake3`, `blake3,verify`.
 2. **Guards.**
-   - `checksum=off`: see "Open for the user" below (this draft refuses it).
+   - `checksum=off` is **allowed behind a typed confirm** (type the dataset name; decided by the user 2026-10-18): the text
+     says there is no integrity checking for new writes and silent corruption will not be detected or repaired. It is judged in
+     the shared apply path, so the free-text form needs the same confirm.
    - Every checksum change says it applies **only to data written afterwards** and offers a reminder to scrub (does not
      start one).
    - Turning `dedup` on is a typed confirm (type the dataset name): the text states that the dedup table must fit in RAM
@@ -63,7 +65,7 @@ the refusals and confirms; see the Dashboard lines appear and clear), merge, ins
   is offered only `on`, `fletcher4`, `sha256`, `sha512`. Dedup values follow the table; `edonr` only as `edonr,verify`. On an
   encrypted dataset the list is limited to what ZFS allows (verified on a VM; interplay with slice 4).
 - **The guard is in the apply path, not the picker.** The picker and the free-text property form go through one validation
-  step in the set-property path, so `dedup=on` always needs the typed confirm and (this draft) `checksum=off` is always refused.
+  step in the set-property path, so `dedup=on` and `checksum=off` always need the typed confirm.
 - **`zpool status -D`** is read asynchronously when the confirm opens, 10-second limit; on timeout or failure the confirm
   says "table size unknown" and the user can still go ahead.
 - **RAM warning:** the host's physical RAM (the Resources reading exists for all three OSes) below 16 GiB is a warning line,
@@ -73,9 +75,9 @@ the refusals and confirms; see the Dashboard lines appear and clear), merge, ins
   up to three datasets and a count.
 - The Datasets panel shows Dedup/Checksum when not default; both are added to the panel's property read.
 
-## Open for the user
+## Decided by the user (2026-10-18)
 
-- Should `checksum=off` be refused outright (this draft), or allowed behind the same typed confirm as `dedup=on`?
+- `checksum=off` is allowed behind the typed confirm, with the persistent Dashboard line `tank/scratch checksum is off`.
 
 ## Shared by all four slices: the storage reading (my call, from the builder check)
 
