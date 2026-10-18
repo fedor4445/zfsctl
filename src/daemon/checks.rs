@@ -162,6 +162,36 @@ fn note(slot: Option<&mut Option<String>>, why: &str) {
     }
 }
 
+/// The status line after a check of one host: what each half found, in words.
+pub fn describe(host: &str, checks: &HostChecks) -> String {
+    use shares_check::Outcome as Shares;
+    use smart_check::Outcome as Disks;
+    let disks = match &checks.disks {
+        Disks::Checked(result) => {
+            let mut file = SmartFile::default();
+            file.hosts.insert(host.to_string(), result.clone());
+            smart_check::problems(&file).first().map_or_else(|| "disks fine".to_string(), |p| format!("disks: {}", p.disks))
+        }
+        Disks::Silent => String::new(),
+        Disks::Failed(_) => "disks not reachable".to_string(),
+    };
+    let shares = match &checks.shares {
+        Shares::Checked(result) => {
+            let mut file = SharesFile::default();
+            file.hosts.insert(host.to_string(), result.clone());
+            shares_check::problems(&file).first().map_or_else(|| "shares fine".to_string(), |p| format!("shares: {}", p.text))
+        }
+        Shares::Silent => String::new(),
+        Shares::Failed(_) => "shares not reachable".to_string(),
+    };
+    match (disks.is_empty(), shares.is_empty()) {
+        (true, true) => format!("{host}: nothing to check (no smartctl, no shares access)"),
+        (false, true) => format!("{host}: {disks}"),
+        (true, false) => format!("{host}: {shares}"),
+        (false, false) => format!("{host}: {disks}, {shares}"),
+    }
+}
+
 /// What a pass found, for the log.
 #[derive(Debug, Default, PartialEq)]
 pub struct PassSummary {
@@ -302,6 +332,22 @@ mod tests {
         assert_eq!(disks.disks.len(), 2);
         let shares_check::Outcome::Checked(shares) = checks.shares else { panic!("shares not checked") };
         assert_eq!((shares.nfs_shares, shares.nfs_running, shares.checked_at), (2, true, at(NOW)));
+    }
+
+    #[test]
+    fn the_status_line_names_what_each_half_found() {
+        let line = |runner: &FakeRunner| describe("fbsd16", &check_one_host(runner, at(NOW), None, None));
+        assert_eq!(line(&healthy()), "fbsd16: disks fine, shares fine");
+        let stopped = FakeRunner::new("")
+            .route("smartctl", "--scan", SCAN)
+            .route("smartctl", "-j", FAILING)
+            .route("service", "samba_server", "smbd is running as pid 2.\n")
+            .route_failure("service", "nfsd", "", 1)
+            .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\n")
+            .route("cat", crate::zfs::smb::CONF_PATH, "[global]\n");
+        assert_eq!(line(&stopped), "fbsd16: disks: ada0 SMART health FAILED; nvme0 SMART health FAILED, shares: NFS: 1 share but nfsd is not running");
+        assert_eq!(line(&down_host()), "fbsd16: disks not reachable, shares not reachable");
+        assert_eq!(line(&silent_host()), "fbsd16: nothing to check (no smartctl, no shares access)");
     }
 
     #[test]

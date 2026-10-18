@@ -174,6 +174,19 @@ fn apply_pending_preflights(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued check of one host (`c` in Hosts) its host's runner.
+fn apply_pending_host_checks(app: &mut App, inventory: &HostInventory) {
+    for name in std::mem::take(&mut app.pending_host_checks) {
+        match inventory.hosts.iter().find(|h| h.name == name) {
+            Some(h) => app.start_host_check(name, h.runner.clone()),
+            None => {
+                app.host_check_running = false;
+                app.set_error(format!("unknown host '{name}'"));
+            }
+        }
+    }
+}
+
 /// Hands each queued Cloud lookup (remote list, bucket size) its host's runner.
 fn apply_pending_cloud(app: &mut App, inventory: &HostInventory) {
     for pending in std::mem::take(&mut app.pending_cloud) {
@@ -255,6 +268,7 @@ fn event_loop(
         apply_pending_account_fetches(app, inventory);
         apply_pending_pool_fetches(app, inventory);
         apply_pending_preflights(app, inventory);
+        apply_pending_host_checks(app, inventory);
         apply_pending_cloud(app, inventory);
         apply_pending_prune_checks(app, inventory);
         poll_host_probes(app, inventory);

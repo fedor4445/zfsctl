@@ -8602,3 +8602,93 @@ fn the_dashboard_reads_smart_json_and_enter_on_its_line_selects_that_host_in_dis
     assert_eq!(app.current_section(), Section::Disks);
     assert_eq!(app.selected_host, 1);
 }
+
+fn healthy_runner() -> std::sync::Arc<crate::exec::test_support::FakeRunner> {
+    std::sync::Arc::new(
+        crate::exec::test_support::FakeRunner::new("")
+            .route("smartctl", "--scan", include_str!("../../smart_fixtures/scan.json"))
+            .route("smartctl", "-j", include_str!("../../smart_fixtures/hdd_ok.json"))
+            .route("service", "nfsd", "nfsd is running as pid 1.\n")
+            .route("service", "samba_server", "smbd is running as pid 2.\n")
+            .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\n")
+            .route("cat", crate::zfs::smb::CONF_PATH, "[global]\n"),
+    )
+}
+
+fn hosts_app() -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string()]);
+    app.state_dir = dir.path().to_path_buf();
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
+    app.selected_host = 1;
+    (app, dir)
+}
+
+fn wait_for_host_check(app: &mut App) {
+    for _ in 0..200 {
+        app.drain_worker_messages();
+        if !app.host_check_running {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the check never finished");
+}
+
+#[test]
+fn c_in_hosts_checks_the_selected_host_and_says_what_it_found() {
+    let (mut app, dir) = hosts_app();
+    app.handle_key(KeyCode::Char('c'));
+    assert_eq!(app.pending_host_checks, ["fbsd16"]);
+    assert_eq!(app.status_message.as_deref(), Some("Checking fbsd16..."));
+    app.start_host_check("fbsd16".into(), healthy_runner());
+    wait_for_host_check(&mut app);
+    assert_eq!(app.status_message.as_deref(), Some("fbsd16: disks fine, shares fine"));
+    assert!(crate::daemon::smart_check::SmartFile::load(&dir.path().join("smart.json")).hosts.contains_key("fbsd16"));
+    assert!(crate::daemon::shares_check::SharesFile::load(&dir.path().join("shares.json")).hosts.contains_key("fbsd16"));
+    assert!(crate::daemon::checks::read_marker(dir.path()).is_none(), "the marker is gone when the check is done");
+}
+
+#[test]
+fn c_is_refused_while_a_fresh_marker_exists_and_works_again_when_it_is_stale() {
+    let (mut app, dir) = hosts_app();
+    {
+        let _daemon = crate::daemon::checks::RunGuard::start(dir.path(), "daemon", None);
+        app.handle_key(KeyCode::Char('c'));
+        assert!(app.pending_host_checks.is_empty());
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("already running") && said.contains("daemon"), "{said}");
+    }
+    // a run that died: its marker has no heartbeat for over three minutes
+    let old = chrono::Utc::now() - chrono::Duration::minutes(10);
+    std::fs::write(dir.path().join(crate::daemon::checks::MARKER_FILE), serde_json::to_string(&crate::daemon::checks::Marker { by: "daemon".into(), since: old, beat: old, host: None }).unwrap()).unwrap();
+    app.status_error = None;
+    app.handle_key(KeyCode::Char('c'));
+    assert_eq!(app.pending_host_checks, ["fbsd16"]);
+}
+
+#[test]
+fn c_does_nothing_while_a_manual_check_runs_and_only_in_hosts() {
+    let (mut app, _dir) = hosts_app();
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('c'));
+    assert_eq!(app.pending_host_checks.len(), 1, "a second press while one runs is refused");
+    let (mut other, _d) = hosts_app();
+    other.selected_section = other.sections.iter().position(|s| *s == Section::Pools).unwrap();
+    other.handle_key(KeyCode::Char('c'));
+    assert!(other.pending_host_checks.is_empty());
+}
+
+#[test]
+fn a_check_of_an_unreachable_host_keeps_the_old_entry_and_says_it_could_not_be_reached() {
+    let (mut app, dir) = hosts_app();
+    let mut before = crate::daemon::smart_check::SmartFile::default();
+    before.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: chrono::Utc::now() - chrono::Duration::hours(5), disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Issue, text: "SMART health FAILED".into() }] }], error: None });
+    before.save(&dir.path().join("smart.json")).unwrap();
+    app.handle_key(KeyCode::Char('c'));
+    app.start_host_check("fbsd16".into(), std::sync::Arc::new(crate::exec::test_support::FakeRunner::failing("ssh: connect to host h port 22: Connection timed out", 255)));
+    wait_for_host_check(&mut app);
+    assert_eq!(app.status_message.as_deref(), Some("fbsd16: disks not reachable, shares not reachable"));
+    let after = crate::daemon::smart_check::SmartFile::load(&dir.path().join("smart.json"));
+    assert!(after.hosts["fbsd16"].error.is_some() && crate::daemon::smart_check::problems(&after).len() == 1, "the red line stays, with the error noted");
+}

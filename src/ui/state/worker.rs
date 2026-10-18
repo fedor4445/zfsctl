@@ -42,6 +42,11 @@ impl App {
                 WorkerMsg::HostHealth(name, probe) => self.on_host_health(name, probe),
                 WorkerMsg::HostProbe(name, target, result) => self.on_host_probe(name, target, result),
                 WorkerMsg::AlertsPreview(text) => self.on_alerts_preview(text),
+                WorkerMsg::HostChecked(_, line) => {
+                    self.host_check_running = false;
+                    self.status_message = Some(line);
+                    self.reload_check_files();
+                }
                 WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, &mut refreshes_needed),
             }
         }
