@@ -540,7 +540,7 @@ mod tests {
     }
 
     fn reached(pools: Vec<PoolProbe>) -> HostProbe {
-        HostProbe::Reached { rtt_ms: 3, pools, kind: None, os: None }
+        HostProbe::Reached { rtt_ms: 3, pools, kind: None, os: None, os_name: None }
     }
 
     fn reading(free_gib: u64, arc_gib: u64, busy: u64, idle: u64) -> Resources {

@@ -361,8 +361,8 @@ mod tests {
     fn mixed_app() -> App {
         let mut app = App::new(vec!["local".to_string(), "fbsd16".to_string(), "fbsd16t1".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Dashboard).unwrap();
-        answered(&mut app, "local", HostProbe::Reached { rtt_ms: 3, pools: vec![pool(43)], kind: None, os: None });
-        answered(&mut app, "fbsd16", HostProbe::Reached { rtt_ms: 3, pools: vec![pool(85)], kind: None, os: None });
+        answered(&mut app, "local", HostProbe::Reached { rtt_ms: 3, pools: vec![pool(43)], kind: None, os: None, os_name: None });
+        answered(&mut app, "fbsd16", HostProbe::Reached { rtt_ms: 3, pools: vec![pool(85)], kind: None, os: None, os_name: None });
         app.host_probes.insert("fbsd16t1".into(), HostProbeState { last: Some(HostProbe::Disconnected), ..HostProbeState::default() });
         heartbeat(&mut app);
         app
@@ -467,7 +467,7 @@ mod tests {
     fn when_all_is_well_it_says_so_in_the_attention_block_and_the_header() {
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Dashboard).unwrap();
-        answered(&mut app, "local", HostProbe::Reached { rtt_ms: 3, pools: vec![pool(10)], kind: None, os: None });
+        answered(&mut app, "local", HostProbe::Reached { rtt_ms: 3, pools: vec![pool(10)], kind: None, os: None, os_name: None });
         heartbeat(&mut app);
         let lines = render(&mut app, 120, 40);
         let text = lines.join("\n");

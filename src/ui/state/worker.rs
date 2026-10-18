@@ -478,8 +478,9 @@ impl App {
             if let crate::zfs::host_health::HostProbe::Reached { kind: Some(k), .. } = &probe {
                 state.kind = Some(k.clone());
             }
-            if let crate::zfs::host_health::HostProbe::Reached { os: Some(os), .. } = &probe {
+            if let crate::zfs::host_health::HostProbe::Reached { os: Some(os), os_name, .. } = &probe {
                 state.os = Some(*os);
+                state.os_name.clone_from(os_name);
             }
             // Numbers from before the host stopped answering must not stay on screen.
             if !matches!(probe, crate::zfs::host_health::HostProbe::Reached { .. }) {
