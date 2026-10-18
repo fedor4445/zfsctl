@@ -107,6 +107,16 @@ Eight small read-only programs run over ssh **without** sudo: `getent`, `uname`,
 
 The `cat` and `tee` entries are pinned to one file on purpose: a bare `sudo cat` would let the account read any file as root.
 
+## Linux and illumos hosts
+
+The hub is always FreeBSD, but the hosts it manages may run Linux (tested on Ubuntu 24 with OpenZFS) or illumos (tested on OmniOS). zfsctl reads each host's OS once (`uname -s`) and adapts:
+
+- **Works the same everywhere:** the Hosts and Dashboard rows (pools, capacity, scrub, errors), Pools, Datasets, Snapshots, and the properties and permissions panes, because `zpool` and `zfs` print the same columns on all three systems.
+- **Disks** lists the real disks with the tool each OS has: `lsblk` on Linux, `iostat -En` on illumos (neither needs sudo). Pool membership comes from `zpool status`; a pool made of files, or of disks named by id, shows its disks as available.
+- **Not supported yet:** Boot Envs, Shares and the ACL tab. Their entries in the sidebar are dimmed while such a host is selected, they say `<Section> is not supported on <OS> hosts yet.`, and their keys do nothing. They come back as soon as you select a FreeBSD host. Memory, CPU, load and swap show `?` for now.
+- **Sudoers:** `zfsctl print-sudoers HOST` and `check-host HOST` look at the host's OS first. For Linux and illumos they default to the `core` entry only (`zpool` and `zfs`); `--with smart` adds `smartctl`, and the other features are refused with a message, because they run FreeBSD's tools. The printed file goes to `/etc/sudoers.d/zfsctl` there (FreeBSD's is `/usr/local/etc/sudoers.d/zfsctl`).
+- A host whose OS cannot be read is treated as FreeBSD, so a setup that worked before keeps working.
+
 ## If something is wrong
 
 - **`unreachable`** in the Hosts list: ssh could not connect (wrong address, host down, firewall). Try `ssh user@host` from the hub as root.
