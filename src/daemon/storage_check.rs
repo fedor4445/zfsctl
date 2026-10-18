@@ -272,6 +272,31 @@ pub fn retain_hosts(dir: &Path, configured: &[String]) {
     }
 }
 
+/// What one host adds to Needs attention for its integrity settings: a checksum that is off (up to three datasets named), and a
+/// pool paying for deduplication that saves less than `min_ratio_x100` (hundredths, 110 = 1.10x). A pool with under 10 GiB
+/// allocated is left alone (dedup just switched on has nothing to dedupe yet).
+pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16) -> Vec<StorageProblem> {
+    const ENOUGH_DATA: u64 = 10 << 30;
+    file.hosts
+        .iter()
+        .filter_map(|(host, result)| {
+            let i = &result.integrity;
+            let mut texts = Vec::new();
+            for pool in &i.dedup_pools {
+                if let Some(space) = i.pools.iter().find(|p| &p.name == pool).filter(|p| p.allocated > ENOUGH_DATA && p.ratio_x100 < u32::from(min_ratio_x100)) {
+                    texts.push(format!("{pool} dedup is on but saves only {:.2}x", f64::from(space.ratio_x100) / 100.0));
+                }
+            }
+            if !i.checksum_off.is_empty() {
+                let shown = i.checksum_off.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                let more = if i.checksum_off.len() > 3 { format!(" (+{} more)", i.checksum_off.len() - 3) } else { String::new() };
+                texts.push(format!("{shown} checksum is off{more}"));
+            }
+            (!texts.is_empty()).then(|| StorageProblem { host: host.clone(), severity: Severity::Watch, text: texts.join("; "), checked_at: result.checked_at })
+        })
+        .collect()
+}
+
 /// What one host adds to Needs attention for its pools' device classes: a special or dedup vdev that is a lone disk is an issue
 /// (losing it loses the pool), a faulted log or cache device is only a watch.
 pub fn pool_problems(file: &StorageFile) -> Vec<StorageProblem> {
@@ -591,6 +616,29 @@ mod tests {
         assert_eq!(get.1, ["get", "-H", "-p", "-s", "local,received", "-t", "filesystem,volume", "-o", "name,property,value", "checksum,dedup"].map(String::from));
         let list = calls.iter().find(|c| c.0 == "zpool" && c.1.first().map(String::as_str) == Some("list")).unwrap();
         assert_eq!(list.1, ["list", "-H", "-p", "-o", "name,allocated,dedupratio"].map(String::from));
+    }
+
+    #[test]
+    fn a_pool_with_dedup_on_that_saves_nothing_is_one_watch_line_and_checksum_off_names_three() {
+        const GIB: u64 = 1 << 30;
+        let mut file = file_with("hub", vec![]);
+        let entry = file.hosts.get_mut("hub").unwrap();
+        entry.integrity = Integrity { checksum_off: vec![], dedup_pools: vec!["tank".into()], pools: vec![PoolSpace { name: "tank".into(), allocated: 20 * GIB, ratio_x100: 102 }] };
+        let p = integrity_problems(&file, 110);
+        assert_eq!((p.len(), p[0].severity, p[0].text.as_str()), (1, Severity::Watch, "tank dedup is on but saves only 1.02x"));
+        assert!(integrity_problems(&file, 100).is_empty(), "1.02 is not below 1.00");
+        let mut edit = |f: &mut dyn FnMut(&mut Integrity), file: &mut StorageFile| f(&mut file.hosts.get_mut("hub").unwrap().integrity);
+        edit(&mut |i| i.pools[0].ratio_x100 = 150, &mut file);
+        assert!(integrity_problems(&file, 110).is_empty(), "it saves 1.5x");
+        edit(&mut |i| i.pools[0] = PoolSpace { name: "tank".into(), allocated: 5 * GIB, ratio_x100: 100 }, &mut file);
+        assert!(integrity_problems(&file, 110).is_empty(), "under 10 GiB: nothing to dedupe yet");
+        edit(&mut |i| i.dedup_pools.clear(), &mut file);
+        edit(&mut |i| i.pools[0].allocated = 50 * GIB, &mut file);
+        assert!(integrity_problems(&file, 110).is_empty(), "no dataset has dedup on");
+        edit(&mut |i| i.checksum_off = ["a", "b", "c", "d", "e"].map(String::from).to_vec(), &mut file);
+        assert_eq!(integrity_problems(&file, 110)[0].text, "a, b, c checksum is off (+2 more)");
+        edit(&mut |i| i.checksum_off = vec!["tank/scratch".into()], &mut file);
+        assert_eq!(integrity_problems(&file, 110)[0].text, "tank/scratch checksum is off");
     }
 
     #[test]

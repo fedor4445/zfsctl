@@ -191,16 +191,17 @@ pub fn check_lines(state_dir: &std::path::Path) -> Vec<String> {
     let mut lines = disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")));
     lines.extend(share_lines(&crate::daemon::shares_check::SharesFile::load(&state_dir.join("shares.json"))));
     // The report has no config of its own: the thresholds are the user's, read from the fixed config path (defaults when absent).
-    let quota = crate::config::Config::load(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH)).map(|c| c.dashboard.resolve().quota).unwrap_or_else(|_| crate::config::Thresholds::default().quota);
-    lines.extend(storage_lines(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), quota));
+    let thresholds = crate::config::Config::load(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH)).map(|c| c.dashboard.resolve()).unwrap_or_default();
+    lines.extend(storage_lines(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), thresholds.quota, thresholds.dedup_ratio));
     lines
 }
 
 /// The daily report's lines for datasets near their quota, from `storage.json`.
-pub fn storage_lines(file: &crate::daemon::storage_check::StorageFile, quota: (u8, u8)) -> Vec<String> {
+pub fn storage_lines(file: &crate::daemon::storage_check::StorageFile, quota: (u8, u8), dedup_ratio: u16) -> Vec<String> {
     crate::daemon::storage_check::problems(file, quota)
         .iter()
         .chain(crate::daemon::storage_check::pool_problems(file).iter())
+        .chain(crate::daemon::storage_check::integrity_problems(file, dedup_ratio).iter())
         .map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at)))
         .collect()
 }
@@ -326,10 +327,10 @@ mod tests {
         let mut file = StorageFile::default();
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
         file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, integrity: Default::default(), error: None });
-        let lines = storage_lines(&file, (90, 98));
+        let lines = storage_lines(&file, (90, 98), 110);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/home 94% of its 100 quota (checked "), "{}", lines[0]);
-        assert!(storage_lines(&file, (95, 99)).is_empty());
+        assert!(storage_lines(&file, (95, 99), 110).is_empty());
     }
 
     #[test]
