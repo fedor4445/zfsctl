@@ -101,6 +101,14 @@ fn listing_failure(error: crate::error::AppError) -> Outcome {
 
 /// Asks one host whether its NFS server and Samba run and how many shares need them. Read-only.
 pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
+    // `service ... onestatus` is FreeBSD's: a Linux or illumos host has no equivalent here yet, so it says nothing (a host
+    // whose OS cannot be read is asked as before).
+    match runner.run_unprivileged("uname", &["-s"]) {
+        Ok(out) if out.status == 255 => return Outcome::Failed(first_line(&out.stderr, "could not reach the host")),
+        Ok(out) if out.success() && matches!(crate::zfs::host_health::host_os_from_uname(&out.stdout), crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos) => return Outcome::Silent,
+        Err(e) => return Outcome::Failed(e.to_string()),
+        _ => {}
+    }
     let nfs = match service(runner, "nfsd", crate::exec::CommandOutput::success) {
         Ok(s) => s,
         Err(e) => return Outcome::Failed(e),
@@ -201,6 +209,7 @@ mod tests {
     /// and `cat smb4.conf` gives `conf`.
     fn host(nfs: (&'static str, i32), samba: (&'static str, i32), nfs_list: &'static str, conf: &'static str) -> Script {
         Script(Box::new(move |cmd, args| match (cmd, args[0]) {
+            ("uname", _) => out("FreeBSD\n", "", 0),
             ("service", "nfsd") => out(nfs.0, "", nfs.1),
             ("service", "samba_server") => out(samba.0, "", samba.1),
             ("zfs", "get") => out(nfs_list, "", 0),
@@ -301,6 +310,7 @@ mod tests {
     fn a_samba_block_that_sudo_refuses_is_silent_and_a_dropped_ssh_on_the_read_is_failed() {
         // A host with the `shares` feature (service, zfs) but not `samba` (cat smb4.conf) that runs its own Samba.
         let no_cat = Script(Box::new(|cmd, args| match (cmd, args[0]) {
+            ("uname", _) => out("FreeBSD\n", "", 0),
             ("service", _) => out("smbd is running as pid 2.", "", 0),
             ("zfs", _) => out(TWO_NFS, "", 0),
             ("cat", _) => out("", "sudo: a password is required", 1),
@@ -309,12 +319,39 @@ mod tests {
         let result = checked(check_host(&no_cat, at(NOW)));
         assert_eq!((result.smb_error, result.smb_shares), (None, 0), "not set up for reading smb4.conf: no news");
         let dropped = Script(Box::new(|cmd, args| match (cmd, args[0]) {
+            ("uname", _) => out("FreeBSD\n", "", 0),
             ("service", _) => out("smbd is running as pid 2.", "", 0),
             ("zfs", _) => out(TWO_NFS, "", 0),
             ("cat", _) => out("", "ssh: Connection reset by peer", 255),
             other => panic!("{other:?}"),
         }));
         assert!(matches!(check_host(&dropped, at(NOW)), Outcome::Failed(_)));
+    }
+
+    #[test]
+    fn linux_and_illumos_hosts_are_silent_before_any_service_is_asked() {
+        for uname in ["Linux\n", "SunOS\n"] {
+            let runner = Script(Box::new(move |cmd, args| match (cmd, args.first().copied()) {
+                ("uname", Some("-s")) => out(uname, "", 0),
+                other => panic!("a {uname:?} host was asked {other:?}"),
+            }));
+            assert_eq!(check_host(&runner, at(NOW)), Outcome::Silent, "{uname:?}");
+        }
+    }
+
+    #[test]
+    fn a_freebsd_host_and_one_with_an_odd_uname_are_still_checked() {
+        for uname in ["FreeBSD\n", "Darwin\n", ""] {
+            let runner = Script(Box::new(move |cmd, args| match (cmd, args[0]) {
+                ("uname", _) => out(uname, "", 0),
+                ("service", "nfsd") => out(UP.0, "", UP.1),
+                ("service", "samba_server") => out(SMBD_UP.0, "", SMBD_UP.1),
+                ("zfs", "get") => out(TWO_NFS, "", 0),
+                ("cat", _) => out(MANAGED_CONF, "", 0),
+                other => panic!("{other:?}"),
+            }));
+            assert!(matches!(check_host(&runner, at(NOW)), Outcome::Checked(_)), "{uname:?}");
+        }
     }
 
     #[test]
