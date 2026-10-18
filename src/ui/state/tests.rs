@@ -8677,6 +8677,7 @@ fn c_in_hosts_checks_the_selected_host_and_says_what_it_found() {
     assert_eq!(app.status_message.as_deref(), Some("fbsd16: disks fine, shares fine"));
     assert!(crate::daemon::smart_check::SmartFile::load(&dir.path().join("smart.json")).hosts.contains_key("fbsd16"));
     assert!(crate::daemon::shares_check::SharesFile::load(&dir.path().join("shares.json")).hosts.contains_key("fbsd16"));
+    assert!(crate::daemon::storage_check::StorageFile::load(&dir.path().join("storage.json")).hosts.contains_key("fbsd16"), "`c` also refreshes the quota reading");
     assert!(crate::daemon::checks::read_marker(dir.path()).is_none(), "the marker is gone when the check is done");
 }
 

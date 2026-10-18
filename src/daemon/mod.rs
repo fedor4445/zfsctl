@@ -418,6 +418,28 @@ fn checks_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, a
     }
 }
 
+/// How often the storage check runs: a quota line must clear soon after the fix, and one `zfs list` per host is cheap.
+const STORAGE_EVERY: Duration = Duration::from_secs(600);
+
+/// The storage check (datasets near their quota): once at start, then every ten minutes, into `storage.json`.
+fn storage_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) {
+    log("storage check (quotas) every 10 minutes");
+    while !stop.load(Ordering::SeqCst) {
+        guarded("the storage check", || {
+            let hosts = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
+            storage_check::run_pass(state_dir, &hosts, Utc::now(), storage_check::HOST_DEADLINE);
+        });
+        let mut waited = Duration::ZERO;
+        while waited < STORAGE_EVERY {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+            waited += Duration::from_secs(1);
+        }
+    }
+}
+
 fn dispatch(shared: &Arc<Shared>, work: Vec<Work>) {
     for item in work {
         let shared = Arc::clone(shared);
@@ -473,6 +495,13 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         let (shared, state_dir, stop) = (Arc::clone(&shared), state_dir.clone(), Arc::clone(stop));
         if let Err(e) = std::thread::Builder::new().name("health".to_string()).spawn(move || monitor_loop(&shared, &state_dir, &stop)) {
             log(&format!("could not start the health monitor: {e}"));
+        }
+    }
+
+    {
+        let (shared, state_dir, stop) = (Arc::clone(&shared), state_dir.clone(), Arc::clone(stop));
+        if let Err(e) = std::thread::Builder::new().name("storage".to_string()).spawn(move || storage_loop(&shared, &state_dir, &stop)) {
+            log(&format!("could not start the storage check: {e}"));
         }
     }
 

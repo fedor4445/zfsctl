@@ -190,7 +190,15 @@ pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile) -> Vec<String> {
 pub fn check_lines(state_dir: &std::path::Path) -> Vec<String> {
     let mut lines = disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")));
     lines.extend(share_lines(&crate::daemon::shares_check::SharesFile::load(&state_dir.join("shares.json"))));
+    // The report has no config of its own: the thresholds are the user's, read from the fixed config path (defaults when absent).
+    let quota = crate::config::Config::load(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH)).map(|c| c.dashboard.resolve().quota).unwrap_or_else(|_| crate::config::Thresholds::default().quota);
+    lines.extend(storage_lines(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), quota));
     lines
+}
+
+/// The daily report's lines for datasets near their quota, from `storage.json`.
+pub fn storage_lines(file: &crate::daemon::storage_check::StorageFile, quota: (u8, u8)) -> Vec<String> {
+    crate::daemon::storage_check::problems(file, quota).iter().map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at))).collect()
 }
 
 /// The daily report's lines for hosts whose file sharing has a problem, from the daemon's `shares.json`.
@@ -306,6 +314,18 @@ mod tests {
 
     fn run(job: &str, result: Option<RunResult>, msg: &str, at: DateTime<Utc>) -> Run {
         Run { job_id: job.into(), run_id: format!("{job}-{}", at.timestamp()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: msg.into(), catch_up: false, summary: None }
+    }
+
+    #[test]
+    fn the_report_lists_datasets_near_their_quota() {
+        use crate::daemon::storage_check::{LimitedDataset, StorageFile, StorageResult};
+        let mut file = StorageFile::default();
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], error: None });
+        let lines = storage_lines(&file, (90, 98));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("fbsd16: tank/home 94% of its 100 quota (checked "), "{}", lines[0]);
+        assert!(storage_lines(&file, (95, 99)).is_empty());
     }
 
     #[test]

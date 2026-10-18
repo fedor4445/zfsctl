@@ -105,6 +105,50 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
     }
 }
 
+/// The state file's name in the state directory.
+pub const FILE: &str = "storage.json";
+
+/// How long one pass waits for a host before giving up on it.
+pub const HOST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Asks one host and writes the answer into `storage.json` (load, apply, save), so `c` and the daemon's loop share one path.
+pub fn check_and_merge(dir: &Path, host: &str, runner: &dyn CommandRunner, now: DateTime<Utc>) {
+    let outcome = check_host(runner, now);
+    let path = dir.join(FILE);
+    let mut file = StorageFile::load(&path);
+    file.apply(host, outcome, now);
+    let _ = file.save(&path);
+}
+
+/// Asks every host at once and waits at most `deadline` for each; a host that has not answered by then is left as it was.
+/// Returns how many hosts were asked and answered in time.
+pub fn run_pass(dir: &Path, hosts: &[(String, std::sync::Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: std::time::Duration) -> usize {
+    let (tx, rx) = std::sync::mpsc::channel();
+    for (name, runner) in hosts {
+        let (tx, name, runner) = (tx.clone(), name.clone(), std::sync::Arc::clone(runner));
+        std::thread::spawn(move || {
+            let _ = tx.send((name, check_host(runner.as_ref(), now)));
+        });
+    }
+    drop(tx);
+    let end = std::time::Instant::now() + deadline;
+    let path = dir.join(FILE);
+    let mut file = StorageFile::load(&path);
+    let mut answered = 0;
+    while answered < hosts.len() {
+        let Some(left) = end.checked_duration_since(std::time::Instant::now()) else { break };
+        match rx.recv_timeout(left) {
+            Ok((name, outcome)) => {
+                file.apply(&name, outcome, now);
+                answered += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = file.save(&path);
+    answered
+}
+
 /// What one host adds to Needs attention: its dataset nearest to a limit, with how many others are over the warning line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StorageProblem {
@@ -218,6 +262,46 @@ mod tests {
         assert!(matches!(check_host(&lost, at(NOW)), Outcome::Failed(_)));
         let broken = FakeRunner::new("").route_failure("zfs", "list", "cannot open pool", 1);
         assert!(matches!(check_host(&broken, at(NOW)), Outcome::Failed(_)));
+    }
+
+    #[test]
+    fn check_and_merge_writes_the_hosts_answer_into_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::new("").route("zfs", "list", "tank/home\t9\t9\t10\t0\tfilesystem\n");
+        check_and_merge(dir.path(), "hub", &runner, at(NOW));
+        let file = StorageFile::load(&dir.path().join(FILE));
+        assert_eq!(file.hosts["hub"].datasets.len(), 1);
+        assert_eq!(file.ran_at, Some(at(NOW)));
+        let quiet = FakeRunner::new("").route("zfs", "list", "");
+        check_and_merge(dir.path(), "hub", &quiet, at(NOW));
+        assert!(StorageFile::load(&dir.path().join(FILE)).hosts["hub"].datasets.is_empty(), "the quota is gone: the entry is replaced");
+    }
+
+    #[test]
+    fn a_pass_asks_every_host_and_gives_up_on_one_that_never_answers() {
+        use crate::exec::CommandOutput;
+        struct Hang;
+        impl CommandRunner for Hang {
+            fn run(&self, _: &str, _: &[&str]) -> crate::error::Result<CommandOutput> {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                Ok(CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+            }
+            fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<CommandOutput> {
+                self.run(c, a)
+            }
+            fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<CommandOutput> {
+                self.run(c, a)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let good: std::sync::Arc<dyn CommandRunner> = std::sync::Arc::new(FakeRunner::new("").route("zfs", "list", "a\t9\t9\t10\t0\tfilesystem\n"));
+        let hosts = vec![("good".to_string(), good), ("stuck".to_string(), std::sync::Arc::new(Hang) as std::sync::Arc<dyn CommandRunner>)];
+        let started = std::time::Instant::now();
+        let answered = run_pass(dir.path(), &hosts, at(NOW), std::time::Duration::from_millis(300));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "the hung host must not hold the pass");
+        assert_eq!(answered, 1);
+        let file = StorageFile::load(&dir.path().join(FILE));
+        assert!(file.hosts.contains_key("good") && !file.hosts.contains_key("stuck"));
     }
 
     #[test]

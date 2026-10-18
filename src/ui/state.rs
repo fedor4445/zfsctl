@@ -974,7 +974,14 @@ impl App {
                 let Some(_running) = crate::daemon::checks::RunGuard::start(&state_dir, "tui", Some(&host)) else {
                     return format!("{host}: another check is running; try again in a moment");
                 };
+                // The quota reading rides along, at the same time and within the same deadline (one `zfs list`, merged into
+                // storage.json like the other two), so a host that hangs holds neither.
+                let storage = {
+                    let (dir, one, runner) = (state_dir.clone(), host.clone(), Arc::clone(&runner));
+                    std::thread::spawn(move || crate::daemon::storage_check::run_pass(&dir, &[(one, runner)], chrono::Utc::now(), deadline))
+                };
                 let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], chrono::Utc::now(), deadline);
+                let _ = storage.join();
                 done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe(&host, checks))
             }))
             .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
