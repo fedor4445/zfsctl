@@ -5122,7 +5122,7 @@ fn app_with_jobs(jobs_list: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
 }
 
 fn scrub_job(id: &str) -> crate::jobs::Job {
-    crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
+    crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
 }
 
 #[test]
@@ -6111,7 +6111,7 @@ const GOOD: [&str; 8] = ["local", "tank/data", "hourly", "fbsd16", "backup/data"
 fn big_r_in_jobs_opens_a_blank_replication_form_with_defaults() {
     let (mut app, _dir) = app_with_jobs(&[]);
     app.handle_key(KeyCode::Char('R'));
-    assert_eq!(form_values(&app), ["local", "", "auto", "", "", "n", "30 * * * *", "y", ""]);
+    assert_eq!(form_values(&app), ["local", "", "auto", "", "", "n", "30 * * * *", "y", "", "n"]);
 }
 
 #[test]
@@ -6166,7 +6166,7 @@ fn enter_on_a_replicate_job_edits_it_in_the_replication_form() {
     app.refresh_jobs();
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Enter);
-    assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y", ""]);
+    assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y", "", "n"]);
 }
 
 #[test]
@@ -7475,7 +7475,7 @@ fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_wh
 fn snap_job(keep: Option<u32>) -> crate::jobs::Job {
     crate::jobs::Job {
         id: "snap-local-tank-data".into(), host: "local".into(), kind: crate::jobs::KIND_SNAPSHOT.into(), pool: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true,
-        created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false,
+        created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false,
         repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
     }
 }

@@ -315,7 +315,7 @@ pub enum FormKind {
     /// is every current job, so the form can refuse a prefix another job already uses on the
     /// same host and dataset and can name a new job without a collision.
     SnapshotJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
-    /// Fields: `[source host, source dataset, prefix, destination host (or file), destination dataset (or directory), force (y/n), schedule, catch_up (y/n)]`.
+    /// Fields: `[source host, source dataset, prefix, destination host (or file), destination dataset (or directory), force (y/n), schedule, catch_up (y/n), keep on target, raw (y/n)]`.
     ReplicateJob { hosts: Vec<String>, existing: Option<Box<crate::jobs::Job>>, jobs: Vec<crate::jobs::Job> },
     /// Fields: `[name, vdev_spec]`.
     CreatePool { host: usize },
@@ -449,7 +449,7 @@ mod tests {
     use crate::exec::test_support::FakeRunner;
 
     fn job(id: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
     #[test]

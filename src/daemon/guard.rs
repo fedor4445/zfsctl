@@ -7,8 +7,10 @@ use crate::exec::CommandRunner;
 /// What a job kind needs from its source dataset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Need {
-    /// `zfs send` (replication, stream files) and the rclone mirror: the source must not be encrypted at all.
+    /// The rclone mirror: the source must not be encrypted at all.
     NotEncrypted,
+    /// A replication that is not raw: as `NotEncrypted`, with advice to switch Raw on. (A raw replication skips the check.)
+    NotEncryptedUnlessRaw,
     /// A file-level backup that re-encrypts by itself (restic): an encrypted source is fine while its key is loaded.
     KeyLoaded,
 }
@@ -19,6 +21,7 @@ pub fn check_source(runner: &dyn CommandRunner, dataset: &str, need: Need) -> st
     match (enc, need) {
         (None, _) => Ok(()),
         (Some(_), Need::NotEncrypted) => Err(not_allowed(dataset)),
+        (Some(_), Need::NotEncryptedUnlessRaw) => Err(not_allowed_replication(dataset)),
         (Some(e), Need::KeyLoaded) if e.locked => Err(format!("{dataset} is locked (key not loaded): load the key first")),
         (Some(_), Need::KeyLoaded) => Ok(()),
     }
@@ -27,6 +30,11 @@ pub fn check_source(runner: &dyn CommandRunner, dataset: &str, need: Need) -> st
 /// The text a form or a run shows for a source this job kind does not take.
 pub fn not_allowed(dataset: &str) -> String {
     format!("{dataset} is encrypted: sending it without a raw option would deliver it decrypted, so this job kind does not run on encrypted datasets")
+}
+
+/// The refusal for a replication that is not raw.
+pub fn not_allowed_replication(dataset: &str) -> String {
+    format!("{dataset} is encrypted: sending it without Raw would deliver it decrypted. Turn Raw on in the job to send it as it is (it stays encrypted and locked on the destination)")
 }
 
 /// What a test host answers to the encryption query: nothing for `None` (an unencrypted dataset), else an encrypted dataset

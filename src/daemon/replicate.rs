@@ -116,8 +116,11 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
     // with a scrub's or a snapshot's lock key.
     let Some(_dst_guard) = ctx.locks.try_acquire(&dest_host, &format!("#dst@{dest_ds}")) else { return skipped("skipped: already running".to_string()) };
 
-    if let Err(msg) = super::guard::check_source(src, &dataset, super::guard::Need::NotEncrypted) {
-        return failed(msg);
+    // A raw job sends an encrypted source as it is; any other job would deliver it decrypted.
+    if !job.raw {
+        if let Err(msg) = super::guard::check_source(src, &dataset, super::guard::Need::NotEncryptedUnlessRaw) {
+            return failed(msg);
+        }
     }
 
     let token = match resume_token(dst, &dest_ds) {
@@ -144,8 +147,8 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
                 };
             }
             Plan::Send { new, base } => Chosen {
-                send: send_args(&dataset, &new, base.as_deref(), false),
-                dry: send_args(&dataset, &new, base.as_deref(), true),
+                send: send_args(&dataset, &new, base.as_deref(), false, job.raw),
+                dry: send_args(&dataset, &new, base.as_deref(), true, job.raw),
                 label: match &base {
                     Some(base) => format!("sent {new} (incremental from {base})"),
                     None => format!("sent {new} (full)"),
@@ -595,6 +598,32 @@ mod tests {
             assert!(src.commands().is_empty() && dst.commands().is_empty(), "nothing was sent or received");
             assert!(!src.queries.lock().unwrap().iter().any(|q| q[0] == "list" || q[0] == "send"), "{:?}", src.queries.lock().unwrap());
         }
+    }
+
+    #[test]
+    fn a_raw_job_sends_an_encrypted_source_with_dash_w_and_never_asks_whether_it_is_encrypted() {
+        let rig = Rig::new();
+        for status in ["available", "unavailable"] {
+            let mut src = Host::new(&src_listing());
+            src.keystatus = Some(status);
+            let dst = Host::new("");
+            let mut raw = job();
+            raw.raw = true;
+            let (outcome, _) = rig.run(&src, &dst, &raw);
+            assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+            assert!(src.commands().iter().any(|c| c[0] == "send" && c[1] == "-w"), "{:?}", src.commands());
+            assert!(src.queries.lock().unwrap().iter().any(|q| q[0] == "send" && q[1] == "-w"), "the size estimate is raw too");
+            assert!(!src.queries.lock().unwrap().iter().any(|q| q[0] == "get" && q.iter().any(|a| a.contains("keystatus"))));
+        }
+    }
+
+    #[test]
+    fn a_job_that_is_not_raw_is_told_to_turn_raw_on() {
+        let rig = Rig::new();
+        let mut src = Host::new(&src_listing());
+        src.keystatus = Some("available");
+        let (outcome, _) = rig.run(&src, &Host::new(""), &job());
+        assert!(outcome.message.contains("Turn Raw on"), "{}", outcome.message);
     }
 
     #[test]

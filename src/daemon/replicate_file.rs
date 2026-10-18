@@ -84,8 +84,11 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     // a pool name, so the key cannot collide with a scrub's, a snapshot's or another replication's.
     let Some(_guard) = ctx.locks.try_acquire("local", &format!("#dir@{dir}")) else { return skipped("skipped: already running".to_string()) };
 
-    if let Err(msg) = super::guard::check_source(src, &dataset, super::guard::Need::NotEncrypted) {
-        return failed(msg);
+    // A raw job sends an encrypted source as it is; any other job would deliver it decrypted.
+    if !job.raw {
+        if let Err(msg) = super::guard::check_source(src, &dataset, super::guard::Need::NotEncryptedUnlessRaw) {
+            return failed(msg);
+        }
     }
     let source = match list_snapshot_infos(src, &dataset) {
         Ok(s) => s,
@@ -129,10 +132,10 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     };
 
     // The size is only for the progress display; a failed or unparseable estimate is not an error.
-    let dry = send_args(&dataset, &new, base.as_deref(), true);
+    let dry = send_args(&dataset, &new, base.as_deref(), true, job.raw);
     let dry_refs: Vec<&str> = dry.iter().map(String::as_str).collect();
     let total = src.run("zfs", &dry_refs).ok().and_then(|out| parse_send_size(&out.stdout));
-    let send = send_args(&dataset, &new, base.as_deref(), false);
+    let send = send_args(&dataset, &new, base.as_deref(), false, job.raw);
     let send_refs: Vec<&str> = send.iter().map(String::as_str).collect();
     let send_cmd = match src.command("zfs", &send_refs) {
         Ok(c) => c,
@@ -335,6 +338,19 @@ mod tests {
         assert!(outcome.message.starts_with("tank/data is encrypted"), "{}", outcome.message);
         assert!(src.commands().is_empty());
         assert!(rig.files().is_empty());
+    }
+
+    #[test]
+    fn a_raw_job_writes_the_stream_with_dash_w() {
+        let rig = Rig::new();
+        let mut src = Host::new(&listing(&[(A, 1, 10), (B, 2, 20)]));
+        src.keystatus = Some("unavailable");
+        let mut job = rig.job(&rig.dir());
+        job.raw = true;
+        let (outcome, _) = rig.run(&src, &job);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(src.commands().iter().any(|c| c[0] == "send" && c[1] == "-w"), "{:?}", src.commands());
+        assert!(!rig.files().is_empty());
     }
 
     #[test]

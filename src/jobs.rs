@@ -66,6 +66,9 @@ pub struct Job {
     /// Receive with `-F`, rolling the destination back to the incremental base.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
+    /// Replication only: send with `-w`, so an encrypted source stays encrypted (and locked) on the destination.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
     /// A backup job's restic repository (`restic -r`). It must not contain credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
@@ -466,11 +469,11 @@ pub fn duplicate_prefix_reasons(jobs: &[Job]) -> std::collections::HashMap<Strin
 #[cfg(test)]
 impl Job {
     pub fn test_snapshot(id: &str, dataset: &str, prefix: &str, keep: u32) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_SNAPSHOT.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: Some(keep), dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_backup(id: &str, dataset: &str, prefix: &str, repository: &str, password_file: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, source: None, snapshot: None, path: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_BACKUP.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false, repository: Some(repository.into()), password_file: Some(password_file.into()), retention: None, source: None, snapshot: None, path: None, schedule: "0 3 * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 
     pub fn test_mirror(id: &str, dataset: &str, prefix: &str, remote: &str) -> Job {
@@ -478,7 +481,7 @@ impl Job {
     }
 
     pub fn test_replicate(id: &str, dataset: &str, prefix: &str, dest_host: &str, dest_dataset: &str) -> Job {
-        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
+        Job { id: id.into(), host: "local".into(), kind: KIND_REPLICATE.into(), pool: None, dataset: Some(dataset.into()), recursive: false, prefix: Some(prefix.into()), keep: None, dest_host: Some(dest_host.into()), dest_dataset: Some(dest_dataset.into()), dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None, schedule: "30 * * * *".into(), catch_up: true, enabled: true, created_at: None }
     }
 }
 
@@ -542,7 +545,7 @@ mod tests {
             dest_dataset: None,
             dest_dir: None,
             dest_keep: None,
-            remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
+            remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         }
     }
 

@@ -75,7 +75,7 @@ impl App {
 impl App {
     pub(super) fn replicate_job_form(&self, existing: Option<crate::jobs::Job>) -> Modal {
         let yn = |b: bool| if b { "y" } else { "n" }.to_string();
-        let (title, host, dataset, prefix, dest_host, dest, force, schedule, catch_up, dest_keep) = match &existing {
+        let (title, host, dataset, prefix, dest_host, dest, force, schedule, catch_up, dest_keep, raw) = match &existing {
             Some(j) => (
                 format!("Edit replication job '{}'", j.id),
                 j.host.clone(),
@@ -87,8 +87,9 @@ impl App {
                 j.schedule.clone(),
                 j.catch_up,
                 j.dest_keep.map(|k| k.to_string()).unwrap_or_default(),
+                j.raw,
             ),
-            None => ("New replication job".to_string(), self.active_host_name().to_string(), String::new(), crate::jobs::DEFAULT_PREFIX.to_string(), String::new(), String::new(), false, "30 * * * *".to_string(), true, String::new()),
+            None => ("New replication job".to_string(), self.active_host_name().to_string(), String::new(), crate::jobs::DEFAULT_PREFIX.to_string(), String::new(), String::new(), false, "30 * * * *".to_string(), true, String::new(), false),
         };
         Modal::Form {
             title,
@@ -102,9 +103,10 @@ impl App {
                 FormField { label: "Schedule".to_string(), value: schedule },
                 FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
                 FormField { label: "Keep on target (blank = keep everything)".to_string(), value: dest_keep },
+                FormField { label: "Raw: keep it encrypted (y/n)".to_string(), value: yn(raw) },
             ],
             focused: 0,
-            description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally. The destination is received unmounted and rolled back only if Force is y. Keep on target destroys this job's older snapshots on a host destination after each run.".to_string()),
+            description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally. The destination is received unmounted and rolled back only if Force is y. Keep on target destroys this job's older snapshots on a host destination after each run. Raw y sends an encrypted dataset as it is (it stays encrypted and locked on the destination, which cannot read it without the key); an encrypted source needs it.".to_string()),
             kind: FormKind::ReplicateJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
@@ -195,7 +197,7 @@ pub(super) fn build_backup_job_action(kind: &FormKind, fields: &[FormField], sta
         dest_keep: None,
         remote: None,
         bwlimit: None,
-        force: false,
+        force: false, raw: false,
         repository: Some(repository.to_string()),
         password_file: Some(password_file.to_string()),
         retention: (!keep.is_empty()).then(|| keep.to_string()),
@@ -307,7 +309,7 @@ pub(super) fn build_mirror_job_action(kind: &FormKind, fields: &[FormField], sta
         dest_keep: None,
         remote: Some(remote.to_string()),
         bwlimit: (!limit.is_empty()).then(|| limit.to_string()),
-        force: false,
+        force: false, raw: false,
         repository: None,
         password_file: None,
         retention: None,
@@ -358,6 +360,7 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
     let dest_host = field_value(fields, 3).trim();
     let dest = field_value(fields, 4).trim();
     let force = yes_no("Force", field_value(fields, 5), false)?;
+    let raw = yes_no("Raw", field_value(fields, 9), false)?;
     let schedule = field_value(fields, 6).trim();
     crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
     let catch_up = yes_no("Catch up", field_value(fields, 7), true)?;
@@ -389,6 +392,7 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
         remote: None,
         bwlimit: None,
         force,
+        raw,
         repository: None,
         password_file: None,
         retention: None, source: None, snapshot: None, path: None,
@@ -456,7 +460,7 @@ pub(super) fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], s
             dest_keep: None,
             remote: None,
             bwlimit: None,
-            force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
+            force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
             schedule: schedule.to_string(),
             catch_up,
             enabled: true,
@@ -509,7 +513,7 @@ pub(super) fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir:
             dest_keep: None,
             remote: None,
             bwlimit: None,
-            force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
+            force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         },
     };
     Ok(PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: state_dir.to_path_buf(), job: Box::new(job) } })

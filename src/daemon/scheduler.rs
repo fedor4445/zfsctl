@@ -157,7 +157,7 @@ mod tests {
 
             bwlimit: None,
 
-            force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
+            force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
         }
     }
 

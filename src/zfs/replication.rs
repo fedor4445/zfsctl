@@ -116,9 +116,13 @@ pub fn prune_selection(listing: &[SnapInfo], prefix: &str, keep: u32) -> Vec<Str
     own[..excess].iter().map(|s| s.name.clone()).collect()
 }
 
-/// `zfs send [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size.
-pub fn send_args(dataset: &str, new: &str, base: Option<&str>, dry: bool) -> Vec<String> {
+/// `zfs send [-w] [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size. `raw` (`-w`) sends an encrypted dataset
+/// as it is, so it stays encrypted on the destination; on a plain dataset the stream is the same.
+pub fn send_args(dataset: &str, new: &str, base: Option<&str>, dry: bool, raw: bool) -> Vec<String> {
     let mut args = vec!["send".to_string()];
+    if raw {
+        args.push("-w".to_string());
+    }
     if dry {
         args.push("-nvP".to_string());
     }
@@ -285,9 +289,11 @@ mod tests {
 
     #[test]
     fn the_argument_lists_are_exactly_what_was_verified_live() {
-        assert_eq!(send_args("tank/data", "h-2", None, false), ["send", "--", "tank/data@h-2"]);
-        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), false), ["send", "-i", "@h-1", "--", "tank/data@h-2"]);
-        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), true), ["send", "-nvP", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", None, false, false), ["send", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), false, false), ["send", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), true, false), ["send", "-nvP", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), false, true), ["send", "-w", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", None, true, true), ["send", "-w", "-nvP", "--", "tank/data@h-2"]);
         assert_eq!(resume_send_args("1-abc", false), ["send", "-t", "1-abc"]);
         assert_eq!(resume_send_args("1-abc", true), ["send", "-nvP", "-t", "1-abc"]);
         assert_eq!(receive_args("backup/data", false), ["receive", "-s", "-u", "--", "backup/data"]);
