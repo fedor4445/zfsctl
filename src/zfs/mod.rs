@@ -44,6 +44,15 @@ pub(crate) fn parse_numeric_or_dash(s: &str) -> Option<u64> {
 /// `AppError::CommandFailed`, using `display` as the human-readable
 /// command description in the error (since `args` may include `--`
 /// guards or a shell pipeline that isn't worth showing verbatim).
+/// A name that starts with `-` would be read as an option by a command that takes no `--` (a `get`, whose dataset comes last
+/// because illumos reads a `--` after the property list as a name).
+pub(crate) fn not_an_option(name: &str) -> Result<()> {
+    if name.starts_with('-') {
+        return Err(AppError::Parse(format!("not a dataset or pool name: {name}")));
+    }
+    Ok(())
+}
+
 /// Collapses the success/failure-check block that was previously
 /// hand-duplicated at every call site in `pool.rs`/`dataset.rs`/
 /// `snapshot.rs`.
@@ -88,5 +97,33 @@ mod tests {
             }
             other => panic!("expected CommandFailed, got {other:?}"),
         }
+    }
+
+    /// illumos's `zfs` and `zpool` stop reading options at the first argument that is not one, so in a `get` the `--` that
+    /// follows the property list is taken for a dataset name (found on OmniOS: `zfs get all -H -p -- ds`). In a `get` the
+    /// dataset comes last, with no `--`; a name that starts with `-` is refused by the caller instead.
+    #[test]
+    fn no_get_call_puts_a_double_dash_after_the_property_list() {
+        fn walk(dir: &std::path::Path, hits: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, hits);
+                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("zfs/mod.rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    for (n, line) in text.lines().enumerate() {
+                        if let Some(i) = line.find("[\"get\",") {
+                            let array = line[i..].split(']').next().unwrap_or("");
+                            if array.contains("\"--\"") {
+                                hits.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        walk(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")), &mut hits);
+        assert!(hits.is_empty(), "{}", hits.join("\n"));
     }
 }

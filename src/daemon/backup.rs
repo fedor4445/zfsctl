@@ -117,7 +117,7 @@ pub(super) fn destroy_clone(runner: &dyn CommandRunner, clock: &dyn super::scrub
 /// The snapshot's creation time as restic's `--time` wants it: in the host's own local time zone.
 /// `None` when the host cannot say, and the backup then carries the run time.
 fn snapshot_time(runner: &dyn CommandRunner, dataset: &str, snapshot: &str) -> Option<String> {
-    let epoch = zfs(runner, &["get", "-H", "-p", "-o", "value", "creation", "--", &format!("{dataset}@{snapshot}")]).ok()?;
+    let epoch = zfs(runner, &["get", "-H", "-p", "-o", "value", "creation", &format!("{dataset}@{snapshot}")]).ok()?;
     let epoch = epoch.trim();
     if epoch.is_empty() || !epoch.bytes().all(|b| b.is_ascii_digit()) {
         return None;
