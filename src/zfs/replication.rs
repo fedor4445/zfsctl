@@ -117,7 +117,8 @@ pub fn prune_selection(listing: &[SnapInfo], prefix: &str, keep: u32) -> Vec<Str
 }
 
 /// `zfs send [-w] [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size. `raw` (`-w`) sends an encrypted dataset
-/// as it is, so it stays encrypted on the destination; on a plain dataset the stream is the same.
+/// as it is, so it stays encrypted on the destination. On a plain dataset `-w` is the same as `-Lec` (compressed, large
+/// blocks, embedded data): harmless for a new job, but a different stream type than a plain send.
 pub fn send_args(dataset: &str, new: &str, base: Option<&str>, dry: bool, raw: bool) -> Vec<String> {
     let mut args = vec!["send".to_string()];
     if raw {
@@ -144,6 +145,13 @@ pub fn resume_send_args(token: &str, dry: bool) -> Vec<String> {
     args.push("-t".to_string());
     args.push(token.to_string());
     args
+}
+
+/// Whether a resume token belongs to a raw send (`rawok = 1` in `zfs send -nv -t <token>`). A token keeps the flags of the
+/// send that made it, so resuming a plain send's token from a raw job would send the rest in the clear.
+pub fn token_is_raw(runner: &dyn CommandRunner, token: &str) -> Result<bool> {
+    let out = super::run_checked(runner, "zfs", &["send", "-nv", "-t", token], "zfs send -nv -t")?;
+    Ok(out.stdout.lines().chain(out.stderr.lines()).any(|l| l.trim().replace(' ', "") == "rawok=1"))
 }
 
 /// `zfs receive -s -u [-F] -- dest`: resumable, never mounted, rolled back only when forced.
@@ -298,5 +306,14 @@ mod tests {
         assert_eq!(resume_send_args("1-abc", true), ["send", "-nvP", "-t", "1-abc"]);
         assert_eq!(receive_args("backup/data", false), ["receive", "-s", "-u", "--", "backup/data"]);
         assert_eq!(receive_args("backup/data", true), ["receive", "-s", "-u", "-F", "--", "backup/data"]);
+    }
+
+    #[test]
+    fn a_resume_token_is_raw_only_when_it_decodes_with_rawok() {
+        let raw = FakeRunner::new("resume token contents:\nnvlist version: 0\n\tcompressok = 1\n\trawok = 1\n");
+        assert!(token_is_raw(&raw, "1-abc").unwrap());
+        assert_eq!(raw.calls.lock().unwrap()[0].1, ["send", "-nv", "-t", "1-abc"]);
+        assert!(!token_is_raw(&FakeRunner::new("resume token contents:\nnvlist version: 0\n\tobject = 0x2\n"), "1-abc").unwrap());
+        assert!(token_is_raw(&FakeRunner::failing("bad token", 1), "1-abc").is_err());
     }
 }

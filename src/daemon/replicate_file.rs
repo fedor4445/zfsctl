@@ -28,6 +28,10 @@ pub struct Sent {
     pub snapshot: String,
     pub guid: u64,
     pub dir: String,
+    /// Whether the stream was raw (`-w`). Raw and plain streams do not chain, so a job whose Raw setting changed starts over
+    /// with a full stream.
+    #[serde(default)]
+    pub raw: bool,
 }
 
 /// Two file jobs can finish at the same moment; their read-modify-write of the state file must not interleave.
@@ -97,7 +101,7 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     // The recorded snapshot stands in for "what the other side has": `plan` then gives exactly the
     // rule we want (an increment only from a snapshot that still exists on the source, by guid).
     let flat = dataset.replace('/', "-");
-    let recorded = read_state(env.replication_state).remove(&job.id).filter(|s| s.dir == dir && stream_exists(&dir, &flat, &s.snapshot));
+    let recorded = read_state(env.replication_state).remove(&job.id).filter(|s| s.dir == dir && s.raw == job.raw && stream_exists(&dir, &flat, &s.snapshot));
     let known: Vec<SnapInfo> = recorded.iter().map(|s| SnapInfo { name: s.snapshot.clone(), guid: s.guid, createtxg: 0 }).collect();
     let (new, base) = match plan(&source, &known, &prefix) {
         Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
@@ -186,7 +190,7 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
         Some(base) => format!("incremental from {base}"),
         None => "full".to_string(),
     };
-    if let Err(e) = record(env.replication_state, &job.id, Sent { snapshot: new.clone(), guid: new_guid, dir: dir.clone() }) {
+    if let Err(e) = record(env.replication_state, &job.id, Sent { snapshot: new.clone(), guid: new_guid, dir: dir.clone(), raw: job.raw }) {
         return failed(format!("wrote {name} but could not record it in replication.json ({e}); the next run sends a full stream"));
     }
     let note = kept.and_then(|p| p.file_name().map(|n| format!("; kept the earlier file as {}", n.to_string_lossy()))).unwrap_or_default();
@@ -323,7 +327,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(format!("{}/tank-data@{B}.zfs", rig.dir())).unwrap(), "STREAMDATA");
         assert_eq!(src.commands(), vec![vec!["send".to_string(), "--".into(), format!("tank/data@{B}")]]);
         let state = read_state(&rig.state_file());
-        assert_eq!(state.get("r"), Some(&Sent { snapshot: B.to_string(), guid: 2, dir: rig.dir() }));
+        assert_eq!(state.get("r"), Some(&Sent { snapshot: B.to_string(), guid: 2, dir: rig.dir(), raw: false }));
         assert_eq!((history.len(), history[0].result), (1, Some(RunResult::Ok)));
         assert!(crate::daemon::progress::read_all(&rig.state.path().join("progress")).is_empty());
     }
@@ -375,6 +379,26 @@ mod tests {
         assert_eq!(src.commands()[0], vec!["send".to_string(), "-i".into(), format!("@{B}"), "--".into(), format!("tank/data@{C}")]);
         assert_eq!(rig.files(), vec![format!("tank-data@{B}..{C}.zfs"), format!("tank-data@{B}.zfs")]);
         assert_eq!(read_state(&rig.state_file()).get("r").map(|s| s.snapshot.clone()), Some(C.to_string()));
+    }
+
+    #[test]
+    fn a_job_whose_raw_setting_changed_starts_a_new_full_stream_instead_of_chaining() {
+        let rig = Rig::new();
+        let job = rig.job(&rig.dir());
+        rig.run(&Host::new(&listing(&[(A, 1, 10), (B, 2, 20)])), &job);
+        let mut raw = job.clone();
+        raw.raw = true;
+        let src = Host::new(&listing(&[(A, 1, 10), (B, 2, 20), (C, 3, 30)]));
+        let (outcome, _) = rig.run(&src, &raw);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("full"), "no increment on top of the other kind: {}", outcome.message);
+        assert_eq!(src.commands()[0], vec!["send".to_string(), "-w".into(), "--".into(), format!("tank/data@{C}")]);
+        assert!(read_state(&rig.state_file()).get("r").unwrap().raw);
+        // And the next raw run chains onto the raw one.
+        let next = Host::new(&listing(&[(A, 1, 10), (B, 2, 20), (C, 3, 30), ("hourly-20261008T130000Z", 4, 40)]));
+        let (outcome, _) = rig.run(&next, &raw);
+        assert!(outcome.message.contains("incremental"), "{}", outcome.message);
+        assert_eq!(&next.commands()[0][..3], ["send", "-w", "-i"]);
     }
 
     #[test]
@@ -497,7 +521,7 @@ mod tests {
         let handles: Vec<_> = (0..8)
             .map(|i| {
                 let path = path.clone();
-                std::thread::spawn(move || record(&path, &format!("job{i}"), Sent { snapshot: format!("s{i}"), guid: i, dir: "/d".into() }).unwrap())
+                std::thread::spawn(move || record(&path, &format!("job{i}"), Sent { snapshot: format!("s{i}"), guid: i, dir: "/d".into(), raw: false }).unwrap())
             })
             .collect();
         for h in handles {

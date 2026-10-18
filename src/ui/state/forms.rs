@@ -744,6 +744,16 @@ pub(super) fn prune_prompt(dest_host: &str, dest_ds: &str, doomed: &[String], ke
 pub(super) fn job_save_prompt(old: Option<&crate::jobs::Job>, new: &crate::jobs::Job, snapshots: Option<&[crate::zfs::snapshot::Snapshot]>) -> Option<String> {
     use crate::jobs::{effective_prefix, KIND_BACKUP, KIND_MIRROR, KIND_REPLICATE, KIND_SNAPSHOT};
     let dataset = new.dataset.as_deref().unwrap_or("?");
+    // Raw and plain streams do not chain: changing the setting on a job that has already sent something can leave the
+    // destination unable to take the next incremental (ZFS says so and the run fails), or, for stream files, starts a new full one.
+    if let Some(o) = old.filter(|o| new.kind == KIND_REPLICATE && o.raw != new.raw) {
+        let to = if new.raw { "ON" } else { "OFF" };
+        let rest = job_save_prompt(old, &crate::jobs::Job { raw: o.raw, ..new.clone() }, snapshots).map(|p| format!("\n\n{p}")).unwrap_or_default();
+        return Some(format!(
+            "Raw is being turned {to} for {dataset}.\nA raw stream and a plain one do not chain: a destination that already holds data from the other kind may refuse the next incremental (the run then fails with ZFS's message and the destination must be received again from a full send), and a stream-file job starts a new full stream. Nothing is destroyed by this save.{}",
+            if rest.is_empty() { "\n\nSave this job? (y/n)".to_string() } else { rest }
+        ));
+    }
     match new.kind.as_str() {
         KIND_REPLICATE if new.force => {
             let (dest_host, dest) = (new.dest_host.as_deref().unwrap_or("?"), new.dest_dataset.as_deref().unwrap_or("?"));

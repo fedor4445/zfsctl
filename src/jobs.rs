@@ -27,7 +27,7 @@ fn yes() -> bool {
     true
 }
 
-// The four bools (`recursive`, `force`, `catch_up`, `enabled`) are independent job flags in `jobs.toml`.
+// The bools (`recursive`, `force`, `raw`, `catch_up`, `enabled`) are independent job flags in `jobs.toml`.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Job {
@@ -353,6 +353,9 @@ pub fn resolve(job: &Job, known_hosts: &[String]) -> std::result::Result<Schedul
     }
     if job.dest_keep.is_some() && !(job.kind == KIND_REPLICATE && job.dest_host.as_deref() != Some(DEST_FILE)) {
         return Err("dest_keep is only for a replication job to a host, not to a file".to_string());
+    }
+    if job.raw && job.kind != KIND_REPLICATE {
+        return Err("raw is only for a replication job".to_string());
     }
     if (job.remote.is_some() || job.bwlimit.is_some()) && job.kind != KIND_MIRROR {
         return Err("remote and bwlimit are only for a cloud mirror job".to_string());
@@ -1132,5 +1135,31 @@ mod tests {
         for bad in ["", "-x", "/tank", "tank/", "../x", "tank//x", "tank/./x", "tank/../x", "tank/data/..", ".", "..", "tank/a b", "tank/a@b"] {
             assert!(!valid_dataset(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn raw_is_omitted_when_false_round_trips_when_true_and_is_only_for_replication() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.toml");
+        let mut raw = Job::test_replicate("r", "tank/s", "p", "hub", "backup/s");
+        raw.raw = true;
+        let plain = Job::test_replicate("q", "tank/t", "p", "hub", "backup/t");
+        upsert(&path, raw).unwrap();
+        upsert(&path, plain).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("raw = true").count(), 1, "{text}");
+        assert!(!text.contains("raw = false"), "{text}");
+        let loaded = load(&path).unwrap();
+        assert!(loaded.iter().find(|j| j.id == "r").unwrap().raw && !loaded.iter().find(|j| j.id == "q").unwrap().raw);
+        // A file written before the field existed loads with raw off.
+        std::fs::write(&path, text.replace("raw = true\n", "")).unwrap();
+        assert!(load(&path).unwrap().iter().all(|j| !j.raw));
+        let hosts = vec!["local".to_string(), "hub".to_string()];
+        let mut other = scrub("s");
+        other.raw = true;
+        assert!(resolve(&other, &hosts).unwrap_err().contains("raw is only for a replication"));
+        let mut ok = Job::test_replicate("r", "tank/s", "p", "hub", "backup/s");
+        ok.raw = true;
+        assert!(resolve(&ok, &hosts).is_ok());
     }
 }

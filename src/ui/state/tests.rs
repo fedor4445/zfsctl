@@ -9429,7 +9429,7 @@ fn integrity_app(checksum: &str, dedup: &str) -> App {
 }
 
 fn version_of(app: &mut App, version: &str) {
-    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: Default::default(), integrity_stale: false, error: None });
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
 }
 
 #[test]
@@ -9790,4 +9790,20 @@ fn a_full_encrypted_create_keeps_the_passphrase_out_of_arguments_and_status() {
     assert!(calls.iter().all(|(_, a)| a.iter().all(|x| !x.contains(PASS))));
     assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), format!("{PASS}\n"))]);
     assert!(!app.status_message.clone().unwrap_or_default().contains(PASS));
+}
+
+#[test]
+fn turning_raw_on_or_off_for_a_job_that_has_run_needs_a_confirm_that_says_streams_do_not_chain() {
+    let mut app = keep_form_app("");
+    let mut existing = repl_job(false);
+    existing.host = "local".into();
+    existing.dataset = Some("tank/data".into());
+    let Some(Modal::Form { kind, fields, focused, .. }) = app.modal.as_mut() else { panic!() };
+    *kind = repl_kind(Some(existing), vec![]);
+    fields.resize_with(10, || FormField { label: String::new(), value: String::new() });
+    fields[9].value = "y".into();
+    *focused = 9;
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?} {:?}", app.modal, app.status_message) };
+    assert!(prompt.contains("Raw is being turned ON") && prompt.contains("do not chain"), "{prompt}");
 }

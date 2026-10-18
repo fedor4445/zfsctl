@@ -483,7 +483,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         file
     }
 
@@ -528,7 +528,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
@@ -759,7 +759,7 @@ mod tests {
     fn a_pool_that_only_just_started_deduplicating_is_not_judged_until_the_grace_has_passed() {
         const GIB: u64 = 1 << 30;
         let mut file = StorageFile::default();
-        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: Default::default() }, integrity_stale: false, error: None };
+        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: std::collections::BTreeMap::default() }, integrity_stale: false, error: None };
         file.apply("hub", Outcome::Checked(answer(true)), at(NOW));
         assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW), "first seen now");
         assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(1)).is_empty(), "2 TiB of old data, ratio 1.00x, one day after enabling: not yet");

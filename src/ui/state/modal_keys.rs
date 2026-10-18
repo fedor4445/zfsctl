@@ -412,7 +412,7 @@ impl App {
             return None;
         }
         // A raw replication sends an encrypted source as it is: nothing to refuse.
-        if job.raw {
+        if job.kind == crate::jobs::KIND_REPLICATE && job.raw {
             return None;
         }
         let dataset = job.dataset.as_deref()?;

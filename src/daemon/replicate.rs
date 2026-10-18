@@ -128,6 +128,14 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
         Err(e) => return failed(e.to_string()),
     };
     let chosen = if let Some(token) = token {
+        // A raw job never completes a plain send's leftovers: the rest of an encrypted dataset would go out decrypted.
+        if job.raw && !crate::zfs::replication::token_is_raw(src, &token).unwrap_or(false) {
+            match crate::zfs::encryption::query(src, &dataset) {
+                Ok(None) => {}
+                Ok(Some(_)) => return failed(format!("{dest_ds} holds an interrupted transfer that was not sent raw, and {dataset} is encrypted: resuming it would send the rest decrypted. Discard it with `zfs receive -A {dest_ds}` on {dest_host}, then the next run starts again raw")),
+                Err(e) => return failed(format!("could not check whether {dataset} is encrypted: {e}")),
+            }
+        }
         Chosen { send: resume_send_args(&token, false), dry: resume_send_args(&token, true), label: "resumed an interrupted transfer".to_string(), resumed: true, incremental: false, protect: Vec::new() }
     } else {
         let source = match list_snapshot_infos(src, &dataset) {
@@ -246,13 +254,15 @@ mod tests {
         destroy_fails: Vec<(String, String)>,
         /// The source's `keystatus` when it is encrypted.
         keystatus: Option<&'static str>,
+        /// What `zfs send -nv -t <token>` prints (the decoded resume token).
+        token_decode: String,
         queries: Mutex<Vec<Vec<String>>>,
         commands: Mutex<Vec<Vec<String>>>,
     }
 
     impl Host {
         fn new(listing: &str) -> Self {
-            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], keystatus: None, queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
+            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], keystatus: None, token_decode: String::new(), queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
         }
         fn commands(&self) -> Vec<Vec<String>> {
             self.commands.lock().unwrap().clone()
@@ -280,6 +290,7 @@ mod tests {
                 }
                 Some("get") if args.contains(&"name,property,value") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
                 Some("get") => ok(&self.token),
+                Some("send") if args.contains(&"-nv") => ok(&self.token_decode),
                 Some("send") => ok(&self.size_output),
                 other => panic!("unexpected query {other:?}"),
             }
@@ -623,7 +634,72 @@ mod tests {
         let mut src = Host::new(&src_listing());
         src.keystatus = Some("available");
         let (outcome, _) = rig.run(&src, &Host::new(""), &job());
+        assert_eq!(outcome.result, RunResult::Failed);
         assert!(outcome.message.contains("Turn Raw on"), "{}", outcome.message);
+        assert!(src.commands().is_empty());
+    }
+
+    const RAW_TOKEN: &str = "resume token contents:\nnvlist version: 0\n\tobject = 0x2\n\ttoname = tank/data@h\n\tcompressok = 1\n\trawok = 1\n";
+    const PLAIN_TOKEN: &str = "resume token contents:\nnvlist version: 0\n\tobject = 0x2\n\ttoname = tank/data@h\n";
+
+    #[test]
+    fn a_raw_job_never_completes_a_plain_sends_leftovers_of_an_encrypted_source() {
+        let rig = Rig::new();
+        let mut src = Host::new(&src_listing());
+        src.keystatus = Some("available");
+        src.token_decode = PLAIN_TOKEN.into();
+        let mut dst = Host::new("");
+        dst.token = "1-abc-def".into();
+        let mut raw = job();
+        raw.raw = true;
+        let (outcome, _) = rig.run(&src, &dst, &raw);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("not sent raw") && outcome.message.contains("zfs receive -A backup/data"), "{}", outcome.message);
+        assert!(src.commands().is_empty() && dst.commands().is_empty(), "nothing was sent or received");
+    }
+
+    #[test]
+    fn a_raw_job_resumes_a_raw_token_and_a_plain_token_of_a_plain_source() {
+        let rig = Rig::new();
+        for (keystatus, decode) in [(Some("available"), RAW_TOKEN), (None, PLAIN_TOKEN)] {
+            let mut src = Host::new(&src_listing());
+            src.keystatus = keystatus;
+            src.token_decode = decode.into();
+            let mut dst = Host::new("");
+            dst.token = "1-abc-def".into();
+            let mut raw = job();
+            raw.raw = true;
+            let (outcome, _) = rig.run(&src, &dst, &raw);
+            assert_eq!(outcome.result, RunResult::Ok, "{keystatus:?}: {}", outcome.message);
+            assert_eq!(src.commands()[0], ["send", "-t", "1-abc-def"], "resumed by token");
+        }
+    }
+
+    #[test]
+    fn a_raw_job_that_cannot_tell_whether_the_source_is_encrypted_does_not_resume() {
+        let rig = Rig::new();
+        let src = Host::new(&src_listing()); // token_decode is blank: not raw
+        struct Down(Host);
+        impl CommandRunner for Down {
+            fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+                if args.first() == Some(&"get") && args.contains(&"name,property,value") {
+                    return Ok(CommandOutput { stdout: String::new(), stderr: "Connection closed".into(), status: 255 });
+                }
+                self.0.run(cmd, args)
+            }
+            fn run_with_stdin(&self, cmd: &str, a: &[&str], s: &str) -> Result<CommandOutput> { self.0.run_with_stdin(cmd, a, s) }
+            fn run_unprivileged(&self, cmd: &str, a: &[&str]) -> Result<CommandOutput> { self.0.run_unprivileged(cmd, a) }
+            fn command(&self, cmd: &str, a: &[&str]) -> Result<Command> { self.0.command(cmd, a) }
+        }
+        let src = Down(src);
+        let mut dst = Host::new("");
+        dst.token = "1-abc-def".into();
+        let mut raw = job();
+        raw.raw = true;
+        let (outcome, _) = rig.run(&src, &dst, &raw);
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("could not check"), "{}", outcome.message);
+        assert!(src.0.commands().is_empty());
     }
 
     #[test]

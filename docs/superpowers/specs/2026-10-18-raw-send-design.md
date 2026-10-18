@@ -15,7 +15,7 @@ explicit option.
   are unchanged (mirror still refuses an encrypted source; restic re-encrypts with its own key).
 - **Destination:** a raw replica is **locked** and is expected to stay so. It is not a problem anywhere in zfsctl.
 - **Mixed trees:** the question does not arise: a replication job sends **one dataset** (`recursive` belongs to snapshot
-  jobs), so there is no tree to split. A raw send of a plain dataset is harmless (the stream is the same plain data).
+  jobs), so there is no tree to split. A raw send of a plain dataset works (`-w` there equals `-Lec`) but is a different stream type; see the review notes below.
 
 ## Facts verified 2026-10-18 on the hub (FreeBSD)
 
@@ -49,3 +49,11 @@ Raw for the rclone mirror; sending a whole tree (`-R`); converting plain to encr
 ## Left to the builder
 
 Field position/wording in the form, message text.
+
+## Review notes (2026-10-18)
+
+- A raw job refuses to resume a resume token that a plain send made when the source is encrypted (`rawok` is decoded from
+  `zfs send -nv -t`); the message names `zfs receive -A`.
+- Raw and plain streams do not chain: the stream-file state records `raw` and starts a full stream when it differs; a host
+  job gets a confirm when Raw changes on a saved job.
+- Verified on FreeBSD only; Linux and illumos behaviour of raw receives and of key changes is not tested.

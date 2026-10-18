@@ -19,11 +19,10 @@ pub enum Need {
 pub fn check_source(runner: &dyn CommandRunner, dataset: &str, need: Need) -> std::result::Result<(), String> {
     let enc = crate::zfs::encryption::query(runner, dataset).map_err(|e| format!("could not check whether {dataset} is encrypted: {e}"))?;
     match (enc, need) {
-        (None, _) => Ok(()),
         (Some(_), Need::NotEncrypted) => Err(not_allowed(dataset)),
         (Some(_), Need::NotEncryptedUnlessRaw) => Err(not_allowed_replication(dataset)),
         (Some(e), Need::KeyLoaded) if e.locked => Err(format!("{dataset} is locked (key not loaded): load the key first")),
-        (Some(_), Need::KeyLoaded) => Ok(()),
+        (None, _) | (Some(_), Need::KeyLoaded) => Ok(()),
     }
 }
 
