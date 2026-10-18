@@ -14,6 +14,8 @@ pub enum MutationCall {
     DestroyPool { pool: String },
     CreatePool { name: String, vdev_spec: Vec<String> },
     AddVdev { pool: String, vdev_spec: Vec<String> },
+    /// `zpool remove` of a log, cache or spare device.
+    RemoveVdev { pool: String, device: String },
     OfflineDisk { pool: String, disk: String },
     OnlineDisk { pool: String, disk: String },
     ReplaceDisk { pool: String, old_disk: String, new_disk: String },
@@ -99,6 +101,7 @@ impl MutationCall {
             | MutationCall::ReplaceDisk { .. }
             | MutationCall::CreatePool { .. }
             | MutationCall::AddVdev { .. }
+            | MutationCall::RemoveVdev { .. }
             | MutationCall::UnallowPermission { .. }
             | MutationCall::RemoveAclEntry { .. }
             | MutationCall::RemoveSmbShare { .. }
@@ -136,6 +139,7 @@ impl MutationCall {
             MutationCall::DestroyPool { .. } => "DESTROY POOL",
             MutationCall::CreatePool { .. } => "CREATE POOL",
             MutationCall::AddVdev { .. } => "ADD VDEV",
+            MutationCall::RemoveVdev { .. } => "REMOVE VDEV",
             MutationCall::OfflineDisk { .. } => "OFFLINE DISK",
             MutationCall::OnlineDisk { .. } => "ONLINE DISK",
             MutationCall::ReplaceDisk { .. } => "REPLACE DISK",
@@ -192,6 +196,7 @@ impl MutationCall {
                 let spec: Vec<&str> = vdev_spec.iter().map(String::as_str).collect();
                 crate::zfs::pool::add_vdev(runner, pool, &spec)
             }
+            MutationCall::RemoveVdev { pool, device } => crate::zfs::pool::remove_vdev(runner, pool, device),
             MutationCall::OfflineDisk { pool, disk } => crate::zfs::pool::offline_disk(runner, pool, disk),
             MutationCall::OnlineDisk { pool, disk } => crate::zfs::pool::online_disk(runner, pool, disk),
             MutationCall::ReplaceDisk { pool, old_disk, new_disk } => {

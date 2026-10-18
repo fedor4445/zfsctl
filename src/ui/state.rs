@@ -1648,6 +1648,18 @@ impl App {
             KeyCode::Char('O') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 self.open_vdev_confirm(true);
             }
+            KeyCode::Char('X') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                let Some(pool) = self.drilled_pool.clone() else { return true };
+                let picked = self.vdevs_table.selected().and_then(|i| crate::zfs::pool::removable_device(&self.vdevs, i));
+                match picked {
+                    Some((device, class)) => {
+                        let host = self.hosts.get(self.selected_host).map_or("?", String::as_str);
+                        let prompt = format!("On {host}:\n  zpool remove {pool} {device}\n\nThe {class} device is taken out of the pool; it can be added again later. Remove it? (y/n)");
+                        self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Vdevs, call: MutationCall::RemoveVdev { pool, device } } });
+                    }
+                    None => self.status_message = Some("only a log, cache or spare device can be removed here (select its row)".to_string()),
+                }
+            }
             KeyCode::Char('x') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
                 if let Some(i) = self.vdevs_table.selected() {
                     if let Some(vdev) = self.vdevs.get(i) {

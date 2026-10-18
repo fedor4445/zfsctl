@@ -9208,3 +9208,33 @@ fn the_raw_add_form_refuses_a_lone_special_disk_and_queues_the_dry_run_otherwise
     assert!(prompt.contains("zpool add tank special mirror da6 da7"), "{prompt}");
     assert_eq!(app.pending_add_checks[0].role, crate::zfs::vdev_role::Role::Special);
 }
+
+#[test]
+fn capital_x_on_a_log_cache_or_spare_row_asks_y_n_with_the_command_and_removes_it() {
+    let mut app = App::new(vec!["local".to_string()]);
+    pool_for_forms(&mut app);
+    let line = |depth, name: &str| VdevLine { depth, name: name.to_string(), health: crate::zfs::pool::PoolHealth::Online };
+    app.vdevs = vec![line(0, "tank"), line(1, "da0"), line(0, "logs"), line(1, "da4"), line(0, "cache"), line(1, "da5")];
+    app.vdevs_table.select(Some(3));
+    app.handle_key(KeyCode::Char('X'));
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("zpool remove tank da4") && prompt.contains("log device"), "{prompt}");
+    assert_eq!(app.handle_modal_key(KeyCode::Char('y')), None);
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter sends it");
+    assert_eq!(action.call, MutationCall::RemoveVdev { pool: "tank".into(), device: "da4".into() });
+}
+
+#[test]
+fn capital_x_on_a_data_device_says_it_is_not_offered_and_the_hint_follows_the_row() {
+    let mut app = App::new(vec!["local".to_string()]);
+    pool_for_forms(&mut app);
+    let line = |depth, name: &str| VdevLine { depth, name: name.to_string(), health: crate::zfs::pool::PoolHealth::Online };
+    app.vdevs = vec![line(0, "tank"), line(1, "da0"), line(0, "logs"), line(1, "da4")];
+    app.vdevs_table.select(Some(1));
+    let keys = |a: &App| crate::ui::hints::hints(a).iter().map(|h| h.key.to_string()).collect::<Vec<_>>();
+    assert!(!keys(&app).contains(&"X".to_string()));
+    app.handle_key(KeyCode::Char('X'));
+    assert!(app.modal.is_none() && app.status_message.as_deref().is_some_and(|m| m.contains("log, cache or spare")), "{:?}", app.status_message);
+    app.vdevs_table.select(Some(3));
+    assert!(keys(&app).contains(&"X".to_string()));
+}
