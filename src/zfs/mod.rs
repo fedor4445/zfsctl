@@ -100,7 +100,7 @@ mod tests {
     }
 
     /// illumos's `zfs` and `zpool` stop reading options at the first argument that is not one, so in a `get` the `--` that
-    /// follows the property list is taken for a dataset name (found on OmniOS: `zfs get all -H -p -- ds`). In a `get` the
+    /// follows the property list is taken for a dataset name (found on `OmniOS`: `zfs get all -H -p -- ds`). In a `get` the
     /// dataset comes last, with no `--`; a name that starts with `-` is refused by the caller instead.
     #[test]
     fn no_get_call_puts_a_double_dash_after_the_property_list() {

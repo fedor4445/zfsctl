@@ -225,7 +225,8 @@ pub fn locked_problems(file: &StorageFile, jobs: &[crate::jobs::Job]) -> Vec<Sto
                 jobs.iter().filter(|j| j.enabled && matches!(j.kind.as_str(), KIND_REPLICATE | KIND_BACKUP | KIND_MIRROR)).any(|j| {
                     // A replication or mirror source is refused when encrypted, key or no key: loading the key would not help.
                     let reads = j.kind == KIND_BACKUP && j.host == *host && j.dataset.as_deref().is_some_and(|d| locked == d || (j.recursive && locked.strip_prefix(d).is_some_and(|rest| rest.starts_with('/'))));
-                    let writes = j.dest_host.as_deref() == Some(host.as_str()) && j.dest_dataset.as_deref() == Some(locked);
+                    // A raw replica is meant to stay locked, and a receive into it works without the key.
+                    let writes = !j.raw && j.dest_host.as_deref() == Some(host.as_str()) && j.dest_dataset.as_deref() == Some(locked);
                     reads || writes
                 })
             };
@@ -482,7 +483,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         file
     }
 
@@ -527,7 +528,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Default::default(), integrity_stale: false, error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
@@ -758,7 +759,7 @@ mod tests {
     fn a_pool_that_only_just_started_deduplicating_is_not_judged_until_the_grace_has_passed() {
         const GIB: u64 = 1 << 30;
         let mut file = StorageFile::default();
-        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: Default::default() }, integrity_stale: false, error: None };
+        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: std::collections::BTreeMap::default() }, integrity_stale: false, error: None };
         file.apply("hub", Outcome::Checked(answer(true)), at(NOW));
         assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW), "first seen now");
         assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(1)).is_empty(), "2 TiB of old data, ratio 1.00x, one day after enabling: not yet");
@@ -867,7 +868,10 @@ tank/open\tkeystatus\tavailable\ntank/open\tsharenfs\ton\ntank/plain\tkeystatus\
         from.host = "hub".into();
         assert!(locked_problems(&file, &[from]).is_empty(), "a replication source is refused whatever the key state");
         let into = Job::test_replicate("r", "tank/src", "p", "hub", "tank/secure/kid");
-        assert_eq!(locked_problems(&file, &[into]).len(), 1, "a receive into a locked destination fails");
+        assert_eq!(locked_problems(&file, std::slice::from_ref(&into)).len(), 1, "a receive into a locked destination fails");
+        let mut raw = into.clone();
+        raw.raw = true;
+        assert!(locked_problems(&file, &[raw]).is_empty(), "a raw replica is meant to stay locked: no line");
     }
 
     #[test]

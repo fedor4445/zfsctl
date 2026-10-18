@@ -631,9 +631,9 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     // A Quota column only when some dataset has a limit and the pane has room for it after the columns that are always there.
     let fixed = DATASET_NAME_MIN + SIZE_COL_W + SIZE_COL_W + KIND_COL_W + 3;
     // The Lock column comes first: whether data can be read matters more than how full it is.
-    let lock_col = !app.encryption.is_empty() && area.width.saturating_sub(2) >= fixed + LOCK_COL_W + 1;
+    let lock_col = !app.encryption.is_empty() && area.width.saturating_sub(2) > fixed + LOCK_COL_W;
     let lock_w = if lock_col { LOCK_COL_W + 1 } else { 0 };
-    let quota_col = app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) && area.width.saturating_sub(2) >= fixed + lock_w + QUOTA_COL_W + 1;
+    let quota_col = app.datasets.iter().any(|d| d.quota > 0 || d.refquota > 0) && area.width.saturating_sub(2) > fixed + lock_w + QUOTA_COL_W;
     let (warn, crit) = app.dashboard_thresholds.quota;
     let rows = app.datasets.iter().map(|d| {
         let mut cells = vec![
@@ -928,7 +928,8 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
             Some(host) => format!("{host}:{}", job.dest_dataset.as_deref().unwrap_or("")),
             None => String::new(),
         };
-        info.push(Line::from(format!("to {dest}  prefix {}{}", crate::jobs::effective_prefix(job), if job.force { "  force" } else { "" })));
+        let flags = format!("{}{}", if job.force { "  force" } else { "" }, if job.raw { "  raw" } else { "" });
+        info.push(Line::from(format!("to {dest}  prefix {}{flags}", crate::jobs::effective_prefix(job))));
         if let Some(keep) = job.dest_keep {
             info.push(Line::from(format!("keep {keep} on target")));
         }
@@ -2351,7 +2352,7 @@ mod tests {
     }
 
     fn a_job(id: &str, schedule: &str) -> crate::jobs::Job {
-        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
+        crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
     #[test]

@@ -116,9 +116,14 @@ pub fn prune_selection(listing: &[SnapInfo], prefix: &str, keep: u32) -> Vec<Str
     own[..excess].iter().map(|s| s.name.clone()).collect()
 }
 
-/// `zfs send [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size.
-pub fn send_args(dataset: &str, new: &str, base: Option<&str>, dry: bool) -> Vec<String> {
+/// `zfs send [-w] [-nvP] [-i @base] -- dataset@new`; `dry` only reports the size. `raw` (`-w`) sends an encrypted dataset
+/// as it is, so it stays encrypted on the destination. On a plain dataset `-w` is the same as `-Lec` (compressed, large
+/// blocks, embedded data): harmless for a new job, but a different stream type than a plain send.
+pub fn send_args(dataset: &str, new: &str, base: Option<&str>, dry: bool, raw: bool) -> Vec<String> {
     let mut args = vec!["send".to_string()];
+    if raw {
+        args.push("-w".to_string());
+    }
     if dry {
         args.push("-nvP".to_string());
     }
@@ -140,6 +145,13 @@ pub fn resume_send_args(token: &str, dry: bool) -> Vec<String> {
     args.push("-t".to_string());
     args.push(token.to_string());
     args
+}
+
+/// Whether a resume token belongs to a raw send (`rawok = 1` in `zfs send -nv -t <token>`). A token keeps the flags of the
+/// send that made it, so resuming a plain send's token from a raw job would send the rest in the clear.
+pub fn token_is_raw(runner: &dyn CommandRunner, token: &str) -> Result<bool> {
+    let out = super::run_checked(runner, "zfs", &["send", "-nv", "-t", token], "zfs send -nv -t")?;
+    Ok(out.stdout.lines().chain(out.stderr.lines()).any(|l| l.trim().replace(' ', "") == "rawok=1"))
 }
 
 /// `zfs receive -s -u [-F] -- dest`: resumable, never mounted, rolled back only when forced.
@@ -285,12 +297,23 @@ mod tests {
 
     #[test]
     fn the_argument_lists_are_exactly_what_was_verified_live() {
-        assert_eq!(send_args("tank/data", "h-2", None, false), ["send", "--", "tank/data@h-2"]);
-        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), false), ["send", "-i", "@h-1", "--", "tank/data@h-2"]);
-        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), true), ["send", "-nvP", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", None, false, false), ["send", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), false, false), ["send", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), true, false), ["send", "-nvP", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", Some("h-1"), false, true), ["send", "-w", "-i", "@h-1", "--", "tank/data@h-2"]);
+        assert_eq!(send_args("tank/data", "h-2", None, true, true), ["send", "-w", "-nvP", "--", "tank/data@h-2"]);
         assert_eq!(resume_send_args("1-abc", false), ["send", "-t", "1-abc"]);
         assert_eq!(resume_send_args("1-abc", true), ["send", "-nvP", "-t", "1-abc"]);
         assert_eq!(receive_args("backup/data", false), ["receive", "-s", "-u", "--", "backup/data"]);
         assert_eq!(receive_args("backup/data", true), ["receive", "-s", "-u", "-F", "--", "backup/data"]);
+    }
+
+    #[test]
+    fn a_resume_token_is_raw_only_when_it_decodes_with_rawok() {
+        let raw = FakeRunner::new("resume token contents:\nnvlist version: 0\n\tcompressok = 1\n\trawok = 1\n");
+        assert!(token_is_raw(&raw, "1-abc").unwrap());
+        assert_eq!(raw.calls.lock().unwrap()[0].1, ["send", "-nv", "-t", "1-abc"]);
+        assert!(!token_is_raw(&FakeRunner::new("resume token contents:\nnvlist version: 0\n\tobject = 0x2\n"), "1-abc").unwrap());
+        assert!(token_is_raw(&FakeRunner::failing("bad token", 1), "1-abc").is_err());
     }
 }

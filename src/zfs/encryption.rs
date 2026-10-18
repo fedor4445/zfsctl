@@ -163,11 +163,6 @@ fn key_command(runner: &dyn CommandRunner, verb: &str, dataset: &str, passphrase
     Err(crate::error::AppError::CommandFailed { cmd: format!("zfs {verb} {dataset}"), status: out.status, stderr })
 }
 
-/// `zfs load-key`: the passphrase is the key's one line on stdin. Only the encryption root can be loaded.
-pub fn load_key(runner: &dyn CommandRunner, dataset: &str, passphrase: &str) -> crate::error::Result<()> {
-    load_key_checked(runner, dataset, passphrase).map(|_| ())
-}
-
 fn load_key_checked(runner: &dyn CommandRunner, dataset: &str, passphrase: &str) -> crate::error::Result<bool> {
     if dataset.starts_with('-') {
         return Err(crate::error::AppError::Parse(format!("not a dataset name: {dataset}")));
@@ -196,7 +191,7 @@ pub fn load_key_and_mount(runner: &dyn CommandRunner, dataset: &str, passphrase:
     })
 }
 
-/// The ciphers `zfs create -o encryption=` takes (OpenZFS), `aes-256-gcm` first because it is the default. A host's `zfs`
+/// The ciphers `zfs create -o encryption=` takes (`OpenZFS`), `aes-256-gcm` first because it is the default. A host's `zfs`
 /// refuses one it does not know with its own message.
 pub const CIPHERS: [&str; 6] = ["aes-256-gcm", "aes-192-gcm", "aes-128-gcm", "aes-256-ccm", "aes-192-ccm", "aes-128-ccm"];
 
@@ -322,7 +317,7 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         assert!(check_passphrase("two\nlines", false).is_err());
         assert!(check_passphrase("with\rreturn", false).is_err());
         assert!(check_passphrase("short", false).is_ok(), "loading takes whatever the key is");
-        assert!(check_passphrase("short", true).unwrap_err().contains("8"), "a new key needs 8 characters");
+        assert!(check_passphrase("short", true).unwrap_err().contains('8'), "a new key needs 8 characters");
         assert!(check_passphrase("long enough", true).is_ok());
         assert!(check_passphrase(&"x".repeat(513), true).is_err(), "zfs takes at most 512 bytes");
     }
@@ -333,7 +328,7 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
     fn the_passphrase_goes_through_stdin_and_never_through_the_arguments() {
         let secret = "correct horse battery";
         let runner = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/secure\ncanmount\ton\n");
-        load_key(&runner, "tank/secure", secret).unwrap();
+        load_key_and_mount(&runner, "tank/secure", secret, false).unwrap();
         change_key(&runner, "tank/secure", secret).unwrap();
         let calls = runner.calls.lock().unwrap();
         let verbs: Vec<&str> = calls.iter().map(|c| c.1[0].as_str()).collect();
@@ -357,7 +352,7 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
     #[test]
     fn a_name_that_looks_like_an_option_is_refused_before_anything_runs() {
         let runner = FakeRunner::new("");
-        assert!(load_key(&runner, "-r", "pass phrase").is_err());
+        assert!(load_key_and_mount(&runner, "-r", "pass phrase", false).is_err());
         assert!(unload_key(&runner, "-r").is_err());
         assert!(runner.calls.lock().unwrap().is_empty());
     }
@@ -365,7 +360,7 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
     #[test]
     fn zfs_failures_come_back_verbatim_and_busy_gets_a_hint() {
         let wrong = FakeRunner::failing("Key load error: Incorrect key provided for 'tank/secure'.", 255);
-        let msg = load_key(&wrong, "tank/secure", "wrong guess").unwrap_err().to_string();
+        let msg = load_key_and_mount(&wrong, "tank/secure", "wrong guess", false).unwrap_err().to_string();
         assert!(msg.contains("Incorrect key provided"), "{msg}");
         assert!(!msg.contains("wrong guess"));
         let busy = FakeRunner::failing("Key unload error: 'tank/secure' is busy.", 255);
@@ -392,13 +387,13 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
     #[test]
     fn a_key_kept_in_a_file_or_inherited_is_refused_before_anything_is_sent() {
         let file = FakeRunner::new("").route("zfs", "get", "keylocation\tfile:///root/s.key\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n");
-        for result in [load_key(&file, "tank/s", "pass phrase"), change_key(&file, "tank/s", "pass phrase")] {
+        for result in [load_key_and_mount(&file, "tank/s", "pass phrase", false), change_key(&file, "tank/s", "pass phrase")] {
             assert!(result.unwrap_err().to_string().contains("file:///root/s.key"));
         }
         let child = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\tpassphrase\nencryptionroot\ttank/s\ncanmount\ton\n");
         assert!(change_key(&child, "tank/s/kid", "pass phrase").unwrap_err().to_string().contains("uses the key of tank/s"));
         let raw = FakeRunner::new("").route("zfs", "get", "keylocation\tprompt\nkeyformat\traw\nencryptionroot\ttank/s\ncanmount\ton\n");
-        assert!(load_key(&raw, "tank/s", "pass phrase").is_err());
+        assert!(load_key_and_mount(&raw, "tank/s", "pass phrase", false).is_err());
         for r in [&file, &child, &raw] {
             assert!(r.stdin_calls.lock().unwrap().is_empty(), "the passphrase must not be sent");
             assert!(r.calls.lock().unwrap().iter().all(|c| c.1[0] == "get"));
@@ -408,10 +403,10 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
     #[test]
     fn a_host_that_cannot_say_how_the_key_is_kept_gets_no_key_operation() {
         let down = FakeRunner::failing("ssh: connection refused", 255);
-        assert!(load_key(&down, "tank/s", "pass phrase").is_err());
+        assert!(load_key_and_mount(&down, "tank/s", "pass phrase", false).is_err());
         assert!(change_key(&down, "tank/s", "pass phrase").is_err());
         let blank = FakeRunner::new("");
-        assert!(load_key(&blank, "tank/s", "pass phrase").is_err(), "an empty answer is not an answer");
+        assert!(load_key_and_mount(&blank, "tank/s", "pass phrase", false).is_err(), "an empty answer is not an answer");
         assert!(blank.stdin_calls.lock().unwrap().is_empty());
     }
 
@@ -451,5 +446,37 @@ keystatus\tencryption\toff\nkeystatus\tkeystatus\t-\nold\tencryption\t-\n";
         let runner = FakeRunner::failing("cannot create 'tank/a': invalid property 'encryption'", 2);
         let msg = create_encrypted(&runner, "tank/a", "aes-256-gcm", "long enough").unwrap_err().to_string();
         assert!(msg.contains("invalid property") && msg.contains("does not know native encryption") && !msg.contains("long enough"), "{msg}");
+    }
+
+    #[test]
+    fn query_fails_closed_on_every_answer_that_is_not_a_clean_one() {
+        let enc_out = "tank/s\tencryption\taes-256-gcm\ntank/s\tkeyformat\tpassphrase\ntank/s\tkeystatus\tavailable\ntank/s\tencryptionroot\ttank/s\n";
+        // A dropped connection is an error even when its text happens to mention an unknown property.
+        assert!(query(&FakeRunner::failing("invalid property 'keystatus'", 255), "tank/s").is_err());
+        // Any other failure that is not "this zfs has no such property" is an error too.
+        assert!(query(&FakeRunner::failing("cannot open 'tank/s': dataset does not exist", 1), "tank/s").is_err());
+        assert!(query(&FakeRunner::failing("", 1), "tank/s").unwrap_err().contains("status 1"));
+        // Only the unknown-property answer means "not encrypted", and a clean answer is parsed.
+        assert_eq!(query(&FakeRunner::failing("bad property list: invalid property 'keystatus'", 1), "tank/s"), Ok(None));
+        assert_eq!(query(&FakeRunner::new(enc_out), "tank/s").unwrap().unwrap().root, "tank/s");
+        assert_eq!(query(&FakeRunner::new(""), "tank/s"), Ok(None));
+    }
+
+    #[test]
+    fn the_encryption_root_dash_means_none_and_a_passphrases_limits_are_exact() {
+        let parsed = parse("x\tencryption\taes-256-gcm\nx\tencryptionroot\t-\n");
+        assert_eq!(parsed["x"].root, "");
+        assert!(check_passphrase(&"x".repeat(512), false).is_ok());
+        assert!(check_passphrase(&"x".repeat(513), false).is_err());
+        assert!(check_passphrase(&"x".repeat(8), true).is_ok(), "8 characters is enough");
+        assert!(check_passphrase(&"x".repeat(7), true).is_err());
+        assert!(check_passphrase(&"é".repeat(8), true).is_ok(), "characters, not bytes");
+    }
+
+    #[test]
+    fn the_reason_is_the_first_non_blank_line_of_the_answer() {
+        assert_eq!(query(&FakeRunner::failing("\n  \nConnection closed by 10.0.0.9\nmore", 255), "tank/s"), Err("Connection closed by 10.0.0.9".to_string()));
+        assert_eq!(query(&FakeRunner::failing("\n\nsudo: a password is required\n", 1), "tank/s"), Err("sudo: a password is required".to_string()));
+        assert_eq!(query(&FakeRunner::failing("", 255), "tank/s"), Err("could not reach the host".to_string()));
     }
 }

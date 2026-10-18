@@ -5122,7 +5122,7 @@ fn app_with_jobs(jobs_list: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
 }
 
 fn scrub_job(id: &str) -> crate::jobs::Job {
-    crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
+    crate::jobs::Job { id: id.into(), host: "local".into(), kind: crate::jobs::KIND_SCRUB.into(), pool: Some("tank".into()), schedule: "0 3 * * 0".into(), catch_up: true, enabled: true, created_at: None, dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
 }
 
 #[test]
@@ -6111,7 +6111,7 @@ const GOOD: [&str; 8] = ["local", "tank/data", "hourly", "fbsd16", "backup/data"
 fn big_r_in_jobs_opens_a_blank_replication_form_with_defaults() {
     let (mut app, _dir) = app_with_jobs(&[]);
     app.handle_key(KeyCode::Char('R'));
-    assert_eq!(form_values(&app), ["local", "", "auto", "", "", "n", "30 * * * *", "y", ""]);
+    assert_eq!(form_values(&app), ["local", "", "auto", "", "", "n", "30 * * * *", "y", "", "n"]);
 }
 
 #[test]
@@ -6166,7 +6166,7 @@ fn enter_on_a_replicate_job_edits_it_in_the_replication_form() {
     app.refresh_jobs();
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Enter);
-    assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y", ""]);
+    assert_eq!(form_values(&app), ["local", "tank/data", "hourly", "fbsd16", "backup/data", "n", "30 * * * *", "y", "", "n"]);
 }
 
 #[test]
@@ -7475,7 +7475,7 @@ fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_wh
 fn snap_job(keep: Option<u32>) -> crate::jobs::Job {
     crate::jobs::Job {
         id: "snap-local-tank-data".into(), host: "local".into(), kind: crate::jobs::KIND_SNAPSHOT.into(), pool: None, schedule: "0 * * * *".into(), catch_up: true, enabled: true,
-        created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false,
+        created_at: None, dataset: Some("tank/data".into()), recursive: false, prefix: Some("hourly".into()), keep, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, remote: None, bwlimit: None, force: false, raw: false,
         repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
     }
 }
@@ -7928,6 +7928,24 @@ fn a_replication_or_mirror_of_an_encrypted_dataset_is_not_saved() {
     encrypted(&mut app, "tank/data", 0);
     assert!(app.handle_modal_key(KeyCode::Enter).is_none());
     assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn a_replication_of_an_encrypted_dataset_says_to_turn_raw_on_and_saves_once_it_is_on() {
+    let mut app = keep_form_app("");
+    encrypted(&mut app, "tank/data", 0);
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(matches!(app.modal, Some(Modal::Form { .. })));
+    assert!(app.status_message.as_deref().unwrap_or("").contains("Turn Raw on"), "{:?}", app.status_message);
+    // The Raw field is the tenth one.
+    let Some(Modal::Form { fields, focused, .. }) = app.modal.as_mut() else { panic!() };
+    fields.resize_with(10, || FormField { label: String::new(), value: String::new() });
+    fields[9].value = "y".into();
+    *focused = 9;
+    app.status_message = None;
+    let action = app.handle_modal_key(KeyCode::Enter);
+    assert!(action.is_some() || !matches!(app.modal, Some(Modal::Form { .. })), "a raw job saves: {:?} {:?}", app.modal, app.status_message);
+    assert!(!app.status_is_error(), "{:?}", app.status_message);
 }
 
 #[test]
@@ -9411,7 +9429,7 @@ fn integrity_app(checksum: &str, dedup: &str) -> App {
 }
 
 fn version_of(app: &mut App, version: &str) {
-    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: Default::default(), integrity_stale: false, error: None });
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
 }
 
 #[test]
@@ -9746,6 +9764,9 @@ fn a_bad_encrypted_form_keeps_the_form_and_clears_the_passphrases() {
         ("tank/v", "aes-256-gcm", "short", "short", "8 characters"),
         ("tank/v", "rot13", PASS, PASS, "Cipher"),
         ("vault", "aes-256-gcm", PASS, PASS, "full dataset name"),
+        ("-tank/vault", "aes-256-gcm", PASS, PASS, "full dataset name"),
+        ("tank/my vault", "aes-256-gcm", PASS, PASS, "full dataset name"),
+        ("", "aes-256-gcm", PASS, PASS, "full dataset name"),
         ("tank/s/new", "aes-256-gcm", PASS, PASS, "tank/s is encrypted"),
     ] {
         let mut app = key_app(false, "passphrase");
@@ -9772,4 +9793,34 @@ fn a_full_encrypted_create_keeps_the_passphrase_out_of_arguments_and_status() {
     assert!(calls.iter().all(|(_, a)| a.iter().all(|x| !x.contains(PASS))));
     assert_eq!(runner.stdin_calls.lock().unwrap().as_slice(), [("zfs".to_string(), format!("{PASS}\n"))]);
     assert!(!app.status_message.clone().unwrap_or_default().contains(PASS));
+}
+
+#[test]
+fn turning_raw_on_or_off_for_a_job_that_has_run_needs_a_confirm_that_says_streams_do_not_chain() {
+    let mut app = keep_form_app("");
+    let mut existing = repl_job(false);
+    existing.host = "local".into();
+    existing.dataset = Some("tank/data".into());
+    let Some(Modal::Form { kind, fields, focused, .. }) = app.modal.as_mut() else { panic!() };
+    *kind = repl_kind(Some(existing), vec![]);
+    fields.resize_with(10, || FormField { label: String::new(), value: String::new() });
+    fields[9].value = "y".into();
+    *focused = 9;
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?} {:?}", app.modal, app.status_message) };
+    assert!(prompt.contains("Raw is being turned ON") && prompt.contains("do not chain"), "{prompt}");
+}
+
+#[test]
+fn a_backup_or_snapshot_job_on_an_encrypted_dataset_is_not_refused_by_the_replication_guard() {
+    // The guard is for replication and mirror jobs only: restic re-encrypts, and a snapshot job never sends.
+    let mut app = App::new(vec!["local".to_string()]);
+    encrypted(&mut app, "tank/data", 0);
+    app.hosts = vec!["local".to_string()];
+    for kind in [crate::jobs::KIND_BACKUP, crate::jobs::KIND_SNAPSHOT] {
+        let mut job = crate::jobs::Job::test_replicate("j", "tank/data", "p", "hub", "x/y");
+        job.kind = kind.to_string();
+        let action = PendingAction { host: 0, section: Section::Jobs, call: MutationCall::SaveJob { state_dir: std::path::PathBuf::new(), job: Box::new(job) } };
+        assert_eq!(app.encrypted_source(&action), None, "{kind}");
+    }
 }
