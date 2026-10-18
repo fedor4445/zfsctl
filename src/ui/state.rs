@@ -978,9 +978,9 @@ impl App {
         crate::ui::support::supports(self.host_os(self.selected_host), section)
     }
 
-    /// Boot environments of this host can be listed but not changed (illumos, until `beadm` mutations are built).
-    pub fn bootenvs_read_only(&self) -> bool {
-        crate::ui::support::bootenvs_read_only(self.host_os(self.selected_host))
+    /// Whether `key` of the Boot Envs section is offered for the selected host's OS (see `ui::support`).
+    pub fn bootenv_key_offered(&self, key: char) -> bool {
+        crate::ui::support::bootenv_key_offered(self.host_os(self.selected_host), key)
     }
 
     pub fn current_section_supported(&self) -> bool {
@@ -1388,8 +1388,7 @@ impl App {
                     || self.key_lists_and_snapshots(key)
                     || self.key_jobs(key)
                     || self.key_alerts_and_shares(key)
-                    // read-only on illumos for now: no key may start a `bectl` change there
-                    || (!self.bootenvs_read_only() && self.key_bootenvs(key))
+                    || self.key_bootenvs(key)
                     || self.key_disks(key)));
     }
 
@@ -2285,6 +2284,8 @@ impl App {
     #[allow(clippy::match_same_arms)]
     fn key_bootenvs(&mut self, key: KeyCode) -> bool {
         match key {
+            // A key `beadm` cannot serve (see `ui::support::bootenv_key_offered`): nothing happens, and it is not advertised.
+            KeyCode::Char(c) if self.current_section() == Section::BootEnvs && !self.bootenv_key_offered(c) => {}
             KeyCode::Char('n' | 'a' | 't' | 'T' | 'R' | 'm' | 'u' | 'd' | 'D') if self.current_section() == Section::BootEnvs && self.bootenv_busy_name().is_some() => {
                 let name = self.bootenv_busy_name().unwrap_or_default().to_string();
                 self.status_message = Some(format!("Still working on '{name}'… wait for it to finish"));
@@ -2851,9 +2852,9 @@ impl App {
         if section == Section::BootEnvs {
             self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
         }
-        let tx = self.tx.clone();
+        let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            let result = call.run(runner.as_ref());
+            let result = call.run_on(runner.as_ref(), os);
             let _ = tx.send(WorkerMsg::MutationDone(host, section, result));
         });
     }

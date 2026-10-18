@@ -174,6 +174,12 @@ impl MutationCall {
     /// The single place that maps a `MutationCall` variant to its
     /// underlying `zfs::*` library call.
     pub fn run(&self, runner: &dyn CommandRunner) -> Result<()> {
+        self.run_on(runner, None)
+    }
+
+    /// `run` on a host whose OS is `os` (`None`: not known, treated as FreeBSD): the boot environment calls use the tool of
+    /// that OS.
+    pub fn run_on(&self, runner: &dyn CommandRunner, os: Option<crate::zfs::host_health::HostOs>) -> Result<()> {
         match self {
             MutationCall::ScrubPool { pool } => crate::zfs::pool::scrub_pool(runner, pool),
             MutationCall::ResilverPool { pool } => crate::zfs::pool::resilver_pool(runner, pool),
@@ -211,13 +217,13 @@ impl MutationCall {
                 crate::zfs::smb::set_share(runner, share, password.as_ref().map(|p| p.0.as_str()))
             }
             MutationCall::RemoveSmbShare { dataset } => crate::zfs::smb::remove_share(runner, dataset),
-            MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref()),
-            MutationCall::ActivateBootEnv { name, temporary } => crate::zfs::bootenv::activate(runner, name, *temporary),
-            MutationCall::ClearTemporaryBootEnv { name } => crate::zfs::bootenv::clear_temporary(runner, name),
-            MutationCall::RenameBootEnv { from, to } => crate::zfs::bootenv::rename(runner, from, to),
-            MutationCall::MountBootEnv { name } => crate::zfs::bootenv::mount(runner, name),
-            MutationCall::UnmountBootEnv { name } => crate::zfs::bootenv::unmount(runner, name),
-            MutationCall::DestroyBootEnv { name, origin } => crate::zfs::bootenv::destroy(runner, name, *origin),
+            MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref(), os),
+            MutationCall::ActivateBootEnv { name, temporary } => crate::zfs::bootenv::activate(runner, name, *temporary, os),
+            MutationCall::ClearTemporaryBootEnv { name } => crate::zfs::bootenv::clear_temporary(runner, name, os),
+            MutationCall::RenameBootEnv { from, to } => crate::zfs::bootenv::rename(runner, from, to, os),
+            MutationCall::MountBootEnv { name } => crate::zfs::bootenv::mount(runner, name, os),
+            MutationCall::UnmountBootEnv { name } => crate::zfs::bootenv::unmount(runner, name, os),
+            MutationCall::DestroyBootEnv { name, origin } => crate::zfs::bootenv::destroy(runner, name, *origin, os),
             MutationCall::SaveJob { state_dir, job } => crate::jobs::upsert(&state_dir.join("jobs.toml"), job.as_ref().clone()),
             MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),

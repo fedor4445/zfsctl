@@ -8851,13 +8851,13 @@ fn choosing_a_host_from_the_dashboard_clears_the_previous_hosts_data() {
 }
 
 #[test]
-fn boot_envs_on_illumos_are_listed_with_beadm_and_read_only() {
+fn boot_envs_on_illumos_are_listed_with_beadm_and_offer_the_keys_beadm_can_serve() {
     let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
     app.selected_host = 1;
     go_to(&mut app, Section::BootEnvs);
-    assert!(app.current_section_supported() && app.bootenvs_read_only());
+    assert!(app.current_section_supported());
     let beadm = "omnios-r151058s;e0a8;;;4186112;static;1789232809\nomnios-r151058w;c26a;NR;/;4240252928;static;1791728263\n";
-    app.refresh_bootenvs(std::sync::Arc::new(crate::exec::test_support::FakeRunner::new("").route("beadm", "list", beadm)));
+    app.refresh_bootenvs(std::sync::Arc::new(crate::exec::test_support::FakeRunner::new("").route("sh", "-c", beadm)));
     for _ in 0..100 {
         app.drain_worker_messages();
         if !app.bootenvs.is_empty() {
@@ -8867,14 +8867,18 @@ fn boot_envs_on_illumos_are_listed_with_beadm_and_read_only() {
     }
     assert_eq!(app.bootenvs.len(), 2, "{:?}", app.bootenvs);
     assert!(app.bootenvs[1].flags.now && app.bootenvs[1].flags.reboot);
-    app.bootenvs_table.select(Some(1));
-    for key in ['n', 'a', 't', 'T', 'R', 'm', 'u', 'd', 'D'] {
+    app.bootenvs_table.select(Some(0));
+    for key in ['m', 'u', 'D'] {
         app.handle_key(KeyCode::Char(key));
-        assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "{key} must do nothing on a read-only list");
+        assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "{key} has no beadm equivalent");
     }
     let keys: Vec<&str> = crate::ui::hints::hints(&app).iter().map(|h| h.key).collect();
-    assert!(keys.contains(&"↑↓") && keys.contains(&"r"), "{keys:?}");
-    assert!(!keys.iter().any(|k| matches!(*k, "n" | "a" | "t" | "T" | "R" | "m" | "u" | "d" | "D")), "{keys:?}");
+    for offered in ["a", "t", "R", "d", "n"] {
+        assert!(keys.contains(&offered), "{offered} in {keys:?}");
+    }
+    assert!(!keys.iter().any(|k| matches!(*k, "m" | "u" | "D")), "{keys:?}");
+    app.handle_key(KeyCode::Char('n'));
+    assert!(app.modal.is_some(), "creating a boot environment opens its form on illumos too");
     app.selected_host = 0;
-    assert!(!app.bootenvs_read_only(), "the FreeBSD host keeps every key");
+    assert!(app.bootenv_key_offered('m'), "the FreeBSD host keeps every key");
 }

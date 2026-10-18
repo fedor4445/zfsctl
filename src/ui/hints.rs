@@ -276,8 +276,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if !app.bootenvs.is_empty() {
                 v.push(h("↑↓", "Move", 1));
             }
-            // On illumos the list is read-only for now: only moving and refreshing are offered.
-            if let Some(be) = app.selected_bootenv().filter(|_| !app.bootenvs_read_only()) {
+            if let Some(be) = app.selected_bootenv() {
                 if be.can_activate() {
                     v.push(h("a", "Activate", 2).tone(Tone::Warn));
                 }
@@ -288,18 +287,20 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     v.push(h("T", "Clear next-boot", 2));
                 }
                 v.push(h("R", "Rename", 3));
-                if be.can_mount() {
+                if be.can_mount() && app.bootenv_key_offered('m') {
                     v.push(h("m", "Mount", 3));
                 }
-                if be.can_unmount() {
+                if be.can_unmount() && app.bootenv_key_offered('u') {
                     v.push(h("u", "Unmount", 3));
                 }
                 if be.can_destroy() {
                     v.push(h("d", "Destroy", 2).tone(Tone::Danger));
-                    v.push(h("D", "Destroy + origin", 3).tone(Tone::Danger));
+                    if app.bootenv_key_offered('D') {
+                        v.push(h("D", "Destroy + origin", 3).tone(Tone::Danger));
+                    }
                 }
             }
-            if app.bootenvs_unavailable.is_none() && !app.bootenvs_read_only() {
+            if app.bootenvs_unavailable.is_none() {
                 v.push(h("n", "New", 2));
             }
             v.push(h("r", "Refresh", 4));

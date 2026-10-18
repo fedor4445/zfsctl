@@ -69,6 +69,7 @@ On a managed host the unprivileged account may run these programs as root throug
 | `restic` | backup jobs (`--with restic`) | any arguments |
 | `readlink` | backup jobs with a path (`--with restic`) | any arguments (it only reads where a symlink points) |
 | `rclone` | cloud mirror jobs (`--with rclone`) | any arguments |
+| `beadm` | boot environments on illumos hosts (default there; `--with beadm`) | any arguments |
 | `smartctl` | the daily disk health check (`--with smart`) | only `--scan -j` and `-j -H -A -i /dev/*` (the `*` also matches spaces, so an extra flag is not stopped; zfsctl sends only read-only flags) |
 
 Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` (also `iostat -En` for the Disks of an illumos host), `lsblk` (the Disks of a Linux host), `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.

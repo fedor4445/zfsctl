@@ -15,10 +15,12 @@ pub enum Feature {
     Restic,
     Rclone,
     Smart,
+    /// `beadm`, the boot environment tool of illumos (FreeBSD's is `bootenvs`/`bectl`).
+    Beadm,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 9] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart];
+    pub const ALL: [Feature; 10] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart, Feature::Beadm];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -31,13 +33,18 @@ impl Feature {
             Feature::Restic => "restic",
             Feature::Rclone => "rclone",
             Feature::Smart => "smart",
+            Feature::Beadm => "beadm",
         }
     }
 
     /// Whether the feature's tools exist (and its jobs run) on a host running `os`. Only `core` (`zpool`, `zfs`) and `smart`
     /// (`smartctl`) do on Linux and illumos so far.
     pub fn works_on(self, os: HostOs) -> bool {
-        !matches!(os, HostOs::Linux | HostOs::Illumos) || matches!(self, Feature::Core | Feature::Smart)
+        match os {
+            HostOs::Linux => matches!(self, Feature::Core | Feature::Smart),
+            HostOs::Illumos => matches!(self, Feature::Core | Feature::Smart | Feature::Beadm),
+            HostOs::FreeBsd | HostOs::Other => self != Feature::Beadm,
+        }
     }
 
     pub fn parse(name: &str) -> Option<Feature> {
@@ -92,8 +99,8 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "swapinfo", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "iostat", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "lsblk", features: &[Feature::Disks], kind: Kind::Unprivileged },
-    // illumos boot environments: read without sudo; changing them is not built yet.
-    Entry { name: "beadm", features: &[], kind: Kind::Unprivileged },
+    // illumos boot environments (the list is read through `sh`, without sudo; changes need this entry).
+    Entry { name: "beadm", features: &[Feature::Beadm], kind: ANY },
     Entry { name: "showmount", features: &[Feature::Shares], kind: Kind::Unprivileged },
     Entry { name: "stat", features: &[Feature::Restic], kind: Kind::Unprivileged },
     Entry { name: "true", features: &[], kind: Kind::Unprivileged },
@@ -135,12 +142,16 @@ pub fn require_registered(name: &str, privileged: bool) -> Result<()> {
     }
 }
 
-/// `select` for a host running `os`: FreeBSD (and a host whose OS is unknown) as before; Linux and illumos start from `core`
-/// alone, because the other features run FreeBSD's tools (`geom`, `bectl`, `service`, ...) or belong to jobs those hosts
+/// `select` for a host running `os`: FreeBSD (and a host whose OS is unknown) as before; Linux starts from `core` alone and
+/// illumos from `core` and `bootenvs`, because the other features run FreeBSD's tools (`geom`, `bectl`, `service`, ...) or belong to jobs those hosts
 /// cannot run yet. Adding a feature the OS does not support is an error that names it; `smart` is allowed everywhere.
 pub fn select_for_os(os: HostOs, with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     if !matches!(os, HostOs::Linux | HostOs::Illumos) {
-        return select(with, without);
+        let features = select(with, without)?;
+        if features.contains(&Feature::Beadm) {
+            return Err(AppError::Config(format!("feature 'beadm' is not available on {} hosts", os.word())));
+        }
+        return Ok(features);
     }
     let parse = |name: &String| Feature::parse(name).ok_or_else(|| AppError::Config(format!("unknown feature '{name}'; valid features: {}", Feature::ALL.map(Feature::name).join(", "))));
     let added: Vec<Feature> = with.iter().map(parse).collect::<Result<_>>()?;
@@ -151,10 +162,12 @@ pub fn select_for_os(os: HostOs, with: &[String], without: &[String]) -> Result<
     if let Some(f) = added.iter().find(|f| removed.contains(f)) {
         return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
     }
-    Ok(Feature::ALL.into_iter().filter(|f| f.works_on(os) && (*f == Feature::Core || added.contains(f)) && !removed.contains(f)).collect())
+    // illumos also takes `bootenvs` by default (`beadm`); everything else there is opt-in or not available.
+    let default = |f: &Feature| *f == Feature::Core || (os == HostOs::Illumos && *f == Feature::Beadm);
+    Ok(Feature::ALL.into_iter().filter(|f| f.works_on(os) && (default(f) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
-/// The features a run covers: all but `restic`, `rclone` and `smart`, plus `with`, minus `without`.
+/// The features a run covers: all but `restic`, `rclone`, `smart` and `beadm` (illumos's), plus `with`, minus `without`.
 pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     let parse = |name: &String| {
         Feature::parse(name).ok_or_else(|| {
@@ -167,7 +180,7 @@ pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     if let Some(f) = added.iter().find(|f| removed.contains(f)) {
         return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
     }
-    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart) || added.contains(f)) && !removed.contains(f)).collect())
+    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart | Feature::Beadm) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
 fn serving(entry: &Entry, features: &[Feature]) -> bool {
@@ -270,9 +283,8 @@ mod tests {
     #[test]
     fn select_for_os_defaults_linux_and_illumos_to_core_only_and_keeps_the_freebsd_defaults() {
         use crate::zfs::host_health::HostOs;
-        for os in [HostOs::Linux, HostOs::Illumos] {
-            assert_eq!(select_for_os(os, &[], &[]).unwrap(), [Feature::Core], "{os:?}");
-        }
+        assert_eq!(select_for_os(HostOs::Linux, &[], &[]).unwrap(), [Feature::Core]);
+        assert_eq!(select_for_os(HostOs::Illumos, &[], &[]).unwrap(), [Feature::Core, Feature::Beadm], "illumos also gets beadm");
         for os in [HostOs::FreeBsd, HostOs::Other] {
             assert_eq!(select_for_os(os, &["restic".to_string()], &["acl".to_string()]).unwrap(), select(&["restic".to_string()], &["acl".to_string()]).unwrap(), "{os:?}");
         }
@@ -281,11 +293,15 @@ mod tests {
     #[test]
     fn with_a_feature_the_os_does_not_support_is_refused_with_its_name_and_smart_is_allowed() {
         use crate::zfs::host_health::HostOs;
-        for name in ["bootenvs", "disks", "acl", "shares", "samba", "restic", "rclone"] {
+        for name in ["bootenvs", "disks", "acl", "shares", "samba", "restic", "rclone", "beadm"] {
             let err = select_for_os(HostOs::Linux, &[name.to_string()], &[]).unwrap_err().to_string();
             assert!(err.contains(name) && err.contains("Linux"), "{err}");
         }
-        assert_eq!(select_for_os(HostOs::Illumos, &["smart".to_string()], &[]).unwrap(), [Feature::Core, Feature::Smart]);
+        let err = select_for_os(HostOs::Illumos, &["bootenvs".to_string()], &[]).unwrap_err().to_string();
+        assert!(err.contains("bootenvs") && err.contains("illumos"), "bectl's feature is not an illumos one: {err}");
+        let err = select_for_os(HostOs::FreeBsd, &["beadm".to_string()], &[]).unwrap_err().to_string();
+        assert!(err.contains("beadm") && err.contains("FreeBSD"), "{err}");
+        assert_eq!(select_for_os(HostOs::Illumos, &["smart".to_string()], &[]).unwrap(), [Feature::Core, Feature::Smart, Feature::Beadm]);
         assert!(select_for_os(HostOs::Linux, &["nope".to_string()], &[]).unwrap_err().to_string().contains("unknown feature"));
     }
 
@@ -403,7 +419,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/*";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm`";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);
