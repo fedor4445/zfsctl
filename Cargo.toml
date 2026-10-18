@@ -5,6 +5,7 @@ edition = "2021"
 license = "BSD-2-Clause"
 description = "A terminal UI and daemon for managing ZFS pools, datasets, snapshots, jobs and backups on FreeBSD, Linux and illumos"
 repository = "https://github.com/fedor4445/zfsctl"
+homepage = "https://zfsctl.com"
 readme = "README.md"
 keywords = ["zfs", "freebsd", "tui", "storage", "illumos"]
 categories = ["command-line-utilities", "filesystem"]
