@@ -72,11 +72,11 @@ enum Service {
 }
 
 /// sudo's own refusals and a missing command, as opposed to the service saying it is not running.
-fn is_refusal(stderr: &str) -> bool {
+pub(super) fn is_refusal(stderr: &str) -> bool {
     stderr.trim_start().starts_with("sudo:") || stderr.contains("not found")
 }
 
-fn first_line(text: &str, fallback: &str) -> String {
+pub(super) fn first_line(text: &str, fallback: &str) -> String {
     text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(fallback).to_string()
 }
 

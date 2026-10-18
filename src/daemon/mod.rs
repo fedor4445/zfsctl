@@ -19,6 +19,7 @@ pub mod backup;
 pub mod mirror;
 pub mod scrub;
 pub mod shares_check;
+pub mod storage_check;
 pub mod smart_check;
 pub mod snapshot;
 pub mod transfer;
