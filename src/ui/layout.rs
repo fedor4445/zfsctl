@@ -781,6 +781,7 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
         if show_type {
             cells.push(match d.media {
                 DiskMedia::Ssd => "SSD".to_string(),
+                DiskMedia::Hdd(0) => "HDD".to_string(),
                 DiskMedia::Hdd(rpm) => format!("HDD {rpm}"),
                 DiskMedia::Unknown => String::new(),
             });

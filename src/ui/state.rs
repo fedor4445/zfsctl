@@ -2913,9 +2913,9 @@ impl App {
             return;
         }
         self.begin_refresh(Section::Disks, host);
-        let tx = self.tx.clone();
+        let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            let result = crate::zfs::disk::list_disks_with_membership(runner.as_ref());
+            let result = crate::zfs::disk::list_disks_with_membership(runner.as_ref(), os);
             let _ = tx.send(WorkerMsg::Disks(host, result));
         });
     }

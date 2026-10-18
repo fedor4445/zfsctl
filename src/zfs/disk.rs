@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::exec::CommandRunner;
+use crate::zfs::host_health::HostOs;
 use crate::zfs::pool::{self, is_leaf_disk, VdevLine};
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -55,6 +56,7 @@ impl DiskInfo {
         }
         match self.media {
             DiskMedia::Ssd => parts.push("SSD".to_string()),
+            DiskMedia::Hdd(0) => parts.push("HDD".to_string()),
             DiskMedia::Hdd(rpm) => parts.push(format!("HDD {rpm} rpm")),
             DiskMedia::Unknown => {}
         }
@@ -155,9 +157,90 @@ fn parse_disk_list(output: &str) -> Vec<DiskInfo> {
     disks
 }
 
-pub fn list_disks(runner: &dyn CommandRunner) -> Result<Vec<DiskInfo>> {
-    let output = super::run_checked(runner, "geom", &["disk", "list"], "geom disk list")?;
-    Ok(parse_disk_list(&output.stdout))
+/// The disks of the host, from the tool its OS has: `geom disk list` on FreeBSD (and for a host whose OS is not known),
+/// `lsblk` on Linux, `iostat -En` on illumos. The last two need no sudo.
+pub fn list_disks(runner: &dyn CommandRunner, os: Option<HostOs>) -> Result<Vec<DiskInfo>> {
+    match os {
+        Some(HostOs::Linux) => {
+            let args = ["-b", "-d", "-n", "-P", "-o", "NAME,SIZE,TYPE,MODEL,SERIAL,ROTA"];
+            let out = runner.run_unprivileged("lsblk", &args)?;
+            if !out.success() {
+                return Err(crate::error::AppError::CommandFailed { cmd: "lsblk".to_string(), status: out.status, stderr: out.stderr });
+            }
+            Ok(parse_lsblk(&out.stdout))
+        }
+        Some(HostOs::Illumos) => {
+            let out = runner.run_unprivileged("iostat", &["-En"])?;
+            if !out.success() {
+                return Err(crate::error::AppError::CommandFailed { cmd: "iostat -En".to_string(), status: out.status, stderr: out.stderr });
+            }
+            Ok(parse_iostat_en(&out.stdout))
+        }
+        _ => {
+            let output = super::run_checked(runner, "geom", &["disk", "list"], "geom disk list")?;
+            Ok(parse_disk_list(&output.stdout))
+        }
+    }
+}
+
+/// `lsblk -P` lines (`KEY="value" KEY="value" ...`; a value may hold spaces): only `TYPE="disk"` entries, so loop devices,
+/// optical drives and partitions are left out. `ROTA` 1 is a rotating disk (its speed is not known: `Hdd(0)`), 0 an SSD.
+fn parse_lsblk(output: &str) -> Vec<DiskInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut pairs: Vec<(&str, &str)> = Vec::new();
+            let mut rest = line.trim();
+            while let Some(eq) = rest.find("=\"") {
+                let after = &rest[eq + 2..];
+                let Some(end) = after.find('"') else { break };
+                pairs.push((rest[..eq].trim(), &after[..end]));
+                rest = &after[end + 1..];
+            }
+            let get = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+            (get("TYPE")? == "disk").then(|| DiskInfo {
+                name: get("NAME").unwrap_or_default().to_string(),
+                size: get("SIZE").and_then(|s| s.parse().ok()).unwrap_or(0),
+                membership: DiskMembership::Available,
+                model: get("MODEL").and_then(clean_identity),
+                serial: get("SERIAL").and_then(clean_identity),
+                media: match get("ROTA") {
+                    Some("1") => DiskMedia::Hdd(0),
+                    Some("0") => DiskMedia::Ssd,
+                    _ => DiskMedia::Unknown,
+                },
+            })
+        })
+        .filter(|d| !d.name.is_empty())
+        .collect()
+}
+
+/// `iostat -En` blocks: `c1t0d0  Soft Errors: ...`, then `Vendor: .. Product: .. Revision: .. Serial No: ..` and
+/// `Size: 21.47GB <21474836480 bytes>`. A block without a size (an empty optical drive) is not a disk. The tool says nothing
+/// about rotation, so the media stays unknown.
+fn parse_iostat_en(output: &str) -> Vec<DiskInfo> {
+    let mut disks = Vec::new();
+    let mut current: Option<DiskInfo> = None;
+    for line in output.lines() {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() >= 3 && tokens[1] == "Soft" && tokens[2] == "Errors:" {
+            disks.extend(current.take().filter(|d| d.size > 0));
+            current = Some(DiskInfo { name: tokens[0].to_string(), ..Default::default() });
+            continue;
+        }
+        let Some(d) = current.as_mut() else { continue };
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Vendor:") {
+            let (vendor, rest) = rest.split_once("Product:").unwrap_or((rest, ""));
+            let (product, rest) = rest.split_once("Revision:").unwrap_or((rest, ""));
+            d.model = clean_identity(&format!("{} {}", vendor.trim(), product.trim()));
+            d.serial = rest.split_once("Serial No:").and_then(|(_, serial)| clean_identity(serial));
+        } else if let Some(rest) = line.strip_prefix("Size:") {
+            d.size = rest.split_once('<').and_then(|(_, bytes)| bytes.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+        }
+    }
+    disks.extend(current.filter(|d| d.size > 0));
+    disks
 }
 
 /// Walks `vdevs` (the same depth-tagged shape `get_pool_vdevs` produces)
@@ -169,6 +252,20 @@ pub fn list_disks(runner: &dyn CommandRunner) -> Result<Vec<DiskInfo>> {
 /// `raidz1-0`, ...) or a bare top-level disk; depth 2+ are a group's
 /// children.
 pub fn annotate_membership(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine]) {
+    annotate_with(disks, pool, vdevs, &disk_matches_vdev);
+}
+
+/// `annotate_membership` with the name rule of the host's OS: Linux names partitions `sdb1` and `nvme0n1p1`, FreeBSD and
+/// illumos use the rule above (`ada0p4`, `da0s1a`, `c1t0d0s0`).
+fn annotate_membership_for(os: Option<HostOs>, disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine]) {
+    if os == Some(HostOs::Linux) {
+        annotate_with(disks, pool, vdevs, &linux_disk_matches_vdev);
+    } else {
+        annotate_with(disks, pool, vdevs, &disk_matches_vdev);
+    }
+}
+
+fn annotate_with(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine], matches: &dyn Fn(&str, &str) -> bool) {
     let mut current_group: Option<String> = None;
     for vdev in vdevs {
         if vdev.depth == 0 {
@@ -185,7 +282,7 @@ pub fn annotate_membership(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine
         } else {
             current_group.clone().unwrap_or_else(|| vdev.name.clone())
         };
-        if let Some(disk) = disks.iter_mut().find(|d| disk_matches_vdev(&d.name, &vdev.name)) {
+        if let Some(disk) = disks.iter_mut().find(|d| matches(&d.name, &vdev.name)) {
             disk.membership = DiskMembership::InPool { pool: pool.to_string(), vdev: vdev_name };
         }
     }
@@ -225,14 +322,29 @@ fn disk_matches_vdev(disk_name: &str, vdev_name: &str) -> bool {
 /// membership by cross-referencing every pool currently on the host.
 /// Self-contained — correct even if the caller has never separately
 /// fetched the pool list this session.
-pub fn list_disks_with_membership(runner: &dyn CommandRunner) -> Result<Vec<DiskInfo>> {
-    let mut disks = list_disks(runner)?;
+pub fn list_disks_with_membership(runner: &dyn CommandRunner, os: Option<HostOs>) -> Result<Vec<DiskInfo>> {
+    let mut disks = list_disks(runner, os)?;
     let pools = pool::list_pools(runner)?;
     for p in &pools {
         let (vdevs, _scan_status) = pool::get_pool_vdevs(runner, &p.name)?;
-        annotate_membership(&mut disks, &p.name, &vdevs);
+        annotate_membership_for(os, &mut disks, &p.name, &vdevs);
     }
     Ok(disks)
+}
+
+/// Linux: `vdev_name` is the disk, or a partition of it (`sdb1`; `nvme0n1p1` when the disk's name ends in a digit). A disk
+/// named by id or a file-backed vdev matches nothing.
+fn linux_disk_matches_vdev(disk_name: &str, vdev_name: &str) -> bool {
+    if disk_name == vdev_name {
+        return true;
+    }
+    let Some(suffix) = vdev_name.strip_prefix(disk_name) else { return false };
+    let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    if disk_name.ends_with(|c: char| c.is_ascii_digit()) {
+        suffix.strip_prefix('p').is_some_and(digits)
+    } else {
+        digits(suffix)
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +398,86 @@ Providers:
    descr: (unknown device)
 ";
 
+    const LSBLK_UBUNTU: &str = include_str!("disk_fixtures/lsblk_ubuntu.txt");
+    const IOSTAT_EN_OMNIOS: &str = include_str!("disk_fixtures/iostat_en_omnios.txt");
+
+    #[test]
+    fn lsblk_lists_only_disks_with_size_model_serial_and_media() {
+        let disks = parse_lsblk(LSBLK_UBUNTU);
+        assert_eq!(disks.len(), 1, "the loop devices are not disks: {disks:?}");
+        assert_eq!(disks[0], DiskInfo { name: "vda".into(), size: 42_949_672_960, membership: DiskMembership::Available, model: None, serial: Some("vp7vE2LV".into()), media: DiskMedia::Hdd(0) });
+    }
+
+    #[test]
+    fn lsblk_reads_quoted_models_with_spaces_ssd_and_survives_garbage() {
+        let text = "NAME=\"sda\" SIZE=\"1000204886016\" TYPE=\"disk\" MODEL=\"Samsung SSD 860 EVO\" SERIAL=\"S3Z9NB0K\" ROTA=\"0\"\n\
+                    NAME=\"sr0\" SIZE=\"1073741312\" TYPE=\"rom\" MODEL=\"QEMU DVD-ROM\" SERIAL=\"\" ROTA=\"1\"\n\
+                    garbage line without pairs\n\
+                    NAME=\"nvme0n1\" SIZE=\"not a number\" TYPE=\"disk\" MODEL=\"\" SERIAL=\"\" ROTA=\"\"\n";
+        let disks = parse_lsblk(text);
+        assert_eq!(disks[0].model.as_deref(), Some("Samsung SSD 860 EVO"));
+        assert_eq!((disks[0].media.clone(), disks[0].size), (DiskMedia::Ssd, 1_000_204_886_016));
+        assert_eq!(disks.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["sda", "nvme0n1"], "the DVD drive and the garbage line are skipped");
+        assert_eq!((disks[1].size, disks[1].media.clone(), disks[1].model.clone()), (0, DiskMedia::Unknown, None));
+        assert!(parse_lsblk("").is_empty() && parse_lsblk("   \n\n").is_empty());
+    }
+
+    #[test]
+    fn iostat_en_reads_name_model_serial_and_size_per_disk() {
+        let disks = parse_iostat_en(IOSTAT_EN_OMNIOS);
+        assert_eq!(disks.len(), 2, "{disks:?}");
+        assert_eq!(disks[0], DiskInfo { name: "c2t0d0".into(), size: 16_106_127_360, membership: DiskMembership::Available, model: Some("Virtio Block Device".into()), serial: Some("f4DOej3R".into()), media: DiskMedia::Unknown });
+        assert_eq!((disks[1].name.as_str(), disks[1].model.as_deref(), disks[1].serial.as_deref(), disks[1].size), ("c1t0d0", Some("ATA QEMU HARDDISK"), Some("LRdb61VJ"), 21_474_836_480));
+    }
+
+    #[test]
+    fn iostat_en_skips_entries_without_a_size_and_survives_garbage() {
+        let text = "sd1              Soft Errors: 0 Hard Errors: 0 Transport Errors: 0 \nVendor: NECVMWar Product: VMware IDE CDR10 Revision: 1.00 Serial No: \nSize: 0.00GB <0 bytes>\n\
+                    c0t0d0           Soft Errors: 0 Hard Errors: 0 Transport Errors: 0 \nVendor: ATA Product: X Revision: 1 Serial No:  \n";
+        assert!(parse_iostat_en(text).is_empty(), "no usable size, no disk");
+        assert!(parse_iostat_en("").is_empty() && parse_iostat_en("lots of\nunrelated text\n").is_empty());
+    }
+
+    #[test]
+    fn linux_membership_matches_whole_disks_and_numbered_or_p_partitions_only() {
+        assert!(linux_disk_matches_vdev("sdb", "sdb") && linux_disk_matches_vdev("sdb", "sdb1") && linux_disk_matches_vdev("sdb", "sdb10"));
+        assert!(linux_disk_matches_vdev("nvme0n1", "nvme0n1p1") && linux_disk_matches_vdev("nvme0n1", "nvme0n1"));
+        assert!(!linux_disk_matches_vdev("sdb", "sdc1") && !linux_disk_matches_vdev("sdb", "sdbx") && !linux_disk_matches_vdev("sdb", "sdb1x"));
+        assert!(!linux_disk_matches_vdev("sdb", "sdb1p"), "a p marker needs a number");
+        assert!(!linux_disk_matches_vdev("sda", "/var/tmp/zt1.img"), "a file-backed vdev matches nothing");
+        assert!(!linux_disk_matches_vdev("nvme0n1", "nvme0n11"), "a bare digit after a digit is another disk, as on FreeBSD");
+    }
+
+    #[test]
+    fn illumos_membership_matches_whole_disks_and_slices() {
+        assert!(disk_matches_vdev("c1t0d0", "c1t0d0") && disk_matches_vdev("c1t0d0", "c1t0d0s0") && disk_matches_vdev("c1t0d0", "c1t0d0s2"));
+        assert!(!disk_matches_vdev("c1t0d0", "c1t1d0") && !disk_matches_vdev("c1t0d0", "c1t0d0s"));
+    }
+
+    #[test]
+    fn the_backend_follows_the_os_and_membership_comes_from_zpool_status() {
+        use crate::zfs::host_health::HostOs;
+        let status = "  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        ONLINE       0     0     0\n\t  c1t0d0s0  ONLINE       0     0     0\n\nerrors: No known data errors\n";
+        let omnios = FakeRunner::new("").route("iostat", "-En", IOSTAT_EN_OMNIOS).route("zpool", "list", "tank\t100\t10\t90\tONLINE\n").route("zpool", "status", status);
+        let disks = list_disks_with_membership(&omnios, Some(HostOs::Illumos)).unwrap();
+        assert_eq!(disks.len(), 2);
+        assert_eq!(disks[1].membership, DiskMembership::InPool { pool: "tank".into(), vdev: "c1t0d0s0".into() }, "{disks:?}");
+        assert_eq!(disks[0].membership, DiskMembership::Available);
+        let ubuntu = FakeRunner::new("").route("lsblk", "-b", LSBLK_UBUNTU).route("zpool", "list", "").route("zpool", "status", "");
+        assert_eq!(list_disks_with_membership(&ubuntu, Some(HostOs::Linux)).unwrap().len(), 1);
+        let freebsd = FakeRunner::new("").route("geom", "disk", GEOM_DISK_LIST_FIXTURE).route("zpool", "list", "").route("zpool", "status", "");
+        assert!(!list_disks_with_membership(&freebsd, None).unwrap().is_empty(), "an unknown OS asks geom, as before");
+        assert!(!list_disks_with_membership(&freebsd, Some(HostOs::Other)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unknown_rpm_hdd_is_called_hdd_without_a_number() {
+        let d = DiskInfo { name: "vda".into(), media: DiskMedia::Hdd(0), ..Default::default() };
+        assert!(d.identity_line().contains("HDD") && !d.identity_line().contains("rpm"), "{}", d.identity_line());
+        let fast = DiskInfo { name: "da0".into(), media: DiskMedia::Hdd(7200), ..Default::default() };
+        assert!(fast.identity_line().contains("HDD 7200 rpm"));
+    }
+
     #[test]
     fn parses_multi_disk_geom_disk_list_fixture() {
         let disks = parse_disk_list(GEOM_DISK_LIST_FIXTURE);
@@ -314,7 +506,7 @@ Providers:
     #[test]
     fn list_disks_uses_correct_command_and_parses_result() {
         let runner = FakeRunner::new(GEOM_DISK_LIST_FIXTURE);
-        let disks = list_disks(&runner).unwrap();
+        let disks = list_disks(&runner, None).unwrap();
         assert_eq!(disks.len(), 3);
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], ("geom".to_string(), vec!["disk".to_string(), "list".to_string()]));
@@ -323,7 +515,7 @@ Providers:
     #[test]
     fn list_disks_surfaces_command_failure() {
         let runner = FakeRunner::failing("geom: no such class", 1);
-        let result = list_disks(&runner);
+        let result = list_disks(&runner, None);
         assert!(result.is_err());
     }
 
@@ -409,7 +601,7 @@ errors: No known data errors
             .route("geom", "disk", GEOM_DISK_LIST_FIXTURE)
             .route("zpool", "list", ZPOOL_LIST_TANK_FIXTURE)
             .route("zpool", "status", ZPOOL_STATUS_TANK_FIXTURE);
-        let disks = list_disks_with_membership(&runner).unwrap();
+        let disks = list_disks_with_membership(&runner, None).unwrap();
         assert_eq!(disks.len(), 3);
         assert_eq!(disks.iter().find(|d| d.name == "ada0").unwrap().membership, DiskMembership::Available);
         assert_eq!(
@@ -421,7 +613,7 @@ errors: No known data errors
     #[test]
     fn list_disks_with_membership_surfaces_command_failure() {
         let runner = FakeRunner::failing("geom: no such class", 1);
-        let result = list_disks_with_membership(&runner);
+        let result = list_disks_with_membership(&runner, None);
         assert!(result.is_err());
     }
 

@@ -232,6 +232,7 @@ fn disk_lines(info: Option<&DiskInfo>, live: &DiskLive, theme: &Theme) -> Vec<Li
     };
     let media = match info.media {
         DiskMedia::Ssd => "SSD".to_string(),
+        DiskMedia::Hdd(0) => "HDD".to_string(),
         DiskMedia::Hdd(rpm) => format!("HDD {rpm} rpm"),
         DiskMedia::Unknown => "type unknown".to_string(),
     };
