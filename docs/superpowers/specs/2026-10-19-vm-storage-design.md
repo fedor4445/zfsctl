@@ -19,8 +19,9 @@ storage a running VM is using, and handing a physical disk that belongs to a poo
 - **Slice 1 (zvol for a VM):** create a zvol for a VM. zfsctl creates the zvol and **shows the one config line to add**;
   it does not attach it and does not edit the manager's files.
 - **Slice 2 (physical disk for a VM), guarded:** a form that checks a physical disk and **refuses** (never overrides; a
-  forced override is the sysadmin's job in a shell) if it is unsafe to hand to a guest. At the end it, like slice 1,
-  **shows the config line**; it runs nothing (my call, to be consistent with slice 1; the user may revise).
+  forced override is the sysadmin's job in a shell) if it is unsafe to hand to a guest. User decision 2026-10-19: at the
+  end it **runs the manager's own attach command** after the two-key confirm, which shows the exact command (slice 1
+  still only shows the line). zfsctl never edits a manager's files by hand.
 - **Both Linux and illumos hosts matter** ("we should think of KVM and bhyve too"): discovery must not be bhyve-only. User
   decision 2026-10-19: **illumos (OmniOS bhyve zones) discovery is in the first slice**, beside `vm-bhyve` and libvirt.
 - Proxmox and LXD (own zvol naming) are not in this slice; each would be another small reader later.
@@ -30,6 +31,7 @@ storage a running VM is using, and handing a physical disk that belongs to a poo
 - Create, start, stop, console, install, delete of VMs; any hand-edit of a manager's configuration; PCI/GPU
   passthrough; a VM installer screen. zfsctl never wipes, partitions or formats a disk.
 - Anything that would let a user override a refusal from inside zfsctl.
+- Detaching or removing a disk from a VM.
 
 ## Parts
 
@@ -89,8 +91,13 @@ A form: VM (from discovery), then a disk, picked with F2. The picker shows every
 5. the target VM is stopped.
 
 Refusal list shows the reason per disk, for example `member of pool tank (mirror-1)`, `ZFS label from pool "old"`,
-`used by VM web (disk2)`. There is no override. A disk that passes ends in the usual confirm, then a result screen that
-shows the config line and the exact device path; zfsctl runs nothing against the VM or the disk.
+`used by VM web (disk2)`. There is no override. A disk that passes ends in the usual confirm showing the exact command,
+then zfsctl runs the manager's attach command for the stopped VM, persistent form only (per manager, to be verified:
+`vm add` for `vm-bhyve`, `virsh attach-disk --config` for libvirt, `zonecfg` for a bhyve zone). The checks are re-run
+immediately before the command (the disk may have changed since the picker). It never writes to the disk itself. The
+result screen shows the command's output; a failure is shown whole and nothing is retried.
+- The attach commands are privileged: `print-sudoers` gets one narrow entry per manager, and only for hosts that use it.
+- Removing a disk from a VM stays with the manager.
 
 ## Constraints
 
@@ -121,6 +128,4 @@ fixture formats, and how the dataset-to-VM map is cached and refreshed (not on e
 
 ## Open for the user
 
-- Slice 2's end state: show the line only (as written), or run the manager's attach command after a confirm.
-- Whether to hold the public release for this, or release and mark VM storage "planned" (the user said they would like to
-  design it before releasing).
+- (Decided 2026-10-19: the public release is held until this is built.)
