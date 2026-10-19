@@ -21,7 +21,9 @@ storage a running VM is using, and handing a physical disk that belongs to a poo
 - **Slice 2 (physical disk for a VM), guarded:** a form that checks a physical disk and **refuses** (never overrides; a
   forced override is the sysadmin's job in a shell) if it is unsafe to hand to a guest. At the end it, like slice 1,
   **shows the config line**; it runs nothing (my call, to be consistent with slice 1; the user may revise).
-- **Both Linux and illumos hosts matter** ("we should think of KVM and bhyve too"): discovery must not be bhyve-only.
+- **Both Linux and illumos hosts matter** ("we should think of KVM and bhyve too"): discovery must not be bhyve-only. User
+  decision 2026-10-19: **illumos (OmniOS bhyve zones) discovery is in the first slice**, beside `vm-bhyve` and libvirt.
+- Proxmox and LXD (own zvol naming) are not in this slice; each would be another small reader later.
 
 ## Out of scope (anti-goals)
 
@@ -40,7 +42,7 @@ it. Sources (my calls; **every command and file below is to be verified on a rea
 |------|---------|---------------------|
 | FreeBSD | `vm-bhyve` | `vm list` for names and state; each VM's `<name>.conf` (`diskN_type`, `diskN_name`, `diskN_dev`) under the datastore |
 | Linux | libvirt (KVM) | `virsh list --all`, `virsh domblklist <vm> --details` |
-| illumos | (not in slice 1) | later; zones/bhyve zones differ enough to need their own pass |
+| illumos | bhyve zones (OmniOS) | the zone's configuration (`zonecfg -z <zone> info`, or `zadm show` where installed) and `zoneadm list -cv` for state |
 
 - The result maps a **dataset name -> VM name + running?**. Without a manager installed the section says so and the rest of
   zfsctl is unchanged. **Fail closed:** if zfsctl cannot ask the manager (command missing, sudo refuses, ssh drops), it
@@ -103,6 +105,9 @@ All current machines are KVM guests: **bhyve cannot start a VM on any of them** 
 virtualization. So:
 
 - Everything that reads ZFS (zvol creation, refusals, snapshots, the disk checks) is built and live-tested as usual.
+- illumos: reading a zone's configuration does not need a running zone, so a bhyve-brand zone can be configured (not
+  booted) on OmniOS and read; to verify before coding. Whether OmniOS's bhyve zones are driven by `zonecfg` alone or
+  also by `zadm` is to verify.
 - libvirt discovery can be built and checked on the Ubuntu VM with `virsh` read-only against a defined (not started)
   domain, if `libvirt` is installable there (to verify).
 - `vm-bhyve` discovery is written against its documented files and command output, with fixtures, and marked **untested
@@ -117,6 +122,5 @@ fixture formats, and how the dataset-to-VM map is cached and refreshed (not on e
 ## Open for the user
 
 - Slice 2's end state: show the line only (as written), or run the manager's attach command after a confirm.
-- Whether the first release includes illumos discovery (written as: not in slice 1).
 - Whether to hold the public release for this, or release and mark VM storage "planned" (the user said they would like to
   design it before releasing).
