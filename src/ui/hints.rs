@@ -77,7 +77,7 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
-        Modal::Info { .. } => vec![h("any key", "Close", 0)],
+        Modal::Info { .. } => vec![h("↑/↓", "Scroll", 0), h("any key", "Close", 0)],
         // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
         // it is only advertised once there is a selection for it to apply.
         Modal::Confirm { action, choice, .. } => match choice {
@@ -1083,8 +1083,7 @@ mod tests {
         let mut app = pools_middle();
         app.modal = Some(Modal::Info { title: "Help".to_string(), body: String::new() });
         let hs = hints(&app);
-        assert_eq!(hs.len(), 1);
-        assert_eq!(hs[0].key, "any key");
+        assert_eq!(hs.iter().map(|h| h.key).collect::<Vec<_>>(), ["↑/↓", "any key"]);
         assert!(!hs.iter().any(|h| h.pinned));
     }
 

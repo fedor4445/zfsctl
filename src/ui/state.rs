@@ -347,6 +347,8 @@ pub struct App {
     /// `config.toml`, read and (for the alert settings) written by the Alerts screen.
     pub config_path: std::path::PathBuf,
     pub alerts_view: crate::ui::alerts::AlertsView,
+    /// First visible line of an open Info pop-up (Help, About, report preview); Up/Down/PageUp/PageDown/Home/End move it.
+    pub info_scroll: u16,
     /// The Settings section: the rest of `config.toml` that can be edited here.
     pub settings_view: crate::ui::settings::SettingsView,
     pub settings_table: TableState,
@@ -566,6 +568,7 @@ impl App {
             last_cloud_refresh: None,
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
+            info_scroll: 0,
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
             smart: crate::daemon::smart_check::SmartFile::default(),
@@ -3362,8 +3365,24 @@ pub(crate) fn help_text_for_book() -> String {
     help_text()
 }
 
+/// The Help text: one blank line between key lines, so a long description that wraps cannot run into the next key.
 fn help_text() -> String {
-    "\
+    let mut out = String::new();
+    let mut previous_was_key = false;
+    for line in HELP_SOURCE.lines() {
+        let is_key = line.starts_with("  ");
+        if is_key && previous_was_key {
+            out.push('\n');
+        }
+        out.push_str(line);
+        out.push('\n');
+        previous_was_key = is_key;
+    }
+    out.pop();
+    out
+}
+
+const HELP_SOURCE: &str = "\
 Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
@@ -3474,9 +3493,7 @@ Settings
   Enter            edit the setting in a form (blank = default; saved into config.toml after a y/n confirmation)
   r                reload the settings from config.toml
 
-Press any key to close."
-        .to_string()
-}
+Up / Down / PageUp / PageDown scroll; any other key closes.";
 
 /// The Add Host reachability check: plain `true` over ssh, deliberately WITHOUT sudo. The documented sudoers
 /// entry is path-pinned and has no `true`, so `sudo -n true` would reject every correctly set-up host. A

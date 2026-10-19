@@ -9869,3 +9869,34 @@ fn a_failed_measurement_keeps_the_last_good_numbers_and_says_why() {
     fresh.drain_worker_messages();
     assert_eq!(fresh.cloud_sizes["m"], failed);
 }
+
+#[test]
+fn help_has_a_blank_line_between_key_lines() {
+    let text = help_text();
+    let lines: Vec<&str> = text.lines().collect();
+    for pair in lines.windows(2) {
+        assert!(!(pair[0].starts_with("  ") && pair[1].starts_with("  ")), "no blank line between {:?} and {:?}", pair[0], pair[1]);
+    }
+    assert!(text.contains("switch sections\n\n  Up / Down"), "{text}");
+    assert!(!text.contains("Global\n\n"), "a heading is followed directly by its first key");
+}
+
+#[test]
+fn an_info_popup_scrolls_with_the_navigation_keys_and_any_other_key_closes_it() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.modal = Some(Modal::Info { title: "Help".to_string(), body: "a\nb\nc".to_string() });
+    app.handle_modal_key(KeyCode::Down);
+    assert_eq!(app.info_scroll, 1);
+    assert!(app.modal.is_some());
+    app.handle_modal_key(KeyCode::PageDown);
+    assert_eq!(app.info_scroll, 2, "never past the last line");
+    app.handle_modal_key(KeyCode::Up);
+    assert_eq!(app.info_scroll, 1);
+    app.handle_modal_key(KeyCode::Home);
+    assert_eq!(app.info_scroll, 0);
+    app.handle_modal_key(KeyCode::End);
+    assert_eq!(app.info_scroll, 2);
+    app.handle_modal_key(KeyCode::Char('x'));
+    assert!(app.modal.is_none());
+    assert_eq!(app.info_scroll, 0, "the next pop-up starts at the top");
+}

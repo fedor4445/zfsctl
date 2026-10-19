@@ -38,8 +38,29 @@ impl App {
             Modal::Confirm { prompt, action, choice } => self.confirm_key(key, prompt, action, choice),
             Modal::ConfirmTyped { prompt, expected, input, action } => self.confirm_typed_key(key, prompt, expected, input, action),
             Modal::Form { title, fields, focused, description, kind } => self.form_key(key, FormParts { title, fields, focused, description, kind }),
-            Modal::Info { .. } => None,
+            Modal::Info { title, body } => self.info_key(key, title, body),
         }
+    }
+
+    /// A read-only pop-up scrolls with the navigation keys; any other key closes it.
+    fn info_key(&mut self, key: KeyCode, title: String, body: String) -> Option<PendingAction> {
+        const PAGE: u16 = 10;
+        let last = u16::try_from(body.lines().count().saturating_sub(1)).unwrap_or(u16::MAX);
+        let scroll = match key {
+            KeyCode::Down => self.info_scroll.saturating_add(1),
+            KeyCode::Up => self.info_scroll.saturating_sub(1),
+            KeyCode::PageDown => self.info_scroll.saturating_add(PAGE),
+            KeyCode::PageUp => self.info_scroll.saturating_sub(PAGE),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            _ => {
+                self.info_scroll = 0;
+                return None;
+            }
+        };
+        self.info_scroll = scroll.min(last);
+        self.modal = Some(Modal::Info { title, body });
+        None
     }
 
     // Two steps for both outcomes: `y` / `n` / Esc only select, Enter applies the selection.

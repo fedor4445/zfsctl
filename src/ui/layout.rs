@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(hint_line), hint_area);
 
     if let Some(modal) = app.modal.clone() {
-        draw_modal(f, &modal, app.backup_preflight.as_ref(), &app.theme, area);
+        draw_modal(f, &modal, app.backup_preflight.as_ref(), app.info_scroll, &app.theme, area);
     }
     if let Some(picker) = app.picker.clone() {
         draw_picker(f, &picker, &app.theme, area);
@@ -1364,7 +1364,7 @@ const CONFIRM_NONE: &str = "Press y for yes or n for no, then Enter.";
 const CONFIRM_YES: &str = "▶ YES selected: press Enter to run it (n or Esc to change).";
 const CONFIRM_NO: &str = "▶ NO selected: press Enter to cancel (y to change).";
 
-fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, theme: &Theme, area: Rect) {
+fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, info_scroll: u16, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
     // percentage of the terminal's height let long prompts or the
@@ -1483,6 +1483,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
         Modal::Info { title, body } => {
             let p = Paragraph::new(body.as_str())
                 .wrap(Wrap { trim: false })
+                .scroll((info_scroll, 0))
                 .block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
