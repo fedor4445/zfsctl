@@ -108,9 +108,9 @@ and physical disks, with size, used and encryption state; `n` creates a zvol for
 **Snapshots** (the VM's snapshot sets across all its disks, each marked running or stopped). The Datasets list and
 detail show "used by VM <name>" on a zvol. Section and tab names, widths and key hints are the builder's to settle.
 
-### F. Dashboard: which hypervisor a host runs on
+### F. Hosts section: which hypervisor a host runs on
 
-User decision 2026-10-19: the Dashboard's host table marks a host that is itself a virtual machine and says which
+User decision 2026-10-19: the Hosts section's Type column marks a host that is itself a virtual machine and says which
 hypervisor it runs on (`kvm`, `bhyve`, and so on), "even if users know it from the OS". Today the health probe already reads
 `kern.vm_guest` on FreeBSD and the table shows only a generic `vm` (`host_health.rs`: "kept for later"). Show the name
 instead. Linux reads `systemd-detect-virt` where present; illumos has its own source (both to verify; unknown shows the
