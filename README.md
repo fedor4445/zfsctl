@@ -1,6 +1,6 @@
 # zfsctl
 
-A terminal UI for managing ZFS storage on FreeBSD.
+A terminal UI and daemon for managing ZFS storage: a FreeBSD hub that manages FreeBSD, Linux and illumos hosts over ssh.
 
 > **Built with Claude.** zfsctl was written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code): the design, code, tests and documentation were produced in conversation with it, and directed and tested by the author on real machines.
 
@@ -8,7 +8,7 @@ A terminal UI for managing ZFS storage on FreeBSD.
 
 ## Requirements
 
-- FreeBSD (uses `zpool`/`zfs`; no Linux/illumos support)
+- A FreeBSD machine as the hub, where zfsctl runs (it uses `zpool`/`zfs`). The hosts it manages over ssh may run FreeBSD, Linux (tested on Ubuntu 24 with OpenZFS) or illumos (tested on OmniOS)
 - Root privileges
 - `ssh` configured (with working host keys / `~/.ssh/config` entries) for any remote hosts you add to the config
 
@@ -502,7 +502,25 @@ remind_hours = 6                     # repeat an unresolved alert this often; de
 
 ## Status
 
-v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. Scheduled `zfs send`/`receive` replication between hosts is described under Scheduled jobs. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated ZFS administration permissions (`zfs allow`/`unallow`) can be viewed, granted, and revoked from a Permissions sub-tab in the Datasets right pane (`'['`/`']'` to switch to it, once focused with `Right`) — Pools has no equivalent, since `zfs allow` only targets a filesystem or volume. File ACLs (`getfacl`/`setfacl`, NFSv4 only — POSIX ACLs are deferred) can be viewed, added, and removed from an ACL sub-tab in the Datasets right pane, scoped to the dataset's mountpoint; bhyve zvol association is still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares are created, edited and removed through a managed block in `smb4.conf` (see Shares → SMB shares), since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).
+Version 0.2, in development. It manages pools, datasets and their properties, snapshots, disks, NFS and SMB shares, boot environments, delegated permissions and ACLs, native encryption keys, and scheduled snapshot, replication, restic backup and rclone mirror jobs, with alerts and a daily report. The book (`docs/book`) documents every screen.
+
+### What is tested, and what is not
+
+Tested:
+- **Unit tests:** over two thousand, running against fake command runners (no real ZFS needed). Most behaviour that can go wrong, such as argument order, refusals and what a failing command reports, is pinned there.
+- **Mutation testing:** `cargo mutants` was run on the newer, safety-critical code (encryption, the job guards, replication, the Dashboard), and the mutants that survived were pinned with tests. The memory wipes on secrets cannot be tested from safe Rust and are not covered.
+- **Independent review:** each major change was reviewed by a separate AI reviewer before it was merged, and its findings were fixed.
+- **Live on real machines:** a FreeBSD 15 hub and three FreeBSD VMs (one on 16.0), with real pools, snapshots, replication between hosts, restic backups and rclone mirrors to Backblaze B2 and S3, boot environments including real reboots, and encryption keys loaded, changed and unloaded through the TUI.
+
+Tested less, or not live:
+- **Linux and illumos hosts:** checked on Ubuntu 24 and OmniOS, but far less than FreeBSD. Sections a host's OS cannot support are dimmed rather than half-working. Expect rough edges there.
+- **Raw replication of encrypted datasets:** the `zfs send -w` flow was verified by hand on FreeBSD, and the job logic is covered by tests with fake hosts. It has not run as a long-lived daemon job.
+- **Restic backups of remote hosts:** local hub backups were verified live; remote hosts were not.
+- **Not security-audited.** zfsctl runs commands as root through sudoers rules you install yourself. Read what `zfsctl print-sudoers` generates before installing it.
+
+How it protects data: every change needs `y` then `Enter`; what cannot be undone makes you type the name; recursive destroys refuse a pool's root and anything holding the running system; a replication or mirror of an encrypted dataset is refused unless it is explicitly raw; passphrases reach `zfs` only on standard input, never in an argument, a log or a file.
+
+Please try it on a test pool first, and keep backups of anything you care about.
 
 ## Licence
 
