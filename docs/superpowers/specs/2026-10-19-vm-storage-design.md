@@ -99,6 +99,24 @@ result screen shows the command's output; a failure is shown whole and nothing i
 - The attach commands are privileged: `print-sudoers` gets one narrow entry per manager, and only for hosts that use it.
 - Removing a disk from a VM stays with the manager.
 
+### E. The VMs section (UI)
+
+User decision 2026-10-19: a sidebar section **VMs**, between Boot Envs and Jobs. The left list shows each VM of the
+selected host: name, manager (`bhyve`, `kvm`, `bhyve zone`), running state, and CPU/memory where the manager reports them.
+The right pane has two tabs, switched with `[` / `]` like the Datasets detail pane: **Disks** (the VM's zvols, datasets
+and physical disks, with size, used and encryption state; `n` creates a zvol for it, `a` assigns a physical disk) and
+**Snapshots** (the VM's snapshot sets across all its disks, each marked running or stopped). The Datasets list and
+detail show "used by VM <name>" on a zvol. Section and tab names, widths and key hints are the builder's to settle.
+
+### F. Dashboard: which hypervisor a host runs on
+
+User decision 2026-10-19: the Dashboard's host table marks a host that is itself a virtual machine and says which
+hypervisor it runs on (`kvm`, `bhyve`, and so on), "even if users know it from the OS". Today the health probe already reads
+`kern.vm_guest` on FreeBSD and the table shows only a generic `vm` (`host_health.rs`: "kept for later"). Show the name
+instead. Linux reads `systemd-detect-virt` where present; illumos has its own source (both to verify; unknown shows the
+generic `vm` or nothing, never a guess). A VM listed in the VMs section (part A) is labelled with its manager's kind the
+same way. The mark is information only and changes no behaviour.
+
 ## Constraints
 
 - Rust-only; two-key confirms; typed names for irreversible actions; secrets only on stdin; no root SSH, sudoers only.
