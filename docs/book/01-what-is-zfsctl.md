@@ -93,6 +93,17 @@ Chapter 18 gathers these promises, and the honest limits of them, in one place.
 
 Every screen and command output in this book was captured from a running zfsctl on test machines, not drawn. Where a screen would show something private (an email address), it is replaced with `you@example.com`.
 
+## Built on
+
+zfsctl is a thin layer over other people's work. None of it is bundled; all of it deserves credit and a visit:
+
+- [OpenZFS](https://openzfs.org/): the file system, volume manager and the `zpool`/`zfs` tools that zfsctl drives.
+- [FreeBSD](https://www.freebsd.org/): the operating system of the hub, and of most of the test machines.
+- [illumos](https://illumos.org/) and [OmniOS](https://omnios.org/): the descendant of OpenSolaris, where ZFS was born at Sun; OmniOS is the distribution used for testing.
+- [Linux](https://www.kernel.org/) (tested on [Ubuntu](https://ubuntu.com/)) with [OpenZFS on Linux](https://openzfs.github.io/openzfs-docs/).
+- [Rust](https://www.rust-lang.org/): the language, with [ratatui](https://ratatui.rs/) for the screen and [crossterm](https://github.com/crossterm-rs/crossterm) for the terminal.
+- [restic](https://restic.net/) and [rclone](https://rclone.org/): backups and cloud mirrors, when you use those job kinds.
+
 ## Try it
 
 If zfsctl is already installed on your hub, run it as root (`zfsctl`), look at the Hosts list, press `?` to open the Help screen, press any key to close it, and press `q` to quit. If it is not installed yet, chapter 4 gets you there; chapters 2 and 3 are good reading first.
