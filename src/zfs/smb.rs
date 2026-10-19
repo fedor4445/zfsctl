@@ -6,10 +6,6 @@ pub const CONF_PATH: &str = "/usr/local/etc/smb4.conf";
 pub const BLOCK_START: &str = "## zfsctl managed shares -- do not edit by hand -- start";
 pub const BLOCK_END: &str = "## zfsctl managed shares -- do not edit by hand -- end";
 const DATASET_KEY: &str = "# zfsctl-dataset";
-// What the project wrote under its earlier name (zfsctl). A conf written then is still read; the next write replaces it.
-const LEGACY_BLOCK_START: &str = "## zfsctl managed shares -- do not edit by hand -- start";
-const LEGACY_BLOCK_END: &str = "## zfsctl managed shares -- do not edit by hand -- end";
-const LEGACY_DATASET_KEY: &str = "# zfsctl-dataset";
 
 /// One managed share. `dataset` is the identity (one share per dataset);
 /// `name` is the `[stanza]` label Windows clients see.
@@ -39,12 +35,12 @@ fn locate_block(conf: &str) -> Result<Option<BlockSpan>> {
     let (mut offset, mut start, mut end) = (0usize, None, None);
     for line in conf.split_inclusive('\n') {
         let text = line.trim_end_matches(['\n', '\r']).trim_end();
-        if text == BLOCK_START || text == LEGACY_BLOCK_START {
+        if text == BLOCK_START {
             if start.is_some() {
                 return Err(smb_err("smb4.conf has more than one zfsctl start marker; fix it by hand"));
             }
             start = Some(offset);
-        } else if text == BLOCK_END || text == LEGACY_BLOCK_END {
+        } else if text == BLOCK_END {
             if start.is_none() {
                 return Err(smb_err("smb4.conf has a zfsctl end marker before any start marker; fix it by hand"));
             }
@@ -112,7 +108,7 @@ pub fn parse_managed(conf: &str) -> Result<Vec<SmbShare>> {
         let Some(p) = current.as_mut() else {
             return Err(smb_err(format!("unexpected line in managed block before any [share]: '{line}'")));
         };
-        if let Some(rest) = line.strip_prefix(DATASET_KEY).or_else(|| line.strip_prefix(LEGACY_DATASET_KEY)) {
+        if let Some(rest) = line.strip_prefix(DATASET_KEY) {
             let value = rest.trim_start().strip_prefix('=').map(str::trim).filter(|v| !v.is_empty());
             p.dataset = Some(value.ok_or_else(|| smb_err(format!("bad '# zfsctl-dataset' line: '{line}'")))?.to_string());
         } else if line.starts_with('#') || line.starts_with(';') {
@@ -828,20 +824,5 @@ mod tests {
         let r = runner_with(&first);
         set_share(&r, &share("other", "tank/other", None, true), None).unwrap();
         assert_eq!(parse_managed(&tee_writes(&r)[0]).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn a_block_written_under_the_old_name_is_read_and_rewritten_with_the_new_markers() {
-        let old = format!("{FB_CONF}## zfsctl managed shares -- do not edit by hand -- start\n[media]\n    # zfsctl-dataset = tank/media\n    path = /tank/media\n## zfsctl managed shares -- do not edit by hand -- end\n");
-        let shares = parse_managed(&old).unwrap();
-        assert_eq!((shares.len(), shares[0].dataset.as_str(), shares[0].path.as_str()), (1, "tank/media", "/tank/media"));
-        // Writing it back replaces the old block in place: no second block, no old markers left.
-        let new = render_with_shares(&old, &shares).unwrap();
-        assert_eq!(new.matches("managed shares").count(), 2, "{new}");
-        assert!(new.contains(BLOCK_START) && new.contains(BLOCK_END) && new.contains("# zfsctl-dataset = tank/media"), "{new}");
-        assert!(!new.contains("zfsctl"), "{new}");
-        // An old start marker beside a new end marker is one block, and two old starts are still refused.
-        assert!(locate_block(&format!("{LEGACY_BLOCK_START}\n{BLOCK_END}\n")).unwrap().is_some());
-        assert!(locate_block(&format!("{LEGACY_BLOCK_START}\n{BLOCK_START}\n{BLOCK_END}\n")).is_err());
     }
 }

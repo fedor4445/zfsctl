@@ -1175,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_zfs_alone_complains_about_is_at_least_a_warning_even_when_the_host_level_is_ok() {
+    fn a_line_that_zfs_complains_about_is_at_least_a_warning_even_when_the_host_level_is_ok() {
         let theme = Theme::ansi();
         let (text, reason, style) = status_text(Some("pool: tank"), Some(&assessed(Level::Ok, "ok")), &theme);
         assert_eq!((text.as_str(), reason, style), ("pool: tank", None, theme.warn));

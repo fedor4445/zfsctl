@@ -87,16 +87,10 @@ fn repo_flags(repo: &str, password_file: &str) -> [String; 2] {
 /// Jobs that share a repository take turns: wait for another run's lock instead of failing at once.
 const RETRY_LOCK: &str = "--retry-lock=10m";
 
-// Backups made under the project's earlier name (zfsctl) carry these tags. They are still found and still pruned: a repeated
-// `--tag` is an OR, a comma inside one is an AND.
-const LEGACY_JOB_TAG: &str = "zfsctl";
-const LEGACY_SNAPSHOT_TAG: &str = "zfsctl-snapshot";
-
-/// `restic snapshots` of the backups made from `snapshot` by this job on this machine (both tags must match, under the
-/// current tag names or the old ones).
+/// `restic snapshots` of the backups made from `snapshot` by this job on this machine (both tags must match).
 pub fn snapshots_args(repo: &str, password_file: &str, host: &str, job_id: &str, snapshot: &str) -> Vec<String> {
     let [r, p] = repo_flags(repo, password_file);
-    vec!["snapshots".to_string(), r, p, RETRY_LOCK.to_string(), format!("--host={host}"), "--json".to_string(), format!("--tag=zfsctl:{job_id},zfsctl-snapshot:{snapshot}"), format!("--tag={LEGACY_JOB_TAG}:{job_id},{LEGACY_SNAPSHOT_TAG}:{snapshot}")]
+    vec!["snapshots".to_string(), r, p, RETRY_LOCK.to_string(), format!("--host={host}"), "--json".to_string(), format!("--tag=zfsctl:{job_id},zfsctl-snapshot:{snapshot}")]
 }
 
 /// `restic backup` of `path`, tagged with the job and the ZFS snapshot it was made from.
@@ -110,10 +104,10 @@ pub fn backup_args(repo: &str, password_file: &str, host: &str, job_id: &str, sn
     args
 }
 
-/// `restic forget --prune` limited to this job's backups from this host (tagged under the current or the old name).
+/// `restic forget --prune` limited to this job's backups from this host.
 pub fn forget_args(repo: &str, password_file: &str, host: &str, job_id: &str, retention: &Retention) -> Vec<String> {
     let [r, p] = repo_flags(repo, password_file);
-    let mut args = vec!["forget".to_string(), r, p, RETRY_LOCK.to_string(), "--prune".to_string(), format!("--tag=zfsctl:{job_id}"), format!("--tag={LEGACY_JOB_TAG}:{job_id}"), format!("--host={host}")];
+    let mut args = vec!["forget".to_string(), r, p, RETRY_LOCK.to_string(), "--prune".to_string(), format!("--tag=zfsctl:{job_id}"), format!("--host={host}")];
     args.extend(retention.args());
     args
 }
@@ -360,7 +354,7 @@ mod tests {
     #[test]
     fn snapshots_args_match_both_tags_with_one_comma_separated_flag() {
         let a = snapshots_args("/repo", "/pw", "fb", "backup-local-tank-data", "hourly-20261008T100000Z");
-        assert_eq!(a, vec!["snapshots", "--repo=/repo", "--password-file=/pw", "--retry-lock=10m", "--host=fb", "--json", "--tag=zfsctl:backup-local-tank-data,zfsctl-snapshot:hourly-20261008T100000Z", "--tag=zfsctl:backup-local-tank-data,zfsctl-snapshot:hourly-20261008T100000Z"]);
+        assert_eq!(a, vec!["snapshots", "--repo=/repo", "--password-file=/pw", "--retry-lock=10m", "--host=fb", "--json", "--tag=zfsctl:backup-local-tank-data,zfsctl-snapshot:hourly-20261008T100000Z"]);
     }
 
     #[test]
@@ -376,7 +370,7 @@ mod tests {
     fn forget_args_are_limited_to_this_jobs_tag_and_host() {
         let r = parse_retention("7d 4w").unwrap();
         let a = forget_args("/repo", "/pw", "local", "job1", &r);
-        assert_eq!(a, vec!["forget", "--repo=/repo", "--password-file=/pw", "--retry-lock=10m", "--prune", "--tag=zfsctl:job1", "--tag=zfsctl:job1", "--host=local", "--keep-daily=7", "--keep-weekly=4"]);
+        assert_eq!(a, vec!["forget", "--repo=/repo", "--password-file=/pw", "--retry-lock=10m", "--prune", "--tag=zfsctl:job1", "--host=local", "--keep-daily=7", "--keep-weekly=4"]);
     }
 
     #[test]
