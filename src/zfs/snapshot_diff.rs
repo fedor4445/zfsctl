@@ -104,18 +104,21 @@ pub fn parse_diff_line(line: &str) -> Option<DiffEntry> {
     Some(DiffEntry { changed_at, change, kind: FileKind::from_letter(letter), path: decode_zfs_path(path), renamed_to: renamed.map(decode_zfs_path) })
 }
 
-/// `zfs diff` writes a space, a tab, a backslash and other unusual bytes as `\NNN` (three octal digits). Bytes are
-/// decoded first and the result read as UTF-8 (a multi-byte character arrives as several escapes); a backslash that
-/// does not start three octal digits is kept as written.
+/// `zfs diff` writes a space, a tab, a backslash and other unusual bytes as a backslash and four octal digits with a
+/// leading zero (`\\0040` for a space; seen on FreeBSD). The three-digit form is read too, when no four-digit escape
+/// fits. Bytes are decoded first and the result read as UTF-8 (a multi-byte character arrives as several escapes); a
+/// backslash that starts no escape is kept as written.
 pub fn decode_zfs_path(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while let Some(&b) = bytes.get(i) {
         if b == b'\\' {
-            if let Some(byte) = bytes.get(i + 1..i + 4).and_then(octal_byte) {
+            let four = bytes.get(i + 1..i + 5).and_then(octal_byte);
+            let three = bytes.get(i + 1..i + 4).and_then(octal_byte);
+            if let Some((byte, used)) = four.map(|byte| (byte, 5)).or_else(|| three.map(|byte| (byte, 4))) {
                 out.push(byte);
-                i += 4;
+                i += used;
                 continue;
             }
         }
@@ -125,11 +128,19 @@ pub fn decode_zfs_path(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Three octal digits as one byte; `None` for anything else (including a value over 255).
+/// Octal digits (three or four of them) as one byte; `None` for anything else, or a value over 255.
 fn octal_byte(digits: &[u8]) -> Option<u8> {
-    let &[a, b, c] = digits else { return None };
-    let digit = |d: u8| (b'0'..=b'7').contains(&d).then(|| u32::from(d - b'0'));
-    u8::try_from(digit(a)? * 64 + digit(b)? * 8 + digit(c)?).ok()
+    if !(3..=4).contains(&digits.len()) {
+        return None;
+    }
+    let mut value: u32 = 0;
+    for &d in digits {
+        if !(b'0'..=b'7').contains(&d) {
+            return None;
+        }
+        value = value * 8 + u32::from(d - b'0');
+    }
+    u8::try_from(value).ok()
 }
 
 /// The path as seen from the dataset's own root: `/scratch/data/a/b` with the mountpoint `/scratch/data` is `a/b`
@@ -209,13 +220,21 @@ mod tests {
 
     #[test]
     fn octal_escapes_are_decoded() {
-        assert_eq!(decode_zfs_path("/a/b\\040c"), "/a/b c");
-        assert_eq!(decode_zfs_path("a\\134b"), "a\\b");
-        assert_eq!(decode_zfs_path("a\\011b"), "a\tb");
+        // As real hosts print them (`%04o`: a backslash, then four octal digits with a leading zero).
+        assert_eq!(decode_zfs_path("/a/b\\0040c"), "/a/b c");
+        assert_eq!(decode_zfs_path("a\\0134b"), "a\\b");
+        assert_eq!(decode_zfs_path("a\\0011b"), "a\tb");
+        assert_eq!(decode_zfs_path("caf\\0303\\0251"), "café");
+        assert_eq!(decode_zfs_path("/s/photo\\0040dir/new\\0040file.txt"), "/s/photo dir/new file.txt");
+        // A literal digit after an escape stays a digit.
+        assert_eq!(decode_zfs_path("a\\00400"), "a 0");
+        // The three-digit form is read too, when no four-digit escape fits.
+        assert_eq!(decode_zfs_path("a\\040b"), "a b");
+        assert_eq!(decode_zfs_path("a\\0407"), "a 7", "0407 is over 255, so it is \\040 and a 7");
+        // Anything that is not an escape is kept as written.
         assert_eq!(decode_zfs_path("trailing\\"), "trailing\\");
         assert_eq!(decode_zfs_path("odd\\9zz"), "odd\\9zz");
-        assert_eq!(decode_zfs_path("caf\\303\\251"), "café");
-        assert_eq!(parse_diff_line("1.0\t+\tF\t/a/b\\040c").unwrap().path, "/a/b c");
+        assert_eq!(parse_diff_line("1.0\t+\tF\t/a/b\\0040c").unwrap().path, "/a/b c");
     }
 
     #[test]

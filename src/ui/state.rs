@@ -3561,13 +3561,13 @@ fn about_text() -> String {
     )
 }
 
-/// The Help text, for the book's drift test.
-#[cfg(test)]
 /// The question the hold confirm asks, from the `H` key in the list and from the changes view.
 fn hold_prompt(target: &str) -> String {
     format!("Protect {target} with a hold?\nIt cannot be destroyed, and retention, backups and replication will not prune it, until the hold is released. (y/n)")
 }
 
+/// The Help text, for the book's drift test.
+#[cfg(test)]
 pub(crate) fn help_text_for_book() -> String {
     help_text()
 }
