@@ -324,7 +324,7 @@ Press `F5` in the form to check the remote before you save. It lists the remote 
 │Alerts               │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
 │Settings             │  Snapshots to keep (Source new only; blank = 3):               │                     │
 │                     │> Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│                     │
-│                     │it): b2:zfsctl/photos                                           │─────────────────────┘
+│                     │it): b2:zfsctl-b2/photos                                        │─────────────────────┘
 │                     │  Speed limit (bytes/s, e.g. 5M; blank = none):                 │─────────────────────┐
 │                     │  Schedule: 30 3 * * *                                          │                     │
 │                     │  Catch up (y/n): y                                             │                     │
