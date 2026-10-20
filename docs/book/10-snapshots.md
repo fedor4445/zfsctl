@@ -5,6 +5,7 @@
 - What a snapshot costs, and how to read the Snapshots list and panel.
 - How to take, destroy and roll back to a snapshot.
 - How to protect a snapshot with a hold.
+- How to see what changed between two snapshots, folder by folder.
 - How scheduled snapshots are named, so you can recognise them.
 
 ## The list
@@ -50,7 +51,7 @@ A snapshot is a read-only picture of a dataset at one moment. Go to Snapshots an
 ↑↓ Move  d Destroy  b Rollback  H Hold  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
-The list shows every snapshot on the host, named `dataset@name`, with the space it **Used**: the space that would be freed if you destroyed only that snapshot. A snapshot that has just been taken uses nothing; it grows as the dataset changes, because it keeps the old blocks. (Sizes are in human units, like everywhere else.)
+The list shows every snapshot on the host, named `dataset@name`, with the space it **Used**: the space that would be freed if you destroyed only that snapshot. A snapshot that has just been taken uses nothing; it grows as the dataset changes, because it keeps the old blocks. The **Written** column is how much new data went into the dataset since the snapshot before it: a very large number marks a busy period. (Sizes are in human units, like everywhere else.)
 
 ## The panel
 
@@ -147,6 +148,32 @@ Because a hold is ZFS's own mechanism (`zfs hold`), it is enforced by ZFS and pr
 If zfsctl cannot find out whether a snapshot is held (the check fails, or the host's answer is not understood), it does not guess: it refuses to destroy it and the message starts with `could not check holds:`. This is different from a hold. A snapshot job or replication run that meets such a failure is shown as **Failed**, with the reason in its message, so a check that never works does not hide behind a green run (backup and cloud-mirror pruning of old snapshots stays green and says so in a note; chapter 19 lists the messages); fix the cause (read the reason in the message) and the next run prunes again.
 
 > **Safety:** a hold protects one snapshot from being destroyed; it is not a backup. If the pool is lost, the held snapshot is lost with it (chapter 15).
+
+## What changed between snapshots
+
+When something has gone wrong (a folder emptied, a mass delete, a sync gone astray) the first question is *when*. Select a snapshot and press `c`: zfsctl compares it with the snapshot made just before it and shows what changed in between. Press `C` instead to compare it with the dataset **as it is now**, which answers "what has changed since this snapshot?".
+
+The view opens with a header of counts, for example `2,505 removed · 12 added · 31 modified · 0 renamed`, and the time span the changes cover. Below it the changes are grouped by **folder**, busiest first, with one count per kind. Press `Enter` on a folder to list its entries, newest first. Each entry shows:
+
+| Column | Meaning |
+|---|---|
+| **Change** | `+ added`, `- removed`, `~ modified` or `R renamed` (a rename shows the old and the new path) |
+| **Type** | file, directory, symlink, and the rarer kinds (socket, pipe, device) |
+| **Changed** | when ZFS last recorded a change to it. This is not the date the file was created, and the view does not show sizes: it tells you what changed and when, not how big it was |
+| **Path** | where it is, written relative to the dataset (see below) |
+
+`[` and `]` make the folders shallower or deeper (one to four levels; two is the start), `Esc` closes a folder and then the view, and `Up` and `Down` move. Everything here only **reads**: the view never changes your data.
+
+The one thing you can do from it is press `H` to **hold the older snapshot**, the one that still has the files, so that nothing can destroy it while you work out what happened (see *Protecting a snapshot* above).
+
+A few things worth knowing:
+
+- **The oldest snapshot** of a dataset has nothing before it, so `c` says so. Press `Esc`, then `C`, to compare it with the live dataset.
+- **Big changes take time.** The read stops after two million changes or two minutes, and then the header says `stopped after N changes` and that the counts are partial; what was read up to then is still shown. `Esc` cancels a read that is still running. At most 5,000 entries are listed per folder (`… N more` says how many are not).
+- **Paths.** A host may print a path the way *it* sees it. A dataset given to a zone, for example, is printed through the zone's root directory. zfsctl cuts that off so you see paths relative to the dataset; if it cannot, the header says `paths as the host prints them`.
+- **Odd lines.** A line zfsctl cannot read is counted (`N unreadable`), never guessed at.
+
+> **Tip:** to find out *when* files vanished, move down the snapshot list one at a time with `c`: the snapshot where the `removed` count jumps is the first one made after the deletion, and the one before it is the one to hold.
 
 ## How scheduled snapshots are named
 
