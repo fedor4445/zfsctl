@@ -10029,3 +10029,22 @@ fn d_on_a_held_snapshot_shows_the_refusal_and_runs_no_destroy() {
 fn help_lists_the_hold_key() {
     assert!(help_text().contains("  H                hold the selected snapshot"), "{}", help_text());
 }
+
+#[test]
+fn a_foreign_tag_with_control_characters_is_shown_readably_in_the_status() {
+    let mut app = hold_app(1, Some(&["a\u{1b}[31mb\u{202e}c"]));
+    app.handle_key(KeyCode::Char('H'));
+    let msg = app.status_message.clone().unwrap();
+    assert!(!msg.chars().any(|c| c.is_control() || c == '\u{202e}'), "{msg:?}");
+    assert_eq!(msg, "held by another tag: a [31mb c; zfsctl will not release it");
+}
+
+#[test]
+fn a_very_long_foreign_tag_is_truncated_in_the_status() {
+    let long = "x".repeat(200);
+    let mut app = hold_app(1, Some(&[long.as_str()]));
+    app.handle_key(KeyCode::Char('H'));
+    let msg = app.status_message.clone().unwrap();
+    assert!(msg.contains(&format!("{}…", "x".repeat(39))), "{msg:?}");
+    assert!(msg.chars().count() < 100, "{msg:?}");
+}

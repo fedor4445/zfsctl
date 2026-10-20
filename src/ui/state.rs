@@ -2235,7 +2235,10 @@ impl App {
                             action: action(MutationCall::ReleaseSnapshot { dataset, name }),
                         });
                     } else {
-                        let shown = tags.map_or_else(|| "unknown".to_string(), |t| t.join(", "));
+                        let shown = tags.map_or_else(
+                            || "unknown".to_string(),
+                            |t| t.iter().map(|t| crate::ui::layout::truncate_with_ellipsis(&crate::ui::layout::sanitise_for_display(t), 40)).collect::<Vec<_>>().join(", "),
+                        );
                         self.status_message = Some(format!("held by another tag: {shown}; zfsctl will not release it"));
                     }
                 }

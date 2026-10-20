@@ -1584,7 +1584,7 @@ pub(crate) fn sanitise_for_display(s: &str) -> String {
 }
 
 /// Truncates `s` to at most `max` characters, ending in "…" when cut.
-fn truncate_with_ellipsis(s: &str, max: usize) -> String {
+pub(crate) fn truncate_with_ellipsis(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
