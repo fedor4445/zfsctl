@@ -483,7 +483,7 @@ fn event_loop(
                             // refreshes: a refresh would wipe a failure message.
                             app.refresh_visible(host.runner.clone());
                         }
-                        shell::ShellOutcome::ConnectFailed => app.set_error(format!("could not open a shell on {}", host.name)),
+                        shell::ShellOutcome::ConnectFailed => app.set_error(format!("the shell on {} could not connect or the connection was lost", host.name)),
                         shell::ShellOutcome::SpawnFailed(e) => app.set_error(format!("could not start a shell on {}: {e}", host.name)),
                     },
                 }
