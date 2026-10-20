@@ -768,6 +768,12 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
+    if app.changes_view_active() {
+        if let Some(view) = &app.changes_view {
+            crate::ui::changes::draw(f, view, &theme, app.active_host_name(), area);
+        }
+        return;
+    }
     let rows = app
         .snapshots
         .iter()
@@ -1733,6 +1739,22 @@ mod tests {
         let row = rows.iter().find(|r| r.contains("tank/a@s")).unwrap_or_else(|| panic!("{rows:?}")).clone();
         let after: Vec<&str> = row[row.find("tank/a@s").unwrap()..].split_whitespace().collect();
         assert_eq!(&after[1..3], ["1.0K", "2.0K"], "{row:?}");
+    }
+
+    #[test]
+    fn the_snapshots_section_shows_the_changes_view_in_place_of_the_list_and_only_for_its_host() {
+        use crate::ui::changes::{Against, ChangesView, PendingChanges};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: "s".to_string(), used: 1, holds: 0, written: 0 }];
+        let pending = PendingChanges { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), against: Against::Previous, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        app.changes_view = Some(ChangesView::new(&pending));
+        let shown = render(&mut app, 100, 12).join("\n");
+        assert!(shown.contains("Changes —") && shown.contains("reading changes"), "{shown}");
+        assert!(!shown.contains("Snapshot  "), "the list is not drawn under the view: {shown}");
+        app.selected_host = 3;
+        let other = render(&mut app, 100, 12).join("\n");
+        assert!(!other.contains("Changes —"), "a view of another host is not shown: {other}");
     }
 
     fn identity_disk(name: &str, model: &str, serial: &str) -> crate::zfs::disk::DiskInfo {

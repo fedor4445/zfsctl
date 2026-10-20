@@ -10226,3 +10226,193 @@ fn a_very_long_foreign_tag_is_truncated_in_the_status() {
     assert!(msg.contains(&format!("{}…", "x".repeat(39))), "{msg:?}");
     assert!(msg.chars().count() < 100, "{msg:?}");
 }
+
+// ---- the changes view (c and C in Snapshots) ----
+
+fn changes_app() -> App {
+    let mut app = hold_app(0, None);
+    app.snapshots.push(Snapshot { dataset: "tank/data".to_string(), name: "s2".to_string(), used: 0, holds: 0, written: 0 });
+    app.snapshots_table.select(Some(1));
+    app
+}
+
+fn ready_outcome(entries: &[(&str, crate::zfs::snapshot_diff::Change)]) -> crate::ui::changes::ChangesOutcome {
+    use crate::zfs::snapshot_changes::{ChangeSummary, Limits};
+    use crate::zfs::snapshot_diff::{DiffEntry, FileKind};
+    let mut summary = ChangeSummary::new(&Limits::default(), Some("/ds".to_string()));
+    for (path, change) in entries {
+        summary.add(DiffEntry { changed_at: 1_788_654_605, change: *change, kind: FileKind::File, path: (*path).to_string(), renamed_to: None });
+    }
+    crate::ui::changes::ChangesOutcome::Done { older: "tank/data@s1".to_string(), newer: "tank/data@s2".to_string(), summary }
+}
+
+fn deliver(app: &mut App, host: usize, request: u64, outcome: crate::error::Result<crate::ui::changes::ChangesOutcome>) {
+    app.tx.send(WorkerMsg::Changes(host, request, outcome)).unwrap();
+    app.drain_worker_messages();
+}
+
+fn ready_app() -> App {
+    use crate::zfs::snapshot_diff::Change;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request, Ok(ready_outcome(&[("/ds/a/f1", Change::Added), ("/ds/a/f2", Change::Added), ("/ds/b/g", Change::Removed)])));
+    app
+}
+
+#[test]
+fn c_on_a_snapshot_opens_a_reading_view_and_queues_one_read() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let view = app.changes_view.as_ref().expect("a view");
+    assert!(matches!(view.phase, crate::ui::changes::Phase::Reading));
+    assert_eq!(app.pending_changes.len(), 1);
+    let p = &app.pending_changes[0];
+    assert_eq!((p.host, p.dataset.as_str(), p.name.as_str(), p.against), (0, "tank/data", "s2", crate::ui::changes::Against::Previous));
+    assert_eq!(p.request, view.request);
+}
+
+#[test]
+fn capital_c_compares_with_the_live_dataset() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(app.pending_changes[0].against, crate::ui::changes::Against::Live);
+    assert_eq!(app.changes_view.as_ref().unwrap().against, crate::ui::changes::Against::Live);
+}
+
+#[test]
+fn c_with_nothing_selected_does_nothing() {
+    let mut app = changes_app();
+    app.snapshots_table.select(None);
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('C'));
+    assert!(app.changes_view.is_none() && app.pending_changes.is_empty());
+}
+
+#[test]
+fn c_while_a_read_is_running_starts_no_second_one() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(app.pending_changes.len(), 1);
+}
+
+#[test]
+fn a_result_for_an_older_request_or_another_host_is_ignored() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request + 99, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::Reading));
+    deliver(&mut app, 5, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::Reading));
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::NoPrevious));
+}
+
+#[test]
+fn esc_while_reading_sets_the_cancel_flag_and_closes_the_view() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let cancel = std::sync::Arc::clone(&app.pending_changes[0].cancel);
+    assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.is_none());
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn esc_in_an_open_group_returns_to_the_groups_and_then_closes_the_view() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Enter);
+    assert!(app.changes_view.as_ref().unwrap().open_group.is_some());
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.as_ref().is_some_and(|v| v.open_group.is_none()));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.is_none());
+}
+
+#[test]
+fn up_down_select_and_the_brackets_change_the_depth_inside_the_limits() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.changes_view.as_ref().unwrap().selected, 1);
+    app.handle_key(KeyCode::Up);
+    assert_eq!(app.changes_view.as_ref().unwrap().selected, 0);
+    app.handle_key(KeyCode::Char(']'));
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 3);
+    for _ in 0..5 {
+        app.handle_key(KeyCode::Char(']'));
+    }
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 4);
+    for _ in 0..9 {
+        app.handle_key(KeyCode::Char('['));
+    }
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 1);
+}
+
+#[test]
+fn capital_h_in_the_view_holds_the_older_snapshot_with_a_y_n_confirm() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+            assert_eq!(action.call, crate::ui::modal::MutationCall::HoldSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() });
+        }
+        other => panic!("expected Confirm modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn capital_h_in_the_view_does_nothing_without_an_older_snapshot() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none(), "still reading");
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none(), "the oldest snapshot has no older one");
+}
+
+#[test]
+fn help_and_quit_keep_working_inside_the_view() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('?'));
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Info { .. })));
+    app.modal = None;
+    app.handle_key(KeyCode::Char('q'));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn a_view_of_another_host_is_dropped_on_the_next_key() {
+    let mut app = ready_app();
+    app.selected_host = 3;
+    app.handle_key(KeyCode::Down);
+    assert!(app.changes_view.is_none());
+}
+
+#[test]
+fn the_help_lists_the_changes_keys() {
+    let text = help_text_for_book();
+    assert!(text.contains("  c ") && text.contains("  C "), "{text}");
+}
+
+#[test]
+fn a_read_whose_runner_cannot_run_the_diff_ends_failed_not_stuck() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let pending = app.pending_changes.remove(0);
+    let request = pending.request;
+    app.start_changes(std::sync::Arc::new(FakeRunner::new("")), pending);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while matches!(app.changes_view.as_ref().map(|v| &v.phase), Some(crate::ui::changes::Phase::Reading)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.drain_worker_messages();
+    }
+    let view = app.changes_view.as_ref().unwrap();
+    assert_eq!(view.request, request);
+    assert!(matches!(view.phase, crate::ui::changes::Phase::Failed(_)), "{:?}", view.phase);
+}

@@ -1,7 +1,5 @@
 //! What changed between two snapshots: the diff folded into counts per folder, with a capped list of entries.
 
-// Nothing outside the tests calls this until the reader (Task 4) and the view (Task 5) exist; remove this then.
-#![allow(dead_code)]
 
 use crate::daemon::transfer::run_lines;
 use crate::error::{AppError, Result};

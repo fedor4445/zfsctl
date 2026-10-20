@@ -222,6 +222,8 @@ pub struct PendingPruneCheck {
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
+    /// A changes read finished: host, the request number it was started for, and what it found.
+    Changes(usize, u64, Result<crate::ui::changes::ChangesOutcome>),
     /// The hold tags of the held snapshots of one host's list (key `dataset@name`), sent after `Snapshots`; the
     /// number says which list refresh they were fetched for.
     SnapshotTags(usize, u64, std::collections::HashMap<String, Vec<String>>),
@@ -375,6 +377,10 @@ pub struct App {
     /// The selected line of the Dashboard's Needs attention list.
     pub dashboard_table: TableState,
     pub pending_cloud: Vec<PendingCloud>,
+    /// The changes view of the Snapshots section (`c` / `C`), its latest request number, and the reads waiting for a runner.
+    pub changes_view: Option<crate::ui::changes::ChangesView>,
+    pub changes_request: u64,
+    pub pending_changes: Vec<crate::ui::changes::PendingChanges>,
     /// Lookups that were started and have not answered: `remotes:<host>` or `size:<job id>`.
     cloud_busy: HashSet<String>,
     /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
@@ -604,6 +610,9 @@ impl App {
             dashboard_thresholds: crate::config::Thresholds::default(),
             dashboard_table: TableState::default(),
             pending_cloud: Vec::new(),
+            changes_view: None,
+            changes_request: 0,
+            pending_changes: Vec::new(),
             cloud_busy: HashSet::new(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
             last_jobs_refresh: None,
@@ -1553,7 +1562,8 @@ impl App {
             self.handle_filter_key(key);
             return;
         }
-        let _handled = self.key_global(key)
+        let _handled = self.key_changes_view(key)
+            || self.key_global(key)
             || self.key_navigation(key)
             // A section the host's OS has no equivalent for (see `ui::support`) is dimmed: its keys do nothing.
             || (self.current_section_supported()
@@ -2259,6 +2269,22 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char(which @ ('c' | 'C')) if self.current_section() == Section::Snapshots && self.changes_view.is_none() => {
+                if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
+                    use crate::ui::changes::{Against, ChangesView, PendingChanges};
+                    self.changes_request += 1;
+                    let pending = PendingChanges {
+                        host: self.selected_host,
+                        request: self.changes_request,
+                        dataset: snap.dataset.clone(),
+                        name: snap.name.clone(),
+                        against: if which == 'c' { Against::Previous } else { Against::Live },
+                        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    };
+                    self.changes_view = Some(ChangesView::new(&pending));
+                    self.pending_changes.push(pending);
+                }
+            }
             KeyCode::Char('H') if self.current_section() == Section::Snapshots => {
                 if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
                     let target = format!("{}@{}", snap.dataset, snap.name);
@@ -2266,7 +2292,7 @@ impl App {
                     let tags = self.snapshot_tags.get(&target);
                     let action = |call| PendingAction { host: self.selected_host, section: Section::Snapshots, call };
                     if snap.holds == 0 {
-                        let prompt = format!("Protect {target} with a hold?\nIt cannot be destroyed, and retention, backups and replication will not prune it, until the hold is released. (y/n)");
+                        let prompt = hold_prompt(&target);
                         self.modal = Some(Modal::Confirm { choice: None, prompt, action: action(MutationCall::HoldSnapshot { dataset, name }) });
                     } else if tags.is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG)) {
                         self.modal = Some(Modal::ConfirmTyped {
@@ -3169,6 +3195,79 @@ impl App {
 
     /// See `refresh_pools` for why this queues rather than drops a
     /// request while already in flight.
+    /// The changes view, when it belongs to the host and section on screen.
+    pub fn changes_view_active(&self) -> bool {
+        self.current_section() == Section::Snapshots && self.changes_view.as_ref().is_some_and(|v| v.host == self.selected_host)
+    }
+
+    /// Keys while the changes view is open: they move in it, open a folder, set the depth, hold the older snapshot
+    /// or close it; the snapshot list's own destructive keys do nothing behind it. Everything else (quit, Help, the
+    /// shell, Tab) works as everywhere. Returns whether the key was handled.
+    fn key_changes_view(&mut self, key: KeyCode) -> bool {
+        if self.changes_view.is_none() || self.modal.is_some() || self.picker.is_some() || self.current_section() != Section::Snapshots {
+            return false;
+        }
+        if !self.changes_view_active() {
+            if let Some(view) = self.changes_view.take() {
+                view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            return false;
+        }
+        let older = self.changes_view.as_ref().and_then(crate::ui::changes::ChangesView::older_snapshot);
+        let Some(view) = self.changes_view.as_mut() else { return false };
+        match key {
+            KeyCode::Esc | KeyCode::Backspace => {
+                if !view.back() {
+                    view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.changes_view = None;
+                }
+            }
+            KeyCode::Down => view.move_selection(true),
+            KeyCode::Up => view.move_selection(false),
+            KeyCode::Enter => view.open_selected(),
+            KeyCode::Char('[') => view.set_depth(view.depth.saturating_sub(1)),
+            KeyCode::Char(']') => view.set_depth(view.depth + 1),
+            KeyCode::Char('H') => {
+                if let Some((dataset, name)) = older {
+                    let prompt = hold_prompt(&format!("{dataset}@{name}"));
+                    let call = MutationCall::HoldSnapshot { dataset, name };
+                    self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Snapshots, call } });
+                }
+            }
+            KeyCode::Char('c' | 'C' | 'd' | 'b') => {}
+            _ => return false,
+        }
+        true
+    }
+
+    /// Ends a queued read that cannot run (its host is gone) as a failed one.
+    pub fn fail_changes(&mut self, pending: &crate::ui::changes::PendingChanges, why: crate::error::AppError) {
+        let _ = self.tx.send(WorkerMsg::Changes(pending.host, pending.request, Err(why)));
+    }
+
+    /// Reads one changes view's diff on a worker thread and sends the outcome back (an error as an error).
+    pub fn start_changes(&mut self, runner: Arc<dyn CommandRunner>, pending: crate::ui::changes::PendingChanges) {
+        use crate::ui::changes::{Against, ChangesOutcome};
+        use crate::zfs::snapshot_changes::{dataset_mountpoint, previous_snapshot, read_changes, Limits};
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<ChangesOutcome> {
+                let this = format!("{}@{}", pending.dataset, pending.name);
+                let (older, newer) = match pending.against {
+                    Against::Previous => match previous_snapshot(runner.as_ref(), &pending.dataset, &pending.name)? {
+                        Some(previous) => (previous, this),
+                        None => return Ok(ChangesOutcome::NoPrevious),
+                    },
+                    Against::Live => (this, pending.dataset.clone()),
+                };
+                let mount = dataset_mountpoint(runner.as_ref(), &pending.dataset)?;
+                let summary = read_changes(runner.as_ref(), &older, &newer, mount, &Limits::default(), &pending.cancel)?;
+                Ok(ChangesOutcome::Done { older, newer, summary })
+            })();
+            let _ = tx.send(WorkerMsg::Changes(pending.host, pending.request, result));
+        });
+    }
+
     pub fn refresh_snapshots(&mut self, runner: Arc<dyn CommandRunner>) {
         let host = self.selected_host;
         if self.is_refreshing(Section::Snapshots, host) {
@@ -3464,6 +3563,11 @@ fn about_text() -> String {
 
 /// The Help text, for the book's drift test.
 #[cfg(test)]
+/// The question the hold confirm asks, from the `H` key in the list and from the changes view.
+fn hold_prompt(target: &str) -> String {
+    format!("Protect {target} with a hold?\nIt cannot be destroyed, and retention, backups and replication will not prune it, until the hold is released. (y/n)")
+}
+
 pub(crate) fn help_text_for_book() -> String {
     help_text()
 }
@@ -3544,6 +3648,8 @@ Snapshots
   d                destroy (type dataset@name to confirm)
   b                roll back (type dataset@name to confirm)
   H                hold the selected snapshot, or release zfsctl's hold on it (a hold protects it from destroy and pruning)
+  c                show what changed since the previous snapshot, by folder (read-only; Enter opens a folder, [ ] sets the depth, H holds the older snapshot, Esc closes)
+  C                show what has changed since this snapshot, compared with the live dataset
 
 Disks
   Space            toggle-select a disk

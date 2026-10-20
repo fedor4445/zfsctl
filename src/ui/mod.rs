@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod changes;
 pub mod cloud;
 pub mod dashboard;
 pub mod dashboard_view;
@@ -213,6 +214,18 @@ fn apply_pending_cloud(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued changes read its host's runner.
+fn apply_pending_changes(app: &mut App, inventory: &HostInventory) {
+    for pending in std::mem::take(&mut app.pending_changes) {
+        if let Some(h) = inventory.hosts.get(pending.host) {
+            app.start_changes(h.runner.clone(), pending);
+        } else {
+            let why = crate::error::AppError::Config(format!("unknown host #{}", pending.host));
+            app.fail_changes(&pending, why);
+        }
+    }
+}
+
 /// Hands each queued destination listing (a replication form's Keep on target check) its host's runner.
 fn apply_pending_prune_checks(app: &mut App, inventory: &HostInventory) {
     for pending in std::mem::take(&mut app.pending_prune_check) {
@@ -286,6 +299,7 @@ fn event_loop(
         apply_pending_add_checks(app, inventory);
         apply_pending_cloud(app, inventory);
         apply_pending_prune_checks(app, inventory);
+        apply_pending_changes(app, inventory);
         poll_host_probes(app, inventory);
         app.clear_stale_scan_status();
 

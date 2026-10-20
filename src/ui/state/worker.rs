@@ -29,6 +29,7 @@ impl App {
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),
+                WorkerMsg::Changes(host, request, result) => self.on_changes(host, request, result),
                 WorkerMsg::SnapshotTags(host, generation, tags) => {
                     self.tags_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&host);
                     if host == self.selected_host {
@@ -175,6 +176,16 @@ impl App {
                 }
             }
             Err(e) => self.set_error(e.to_string()),
+        }
+    }
+
+    /// A changes read finished: it counts only for the view that asked, on the host still selected.
+    fn on_changes(&mut self, host: usize, request: u64, result: Result<crate::ui::changes::ChangesOutcome>) {
+        if host != self.selected_host {
+            return;
+        }
+        if let Some(view) = self.changes_view.as_mut().filter(|v| v.request == request && v.host == host) {
+            view.apply(result);
         }
     }
 

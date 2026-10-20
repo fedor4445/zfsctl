@@ -1,7 +1,5 @@
 //! One line of `zfs diff -FHt` output: when it changed, how, what kind of thing, and where.
 
-// Nothing calls these until the summary (Task 3) and the reader (Task 4) exist; remove this then.
-#![allow(dead_code)]
 
 /// What happened to the path between the two snapshots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
