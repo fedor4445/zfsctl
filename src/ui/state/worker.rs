@@ -34,8 +34,9 @@ impl App {
                     if host == self.selected_host {
                         if generation == self.snapshot_gen.get(&host).copied().unwrap_or(0) {
                             self.snapshot_tags = tags;
-                        } else {
-                            // fetched for an older list; the list on screen has no tags yet
+                        } else if !self.is_refreshing(Section::Snapshots, host) && !self.pending_refresh.contains(&(Section::Snapshots, host)) {
+                            // fetched for an older list and nothing is on its way: the list on screen has no tags yet.
+                            // A refresh in flight or pending fetches its own tags, so pushing another would loop.
                             refreshes_needed.push(Section::Snapshots);
                         }
                     }

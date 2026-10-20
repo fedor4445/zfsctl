@@ -206,7 +206,8 @@ pub fn refuse_if_held(runner: &dyn CommandRunner, dataset: &str, name: &str, rec
         return Err(AppError::HoldCheck(format!("no row for {dataset}@{name}")));
     }
     let blocked: Vec<(String, Option<u64>)> = matching.into_iter().filter(|(_, refs)| *refs != Some(0)).collect();
-    let Some((full, refs)) = blocked.first() else { return Ok(()) };
+    // a confirmed hold wins over an unreadable count, whatever the row order
+    let Some((full, refs)) = blocked.iter().find(|(_, refs)| refs.is_some_and(|n| n > 0)).or_else(|| blocked.first()) else { return Ok(()) };
     let more = if blocked.len() > 1 { format!(" (and {} more)", blocked.len() - 1) } else { String::new() };
     let Some(n) = refs else {
         return Err(AppError::HoldCheck(format!("{full} has an unreadable hold count, so it is treated as held{more}")));
@@ -562,6 +563,17 @@ tank/data@2026-09-04\t2000\t0
         assert!(matches!(refuse_if_held(&r, "tank/data", "a", false), Err(AppError::HoldCheck(_))));
         assert!(destroy_snapshot(&r, "tank/data", "a").is_err());
         assert!(destroy_calls(&r).is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_hold_wins_over_an_unreadable_row() {
+        let r = FakeRunner::new("").route("zfs", "get", "tank/data@a\t-\ntank/data/sub@a\t2\n").route("zfs", "holds", "tank/data/sub@a\tkeep\tx\n");
+        match refuse_if_held(&r, "tank/data", "a", true) {
+            Err(AppError::Held(m)) => assert!(m.contains("tank/data/sub@a has 2 holds"), "{m}"),
+            other => panic!("expected Held, got {other:?}"),
+        }
+        let r = FakeRunner::new("").route("zfs", "get", "tank/data@a\t-\ntank/data/sub@a\t0\n");
+        assert!(matches!(refuse_if_held(&r, "tank/data", "a", true), Err(AppError::HoldCheck(_))));
     }
 
     #[test]

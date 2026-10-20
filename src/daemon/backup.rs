@@ -139,7 +139,7 @@ fn prune_fresh(runner: &dyn CommandRunner, dataset: &str, prefix: &str, keep: us
     for old in own.iter().skip(keep.saturating_sub(1)).rev() {
         match destroy_snapshot_with(runner, dataset, old, false) {
             Ok(()) => {}
-            // A hold (or a hold check that could not run) leaves it alone; the rest are still pruned.
+            // A confirmed hold leaves it alone; the rest are still pruned (a check that could not run is reported below).
             Err(AppError::Held(why)) => {
                 let _ = write!(note, "; kept the old snapshot {old} (held); {why}");
             }

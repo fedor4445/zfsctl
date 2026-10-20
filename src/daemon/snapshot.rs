@@ -73,7 +73,7 @@ pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, schedu
             Ok(()) => pruned += 1,
             // A backup run's clone pins its snapshot for the length of the run: leave it for the next slot.
             Err(AppError::CommandFailed { stderr, .. }) if stderr.contains("dependent clones") => in_use += 1,
-            // A hold (or a hold check that could not run) leaves the snapshot alone and goes on with the rest.
+            // A confirmed hold leaves the snapshot alone and goes on with the rest; a check that could not run is a failure below.
             Err(AppError::Held(why)) => {
                 if held == 0 {
                     held_reason = why;

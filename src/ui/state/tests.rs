@@ -5859,6 +5859,7 @@ fn a_quiet_refresh_keeps_an_informational_status_but_a_manual_one_clears_it() {
 fn a_quiet_refresh_clears_a_stale_error_once_the_host_answers() {
     let mut app = in_section(Section::Pools);
     app.set_error("connection refused".to_string());
+    app.status_error_at = Instant::now().checked_sub(Duration::from_secs(9));
     app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), Instant::now(), TEN);
     wait_until(&mut app, |a| !a.pools.is_empty());
     assert!(app.status_message.is_none());
@@ -10101,6 +10102,80 @@ fn tags_from_another_host_are_ignored() {
     app.tx.send(WorkerMsg::SnapshotTags(1, 0, std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]))).unwrap();
     app.drain_worker_messages();
     assert!(app.snapshot_tags.is_empty());
+}
+
+#[test]
+fn stale_tags_while_a_snapshot_refresh_is_in_flight_or_pending_push_no_refresh() {
+    let tags = std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]);
+    let mut app = App::new(vec!["local".to_string()]);
+    app.snapshot_gen.insert(0, 2);
+    app.begin_refresh(Section::Snapshots, 0);
+    app.tx.send(WorkerMsg::SnapshotTags(0, 1, tags.clone())).unwrap();
+    assert!(!app.drain_worker_messages().contains(&Section::Snapshots), "an in-flight refresh fetches its own tags");
+    app.end_refresh(Section::Snapshots, 0);
+    app.pending_refresh.insert((Section::Snapshots, 0));
+    app.tx.send(WorkerMsg::SnapshotTags(0, 1, tags)).unwrap();
+    assert!(!app.drain_worker_messages().contains(&Section::Snapshots));
+}
+
+#[test]
+fn capital_h_with_only_unprintable_foreign_tags_still_says_it_is_held() {
+    let mut app = hold_app(1, Some(&["\u{1b}\u{7}"]));
+    app.handle_key(KeyCode::Char('H'));
+    assert_eq!(app.status_message.as_deref(), Some("held by another tag (name not printable); zfsctl will not release it"));
+}
+
+struct PanickingList;
+impl CommandRunner for PanickingList {
+    fn run(&self, _: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        assert_ne!(args[0], "holds", "boom");
+        Ok(crate::exec::CommandOutput { stdout: "tank/data@s1\t10\t1\n".into(), stderr: String::new(), status: 0 })
+    }
+    fn run_with_stdin(&self, cmd: &str, args: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, args)
+    }
+    fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, args)
+    }
+}
+
+#[test]
+fn a_panicking_tag_fetch_still_clears_the_per_host_mark() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(Arc::new(PanickingList));
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if app.snapshots_loaded && app.tags_running.lock().unwrap().is_empty() && !app.is_refreshing(Section::Snapshots, 0) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            app.drain_worker_messages();
+            if app.tags_running.lock().unwrap().is_empty() {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.snapshots_loaded);
+    assert!(app.tags_running.lock().unwrap().is_empty());
+    assert!(app.snapshot_tags.is_empty());
+}
+
+#[test]
+fn an_error_status_survives_a_quiet_refresh_for_eight_seconds_only() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.set_error("protected: x".to_string());
+    app.clear_status_after_refresh(true);
+    assert_eq!(app.status_message.as_deref(), Some("protected: x"));
+    app.status_error_at = Instant::now().checked_sub(Duration::from_secs(9));
+    app.clear_status_after_refresh(true);
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn a_non_quiet_refresh_clears_a_young_error_at_once() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.set_error("protected: x".to_string());
+    app.clear_status_after_refresh(false);
+    assert!(app.status_message.is_none());
 }
 
 #[test]

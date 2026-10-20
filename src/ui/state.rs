@@ -16,6 +16,33 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Sends the `SnapshotTags` answer of a tag fetch exactly once: the real one, or an empty one when dropped
+/// before that (a panic), because the answer is what clears the host's "fetch running" mark.
+struct TagsReply {
+    tx: Sender<WorkerMsg>,
+    host: usize,
+    generation: u64,
+    sent: bool,
+}
+
+impl TagsReply {
+    fn send(&mut self, tags: HashMap<String, Vec<String>>) {
+        self.sent = true;
+        let _ = self.tx.send(WorkerMsg::SnapshotTags(self.host, self.generation, tags));
+    }
+}
+
+impl Drop for TagsReply {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self.tx.send(WorkerMsg::SnapshotTags(self.host, self.generation, HashMap::new()));
+        }
+    }
+}
+
+/// How long an error status is kept against quiet (auto) refreshes.
+const ERROR_STATUS_MIN_AGE: Duration = Duration::from_secs(8);
+
 mod forms;
 mod modal_keys;
 mod worker;
@@ -474,6 +501,8 @@ pub struct App {
     /// it invalidates itself the moment the message is replaced or
     /// cleared — a stale flag can never recolor an unrelated message.
     status_error: Option<String>,
+    /// When `status_error` was set: a quiet (auto) refresh leaves an error younger than `ERROR_STATUS_MIN_AGE` alone.
+    status_error_at: Option<Instant>,
     pub should_quit: bool,
     /// Appended by `drain_worker_messages` once a probed host is
     /// confirmed reachable; drained by the event loop (which owns the
@@ -630,6 +659,7 @@ impl App {
             status_message: None,
             theme: crate::ui::theme::Theme::ansi(),
             status_error: None,
+            status_error_at: None,
             should_quit: false,
             pending_new_hosts: Vec::new(),
             pending_shell: false,
@@ -705,8 +735,11 @@ impl App {
     /// A manual refresh result clears whatever status message was showing; a quiet
     /// (auto) one only clears a stale error, so "scrub started" is not wiped every
     /// interval but a "host unreachable" error does go away once the host answers.
+    /// An error younger than `ERROR_STATUS_MIN_AGE` survives a quiet refresh, so a refusal is readable
+    /// even when an overdue auto-refresh fires the moment its modal closes.
     fn clear_status_after_refresh(&mut self, quiet: bool) {
-        if !quiet || self.status_is_error() {
+        let young = self.status_error_at.is_some_and(|at| at.elapsed() < ERROR_STATUS_MIN_AGE);
+        if !quiet || (self.status_is_error() && !young) {
             self.status_message = None;
         }
     }
@@ -1335,6 +1368,7 @@ impl App {
     /// Sets a failure message (rendered with the theme's `err` style).
     pub fn set_error(&mut self, msg: String) {
         self.status_error = Some(msg.clone());
+        self.status_error_at = Some(Instant::now());
         self.status_message = Some(msg);
     }
 
@@ -2242,7 +2276,10 @@ impl App {
                             action: action(MutationCall::ReleaseSnapshot { dataset, name }),
                         });
                     } else if let Some(t) = tags {
-                        self.status_message = Some(format!("held by another tag: {}; zfsctl will not release it", crate::display_text::tag_list(t)));
+                        self.status_message = Some(match crate::display_text::tag_list(t) {
+                            l if l.is_empty() => "held by another tag (name not printable); zfsctl will not release it".to_string(),
+                            l => format!("held by another tag: {l}; zfsctl will not release it"),
+                        });
                     } else {
                         self.status_message = Some("hold tags not loaded yet; press r".to_string());
                     }
@@ -3154,8 +3191,10 @@ impl App {
                 return;
             }
             // A failed chunk leaves its snapshots out: their tags stay unknown, and they cannot be released from here.
+            // The guard answers with an empty map if this thread panics, so the host's mark is always cleared.
+            let mut reply = TagsReply { tx, host, generation, sent: false };
             let tags = crate::zfs::snapshot::hold_tags_for(runner.as_ref(), &held);
-            let _ = tx.send(WorkerMsg::SnapshotTags(host, generation, tags));
+            reply.send(tags);
         });
     }
 

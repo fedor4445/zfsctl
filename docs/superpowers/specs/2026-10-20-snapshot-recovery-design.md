@@ -82,7 +82,7 @@ much", then "where", and only then "which file".
 ### Slice 1: hold (protect) a snapshot
 
 **What the user sees.** In the Snapshots section a new column **Hold** shows `H` (zfsctl's hold) or `h` (someone
-else's) or nothing, and the panel names the tags. A key (proposed: `H`) on the highlighted snapshot toggles zfsctl's hold:
+else's) or nothing, and the panel names the tags. *(Decision 2026-10-20: the panel shows `Holds N`; the tags are named in the message of the `H` key and in the Held refusal text.)* A key (proposed: `H`) on the highlighted snapshot toggles zfsctl's hold:
 
 - **Take:** one confirm line ("Protect `tank/data@x` from deletion?"), `y` then Enter. Taking a hold only makes a
   snapshot harder to lose, so it does not need the "type the name" confirm.
