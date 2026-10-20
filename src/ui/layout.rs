@@ -2024,7 +2024,7 @@ mod tests {
     fn snapshots_list_shows_human_sizes_not_raw_bytes() {
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848, holds: 0 }];
         app.snapshots_table.select(Some(0));
         let text = render(&mut app, 110, 30).join("\n");
         assert!(text.contains("tank/data@b") && text.contains("2.0G"), "{text}");
@@ -2037,7 +2037,7 @@ mod tests {
         use crate::zfs::snapshot_detail::{SnapshotDetail, SnapshotEntry};
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096, holds: 0 }];
         app.snapshots_table.select(Some(0));
         let target = MetricsTarget::Snapshot("tank/data@b".to_string());
         assert_eq!(app.metrics_target(), Some(target.clone()));

@@ -565,8 +565,8 @@ mod tests {
         let mut a = base();
         go(&mut a, Section::Snapshots);
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0 },
         ];
         a.snapshots_table.select(Some(0));
         a
@@ -1296,8 +1296,8 @@ mod tests {
         a.pools = vec![pool("tank"), pool("scratch")];
         a.datasets = vec![dataset("tank/a"), dataset("tank/b")];
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0 },
         ];
         a.disks = vec![
             DiskInfo { name: "da0".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },
