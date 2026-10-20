@@ -5,7 +5,7 @@
 │Datasets              ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
 │Snapshots             ││● fbsd16t2 172.16.10.62       ok                          vm             74%   2    │
 │Disks                 ││● ub24     172.16.10.52       ok                          -      linux   0%    1    │
-│Shares                ││● omnios   172.16.10.80       tank 96% full               -      illumos 96%   2    │
+│Shares                ││● omnios   172.16.10.80       ok                          -      illumos 49%   3    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
 │Cloud                 ││                                                                                    │
@@ -15,11 +15,11 @@
 │                      │┌Metrics — host local (all pools)────────────────────────────────────────────────────┐
 │                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
 │                      ││OS      FreeBSD 15.1-RELEASE-p4            Pools   3 (all ONLINE)                   │
-│                      ││Up      8d 23h   rtt 2ms                   Space   30%  18.9G / 62.2G               │
-│                      ││Load    0.58 0.23 0.18                     ARC     4.8G / 18.9G  hit 99.9%          │
-│                      ││CPU     36 cores  2%                       Status  all pools are healthy            │
+│                      ││Up      8d 23h   rtt 3ms                   Space   30%  18.9G / 62.2G               │
+│                      ││Load    1.02 2.48 1.37                     ARC     4.9G / 18.9G  hit 99.9%          │
+│                      ││CPU     36 cores  1%                       Status  all pools are healthy            │
 │                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
-│                      ││Memory  19.9G  free 9.1G  wired 7.4G                                                │
+│                      ││Memory  19.9G  free 8.9G  wired 7.5G                                                │
 │                      ││Swap    0B / 2.0G                                                                   │
 │                      ││scratch       42% frag 42% ONLINE   scrub Oct  8 19:48:07 2026                      │
 │                      ││tpool         41% frag  2% ONLINE   scrub Oct 18 03:00:30 2026                      │
