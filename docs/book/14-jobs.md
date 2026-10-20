@@ -133,7 +133,7 @@ Press `N` in Jobs, or `J` on a dataset in Datasets:
 Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel
 ```
 
-The job takes a snapshot of the dataset named `<prefix>-<UTC timestamp>` (for example `hourly-20261010T170000Z`) and then keeps only the newest **Keep** of the snapshots it made. **Recursive** includes the child datasets, taken together. The job only ever deletes names that match exactly its own `<prefix>-<timestamp>`: your manual snapshots, other jobs' snapshots, and look-alikes like `hourly-keep-forever` are never touched. If a snapshot cannot be destroyed (a hold, a clone), the run is recorded as failed and says why.
+The job takes a snapshot of the dataset named `<prefix>-<UTC timestamp>` (for example `hourly-20261010T170000Z`) and then keeps only the newest **Keep** of the snapshots it made. **Recursive** includes the child datasets, taken together. The job only ever deletes names that match exactly its own `<prefix>-<timestamp>`: your manual snapshots, other jobs' snapshots, and look-alikes like `hourly-keep-forever` are never touched. A snapshot with a hold (chapter 10) is kept and the run says `kept N (held)`; this is not an error. If a snapshot cannot be destroyed for another reason (a clone), the run is recorded as failed and says why.
 
 ## A replication job
 

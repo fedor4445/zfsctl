@@ -94,6 +94,7 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 |---|---|
 | `d` | destroy (type dataset@name to confirm) |
 | `b` | roll back (type dataset@name to confirm) |
+| `H` | hold the selected snapshot, or release zfsctl's hold on it (a hold stops it being destroyed or pruned; other tags are never released) |
 
 ## Disks
 
