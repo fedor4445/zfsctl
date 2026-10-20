@@ -45,7 +45,7 @@ The panel shows the tool's own message. Common ones:
 - `the snapshot tank/data@x no longer exists`: the Source is pinned to `@x` and someone destroyed it. The run fails on purpose, so you notice. Pick another Source.
 - `skipped: up to date (…)`: normal. The repository already holds a backup of that snapshot from this job.
 - `cannot snapshot tank/data: …`: a `new` Source could not take its snapshot (out of space, or a snapshot limit on the dataset).
-- `could not remove the old snapshot …`: the backup worked, but a hold or a clone stops the job from pruning one of its own `zit-…` snapshots; it tries again next run.
+- `could not remove the old snapshot …`: the backup worked, but a clone (or another destroy failure) stops the job from pruning one of its own `zit-…` snapshots; it tries again next run. A snapshot with a hold is not an error: the run says `kept the old snapshot <name> (held)` and the reason instead.
 - `sftp: no space left on device`: the disk holding the repository is full. Free space there (for example the package cache with `pkg clean -a`, as root) or move the repository; `df` on that host shows the filesystem.
 - `Note:` lines under `F5` in the backup form are about the password file's location and permissions, not about the backup (chapter 15, "Protect the password file").
 

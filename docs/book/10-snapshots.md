@@ -118,7 +118,7 @@ Press `b` on a snapshot to roll its dataset back to that moment. You **type the 
 
 ## Protecting a snapshot
 
-A **hold** is a lock that ZFS itself puts on a snapshot. While a snapshot is held it cannot be destroyed, by anyone, until the hold is released. Use it when you want to keep a snapshot safe while you investigate something: the state before an upgrade, the last good copy before you chase a problem.
+A **hold** is a lock that ZFS itself puts on a snapshot. While a snapshot is held it cannot be destroyed, not even by root, until someone releases the hold. Use it when you want to keep a snapshot safe while you investigate something: the state before an upgrade, the last good copy before you chase a problem.
 
 The Snapshots list has a **Hold** column:
 
@@ -142,13 +142,13 @@ A held snapshot is refused everywhere zfsctl could destroy it:
 - `d` or `D` on a dataset refuses if any of its snapshots is held.
 - Snapshot jobs (retention), the old snapshots that a backup or cloud mirror job takes with source `new`, and the **Keep on target** pruning of a replication job all skip a held snapshot. The run's message says `kept N (held)`; this is not an error.
 
-Because a hold is ZFS's own mechanism (`zfs hold`), it is enforced by ZFS and protects the snapshot even when zfsctl is not running. It also blocks a recursive destroy of the dataset and a rollback past the snapshot. zfsctl never uses the deferred destroy (`zfs destroy -d`), which would remove the snapshot later without asking. No extra sudoers entry is needed.
+Because a hold is ZFS's own mechanism (`zfs hold`), it is enforced by ZFS and protects the snapshot even when zfsctl is not running. Because ZFS refuses to destroy a held snapshot, it also refuses a recursive destroy that would remove it. zfsctl never uses the deferred destroy (`zfs destroy -d`), which would remove the snapshot later without asking. No extra sudoers entry is needed.
 
 > **Safety:** a hold protects one snapshot from being destroyed; it is not a backup. If the pool is lost, the held snapshot is lost with it (chapter 15).
 
 ## How scheduled snapshots are named
 
-A snapshot **job** (chapter 14) names its snapshots `<prefix>-<timestamp>`, for example `auto-20261010T020000Z`, and it only ever deletes snapshots with its own prefix when it applies its retention (`keep`), and it keeps a held snapshot (see above). Your own snapshots, with other names, are never touched by a job. A backup job uses the newest snapshot with its prefix, which is why the two share a prefix.
+A snapshot **job** (chapter 14) names its snapshots `<prefix>-<timestamp>`, for example `auto-20261010T020000Z`, and it only ever deletes snapshots with its own prefix when it applies its retention (`keep`). It also keeps a held snapshot (see above). Your own snapshots, with other names, are never touched by a job. A backup job uses the newest snapshot with its prefix, which is why the two share a prefix.
 
 ## Try it
 
