@@ -1,16 +1,16 @@
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌ACL — scratch/data ('r' refresh, 'n' add, 'd' rem┐
-│Hosts                 ││Name                                         Used     Avail    Kind      ││#   Tar Permissions          Flags         Type  │
-│Pools                 ││scratch                                      102M     18.3M    Filesystem││0   own read_data/write_data —             Allow │
-│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││1   gro read_data/execute/re —             Allow │
-│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││2   eve read_data/execute/re —             Allow │
-│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
-│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
-│Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-│Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
-│Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
-│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
-│                      ││                                                                           Data    100M   Snaps 200K                        │
-│                      ││                                                                           Kids    0B   Refres 0B                           │
+│Dashboard             ││Name                                  Used     Avail    Lock   Kind      ││#   Tar Permissions          Flags         Type  │
+│Hosts                 ││scratch                               103M     17.3M           Filesystem││0   own read_data/write_data —             Allow │
+│Pools                 ││scratch/data                          100M     17.3M           Filesystem││1   gro read_data/execute/re —             Allow │
+│Datasets              ││scratch/vault                         408K     17.3M    LOCKED Filesystem││2   eve read_data/execute/re —             Allow │
+│Snapshots             ││scratch/vault/docs                    200K     17.3M    LOCKED Filesystem││                                                 │
+│Disks                 ││tpool                                 3.9G     5.2G            Filesystem││                                                 │
+│Shares                │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+│Boot Envs             │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│Jobs                  ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 118M                        │
+│Cloud                 ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
+│Alerts                ││                                                                           Data    100M   Snaps 256K                        │
+│Settings              ││                                                                           Kids    0B   Refres 0B                           │
 │                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ↑↓ Move  n Add entry  [ ] Tabs  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

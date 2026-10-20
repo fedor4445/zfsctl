@@ -1,25 +1,25 @@
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
-│Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
-│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
-│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
-│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
-│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
-│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
-│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
-│                      ││zroot/home/fb            554M    30.6G    Filesys││                                 │
-│                      ││zroot/home/carol         128K    30.6G    Filesys││                                 │
-│                      ││zroot/tmp                3.5G    30.6G    Filesys││                                 │
-│                      ││zroot/usr                1018M   30.6G    Filesys││                                 │
-│                      ││zroot/usr/ports          96.0K   30.6G    Filesys││                                 │
-│                      ││zroot/usr/src            1018M   30.6G    Filesys││                                 │
-│                      ││zroot/var                173M    30.6G    Filesys││                                 │
+│Dashboard             ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
+│Hosts                 ││scratch                  103M    17.3M    Filesys││                                 │
+│Pools                 ││scratch/data             100M    17.3M    Filesys││                                 │
+│Datasets              ││scratch/vault            408K    17.3M    Filesys││                                 │
+│Snapshots             ││scratch/vault/docs       200K    17.3M    Filesys││                                 │
+│Disks                 ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Shares                ││zroot                    10.7G   30.5G    Filesys││                                 │
+│Boot Envs             ││zroot/ROOT               5.3G    30.5G    Filesys││                                 │
+│Jobs                  ││zroot/ROOT/default       5.3G    30.5G    Filesys││                                 │
+│Cloud                 ││zroot/home               595M    30.5G    Filesys││                                 │
+│Alerts                ││zroot/home/alice         144K    30.5G    Filesys││                                 │
+│Settings              ││zroot/home/fb            594M    30.5G    Filesys││                                 │
+│                      ││zroot/home/carol         128K    30.5G    Filesys││                                 │
+│                      ││zroot/tmp                3.5G    30.5G    Filesys││                                 │
+│                      ││zroot/usr                1018M   30.5G    Filesys││                                 │
+│                      ││zroot/usr/ports          96.0K   30.5G    Filesys││                                 │
 │                      │└─────────────────────────────────────────────────┘└─────────────────────────────────┘
 │                      │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Used    85%  100M of 119M      │
+│                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Used    85%  100M of 118M      │
 │                      ││0 ops  lat -               0 ops  lat -              Refer   100M   Logical 100M    │
-│                      ││                                                     Data    100M   Snaps 200K      │
+│                      ││                                                     Data    100M   Snaps 256K      │
 │                      ││                                                     Kids    0B   Refres 0B         │
 │                      ││                                                     Compr   on 1.00x   Rec 128K    │
 │                      ││                                                     Quota   -   Ref -              │
@@ -33,4 +33,4 @@
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  → Details  n New  d Destroy  D Destroy recursively  s Snapshot  N NFS share  ? Help  q Quit
+↑↓ Move  → Details  n New  E New encrypted  d Destroy  D Destroy recursively  s Snapshot  ? Help  q Quit

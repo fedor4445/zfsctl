@@ -1,21 +1,21 @@
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
-│Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
-│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
-│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
-│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
-│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
-│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
-│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
-│                      ││zroot/home/fb            554M    30.6G    Filesys││                                 │
-│                     ┌NFS share: 'scratch/data'───────────────────────────────────────┐                     │
-│                     │> Networks: 172.16.10.0/24                                      │                     │
+│Dashboard             ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
+│Hosts                 ││scratch                  103M    17.3M    Filesys││                                 │
+│Pools                 ││scratch/data             100M    17.3M    Filesys││                                 │
+│Datasets              ││scratch/vault            408K    17.3M    Filesys││                                 │
+│Snapshots             ││scratch/vault/docs       200K    17.3M    Filesys││                                 │
+│Disks                 ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Shares                ││zroot                    10.7G   30.5G    Filesys││                                 │
+│Boot Envs             ││zroot/ROOT               5.3G    30.5G    Filesys││                                 │
+│Jobs                  ││zroot/ROOT/default       5.3G    30.5G    Filesys││                                 │
+│Cloud                 ││zroot/home               595M    30.5G    Filesys││                                 │
+│Alerts               ┌NFS share: 'scratch/data'───────────────────────────────────────┐                     │
+│Settings             │> Networks: 172.16.10.0/24                                      │                     │
 │                     │  Hosts:                                                        │─────────────────────┘
 │                     │  Read-only (y/n): n                                            │─────────────────────┐
-│                     │  Root user mapping:                                            │%  100M of 119M      │
+│                     │  Root user mapping:                                            │%  100M of 118M      │
 │                     └────────────────────────────────────────────────────────────────┘0M   Logical 100M    │
-│                      ││                                                     Data    100M   Snaps 200K      │
+│                      ││                                                     Data    100M   Snaps 256K      │
 │                      ││                                                     Kids    0B   Refres 0B         │
 │                      ││                                                     Compr   on 1.00x   Rec 128K    │
 │                      ││                                                     Quota   -   Ref -              │

@@ -1,16 +1,16 @@
 ┌zfsctl────────────────┐┌Vdevs — tpool ('r' refresh, Esc/Backspace back)─────────────────────────────────────┐
-│Hosts                 ││Device                         Health                                               │
-│Pools                 ││tpool                          ● ONLINE                                             │
-│Datasets              ││  raidz2-0                     ● ONLINE                                             │
-│Snapshots             ││    ada1                       ● ONLINE                                             │
-│Disks                 ││    ada2                       ● ONLINE                                             │
-│Shares                ││    ada3                       ● ONLINE                                             │
-│Boot Envs             ││    ada4                       ● ONLINE                                             │
+│Dashboard             ││Device                         Health                                               │
+│Hosts                 ││tpool                          ● ONLINE                                             │
+│Pools                 ││  raidz2-0                     ● ONLINE                                             │
+│Datasets              ││    ada1                       ● ONLINE                                             │
+│Snapshots             ││    ada2                       ● ONLINE                                             │
+│Disks                 ││    ada3                       ● ONLINE                                             │
+│Shares                ││    ada4                       ● ONLINE                                             │
+│Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
-│Alerts                ││                                                                                    │
-│                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — tpool─────────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Health  ● ONLINE               │
+│Cloud                 │└────────────────────────────────────────────────────────────────────────────────────┘
+│Alerts                │┌Metrics — tpool─────────────────────────────────────────────────────────────────────┐
+│Settings              ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Health  ● ONLINE               │
 │                      ││0 ops  lat -               0 ops  lat -              Used    41%  8.1G / 19.5G      │
 │                      ││                                                     Vdevs      1  (1 raidz2)       │
 │                      ││                                                     Disks      4  (4 data)         │
@@ -20,5 +20,5 @@
 │                      ││                                                     Frag    2%   Dedup 1.00x       │
 │                      ││                                                     +2 more lines: enlarge the ter…│
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-resilvered 501M in 00:00:30 with 0 errors on Sat Sep 26 13:15:14 2026
+scrub repaired 0B in 00:00:29 with 0 errors on Sun Oct 18 03:00:30 2026
 ↑↓ Move  a Add vdev  r Refresh  Esc Back  ! Shell  A About  ? Help  q Quit

@@ -12,41 +12,41 @@ A snapshot is a read-only picture of a dataset at one moment. Go to Snapshots an
 
 ```screen
 ┌zfsctl────────────────┐┌Snapshots — local ('r' to refresh)──────────────────────────────────────────────────┐
-│Hosts                 ││Snapshot                           Used                                             │
-│Pools                 ││scratch/data@snap1                 64.0K                                            │
-│Datasets              ││scratch/data@snap2                 64.0K                                            │
-│Snapshots             ││scratch/data@snap4                 72.0K                                            │
+│Dashboard             ││Snapshot                           Used                                             │
+│Hosts                 ││scratch/data@snap1                 64.0K                                            │
+│Pools                 ││scratch/data@snap2                 64.0K                                            │
+│Datasets              ││scratch/data@snap4                 72.0K                                            │
+│Snapshots             ││scratch/data@sphrase1              56.0K                                            │
 │Disks                 ││tpool@snap1                        93.0K                                            │
 │Shares                ││tpool@snap2                        2.0G                                             │
 │Boot Envs             ││zroot@09052026                     80.0K                                            │
 │Jobs                  ││zroot/ROOT@snap1                   0B                                               │
-│Alerts                ││zroot/home/alice@alice             8.0K                                             │
-│                      ││zroot/home/fb@09052026             88.0K                                            │
-│                      ││zroot/home/fb@09062026             88.0K                                            │
+│Cloud                 ││zroot/home/alice@alice             8.0K                                             │
+│Alerts                ││zroot/home/fb@09052026             88.0K                                            │
+│Settings              ││zroot/home/fb@09062026             88.0K                                            │
 │                      ││zroot/home/carol@carol1            0B                                               │
 │                      ││zroot/home/carol@snap5             0B                                               │
 │                      ││zroot/var@snap1                    0B                                               │
 │                      ││zroot/var/log@09052026             224K                                             │
-│                      ││zroot/var/log@snap4                220K                                             │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data@snap1────────────────────────────────────────────────────────┐
-│                      ││Snapshot  snap1                               Snapshot sizes                        │
-│                      ││Created   34d 23h ago                         oldest → newest, this one lit         │
-│                      ││Used      64.0K   Refer 96.0K   Written 96.0K   █                                   │
-│                      ││Reclaim   64.0K  (freed if destroyed)         ▄▄█                                   │
-│                      ││Holds     0   Clones -                        ███                                   │
-│                      ││Dataset   3 snaps, 200K = <1% of used         ███                                   │
-│                      ││Oldest    34d 23h ago                         ███                                   │
-│                      ││Newest    7d 22h ago                          ███                                   │
-│                      ││                                              ███                                   │
-│                      ││                                              ███                                   │
-│                      ││                                              ███                                   │
-│                      ││                                              ███                                   │
-│                      ││                                              ███                                   │
-│                      ││                                              ███                                   │
-│                      ││                                              ███                                   │
+│                      │┌Metrics─────────────────────────────────────────────────────────────────────────────┐
+│                      ││nothing selected                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  d Destroy  b Rollback  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 The list shows every snapshot on the host, named `dataset@name`, with the space it **Used**: the space that would be freed if you destroyed only that snapshot. A snapshot that has just been taken uses nothing; it grows as the dataset changes, because it keeps the old blocks. (Sizes are in human units, like everywhere else.)
@@ -72,23 +72,23 @@ Snapshots are taken from the Datasets section. Select the dataset and press `s`:
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
-│Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
-│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
-│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
-│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
-│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
-│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
-│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
-│                      ││zroot/home/fb            554M    30.6G    Filesys││                                 │
-│                     ┌Snapshot dataset 'scratch/data'─────────────────────────────────┐                     │
-│                     │> Snapshot name:                                                │                     │
+│Dashboard             ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
+│Hosts                 ││scratch                  103M    17.3M    Filesys││                                 │
+│Pools                 ││scratch/data             100M    17.3M    Filesys││                                 │
+│Datasets              ││scratch/vault            408K    17.3M    Filesys││                                 │
+│Snapshots             ││scratch/vault/docs       200K    17.3M    Filesys││                                 │
+│Disks                 ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Shares                ││zroot                    10.7G   30.5G    Filesys││                                 │
+│Boot Envs             ││zroot/ROOT               5.3G    30.5G    Filesys││                                 │
+│Jobs                  ││zroot/ROOT/default       5.3G    30.5G    Filesys││                                 │
+│Cloud                 ││zroot/home               595M    30.5G    Filesys││                                 │
+│Alerts               ┌Snapshot dataset 'scratch/data'─────────────────────────────────┐                     │
+│Settings             │> Snapshot name:                                                │                     │
 │                     │                                                                │─────────────────────┘
 │                     │                                                                │─────────────────────┐
-│                     └────────────────────────────────────────────────────────────────┘%  100M of 119M      │
+│                     └────────────────────────────────────────────────────────────────┘%  100M of 118M      │
 │                      ││0 ops  lat -               0 ops  lat -              Refer   100M   Logical 100M    │
-│                      ││                                                     Data    100M   Snaps 200K      │
+│                      ││                                                     Data    100M   Snaps 256K      │
 │                      ││                                                     Kids    0B   Refres 0B         │
 │                      ││                                                     Compr   on 1.00x   Rec 128K    │
 │                      ││                                                     Quota   -   Ref -              │

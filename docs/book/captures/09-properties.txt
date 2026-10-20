@@ -1,22 +1,22 @@
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)───────────────────────┐┌Properties — scratch/data ('r' refresh, Enter to ed┐
-│Hosts                 ││Name                                       Used     Avail    Kind      ││Property         Value                   Source    │
-│Pools                 ││scratch                                    102M     18.3M    Filesystem││type             filesystem              -         │
-│Datasets              ││scratch/data                               100M     18.3M    Filesystem││creation         1788654263              -         │
-│Snapshots             ││tpool                                      3.9G     5.2G     Filesystem││used             105250816               -         │
-│Disks                 ││zroot                                      10.6G    30.6G    Filesystem││available        19189760                -         │
-│Shares                ││zroot/ROOT                                 5.3G     30.6G    Filesystem││referenced       105046016               -         │
-│Boot Envs             ││zroot/ROOT/default                         5.3G     30.6G    Filesystem││compressratio    1.00                    -         │
-│Jobs                  ││zroot/home                                 554M     30.6G    Filesystem││mounted          yes                     -         │
-│Alerts                ││zroot/home/alice                           144K     30.6G    Filesystem││quota            0                       default   │
-│                      │└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
-│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
-│                      ││                                                                           Data    100M   Snaps 200K                        │
-│                      ││                                                                           Kids    0B   Refres 0B                           │
-│                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
-│                      ││                                                                           Quota   -   Ref -                                │
-│                      ││                                                                           Pool    ONLINE  errs 0                           │
-│                      ││                                                                                                                            │
+│Dashboard             ││Name                                Used     Avail    Lock   Kind      ││Property         Value                   Source    │
+│Hosts                 ││scratch                             103M     17.3M           Filesystem││type             filesystem              -         │
+│Pools                 ││scratch/data                        100M     17.3M           Filesystem││creation         1788654263              -         │
+│Datasets              ││scratch/vault                       408K     17.3M    LOCKED Filesystem││used             105308160               -         │
+│Snapshots             ││scratch/vault/docs                  200K     17.3M    LOCKED Filesystem││available        18178048                -         │
+│Disks                 ││tpool                               3.9G     5.2G            Filesystem││referenced       105046016               -         │
+│Shares                ││zroot                               10.7G    30.5G           Filesystem││compressratio    1.00                    -         │
+│Boot Envs             ││zroot/ROOT                          5.3G     30.5G           Filesystem││mounted          yes                     -         │
+│Jobs                  ││zroot/ROOT/default                  5.3G     30.5G           Filesystem││quota            0                       default   │
+│Cloud                 │└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────┘
+│Alerts                │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│Settings              ││Read  4.0K/s  peak 4.0K/s             Write 0B/s  peak 0B/s                Used    85%  100M of 118M                        │
+│                      ││0 ops  lat 1.6ms                      0 ops  lat -                         Refer   100M   Logical 100M                      │
+│                      ││⡇                                                                          Data    100M   Snaps 256K                        │
+│                      ││⡇                                                                          Kids    0B   Refres 0B                           │
+│                      ││⡇                                                                          Compr   on 1.00x   Rec 128K                      │
+│                      ││⡇                                                                          Quota   -   Ref -                                │
+│                      ││⡇                                                                          Pool    ONLINE  errs 0                           │
+│                      ││⡇                                                                                                                           │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ↑↓ Move  [ ] Tabs  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

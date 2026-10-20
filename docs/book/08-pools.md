@@ -12,13 +12,13 @@ Press `Tab` to reach Pools, then `Down` to select a pool.
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — ? ('r' refresh, Ente┐
-│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
-│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
-│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
-│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Dashboard             ││Name                  Health       Used          ││Property    Value      Source    │
+│Hosts                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Pools                 ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Datasets              ││zroot                 ● ONLINE     ██░░░░░░ 25%  ││                                 │
+│Snapshots             ││                                                 ││                                 │
 │Disks                 ││                                                 ││                                 │
 │Shares                ││                                                 ││                                 │
-│Boot Envs             ││                                                 ││                                 │
 └──────────────────────┘└─────────────────────────────────────────────────┘└─────────────────────────────────┘
 ↑↓ Move  → Properties  n New pool  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
@@ -27,18 +27,18 @@ Each row shows the pool's **health** (`● ONLINE` and friends), a **capacity ba
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — scratch ('r' refresh┐
-│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
-│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
-│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
-│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Dashboard             ││Name                  Health       Used          ││Property    Value      Source    │
+│Hosts                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Pools                 ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Datasets              ││zroot                 ● ONLINE     ██░░░░░░ 25%  ││                                 │
+│Snapshots             ││                                                 ││                                 │
 │Disks                 ││                                                 ││                                 │
 │Shares                ││                                                 ││                                 │
 │Boot Envs             ││                                                 ││                                 │
 │Jobs                  ││                                                 ││                                 │
+│Cloud                 ││                                                 ││                                 │
 │Alerts                ││                                                 ││                                 │
-│                      ││                                                 ││                                 │
-│                      ││                                                 ││                                 │
-│                      ││                                                 ││                                 │
+│Settings              ││                                                 ││                                 │
 │                      ││                                                 ││                                 │
 │                      ││                                                 ││                                 │
 │                      ││                                                 ││                                 │
@@ -48,13 +48,13 @@ Each row shows the pool's **health** (`● ONLINE` and friends), a **capacity ba
 │                      │└─────────────────────────────────────────────────┘└─────────────────────────────────┘
 │                      │┌Metrics — scratch───────────────────────────────────────────────────────────────────┐
 │                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Health  ● ONLINE               │
-│                      ││0 ops  lat -               0 ops  lat -              Used    42%  102M / 240M       │
+│                      ││0 ops  lat -               0 ops  lat -              Used    43%  103M / 240M       │
 │                      ││                                                     Vdevs      1  (1 mirror)       │
 │                      ││                                                     Disks      2  (2 data)         │
-│                      ││                                                     Datasets   2 filesystems       │
-│                      ││                                                     Snapshots  3                   │
+│                      ││                                                     Datasets   4 filesystems       │
+│                      ││                                                     Snapshots  4                   │
 │                      ││                                                     Compress   on 1.00x   Trim on  │
-│                      ││                                                     Frag    40%   Dedup 1.00x      │
+│                      ││                                                     Frag    42%   Dedup 1.00x      │
 │                      ││                                                     Errors  R0 W0 C0               │
 │                      ││                                                     Scrub   Oct  8 19:48:07 2026   │
 │                      ││                                                                                    │
@@ -76,18 +76,18 @@ Press `Enter` on a pool to drill in:
 
 ```screen
 ┌zfsctl────────────────┐┌Vdevs — tpool ('r' refresh, Esc/Backspace back)─────────────────────────────────────┐
-│Hosts                 ││Device                         Health                                               │
-│Pools                 ││tpool                          ● ONLINE                                             │
-│Datasets              ││  raidz2-0                     ● ONLINE                                             │
-│Snapshots             ││    ada1                       ● ONLINE                                             │
-│Disks                 ││    ada2                       ● ONLINE                                             │
-│Shares                ││    ada3                       ● ONLINE                                             │
-│Boot Envs             ││    ada4                       ● ONLINE                                             │
+│Dashboard             ││Device                         Health                                               │
+│Hosts                 ││tpool                          ● ONLINE                                             │
+│Pools                 ││  raidz2-0                     ● ONLINE                                             │
+│Datasets              ││    ada1                       ● ONLINE                                             │
+│Snapshots             ││    ada2                       ● ONLINE                                             │
+│Disks                 ││    ada3                       ● ONLINE                                             │
+│Shares                ││    ada4                       ● ONLINE                                             │
+│Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
-│Alerts                ││                                                                                    │
-│                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — tpool─────────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Health  ● ONLINE               │
+│Cloud                 │└────────────────────────────────────────────────────────────────────────────────────┘
+│Alerts                │┌Metrics — tpool─────────────────────────────────────────────────────────────────────┐
+│Settings              ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Health  ● ONLINE               │
 │                      ││0 ops  lat -               0 ops  lat -              Used    41%  8.1G / 19.5G      │
 │                      ││                                                     Vdevs      1  (1 raidz2)       │
 │                      ││                                                     Disks      4  (4 data)         │
@@ -97,7 +97,7 @@ Press `Enter` on a pool to drill in:
 │                      ││                                                     Frag    2%   Dedup 1.00x       │
 │                      ││                                                     +2 more lines: enlarge the ter…│
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-resilvered 501M in 00:00:30 with 0 errors on Sat Sep 26 13:15:14 2026
+scrub repaired 0B in 00:00:29 with 0 errors on Sun Oct 18 03:00:30 2026
 ↑↓ Move  a Add vdev  r Refresh  Esc Back  ! Shell  A About  ? Help  q Quit
 ```
 
@@ -120,18 +120,18 @@ Press `n` for the Create Pool form:
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — ? ('r' refresh, Ente┐
-│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
-│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
-│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
-│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Dashboard             ││Name                  Health       Used          ││Property    Value      Source    │
+│Hosts                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Pools                 ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Datasets              ││zroot                 ● ONLINE     ██░░░░░░ 25%  ││                                 │
+│Snapshots             ││                                                 ││                                 │
 │Disks                 ││                                                 ││                                 │
 │Shares                ││                                                 ││                                 │
 │Boot Envs             ││                                                 ││                                 │
-│Jobs                  ││                                                 ││                                 │
-│Alerts               ┌Create Pool─────────────────────────────────────────────────────┐                     │
-│                     │> Name:                                                         │                     │
-│                     │  Vdev spec (e.g. mirror da0 da1):                              │─────────────────────┘
-│                     │                                                                │─────────────────────┐
+│Jobs                 ┌Create Pool─────────────────────────────────────────────────────┐                     │
+│Cloud                │> Name:                                                         │                     │
+│Alerts               │  Vdev spec (e.g. mirror da0 da1):                              │─────────────────────┘
+│Settings             │                                                                │─────────────────────┐
 │                     └────────────────────────────────────────────────────────────────┘                     │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
@@ -179,18 +179,18 @@ Press `Right` to move into the properties pane, or select a pool and look at it 
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for p┐┌Properties — tpool ('r' refresh, Enter to edit,┐
-│Hosts                 ││Name             Health       Used ││Property         Value               Source    │
-│Pools                 ││scratch          ● ONLINE     42%  ││size             20937965568         -         │
-│Datasets              ││tpool            ● ONLINE     41%  ││capacity         41                  -         │
-│Snapshots             ││zroot            ● ONLINE     24%  ││altroot          -                   default   │
-│Disks                 ││                                   ││health           ONLINE              -         │
-│Shares                ││                                   ││guid             5954732628176323138 -         │
-│Boot Envs             ││                                   ││version          -                   default   │
-│Jobs                  ││                                   ││bootfs           -                   default   │
-│Alerts                ││                                   ││delegation       on                  default   │
-│                      ││                                   ││autoreplace      on                  local     │
-│                      ││                                   ││cachefile        -                   default   │
-│                      ││                                   ││failmode         wait                default   │
+│Dashboard             ││Name             Health       Used ││Property         Value               Source    │
+│Hosts                 ││scratch          ● ONLINE     42%  ││size             20937965568         -         │
+│Pools                 ││tpool            ● ONLINE     41%  ││capacity         41                  -         │
+│Datasets              ││zroot            ● ONLINE     25%  ││altroot          -                   default   │
+│Snapshots             ││                                   ││health           ONLINE              -         │
+│Disks                 ││                                   ││guid             5954732628176323138 -         │
+│Shares                ││                                   ││version          -                   default   │
+│Boot Envs             ││                                   ││bootfs           -                   default   │
+│Jobs                  ││                                   ││delegation       on                  default   │
+│Cloud                 ││                                   ││autoreplace      on                  local     │
+│Alerts                ││                                   ││cachefile        -                   default   │
+│Settings              ││                                   ││failmode         wait                default   │
 │                      ││                                   ││listsnapshots    on                  local     │
 │                      │└───────────────────────────────────┘└───────────────────────────────────────────────┘
 │                      │┌Metrics — tpool─────────────────────────────────────────────────────────────────────┐
@@ -203,7 +203,7 @@ Press `Right` to move into the properties pane, or select a pool and look at it 
 │                      ││                                                     Compress   on 1.00x   Trim off │
 │                      ││                                                     Frag    2%   Dedup 1.00x       │
 │                      ││                                                     Errors  R0 W0 C0               │
-│                      ││                                                     Scrub   Sep 26 13:15:14 2026   │
+│                      ││                                                     Scrub   Oct 18 03:00:30 2026   │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘

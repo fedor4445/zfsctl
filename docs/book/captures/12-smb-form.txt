@@ -1,27 +1,24 @@
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
-│Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
-│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
-│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
-│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
-│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
-│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
-│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
-│                     ┌SMB share: 'scratch/data'───────────────────────────────────────┐                     │
-│                     │Shares /scratch/data as \\<host>\<name>. The Valid user must    │                     │
-│                     │for every share they use. Blank user + guest n: any Samba user  │                     │
+│Dashboard             ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
+│Hosts                 ││scratch                  103M    17.3M    Filesys││                                 │
+│Pools                 ││scratch/data             100M    17.3M    Filesys││                                 │
+│Datasets              ││scratch/vault            408K    17.3M    Filesys││                                 │
+│Snapshots             ││scratch/vault/docs       200K    17.3M    Filesys││                                 │
+│Disks                 ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Shares                ││zroot                    10.7G   30.5G    Filesys││                                 │
+│Boot Envs            ┌SMB share: 'scratch/data'───────────────────────────────────────┐                     │
+│Jobs                 │Shares /scratch/data as \\<host>\<name>. The Valid user must    │                     │
+│Settings             │for every share they use. Blank user + guest n: any Samba user  │                     │
 │                     │blank user).                                                    │                     │
 │                     │                                                                │─────────────────────┘
 │                     │> Share name: data                                              │─────────────────────┐
-│                     │  Valid user (blank = any Samba user):                          │%  100M of 119M      │
+│                     │  Valid user (blank = any Samba user):                          │%  100M of 118M      │
 │                     │  Password (blank on edit = unchanged):                         │0M   Logical 100M    │
-│                     │  Read-only (y/n): n                                            │0M   Snaps 200K      │
-│                     │  Guest access (y/n): n                                         │   Refres 0B         │
+│                     │  Read-only (y/n): n                                            │0M   Snaps 256K      │
+│                     │  Guest access (y/n): y                                         │   Refres 0B         │
 │                     │                                                                │ 1.00x   Rec 128K    │
 │                     │                                                                │  Ref -              │
 │                     └────────────────────────────────────────────────────────────────┘LINE  errs 0         │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │

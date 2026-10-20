@@ -1,10 +1,10 @@
-┌zfsctl────────────────┐┌Hosts (filter: t1_ — 1/4)───────────────────────────────────────────────────────────┐
-│Hosts                 ││Name       Address            State                               Type   Used  Pools│
-│Pools                 ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
+┌zfsctl────────────────┐┌Hosts (filter: t1_ — 1/6)───────────────────────────────────────────────────────────┐
+│Dashboard             ││Name       Address            State                       Type   Tag     Used  Pools│
+│Hosts                 ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
+│Pools                 ││                                                                                    │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
 │Disks                 ││                                                                                    │
 │Shares                ││                                                                                    │
-│Boot Envs             ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
 Enter Keep filter  Esc Clear

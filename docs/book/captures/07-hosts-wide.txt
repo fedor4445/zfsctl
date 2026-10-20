@@ -1,12 +1,12 @@
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│Hosts                 ││Name       Address            State                                            Type   Used  Pools Scrub         Jobs  Rtt   │
-│Pools                 ││● local    local              ok                                               vm     42%   3     Sep 5 2026    0/1   17ms  │
-│Datasets              ││● fbsd16   172.16.10.60       ok                                               vm     55%   1     never         -     210ms │
-│Snapshots             ││● fbsd16t1 172.16.10.61       ok                                               vm     72%   2     never         -     431ms │
-│Disks                 ││● fbsd16t2 172.16.10.62       ok                                               vm     72%   2     never         -     306ms │
-│Shares                ││                                                                                                                            │
+│Dashboard             ││Name       Address            State                                    Type   Tag     Used  Pools Scrub         Jobs  Rtt   │
+│Hosts                 ││● local    local              ok                                       vm             42%   3     Oct 8 2026    0/2   26ms  │
+│Pools                 ││● fbsd16   172.16.10.60       ok                                       vm             61%   1     Oct 17 2026   -     223ms │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                                       vm             53%   2     Oct 17 2026   -     539ms │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                                       vm             74%   2     Oct 17 2026   -     256ms │
+│Disks                 ││● ub24     172.16.10.52       ok                                       -      linux   0%    1     Oct 17 2026   -     1161ms│
+│Shares                ││● omnios   172.16.10.80       tank 96% full                            -      illumos 96%   2     Oct 17 2026   -     390ms │
 │Boot Envs             ││                                                                                                                            │
 │Jobs                  ││                                                                                                                            │
-│Alerts                ││                                                                                                                            │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Host  c Check disks and shares  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit

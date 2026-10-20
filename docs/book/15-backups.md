@@ -30,19 +30,19 @@ On the host that will run the backup (the hub, in the running example):
 Press `B` in Jobs:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 1698)────────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 8h ago │
-│Datasets             ┌New backup job──────────────────────────────────────────────────┐0-12 10:41 skipped 24│
-│Snapshots            │Backs up a read-only clone of a snapshot. Source: new = take a  │                     │
-│Disks                │fresh snapshot each run and keep the last few of those; a prefix│                     │
-│Shares               │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
-│Boot Envs            │always that one snapshot. The repository must already exist     │                     │
-│Jobs                 │(restic init).                                                  │                     │
-│Alerts               │                                                                │                     │
-│                     │> Host (where restic runs): local                               │                     │
-│                     │  Dataset:                                                      │                     │
-│                     │  Path inside the dataset (blank = all of it):                  │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
+│Pools                ┌New backup job──────────────────────────────────────────────────┐0-25 03:00 ok 2d ago │
+│Datasets             │Backs up a read-only clone of a snapshot. Source: new = take a  │                     │
+│Snapshots            │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Disks                │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Shares               │always that one snapshot. The repository must already exist     │                     │
+│Boot Envs            │(restic init).                                                  │                     │
+│Jobs                 │                                                                │                     │
+│Cloud                │> Host (where restic runs): local                               │                     │
+│Alerts               │  Dataset:                                                      │                     │
+│Settings             │  Path inside the dataset (blank = all of it):                  │                     │
 │                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
 │                     │  Snapshots to keep (Source new only; blank = 3):               │─────────────────────┘
 │                     │  Repository (restic -r; no credentials in it):                 │─────────────────────┐
@@ -52,7 +52,7 @@ Press `B` in Jobs:
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │Next: Wed 2026-10-21 03:30, Thu 2026-10-22 03:30, Fri 2026-10-23│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │                                                                │                     │
@@ -75,29 +75,29 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 Press `F2` on Source to see what the dataset has: `new`, then the prefixes in use (`hourly` here), then every snapshot as `@name`. Type to filter, Enter to choose.
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 1698)────────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 8h ago │
-│Datasets             ┌New backup job──────────────────────────────────────────────────┐0-12 10:41 skipped 25│
-│Snapshots            │Backs up a read-only clone of a snapshot. Source: new = take a  │                     │
-│Disks                │fresh snapshot each run and keep the last few of those; a prefix│                     │
-│Shares               │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
-│Boot Envs            │always that one snapshot. The repository must already exist     │                     │
-│Jobs                 │(restic init).                                                  │                     │
-│Alerts               │                                                                │                     │
-│                     │  Hos┌Pick a value (type filter, Enter OK, Esc cancel)─────┐    │                     │
-│                     │  Dat│new                                                  │    │                     │
-│                     │  Pat│hourly                                               │    │                     │
-│                     │> Sou│@manual1                                             │    │                     │
-│                     │  Sna│@hourly-20261010T130000Z                             │    │─────────────────────┘
-│                     │  Rep│@hourly-20261010T120000Z                             │    │─────────────────────┐
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
+│Pools                ┌New backup job──────────────────────────────────────────────────┐0-25 03:00 ok 2d ago │
+│Datasets             │Backs up a read-only clone of a snapshot. Source: new = take a  │                     │
+│Snapshots            │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Disks                │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Shares               │always that one snapshot. The repository must already exist     │                     │
+│Boot Envs            │(restic init).                                                  │                     │
+│Jobs                 │                                                                │                     │
+│Cloud                │  Hos┌Pick a value (type filter, Enter OK, Esc cancel)─────┐    │                     │
+│Alerts               │  Dat│new                                                  │    │                     │
+│Settings             │  Pat│@sphrase1                                            │    │                     │
+│                     │> Sou│@snap4                                               │    │                     │
+│                     │  Sna│@snap2                                               │    │─────────────────────┘
+│                     │  Rep│@snap1                                               │    │─────────────────────┐
 │                     │  Pas│                                                     │    │                     │
 │                     │  Kee│                                                     │    │                     │
 │                     │  Sch└─────────────────────────────────────────────────────┘    │                     │
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │Next: Wed 2026-10-21 03:30, Thu 2026-10-22 03:30, Fri 2026-10-23│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │                                                                │                     │
@@ -116,19 +116,19 @@ Press `F2` on Source to see what the dataset has: `new`, then the prefixes in us
 Before the first scheduled run, press `F5` in the form. zfsctl tries to open the repository with the password file on that host, and shows the answer at the bottom of the form:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 1698)────────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                ┌New backup job──────────────────────────────────────────────────┐0-18 03:00 ok 8h ago │
-│Datasets             │Backs up a read-only clone of a snapshot. Source: new = take a  │0-12 10:41 skipped 28│
-│Snapshots            │fresh snapshot each run and keep the last few of those; a prefix│                     │
-│Disks                │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
-│Shares               │always that one snapshot. The repository must already exist     │                     │
-│Boot Envs            │(restic init).                                                  │                     │
-│Jobs                 │                                                                │                     │
-│Alerts               │  Host (where restic runs): local                               │                     │
-│                     │  Dataset:                                                      │                     │
-│                     │  Path inside the dataset (blank = all of it):                  │                     │
-│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                ┌New backup job──────────────────────────────────────────────────┐0-25 03:00 ok 2d ago │
+│Pools                │Backs up a read-only clone of a snapshot. Source: new = take a  │0-25 03:00 ok 2d ago │
+│Datasets             │fresh snapshot each run and keep the last few of those; a prefix│                     │
+│Snapshots            │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Disks                │always that one snapshot. The repository must already exist     │                     │
+│Shares               │(restic init).                                                  │                     │
+│Boot Envs            │                                                                │                     │
+│Jobs                 │  Host (where restic runs): local                               │                     │
+│Cloud                │  Dataset:                                                      │                     │
+│Alerts               │  Path inside the dataset (blank = all of it):                  │                     │
+│Settings             │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
 │                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
 │                     │  Repository (restic -r; no credentials in it):                 │                     │
 │                     │/mnt/usb/restic-tank                                            │                     │
@@ -138,7 +138,7 @@ Before the first scheduled run, press `F5` in the form. zfsctl tries to open the
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │Next: Wed 2026-10-21 03:30, Thu 2026-10-22 03:30, Fri 2026-10-23│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │Check: no repository at that address yet: create it once with   │                     │
@@ -172,19 +172,19 @@ Anything else is restic's own message, with the repository address hidden. A fai
 The password file holds the repository password as plain text, because a scheduled backup has nobody to type it. Anyone who can read it, and reach the repository, can open every backup. So `F5` also looks at the file itself and adds `Note:` lines under its answer:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 9108)────────────────────────────────────────────────────┐
-│Hosts                ┌New backup job──────────────────────────────────────────────────┐run        Last      │
-│Pools                │Backs up a read-only clone of a snapshot. Source: new = take a  │0-18 03:00 ok 10h ago│
-│Datasets             │fresh snapshot each run and keep the last few of those; a prefix│                     │
-│Snapshots            │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
-│Disks                │always that one snapshot. The repository must already exist     │                     │
-│Shares               │(restic init).                                                  │                     │
-│Boot Envs            │                                                                │                     │
-│Jobs                 │  Host (where restic runs): local                               │                     │
-│Alerts               │  Dataset:                                                      │                     │
-│                     │  Path inside the dataset (blank = all of it):                  │                     │
-│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
-│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard            ┌New backup job──────────────────────────────────────────────────┐run        Last      │
+│Hosts                │Backs up a read-only clone of a snapshot. Source: new = take a  │0-25 03:00 ok 2d ago │
+│Pools                │fresh snapshot each run and keep the last few of those; a prefix│0-25 03:00 ok 2d ago │
+│Datasets             │= the newest <prefix>-<timestamp> (it takes none); @name =      │                     │
+│Snapshots            │always that one snapshot. The repository must already exist     │                     │
+│Disks                │(restic init).                                                  │                     │
+│Shares               │                                                                │                     │
+│Boot Envs            │  Host (where restic runs): local                               │                     │
+│Jobs                 │  Dataset:                                                      │                     │
+│Cloud                │  Path inside the dataset (blank = all of it):                  │                     │
+│Alerts               │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│Settings             │  Snapshots to keep (Source new only; blank = 3):               │                     │
 │                     │  Repository (restic -r; no credentials in it):                 │                     │
 │                     │/mnt/usb/restic-tank                                            │                     │
 │                     │> Password file (absolute path on the host): /tmp/zit-note-key  │                     │
@@ -193,7 +193,7 @@ The password file holds the repository password as plain text, because a schedul
 │                     │  Catch up (y/n): y                                             │─────────────────────┘
 │                     │                                                                │─────────────────────┐
 │                     │custom schedule                                                 │                     │
-│                     │Next: Mon 2026-10-12 03:30, Tue 2026-10-13 03:30, Wed 2026-10-14│                     │
+│                     │Next: Wed 2026-10-21 03:30, Thu 2026-10-22 03:30, Fri 2026-10-23│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │Check: no repository at that address yet: create it once with   │                     │
@@ -270,19 +270,19 @@ A restic repository is not something you can open in a web browser: it is encryp
 Press `C` in Jobs:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 25913)───────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 6d ago │
-│Datasets             ┌New cloud mirror job────────────────────────────────────────────┐                     │
-│Snapshots            │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
-│Disks                │plain files. What a run replaces or deletes is first moved to   │                     │
-│Shares               │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
-│Boot Envs            │old/. Symlinks, devices, empty folders and child datasets are   │                     │
-│Jobs                 │not copied.                                                     │                     │
-│Alerts               │                                                                │                     │
-│                     │  Host (where rclone runs): local                               │                     │
-│                     │> Dataset:                                                      │                     │
-│                     │  Path inside the dataset (blank = all of it):                  │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
+│Pools                ┌New cloud mirror job────────────────────────────────────────────┐0-25 03:00 ok 2d ago │
+│Datasets             │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
+│Snapshots            │plain files. What a run replaces or deletes is first moved to   │                     │
+│Disks                │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Shares               │old/. Symlinks, devices, empty folders and child datasets are   │                     │
+│Boot Envs            │not copied.                                                     │                     │
+│Jobs                 │                                                                │                     │
+│Cloud                │> Host (where rclone runs): local                               │                     │
+│Alerts               │  Dataset:                                                      │                     │
+│Settings             │  Path inside the dataset (blank = all of it):                  │                     │
 │                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
 │                     │  Snapshots to keep (Source new only; blank = 3):               │─────────────────────┘
 │                     │  Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│─────────────────────┐
@@ -292,7 +292,7 @@ Press `C` in Jobs:
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Sun 2026-10-18 03:30, Mon 2026-10-19 03:30, Tue 2026-10-20│                     │
+│                     │Next: Wed 2026-10-21 03:30, Thu 2026-10-22 03:30, Fri 2026-10-23│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │                                                                │                     │

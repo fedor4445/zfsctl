@@ -6,7 +6,7 @@
 - The few commands you will use every day: `pkg`, `service`, `sysrc`, `geom` and friends.
 - How FreeBSD names disks.
 
-If you already run FreeBSD, skim the headings and move on to [Installing](04-installing.md). For depth, the [FreeBSD Handbook](https://docs.freebsd.org/en/books/handbook/) is excellent.
+[FreeBSD](https://www.freebsd.org/) is developed by the volunteers of the FreeBSD Project, and zfsctl exists because of their work; ZFS in FreeBSD comes from [OpenZFS](https://openzfs.org/). If you already run FreeBSD, skim the headings and move on to [Installing](04-installing.md). For depth, the [FreeBSD Handbook](https://docs.freebsd.org/en/books/handbook/) is excellent.
 
 ## One system, not a distribution
 
