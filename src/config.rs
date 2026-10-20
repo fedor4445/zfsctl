@@ -2,7 +2,7 @@ use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Every key a user can write in `config.toml` (`[[hosts]]`, `[ui]`, `[daemon]`, `[notify]`) and in `jobs.toml`
+/// Every key a user can write in `config.toml` (`[[hosts]]`, `[ui]`, `[daemon]`, `[notify]`, `[ssh]`) and in `jobs.toml`
 /// (`[[jobs]]`), as written in TOML. The book's reference chapter is checked against this list, and
 /// `documented_keys_match_the_serialised_fields` checks the list against the structs themselves.
 #[cfg(test)]
@@ -10,6 +10,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
     vec![
         "name", "ssh_target", "tag",
         "theme", "auto_refresh_secs",
+        "multiplex",
         "notify_command", "daily_check",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
@@ -31,6 +32,8 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
     pub notify: NotifyConfig,
+    #[serde(default, skip_serializing_if = "SshConfig::is_default")]
+    pub ssh: SshConfig,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "CloudConfig::is_default")]
     pub cloud: CloudConfig,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "DashboardConfig::is_default")]
@@ -168,6 +171,26 @@ pub fn parse_cap(text: &str) -> Option<u64> {
     }
     let bytes = number.parse::<f64>().ok()? * unit;
     (bytes >= 1.0 && bytes < 1e18).then(|| bytes.round() as u64)
+}
+
+/// How zfsctl talks to the other hosts (`[ssh]`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SshConfig {
+    /// `true` makes the short commands to one host share a single ssh connection instead of opening one each, which
+    /// is about four times faster per command. Unset means `false`. Read when zfsctl or the daemon starts.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub multiplex: Option<bool>,
+}
+
+impl SshConfig {
+    fn is_default(&self) -> bool {
+        self.multiplex.is_none()
+    }
+
+    /// Where the shared connections' sockets live, when sharing is on.
+    pub fn mux_dir(&self) -> Option<std::path::PathBuf> {
+        self.multiplex.unwrap_or(false).then(|| std::path::Path::new(crate::daemon::engine::DEFAULT_STATE_DIR).join("ssh"))
+    }
 }
 
 /// Settings for `zfsctl daemon`.
@@ -674,6 +697,7 @@ mod tests {
         let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
         let daemon = DaemonConfig { notify_command: Some("true".into()), daily_check: Some("03:30".into()), smart_check: None };
         let cloud = CloudConfig { caps: [("b2".to_string(), "10G".to_string())].into() };
+        let ssh = SshConfig { multiplex: Some(true) };
         let dashboard = DashboardConfig {
             memory_warn: Some(90),
             memory_crit: Some(97),
@@ -702,7 +726,7 @@ mod tests {
             catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
         };
         let mut found: Vec<String> = Vec::new();
-        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&job).unwrap()] {
+        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&ssh).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&job).unwrap()] {
             found.extend(value.as_table().unwrap().keys().cloned());
         }
         found.sort();
@@ -714,6 +738,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn connection_sharing_is_off_unless_the_ssh_section_turns_it_on() {
+        assert_eq!(Config::default().ssh.mux_dir(), None);
+        let on: Config = toml::from_str("[ssh]\nmultiplex = true\n").unwrap();
+        assert_eq!(on.ssh.mux_dir(), Some(std::path::PathBuf::from("/var/db/zfsctl/ssh")));
+        let off: Config = toml::from_str("[ssh]\nmultiplex = false\n").unwrap();
+        assert_eq!(off.ssh.mux_dir(), None);
+        assert!(!toml::to_string(&Config::default()).unwrap().contains("ssh"), "an unset [ssh] is not written");
+    }
 
     #[test]
     fn the_dashboard_defaults_are_the_specs_numbers() {
