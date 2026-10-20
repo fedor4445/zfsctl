@@ -17,7 +17,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const SECTIONS: [&str; 12] = ["Dashboard", "Hosts", "Pools", "Datasets", "Snapshots", "Disks", "Shares", "Boot Envs", "Jobs", "Cloud", "Alerts", "Settings"];
-const KEYS: [(&str, &str); 12] = [
+const KEYS: [(&str, &str); 13] = [
     ("<Tab>", "\t"),
     ("<S-Tab>", "\x1b[Z"),
     ("<Enter>", "\r"),
@@ -30,7 +30,11 @@ const KEYS: [(&str, &str); 12] = [
     ("<Backspace>", "\x7f"),
     ("<F2>", "\x1bOQ"),
     ("<F5>", "\x1b[15~"),
+    ("<Pause>", PAUSE),
 ];
+
+/// Stands for a four second wait between keys (a remote host takes longer than that to fill a list), not for bytes.
+const PAUSE: &str = "\0pause";
 
 #[derive(Debug)]
 struct Args {
@@ -212,6 +216,10 @@ fn tui(args: &Args) -> Result<Vec<String>, String> {
         pump(&mut parser, &rx, args.wait / 2.0);
     }
     for key in expand(&args.keys) {
+        if key == PAUSE {
+            pump(&mut parser, &rx, 4.0);
+            continue;
+        }
         send(&key);
         pump(&mut parser, &rx, 0.6);
     }
@@ -267,6 +275,7 @@ mod tests {
     fn named_keys_become_terminal_bytes_and_other_text_is_typed() {
         assert_eq!(expand("<Down><Down>ab<Enter>"), s(&["\x1b[B", "\x1b[B", "a", "b", "\r"]));
         assert_eq!(expand("<F5>é"), s(&["\x1b[15~", "é"]));
+        assert_eq!(expand("<Pause><Down>"), s(&[PAUSE, "\x1b[B"]));
         assert_eq!(expand("<Nope>"), s(&["<", "N", "o", "p", "e", ">"]));
     }
 
