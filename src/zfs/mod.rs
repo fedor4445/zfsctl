@@ -24,6 +24,7 @@ pub mod smb;
 pub mod replication;
 pub mod snapshot;
 pub mod snapshot_detail;
+pub mod snapshot_changes;
 pub mod snapshot_diff;
 
 use crate::error::{AppError, Result};
