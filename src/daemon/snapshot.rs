@@ -133,7 +133,10 @@ mod tests {
             match args[0] {
                 "snapshot" => self.snapshot_error.as_deref().map_or_else(|| ok(String::new()), fail),
                 "list" => ok(self.listing.clone()),
-                "get" => ok(String::new()),
+                "get" if args.contains(&"userrefs") => {
+                    // every listed snapshot, unheld (the guard needs a row for the one it is about to destroy)
+                    ok(self.listing.lines().filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t0\n")).collect::<Vec<_>>().concat())
+                }
                 "destroy" => {
                     let target = args.last().unwrap();
                     if self.destroy_fails.iter().any(|t| t == target) { fail(&self.destroy_error) } else { ok(String::new()) }

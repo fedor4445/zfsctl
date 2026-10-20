@@ -651,12 +651,13 @@ mod tests {
 
     #[test]
     fn destroy_snapshot_call_runs_destroy_snapshot() {
-        let runner = FakeRunner::new("");
+        let runner = FakeRunner::new("").route("zfs", "get", "tank/data@old-1\t0\n");
         let call = MutationCall::DestroySnapshot { dataset: "tank/data".to_string(), name: "old-1".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        let destroy = calls.iter().find(|c| c.1[0] == "destroy").unwrap();
-        assert_eq!(*destroy, ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+        let destroys: Vec<_> = calls.iter().filter(|c| c.1[0] == "destroy").collect();
+        assert_eq!(destroys.len(), 1);
+        assert_eq!(*destroys[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
     }
 
     #[test]
