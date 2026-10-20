@@ -3,8 +3,14 @@
 // Nothing outside the tests calls this until the reader (Task 4) and the view (Task 5) exist; remove this then.
 #![allow(dead_code)]
 
-use crate::zfs::snapshot_diff::{relative_to_mount, Change, DiffEntry};
+use crate::daemon::transfer::run_lines;
+use crate::error::{AppError, Result};
+use crate::exec::CommandRunner;
+use crate::zfs::snapshot_diff::{parse_diff_line, relative_to_mount, Change, DiffEntry};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// The deepest grouping kept; shallower depths are derived from it, so changing the depth never re-reads the diff.
 pub const MAX_DEPTH: usize = 4;
@@ -194,6 +200,85 @@ impl ChangeSummary {
     }
 }
 
+/// The snapshot created just before `dataset@name`, by creation order (`createtxg`, not by name), as a full name.
+/// `None` for the oldest; an error when `dataset@name` is not in the listing.
+pub fn previous_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<Option<String>> {
+    super::not_an_option(dataset)?;
+    let args = ["list", "-H", "-t", "snapshot", "-d", "1", "-o", "name", "-s", "createtxg", dataset];
+    let out = super::run_checked(runner, "zfs", &args, &format!("zfs list -t snapshot {dataset}"))?;
+    let wanted = format!("{dataset}@{name}");
+    let names: Vec<&str> = out.stdout.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let at = names.iter().position(|n| *n == wanted).ok_or_else(|| AppError::Parse(format!("{wanted} is not in the snapshot list")))?;
+    Ok(at.checked_sub(1).and_then(|i| names.get(i)).map(|n| (*n).to_string()))
+}
+
+/// Where the dataset is mounted, or `None` when it has no path (`legacy`, `none`, `-`).
+pub fn dataset_mountpoint(runner: &dyn CommandRunner, dataset: &str) -> Result<Option<String>> {
+    super::not_an_option(dataset)?;
+    let out = super::run_checked(runner, "zfs", &["get", "-H", "-o", "value", "mountpoint", dataset], &format!("zfs get mountpoint {dataset}"))?;
+    let value = out.stdout.trim();
+    Ok(value.starts_with('/').then(|| value.to_string()))
+}
+
+/// Streams `zfs diff -FHt -- <older> <newer>` into a summary. `older` is a full snapshot name; `newer` a full
+/// snapshot name or the dataset itself. The read ends early, keeping what it has, when `limits` are reached or
+/// `cancel` is set; the child is killed then. A diff that fails is an error with the first line of its stderr.
+pub fn read_changes(runner: &dyn CommandRunner, older: &str, newer: &str, mountpoint: Option<String>, limits: &Limits, cancel: &AtomicBool) -> Result<ChangeSummary> {
+    super::not_an_option(older)?;
+    super::not_an_option(newer)?;
+    let cmd = runner.command("zfs", &["diff", "-FHt", "--", older, newer])?;
+    let stop = AtomicBool::new(false);
+    let reason: Mutex<Option<Stop>> = Mutex::new(None);
+    let finish = AtomicBool::new(false);
+    let deadline = Instant::now() + Duration::from_secs(limits.max_seconds);
+    let mut summary = ChangeSummary::new(limits, mountpoint);
+    let note = |why: Stop| {
+        let mut slot = reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.get_or_insert(why);
+        stop.store(true, Ordering::SeqCst);
+    };
+    let ran = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !finish.load(Ordering::SeqCst) {
+                if cancel.load(Ordering::SeqCst) {
+                    note(Stop::Cancelled);
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    note(Stop::Time);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let ran = run_lines(cmd, &stop, |line| {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            match parse_diff_line(line) {
+                Some(entry) => summary.add(entry),
+                None => summary.add_unreadable(),
+            }
+            if summary.lines() >= limits.max_lines {
+                note(Stop::Lines);
+            }
+        });
+        finish.store(true, Ordering::SeqCst);
+        ran
+    });
+    let lines = ran.map_err(|source| AppError::Spawn { cmd: "zfs diff".to_string(), source })?;
+    let why = *reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(why) = why {
+        summary.set_stopped(why);
+        return Ok(summary);
+    }
+    if lines.code != Some(0) {
+        let first = lines.stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no message").to_string();
+        return Err(AppError::CommandFailed { cmd: "zfs diff".to_string(), status: lines.code.unwrap_or(-1), stderr: first });
+    }
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +398,165 @@ mod tests {
         assert_eq!(s.stopped(), None);
         s.set_stopped(Stop::Lines);
         assert_eq!(s.stopped(), Some(Stop::Lines));
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+    use crate::error::{AppError, Result};
+    use crate::exec::{CommandOutput, CommandRunner};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Answers `zfs list` and `zfs get` from canned text and hands out `sh -c <script>` as the diff command.
+    struct DiffRunner {
+        list_out: String,
+        mount_out: String,
+        script: String,
+        calls: Mutex<Vec<Vec<String>>>,
+        spawned: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl DiffRunner {
+        fn new(script: &str) -> Self {
+            Self { list_out: String::new(), mount_out: String::new(), script: script.to_string(), calls: Mutex::new(vec![]), spawned: Mutex::new(vec![]) }
+        }
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().unwrap().clone()
+        }
+        fn spawned(&self) -> Vec<Vec<String>> {
+            self.spawned.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandRunner for DiffRunner {
+        fn run(&self, _cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            self.calls.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
+            let out = match args.first().copied() {
+                Some("list") => self.list_out.clone(),
+                Some("get") => self.mount_out.clone(),
+                other => return Err(AppError::Config(format!("unexpected zfs {other:?}"))),
+            };
+            Ok(CommandOutput { stdout: out, stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, _cmd: &str, _args: &[&str], _stdin: &str) -> Result<CommandOutput> {
+            Err(AppError::Config("no stdin here".to_string()))
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn command(&self, _cmd: &str, args: &[&str]) -> Result<Command> {
+            self.spawned.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
+            let mut c = Command::new("sh");
+            c.args(["-c", &self.script]);
+            Ok(c)
+        }
+    }
+
+    const FIVE_LINES_AND_GARBAGE: &str = "printf '1.0\\t+\\tF\\t/ds/a/f1\\n1.0\\t+\\tF\\t/ds/a/f2\\n2.0\\tM\\t/\\t/ds/\\n3.0\\t-\\tF\\t/ds/b/g\\n4.0\\tR\\tF\\t/ds/c/o\\t/ds/c/n\\ngarbage\\n'";
+
+    #[test]
+    fn previous_snapshot_is_the_one_before_by_creation_order() {
+        let mut r = DiffRunner::new("true");
+        r.list_out = "tank/d@a\ntank/d@b\ntank/d@c\n".to_string();
+        assert_eq!(previous_snapshot(&r, "tank/d", "b").unwrap().as_deref(), Some("tank/d@a"));
+        assert_eq!(previous_snapshot(&r, "tank/d", "c").unwrap().as_deref(), Some("tank/d@b"));
+        assert_eq!(previous_snapshot(&r, "tank/d", "a").unwrap(), None);
+        assert!(previous_snapshot(&r, "tank/d", "zz").is_err());
+        assert_eq!(r.calls()[0], ["list", "-H", "-t", "snapshot", "-d", "1", "-o", "name", "-s", "createtxg", "tank/d"]);
+    }
+
+    #[test]
+    fn a_dataset_name_starting_with_a_dash_is_refused_and_nothing_runs() {
+        let r = DiffRunner::new("true");
+        let cancel = AtomicBool::new(false);
+        assert!(previous_snapshot(&r, "-x", "a").is_err());
+        assert!(dataset_mountpoint(&r, "-x").is_err());
+        assert!(read_changes(&r, "-x@a", "tank/d@b", None, &Limits::default(), &cancel).is_err());
+        assert!(read_changes(&r, "tank/d@a", "-x", None, &Limits::default(), &cancel).is_err());
+        assert!(r.calls().is_empty() && r.spawned().is_empty());
+    }
+
+    #[test]
+    fn mountpoint_words_that_are_not_paths_become_none() {
+        let mut r = DiffRunner::new("true");
+        for word in ["legacy\n", "none\n", "-\n", "\n"] {
+            r.mount_out = word.to_string();
+            assert_eq!(dataset_mountpoint(&r, "tank/d").unwrap(), None, "{word:?}");
+        }
+        r.mount_out = "/ds\n".to_string();
+        assert_eq!(dataset_mountpoint(&r, "tank/d").unwrap().as_deref(), Some("/ds"));
+        assert_eq!(r.calls().last().unwrap(), &["get", "-H", "-o", "value", "mountpoint", "tank/d"]);
+    }
+
+    #[test]
+    fn read_changes_folds_a_streamed_diff() {
+        let r = DiffRunner::new(FIVE_LINES_AND_GARBAGE);
+        let s = read_changes(&r, "tank/d@a", "tank/d@b", Some("/ds".to_string()), &Limits::default(), &AtomicBool::new(false)).unwrap();
+        let t = s.totals();
+        assert_eq!((t.added, t.removed, t.modified, t.renamed), (2, 1, 1, 1));
+        assert_eq!((s.unreadable(), s.lines(), s.stopped()), (1, 6, None));
+        assert_eq!(s.groups(2).iter().map(|(n, c)| (n.as_str(), c.total())).collect::<Vec<_>>(), [("a/", 2), ("/", 1), ("b/", 1), ("c/", 1)]);
+        assert_eq!(r.spawned()[0], ["diff", "-FHt", "--", "tank/d@a", "tank/d@b"]);
+    }
+
+    #[test]
+    fn the_line_limit_stops_the_read_and_says_so() {
+        let r = DiffRunner::new("i=0; while [ $i -lt 10 ]; do printf '1.0\\t+\\tF\\t/ds/f%s\\n' $i; i=$((i+1)); done; sleep 30");
+        let started = Instant::now();
+        let limits = Limits { max_lines: 3, ..Limits::default() };
+        let s = read_changes(&r, "tank/d@a", "tank/d@b", Some("/ds".to_string()), &limits, &AtomicBool::new(false)).unwrap();
+        assert_eq!(s.stopped(), Some(Stop::Lines));
+        assert_eq!(s.lines(), 3, "nothing is added once the limit is hit");
+        assert!(started.elapsed() < Duration::from_secs(10), "the child was killed, not waited for");
+    }
+
+    #[test]
+    fn the_time_limit_stops_the_read() {
+        let r = DiffRunner::new("printf '1.0\\t+\\tF\\t/ds/x\\n'; sleep 30");
+        let started = Instant::now();
+        let limits = Limits { max_seconds: 1, ..Limits::default() };
+        let s = read_changes(&r, "tank/d@a", "tank/d@b", None, &limits, &AtomicBool::new(false)).unwrap();
+        assert_eq!((s.stopped(), s.lines()), (Some(Stop::Time), 1));
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn cancel_stops_the_read_and_keeps_what_was_read() {
+        let r = DiffRunner::new("printf '1.0\\t+\\tF\\t/ds/x\\n'; sleep 30");
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let s = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(400));
+                cancel.store(true, Ordering::SeqCst);
+            });
+            read_changes(&r, "tank/d@a", "tank/d@b", None, &Limits::default(), &cancel).unwrap()
+        });
+        assert_eq!((s.stopped(), s.lines()), (Some(Stop::Cancelled), 1));
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_failing_diff_is_an_error_with_the_first_stderr_line() {
+        let r = DiffRunner::new("echo \"cannot open 'x': dataset does not exist\" >&2; echo second >&2; exit 1");
+        let err = read_changes(&r, "tank/d@a", "tank/d@b", None, &Limits::default(), &AtomicBool::new(false)).unwrap_err();
+        match err {
+            AppError::CommandFailed { stderr, status, .. } => {
+                assert!(stderr.contains("cannot open 'x': dataset does not exist"), "{stderr:?}");
+                assert!(!stderr.contains("second"), "only the first line: {stderr:?}");
+                assert_eq!(status, 1);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_runner_that_cannot_hand_out_a_command_is_an_error() {
+        let r = crate::exec::test_support::FakeRunner::new("");
+        assert!(read_changes(&r, "tank/d@a", "tank/d@b", None, &Limits::default(), &AtomicBool::new(false)).is_err());
     }
 }
