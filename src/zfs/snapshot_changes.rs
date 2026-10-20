@@ -71,6 +71,8 @@ impl Counts {
 pub struct Row {
     pub entry: DiffEntry,
     pub shown_path: String,
+    /// The new path of a rename, shown the same way.
+    pub shown_renamed_to: Option<String>,
 }
 
 /// The folder of a shown path cut to `depth` components, with a trailing `/`; `/` for the dataset root.
@@ -129,9 +131,10 @@ impl ChangeSummary {
             self.all_relative = false;
         }
         let shown_path = relative.unwrap_or_else(|| entry.path.clone());
+        let shown_renamed_to = entry.renamed_to.as_ref().map(|new| self.mountpoint.as_deref().and_then(|m| relative_to_mount(new, m)).unwrap_or_else(|| new.clone()));
         self.folders.entry(folder_of(&shown_path, MAX_DEPTH)).or_default().bump(entry.change);
         if self.rows.len() < self.max_entries {
-            self.rows.push(Row { entry, shown_path });
+            self.rows.push(Row { entry, shown_path, shown_renamed_to });
         } else {
             self.dropped += 1;
         }
@@ -388,6 +391,23 @@ mod tests {
         s.add_unreadable();
         assert_eq!(s.time_range(), Some((20, 90)));
         assert_eq!((s.unreadable(), s.lines()), (2, 5));
+    }
+
+    #[test]
+    fn a_rename_shows_both_paths_relative_to_the_dataset() {
+        let mut s = summary(Some("/ds"));
+        let mut e = entry("/ds/docs/f2.txt", Change::Renamed, 9);
+        e.renamed_to = Some("/ds/docs/f2-renamed.txt".to_string());
+        s.add(e);
+        let (rows, _) = s.entries_in("docs/", 2, 10);
+        assert_eq!(rows[0].shown_path, "docs/f2.txt");
+        assert_eq!(rows[0].shown_renamed_to.as_deref(), Some("docs/f2-renamed.txt"));
+        let mut raw = summary(None);
+        let mut e = entry("/a/old", Change::Renamed, 1);
+        e.renamed_to = Some("/a/new".to_string());
+        raw.add(e);
+        let (rows, _) = raw.entries_in("a/", 2, 10);
+        assert_eq!(rows[0].shown_renamed_to.as_deref(), Some("/a/new"), "without a mountpoint the raw path is kept");
     }
 
     #[test]

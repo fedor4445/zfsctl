@@ -266,7 +266,7 @@ pub fn draw(f: &mut Frame, view: &ChangesView, theme: &Theme, host: &str, area: 
                         .iter()
                         .map(|r| {
                             let mut path = sanitise_for_display(&r.shown_path);
-                            if let Some(new) = &r.entry.renamed_to {
+                            if let Some(new) = &r.shown_renamed_to {
                                 path = format!("{path} → {}", sanitise_for_display(new));
                             }
                             Row::new(vec![
