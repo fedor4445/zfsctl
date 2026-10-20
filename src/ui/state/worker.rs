@@ -29,6 +29,18 @@ impl App {
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),
+                WorkerMsg::SnapshotTags(host, generation, tags) => {
+                    self.tags_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&host);
+                    if host == self.selected_host {
+                        if generation == self.snapshot_gen.get(&host).copied().unwrap_or(0) {
+                            self.snapshot_tags = tags;
+                        } else if !self.is_refreshing(Section::Snapshots, host) && !self.pending_refresh.contains(&(Section::Snapshots, host)) {
+                            // fetched for an older list and nothing is on its way: the list on screen has no tags yet.
+                            // A refresh in flight or pending fetches its own tags, so pushing another would loop.
+                            refreshes_needed.push(Section::Snapshots);
+                        }
+                    }
+                }
                 WorkerMsg::Disks(host, result) => self.on_disks(host, result, &mut refreshes_needed),
                 WorkerMsg::Shares(host, result) => self.on_shares(host, result, &mut refreshes_needed),
                 WorkerMsg::BootEnvs(host, result) => self.on_boot_envs(host, result, &mut refreshes_needed),
@@ -179,6 +191,7 @@ impl App {
             Ok(snapshots) => {
                 let previous = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)).map(|s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots = snapshots;
+                self.snapshot_tags.clear();
                 pin_selection(&mut self.snapshots_table, previous, &self.snapshots, |s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots_loaded = true;
                 self.clear_status_after_refresh(quiet);

@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(hint_line), hint_area);
 
     if let Some(modal) = app.modal.clone() {
-        draw_modal(f, &modal, app.backup_preflight.as_ref(), &app.theme, area);
+        draw_modal(f, &modal, app.backup_preflight.as_ref(), app.info_scroll, &app.theme, area);
     }
     if let Some(picker) = app.picker.clone() {
         draw_picker(f, &picker, &app.theme, area);
@@ -771,11 +771,11 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .snapshots
         .iter()
-        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used)]));
-    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W)];
+        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used), app.hold_marker(s).to_string()]));
+    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W), Constraint::Length(4)];
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Snapshot", "Used"]))
+        .header(Row::new(vec!["Snapshot", "Used", "Hold"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
@@ -1364,7 +1364,7 @@ const CONFIRM_NONE: &str = "Press y for yes or n for no, then Enter.";
 const CONFIRM_YES: &str = "▶ YES selected: press Enter to run it (n or Esc to change).";
 const CONFIRM_NO: &str = "▶ NO selected: press Enter to cancel (y to change).";
 
-fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, theme: &Theme, area: Rect) {
+fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, info_scroll: u16, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
     // percentage of the terminal's height let long prompts or the
@@ -1483,6 +1483,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
         Modal::Info { title, body } => {
             let p = Paragraph::new(body.as_str())
                 .wrap(Wrap { trim: false })
+                .scroll((info_scroll, 0))
                 .block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
@@ -1568,30 +1569,7 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
     f.render_stateful_widget(list, popup_area, &mut list_state);
 }
 
-/// Replaces every control character (newline, tab, ESC, ...) with a space
-/// and collapses runs of whitespace, so text that may carry raw remote
-/// stderr renders on one line and cannot inject terminal escapes.
-pub(crate) fn sanitise_for_display(s: &str) -> String {
-    let spaced: String = s
-        .chars()
-        .map(|c| {
-            let bidi = matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
-            if c.is_control() || bidi { ' ' } else { c }
-        })
-        .collect();
-    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Truncates `s` to at most `max` characters, ending in "…" when cut.
-fn truncate_with_ellipsis(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let keep = max.saturating_sub(1);
-    let mut out: String = s.chars().take(keep).collect();
-    out.push('…');
-    out
-}
+pub(crate) use crate::display_text::{sanitise_for_display, truncate_with_ellipsis};
 
 /// Height of the Loading/Failed picker popup: the wrapped body plus two
 /// border rows, at least 5, never more than `max_height`. The body estimate
@@ -1646,25 +1624,6 @@ fn pane_border_style(theme: &Theme, current: PaneFocus, pane: PaneFocus) -> Styl
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn sanitise_for_display_strips_control_characters_and_collapses_lines() {
-        let out = super::sanitise_for_display("boom\n\u{1b}[31mred\u{1b}[0m\tbad\r\nend");
-        assert!(!out.chars().any(char::is_control), "{out:?}");
-        assert_eq!(out, "boom [31mred [0m bad end");
-    }
-
-    #[test]
-    fn sanitise_for_display_replaces_bidi_and_format_characters() {
-        let out = super::sanitise_for_display("a\u{202E}b\u{200F}c\u{2066}d\u{2069}e\u{200E}f\u{202A}g");
-        assert_eq!(out, "a b c d e f g");
-    }
-
-    #[test]
-    fn truncate_with_ellipsis_cuts_long_text_only() {
-        assert_eq!(super::truncate_with_ellipsis("abc", 3), "abc");
-        assert_eq!(super::truncate_with_ellipsis("abcdef", 4), "abc…");
-    }
-
     #[test]
     fn failed_popup_height_fits_body_within_bounds() {
         assert_eq!(super::failed_popup_height("Loading accounts…\n\nEsc to close", 40, 24), 6);
@@ -1738,6 +1697,28 @@ mod tests {
         terminal.draw(|f| draw(f, app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn the_hold_column_shows_a_capital_for_ours_and_a_small_h_for_others() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        let snap = |name: &str, holds| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: name.to_string(), used: 1, holds };
+        app.snapshots = vec![snap("free", 0), snap("ours", 1), snap("theirs", 1)];
+        app.snapshot_tags.insert("tank/a@ours".to_string(), vec!["zfsctl".to_string(), "x".to_string()]);
+        app.snapshot_tags.insert("tank/a@theirs".to_string(), vec!["x".to_string()]);
+        app.snapshots_table.select(Some(0));
+        let rows = render(&mut app, 100, 12);
+        let row = |name: &str| rows.iter().find(|r| r.contains(name)).unwrap_or_else(|| panic!("{rows:?}")).clone();
+        assert!(rows.iter().any(|r| r.contains("Hold")), "{rows:?}");
+        let hold_of = |name: &str| {
+            let r = row(name);
+            let after = &r[r.find(name).unwrap() + name.len()..];
+            after.split_whitespace().nth(1).filter(|t| *t != "│").map(str::to_string)
+        };
+        assert_eq!(hold_of("tank/a@free"), None, "{rows:?}");
+        assert_eq!(hold_of("tank/a@ours").as_deref(), Some("H"), "{rows:?}");
+        assert_eq!(hold_of("tank/a@theirs").as_deref(), Some("h"), "{rows:?}");
     }
 
     fn identity_disk(name: &str, model: &str, serial: &str) -> crate::zfs::disk::DiskInfo {
@@ -2023,7 +2004,7 @@ mod tests {
     fn snapshots_list_shows_human_sizes_not_raw_bytes() {
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848, holds: 0 }];
         app.snapshots_table.select(Some(0));
         let text = render(&mut app, 110, 30).join("\n");
         assert!(text.contains("tank/data@b") && text.contains("2.0G"), "{text}");
@@ -2036,7 +2017,7 @@ mod tests {
         use crate::zfs::snapshot_detail::{SnapshotDetail, SnapshotEntry};
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096, holds: 0 }];
         app.snapshots_table.select(Some(0));
         let target = MetricsTarget::Snapshot("tank/data@b".to_string());
         assert_eq!(app.metrics_target(), Some(target.clone()));

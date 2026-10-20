@@ -351,7 +351,7 @@ enabled = true          # default true
 created_at = "2026-10-06T12:00:00Z"  # optional; a catch-up never reaches back before this
 ```
 
-**A snapshot job** takes `zfs snapshot` of one dataset (`recursive = true` adds `-r`, so a whole tree is snapshotted atomically and pruned together) and names it `<prefix>-<UTC timestamp>`, for example `hourly-20261006T193000Z`. After a successful snapshot it destroys its own snapshots beyond the newest `keep`, oldest first. It only ever destroys names that match exactly `<prefix>-<YYYYMMDDTHHMMSSZ>`, so manual snapshots, other jobs' snapshots and look-alikes such as `hourly-keep-forever` are never touched. If a snapshot cannot be destroyed (a hold, a clone) the run is recorded as failed with the reason, and the rest are still pruned. Hourly, daily and weekly tiers are separate jobs with separate prefixes. Two enabled snapshot jobs cannot share a host and prefix on the same dataset, or on a dataset inside a recursive job's tree (they would prune each other); the later one is reported as unable to run. The lock is per dataset and prefix, so an hourly and a daily job on one dataset that fall due together both run. `keep` counts the snapshot just taken, which is never pruned. Changing a job's prefix leaves the old prefix's snapshots in place.
+**A snapshot job** takes `zfs snapshot` of one dataset (`recursive = true` adds `-r`, so a whole tree is snapshotted atomically and pruned together) and names it `<prefix>-<UTC timestamp>`, for example `hourly-20261006T193000Z`. After a successful snapshot it destroys its own snapshots beyond the newest `keep`, oldest first. It only ever destroys names that match exactly `<prefix>-<YYYYMMDDTHHMMSSZ>`, so manual snapshots, other jobs' snapshots and look-alikes such as `hourly-keep-forever` are never touched. A snapshot with a hold is kept and the run says `kept N (held)`; it is not an error. If a snapshot cannot be destroyed for another reason (a clone) the run is recorded as failed with the reason, and the rest are still pruned. Hourly, daily and weekly tiers are separate jobs with separate prefixes. Two enabled snapshot jobs cannot share a host and prefix on the same dataset, or on a dataset inside a recursive job's tree (they would prune each other); the later one is reported as unable to run. The lock is per dataset and prefix, so an hourly and a daily job on one dataset that fall due together both run. `keep` counts the snapshot just taken, which is never pruned. Changing a job's prefix leaves the old prefix's snapshots in place.
 
 ```toml
 [[jobs]]
@@ -521,6 +521,17 @@ Tested less, or not live:
 How it protects data: every change needs `y` then `Enter`; what cannot be undone makes you type the name; recursive destroys refuse a pool's root and anything holding the running system; a replication or mirror of an encrypted dataset is refused unless it is explicitly raw; passphrases reach `zfs` only on standard input, never in an argument, a log or a file.
 
 Please try it on a test pool first, and keep backups of anything you care about.
+
+## Built on
+
+zfsctl is a thin layer over other people's work. None of it is bundled; all of it deserves credit and a visit:
+
+- [OpenZFS](https://openzfs.org/): the file system, volume manager and the `zpool`/`zfs` tools that zfsctl drives.
+- [FreeBSD](https://www.freebsd.org/): the operating system of the hub, and of most of the test machines.
+- [illumos](https://illumos.org/) and [OmniOS](https://omnios.org/): the descendant of OpenSolaris, where ZFS was born at Sun; OmniOS is the distribution used for testing.
+- [Linux](https://www.kernel.org/) (tested on [Ubuntu](https://ubuntu.com/)) with [OpenZFS on Linux](https://openzfs.github.io/openzfs-docs/).
+- [Rust](https://www.rust-lang.org/): the language, with [ratatui](https://ratatui.rs/) for the screen and [crossterm](https://github.com/crossterm-rs/crossterm) for the terminal.
+- [restic](https://restic.net/) and [rclone](https://rclone.org/): backups and cloud mirrors, when you use those job kinds.
 
 ## Licence
 

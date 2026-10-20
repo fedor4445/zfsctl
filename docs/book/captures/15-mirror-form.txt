@@ -1,16 +1,16 @@
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 25913)───────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 6d ago │
-│Datasets             ┌New cloud mirror job────────────────────────────────────────────┐                     │
-│Snapshots            │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
-│Disks                │plain files. What a run replaces or deletes is first moved to   │                     │
-│Shares               │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
-│Boot Envs            │old/. Symlinks, devices, empty folders and child datasets are   │                     │
-│Jobs                 │not copied.                                                     │                     │
-│Alerts               │                                                                │                     │
-│                     │  Host (where rclone runs): local                               │                     │
-│                     │> Dataset:                                                      │                     │
-│                     │  Path inside the dataset (blank = all of it):                  │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
+│Pools                ┌New cloud mirror job────────────────────────────────────────────┐0-25 03:00 ok 2d ago │
+│Datasets             │Copies a read-only clone of a snapshot to <remote>/current as   │                     │
+│Snapshots            │plain files. What a run replaces or deletes is first moved to   │                     │
+│Disks                │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Shares               │old/. Symlinks, devices, empty folders and child datasets are   │                     │
+│Boot Envs            │not copied.                                                     │                     │
+│Jobs                 │                                                                │                     │
+│Cloud                │> Host (where rclone runs): local                               │                     │
+│Alerts               │  Dataset:                                                      │                     │
+│Settings             │  Path inside the dataset (blank = all of it):                  │                     │
 │                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
 │                     │  Snapshots to keep (Source new only; blank = 3):               │─────────────────────┘
 │                     │  Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│─────────────────────┐
@@ -20,7 +20,7 @@
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Sun 2026-10-18 03:30, Mon 2026-10-19 03:30, Tue 2026-10-20│                     │
+│                     │Next: Wed 2026-10-21 03:30, Thu 2026-10-22 03:30, Fri 2026-10-23│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │                                                                │                     │

@@ -93,7 +93,19 @@ pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuses when any snapshot `held_in` returns is held, has an unreadable count, or the check itself cannot run.
+/// A dataset without snapshots (an empty list) is allowed.
+fn refuse_if_any_held(runner: &dyn CommandRunner, name: &str, recursive: bool) -> Result<()> {
+    let rows = crate::zfs::snapshot::held_in(runner, name, recursive).map_err(|e| AppError::HoldCheck(e.to_string()))?;
+    match rows.iter().find(|(_, refs)| *refs != Some(0)) {
+        None => Ok(()),
+        Some((full, Some(n))) => Err(AppError::Held(format!("{full} is held ({n} hold(s)); release it first"))),
+        Some((full, None)) => Err(AppError::HoldCheck(format!("{full} has an unreadable hold count, so it is treated as held; release it first"))),
+    }
+}
+
 pub fn destroy_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
+    refuse_if_any_held(runner, name, false)?;
     super::run_checked(runner, "zfs", &["destroy", "--", name], &format!("zfs destroy {name}"))?;
     Ok(())
 }
@@ -101,6 +113,7 @@ pub fn destroy_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
 /// `zfs destroy -r`: the dataset, its child datasets and all their snapshots. Never `-R`, which would also
 /// destroy clones elsewhere in the pool: a dataset with clones is refused with zfs's own message.
 pub fn destroy_dataset_recursive(runner: &dyn CommandRunner, name: &str) -> Result<()> {
+    refuse_if_any_held(runner, name, true)?;
     super::run_checked(runner, "zfs", &["destroy", "-r", "--", name], &format!("zfs destroy -r {name}"))?;
     Ok(())
 }
@@ -259,7 +272,39 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
         let runner = FakeRunner::new("");
         destroy_dataset(&runner, "tank/olds").unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
+        assert_eq!(calls[1], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
+    }
+
+    #[test]
+    fn destroying_a_dataset_with_a_held_snapshot_is_refused_and_runs_no_destroy() {
+        for (recursive, held) in [(false, "tank/olds@a\t0\ntank/olds@b\t1\n"), (true, "tank/olds@a\t0\ntank/olds/kid@b\t2\n"), (false, "tank/olds@a\t-\n")] {
+            let unreadable = held.ends_with("\t-\n");
+            let runner = FakeRunner::new("").route("zfs", "get", held);
+            let result = if recursive { destroy_dataset_recursive(&runner, "tank/olds") } else { destroy_dataset(&runner, "tank/olds") };
+            match result {
+                Err(crate::error::AppError::Held(m)) if !unreadable => assert!(m.contains("release it first"), "{m}"),
+                Err(crate::error::AppError::HoldCheck(m)) if unreadable => assert!(m.contains("unreadable"), "{m}"),
+                other => panic!("unexpected result {other:?}"),
+            }
+            assert!(runner.calls.lock().unwrap().iter().all(|c| c.1[0] != "destroy"));
+        }
+    }
+
+    #[test]
+    fn destroying_a_dataset_refuses_when_the_hold_check_fails() {
+        let runner = FakeRunner::new("").route_failure("zfs", "get", "boom", 1);
+        assert!(matches!(destroy_dataset(&runner, "tank/olds"), Err(crate::error::AppError::HoldCheck(m)) if m.contains("boom")));
+        assert!(runner.calls.lock().unwrap().iter().all(|c| c.1[0] != "destroy"));
+    }
+
+    #[test]
+    fn destroy_dataset_checks_own_snapshots_and_recursive_checks_the_tree() {
+        let runner = FakeRunner::new("");
+        destroy_dataset(&runner, "tank/olds").unwrap();
+        destroy_dataset_recursive(&runner, "tank/olds").unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert!(calls[0].1.contains(&"-d".to_string()) && !calls[0].1.contains(&"-r".to_string()));
+        assert!(calls[2].1.contains(&"-r".to_string()));
     }
 
     #[test]
@@ -277,11 +322,10 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
     }
 
     #[test]
-    fn guards_against_dataset_names_that_look_like_flags() {
+    fn refuses_dataset_names_that_look_like_flags() {
         let runner = FakeRunner::new("");
-        destroy_dataset(&runner, "-r").unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the dataset name so zfs cannot parse it as an option");
+        assert!(destroy_dataset(&runner, "-r").is_err(), "a name that could be read as an option is refused before any destroy");
+        assert!(runner.calls.lock().unwrap().iter().all(|c| c.1[0] != "destroy"));
     }
 
     const ZFS_GET_PROPERTIES_FIXTURE: &str = "\

@@ -1,31 +1,31 @@
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
-│Hosts                 ││Name       Address            State                               Type   Used  Pools│
-│Pools                 ││● local    local              ok                                  vm     42%   3    │
-│Datasets              ││● fbsd16   172.16.10.60       ok                                  vm     55%   1    │
-│Snapshots             ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
-│Disks                 ││● fbsd16t2 172.16.10.62       ok                                  vm     72%   2    │
-│Shares                ││                                                                                    │
+│Dashboard             ││Name       Address            State                       Type   Tag     Used  Pools│
+│Hosts                 ││● local    local              ok                          vm             42%   3    │
+│Pools                 ││● fbsd16   172.16.10.60       ok                          vm             61%   1    │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                          vm             74%   2    │
+│Disks                 ││● ub24     172.16.10.52       ok                          -      linux   0%    1    │
+│Shares                ││● omnios   172.16.10.80       ok                          -      illumos 49%   3    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
 │Alerts                ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
+│Settings              ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
 │                      │┌Metrics — host fbsd16 (all pools)───────────────────────────────────────────────────┐
-│                      ││I/O     read 0B/s  write 591K/s            ZFS     2.4.99-1149-FreeBSD.g1f380a4f3   │
+│                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.99-1149-FreeBSD.g1f380a4f3   │
 │                      ││OS      FreeBSD 16.0-CURRENT               Pools   1 (all ONLINE)                   │
-│                      ││Up      4h 18m   rtt 214ms                 Space   55%  4.2G / 7.5G                 │
-│                      ││Load    0.46 0.26 0.19                     ARC     60.1M / 6.9G  hit 99.6%          │
+│                      ││Up      46m   rtt 210ms                    Space   61%  4.6G / 7.5G                 │
+│                      ││Load    0.45 0.71 0.43                     ARC     57.0M / 2.9G  hit 99.5%          │
 │                      ││CPU     4 cores  6%                        Status  all pools are healthy            │
 │                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
-│                      ││Memory  7.9G  free 6.5G  wired 957M                                                 │
+│                      ││Memory  3.9G  free 2.6G  wired 920M                                                 │
 │                      ││Swap    0B / 2.0G                                                                   │
-│                      ││zroot         55% frag 22% ONLINE   scrub never                                     │
+│                      ││zroot         61% frag 30% ONLINE   scrub Oct 17 22:07:45 2026                      │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
@@ -33,4 +33,4 @@
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Host  c Check disks and shares  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit

@@ -12,29 +12,29 @@ A *dataset* is a filesystem (or a volume) inside a pool. Go to Datasets and sele
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Properties — scratch/data ('r' refresh, Enter to ┐
-│Hosts                 ││Name                                         Used     Avail    Kind      ││Property         Value            Source         │
-│Pools                 ││scratch                                      102M     18.3M    Filesystem││                                                 │
-│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││                                                 │
-│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││                                                 │
-│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
-│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
-│Boot Envs             ││zroot/ROOT/default                           5.3G     30.6G    Filesystem││                                                 │
-│Jobs                  ││zroot/home                                   554M     30.6G    Filesystem││                                                 │
-│Alerts                ││zroot/home/alice                             144K     30.6G    Filesystem││                                                 │
-│                      ││zroot/home/fb                                554M     30.6G    Filesystem││                                                 │
-│                      │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
-│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
-│                      ││                                                                           Data    100M   Snaps 200K                        │
-│                      ││                                                                           Kids    0B   Refres 0B                           │
-│                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
-│                      ││                                                                           Quota   -   Ref -                                │
-│                      ││                                                                           Pool    ONLINE  errs 0                           │
-│                      ││                                                                                                                            │
-│                      ││                                                                                                                            │
+│Dashboard             ││Name                                  Used     Avail    Lock   Kind      ││Property         Value            Source         │
+│Hosts                 ││scratch                               103M     17.3M           Filesystem││                                                 │
+│Pools                 ││scratch/data                          100M     17.3M           Filesystem││                                                 │
+│Datasets              ││scratch/vault                         408K     17.3M    LOCKED Filesystem││                                                 │
+│Snapshots             ││scratch/vault/docs                    200K     17.3M    LOCKED Filesystem││                                                 │
+│Disks                 ││tpool                                 3.9G     5.2G            Filesystem││                                                 │
+│Shares                ││zroot                                 10.7G    30.5G           Filesystem││                                                 │
+│Boot Envs             ││zroot/ROOT                            5.3G     30.5G           Filesystem││                                                 │
+│Jobs                  ││zroot/ROOT/default                    5.3G     30.5G           Filesystem││                                                 │
+│Cloud                 ││zroot/home                            595M     30.5G           Filesystem││                                                 │
+│Alerts                │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+│Settings              │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│                      ││Read  4.0K/s  peak 4.0K/s             Write 0B/s  peak 0B/s                Used    85%  100M of 118M                        │
+│                      ││0 ops  lat 1.6ms                      0 ops  lat -                         Refer   100M   Logical 100M                      │
+│                      ││⡇                                                                          Data    100M   Snaps 256K                        │
+│                      ││⡇                                                                          Kids    0B   Refres 0B                           │
+│                      ││⡇                                                                          Compr   on 1.00x   Rec 128K                      │
+│                      ││⡇                                                                          Quota   -   Ref -                                │
+│                      ││⡇                                                                          Pool    ONLINE  errs 0                           │
+│                      ││⡇                                                                                                                           │
+│                      ││⡇                                                                                                                           │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  → Details  n New  d Destroy  D Destroy recursively  s Snapshot  N NFS share  M SMB share  J Snapshot job  r Refresh  ? Help  q Quit
+↑↓ Move  → Details  n New  E New encrypted  d Destroy  D Destroy recursively  s Snapshot  N NFS share  M SMB share  J Snapshot job  ? Help  q Quit
 ```
 
 The columns are the dataset's **Name**, the space it **Used** and the space **Avail**able to it, and its **Kind** (`Filesystem` or `Volume`). The sizes are in human units (`100M`, `30.6G`). On a narrow terminal the Kind column is cut short (this capture is 150 columns wide so that it shows in full). The panel below gives more detail.
@@ -62,25 +62,25 @@ With a dataset selected, the panel under the list shows where its space goes:
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)───────────────────────┐┌Properties — scratch/data ('r' refresh, Enter to ed┐
-│Hosts                 ││Name                                       Used     Avail    Kind      ││Property         Value                   Source    │
-│Pools                 ││scratch                                    102M     18.3M    Filesystem││type             filesystem              -         │
-│Datasets              ││scratch/data                               100M     18.3M    Filesystem││creation         1788654263              -         │
-│Snapshots             ││tpool                                      3.9G     5.2G     Filesystem││used             105250816               -         │
-│Disks                 ││zroot                                      10.6G    30.6G    Filesystem││available        19189760                -         │
-│Shares                ││zroot/ROOT                                 5.3G     30.6G    Filesystem││referenced       105046016               -         │
-│Boot Envs             ││zroot/ROOT/default                         5.3G     30.6G    Filesystem││compressratio    1.00                    -         │
-│Jobs                  ││zroot/home                                 554M     30.6G    Filesystem││mounted          yes                     -         │
-│Alerts                ││zroot/home/alice                           144K     30.6G    Filesystem││quota            0                       default   │
-│                      │└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
-│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
-│                      ││                                                                           Data    100M   Snaps 200K                        │
-│                      ││                                                                           Kids    0B   Refres 0B                           │
-│                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
-│                      ││                                                                           Quota   -   Ref -                                │
-│                      ││                                                                           Pool    ONLINE  errs 0                           │
-│                      ││                                                                                                                            │
+│Dashboard             ││Name                                Used     Avail    Lock   Kind      ││Property         Value                   Source    │
+│Hosts                 ││scratch                             103M     17.3M           Filesystem││type             filesystem              -         │
+│Pools                 ││scratch/data                        100M     17.3M           Filesystem││creation         1788654263              -         │
+│Datasets              ││scratch/vault                       408K     17.3M    LOCKED Filesystem││used             105308160               -         │
+│Snapshots             ││scratch/vault/docs                  200K     17.3M    LOCKED Filesystem││available        18178048                -         │
+│Disks                 ││tpool                               3.9G     5.2G            Filesystem││referenced       105046016               -         │
+│Shares                ││zroot                               10.7G    30.5G           Filesystem││compressratio    1.00                    -         │
+│Boot Envs             ││zroot/ROOT                          5.3G     30.5G           Filesystem││mounted          yes                     -         │
+│Jobs                  ││zroot/ROOT/default                  5.3G     30.5G           Filesystem││quota            0                       default   │
+│Cloud                 │└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────┘
+│Alerts                │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│Settings              ││Read  4.0K/s  peak 4.0K/s             Write 0B/s  peak 0B/s                Used    85%  100M of 118M                        │
+│                      ││0 ops  lat 1.6ms                      0 ops  lat -                         Refer   100M   Logical 100M                      │
+│                      ││⡇                                                                          Data    100M   Snaps 256K                        │
+│                      ││⡇                                                                          Kids    0B   Refres 0B                           │
+│                      ││⡇                                                                          Compr   on 1.00x   Rec 128K                      │
+│                      ││⡇                                                                          Quota   -   Ref -                                │
+│                      ││⡇                                                                          Pool    ONLINE  errs 0                           │
+│                      ││⡇                                                                                                                           │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ↑↓ Move  [ ] Tabs  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
@@ -168,18 +168,18 @@ The Permissions tab shows **delegated permissions**: ZFS lets you allow an ordin
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Permissions — scratch/data ('r' refresh, n/s/c gr┐
-│Hosts                 ││Name                                         Used     Avail    Kind      ││Target           Scope           Permissions     │
-│Pools                 ││scratch                                      102M     18.3M    Filesystem││                                                 │
-│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││                                                 │
-│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││                                                 │
-│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
-│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
-│Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-│Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
-│Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
-│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
-│                      ││                                                                           Data    100M   Snaps 200K                        │
-│                      ││                                                                           Kids    0B   Refres 0B                           │
+│Dashboard             ││Name                                  Used     Avail    Lock   Kind      ││Target           Scope           Permissions     │
+│Hosts                 ││scratch                               103M     17.3M           Filesystem││                                                 │
+│Pools                 ││scratch/data                          100M     17.3M           Filesystem││                                                 │
+│Datasets              ││scratch/vault                         408K     17.3M    LOCKED Filesystem││                                                 │
+│Snapshots             ││scratch/vault/docs                    200K     17.3M    LOCKED Filesystem││                                                 │
+│Disks                 ││tpool                                 3.9G     5.2G            Filesystem││                                                 │
+│Shares                │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+│Boot Envs             │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│Jobs                  ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 118M                        │
+│Cloud                 ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
+│Alerts                ││                                                                           Data    100M   Snaps 256K                        │
+│Settings              ││                                                                           Kids    0B   Refres 0B                           │
 │                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 n Grant  s Grant set  c Create-time  [ ] Tabs  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
@@ -193,18 +193,18 @@ The ACL tab lists the **file access control list** of the dataset's mount point:
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌ACL — scratch/data ('r' refresh, 'n' add, 'd' rem┐
-│Hosts                 ││Name                                         Used     Avail    Kind      ││#   Tar Permissions          Flags         Type  │
-│Pools                 ││scratch                                      102M     18.3M    Filesystem││0   own read_data/write_data —             Allow │
-│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││1   gro read_data/execute/re —             Allow │
-│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││2   eve read_data/execute/re —             Allow │
-│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
-│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
-│Boot Envs             │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-│Jobs                  │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
-│Alerts                ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
-│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
-│                      ││                                                                           Data    100M   Snaps 200K                        │
-│                      ││                                                                           Kids    0B   Refres 0B                           │
+│Dashboard             ││Name                                  Used     Avail    Lock   Kind      ││#   Tar Permissions          Flags         Type  │
+│Hosts                 ││scratch                               103M     17.3M           Filesystem││0   own read_data/write_data —             Allow │
+│Pools                 ││scratch/data                          100M     17.3M           Filesystem││1   gro read_data/execute/re —             Allow │
+│Datasets              ││scratch/vault                         408K     17.3M    LOCKED Filesystem││2   eve read_data/execute/re —             Allow │
+│Snapshots             ││scratch/vault/docs                    200K     17.3M    LOCKED Filesystem││                                                 │
+│Disks                 ││tpool                                 3.9G     5.2G            Filesystem││                                                 │
+│Shares                │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+│Boot Envs             │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│Jobs                  ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 118M                        │
+│Cloud                 ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
+│Alerts                ││                                                                           Data    100M   Snaps 256K                        │
+│Settings              ││                                                                           Kids    0B   Refres 0B                           │
 │                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ↑↓ Move  n Add entry  [ ] Tabs  ← Back  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit

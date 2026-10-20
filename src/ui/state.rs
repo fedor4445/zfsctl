@@ -16,6 +16,33 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Sends the `SnapshotTags` answer of a tag fetch exactly once: the real one, or an empty one when dropped
+/// before that (a panic), because the answer is what clears the host's "fetch running" mark.
+struct TagsReply {
+    tx: Sender<WorkerMsg>,
+    host: usize,
+    generation: u64,
+    sent: bool,
+}
+
+impl TagsReply {
+    fn send(&mut self, tags: HashMap<String, Vec<String>>) {
+        self.sent = true;
+        let _ = self.tx.send(WorkerMsg::SnapshotTags(self.host, self.generation, tags));
+    }
+}
+
+impl Drop for TagsReply {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self.tx.send(WorkerMsg::SnapshotTags(self.host, self.generation, HashMap::new()));
+        }
+    }
+}
+
+/// How long an error status is kept against quiet (auto) refreshes.
+const ERROR_STATUS_MIN_AGE: Duration = Duration::from_secs(8);
+
 mod forms;
 mod modal_keys;
 mod worker;
@@ -195,6 +222,9 @@ pub struct PendingPruneCheck {
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
+    /// The hold tags of the held snapshots of one host's list (key `dataset@name`), sent after `Snapshots`; the
+    /// number says which list refresh they were fetched for.
+    SnapshotTags(usize, u64, std::collections::HashMap<String, Vec<String>>),
     /// The dry run (`zpool add -n`) of a vdev add finished: the layout it would give, or the host's own refusal.
     AddChecked(AddCheck, std::result::Result<String, String>),
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
@@ -306,6 +336,13 @@ pub struct App {
     /// The host index `encryption` was read for (a job form may be for another host).
     pub encryption_for: usize,
     pub snapshots: Vec<Snapshot>,
+    /// The hold tags of the held snapshots of the selected host, keyed `dataset@name`. A held snapshot without an
+    /// entry has unknown tags.
+    pub snapshot_tags: std::collections::HashMap<String, Vec<String>>,
+    /// Per host, how many snapshot list refreshes have started: tags are applied only when they were fetched for the latest one.
+    snapshot_gen: HashMap<usize, u64>,
+    /// Hosts with a tag fetch running: a refresh that finds its host here skips its own fetch (tags stay unknown until the next refresh).
+    tags_running: Arc<std::sync::Mutex<HashSet<usize>>>,
     /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
     /// snapshots can say "unknown" instead of a misleading 0.
     pub snapshots_loaded: bool,
@@ -347,6 +384,8 @@ pub struct App {
     /// `config.toml`, read and (for the alert settings) written by the Alerts screen.
     pub config_path: std::path::PathBuf,
     pub alerts_view: crate::ui::alerts::AlertsView,
+    /// First visible line of an open Info pop-up (Help, About, report preview); Up/Down/PageUp/PageDown/Home/End move it.
+    pub info_scroll: u16,
     /// The Settings section: the rest of `config.toml` that can be edited here.
     pub settings_view: crate::ui::settings::SettingsView,
     pub settings_table: TableState,
@@ -462,6 +501,8 @@ pub struct App {
     /// it invalidates itself the moment the message is replaced or
     /// cleared — a stale flag can never recolor an unrelated message.
     status_error: Option<String>,
+    /// When `status_error` was set: a quiet (auto) refresh leaves an error younger than `ERROR_STATUS_MIN_AGE` alone.
+    status_error_at: Option<Instant>,
     pub should_quit: bool,
     /// Appended by `drain_worker_messages` once a probed host is
     /// confirmed reachable; drained by the event loop (which owns the
@@ -532,6 +573,9 @@ impl App {
             encryption: std::collections::BTreeMap::new(),
             encryption_for: 0,
             snapshots: Vec::new(),
+            snapshot_tags: std::collections::HashMap::new(),
+            snapshot_gen: HashMap::new(),
+            tags_running: Arc::new(std::sync::Mutex::new(HashSet::new())),
             snapshots_loaded: false,
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
@@ -566,6 +610,7 @@ impl App {
             last_cloud_refresh: None,
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
+            info_scroll: 0,
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
             smart: crate::daemon::smart_check::SmartFile::default(),
@@ -614,6 +659,7 @@ impl App {
             status_message: None,
             theme: crate::ui::theme::Theme::ansi(),
             status_error: None,
+            status_error_at: None,
             should_quit: false,
             pending_new_hosts: Vec::new(),
             pending_shell: false,
@@ -689,8 +735,11 @@ impl App {
     /// A manual refresh result clears whatever status message was showing; a quiet
     /// (auto) one only clears a stale error, so "scrub started" is not wiped every
     /// interval but a "host unreachable" error does go away once the host answers.
+    /// An error younger than `ERROR_STATUS_MIN_AGE` survives a quiet refresh, so a refusal is readable
+    /// even when an overdue auto-refresh fires the moment its modal closes.
     fn clear_status_after_refresh(&mut self, quiet: bool) {
-        if !quiet || self.status_is_error() {
+        let young = self.status_error_at.is_some_and(|at| at.elapsed() < ERROR_STATUS_MIN_AGE);
+        if !quiet || (self.status_is_error() && !young) {
             self.status_message = None;
         }
     }
@@ -1319,7 +1368,22 @@ impl App {
     /// Sets a failure message (rendered with the theme's `err` style).
     pub fn set_error(&mut self, msg: String) {
         self.status_error = Some(msg.clone());
+        self.status_error_at = Some(Instant::now());
         self.status_message = Some(msg);
+    }
+
+    /// The Hold column: `H` when zfsctl's own tag is on the snapshot, `h` when it is held but not (known to be) by
+    /// zfsctl, blank when unheld.
+    pub fn hold_marker(&self, s: &Snapshot) -> &'static str {
+        if s.holds == 0 {
+            return "";
+        }
+        let ours = self.snapshot_tags.get(&format!("{}@{}", s.dataset, s.name)).is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG));
+        if ours {
+            "H"
+        } else {
+            "h"
+        }
     }
 
     pub fn status_is_error(&self) -> bool {
@@ -1447,6 +1511,7 @@ impl App {
         self.datasets.clear();
         self.encryption.clear();
         self.snapshots.clear();
+        self.snapshot_tags.clear();
         self.snapshots_loaded = false;
         self.pools_table.select(None);
         self.datasets_table.select(None);
@@ -2191,6 +2256,32 @@ impl App {
                                 call: MutationCall::DestroySnapshot { dataset: snap.dataset.clone(), name: snap.name.clone() },
                             },
                         });
+                    }
+                }
+            }
+            KeyCode::Char('H') if self.current_section() == Section::Snapshots => {
+                if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
+                    let target = format!("{}@{}", snap.dataset, snap.name);
+                    let (dataset, name) = (snap.dataset.clone(), snap.name.clone());
+                    let tags = self.snapshot_tags.get(&target);
+                    let action = |call| PendingAction { host: self.selected_host, section: Section::Snapshots, call };
+                    if snap.holds == 0 {
+                        let prompt = format!("Protect {target} with a hold?\nIt cannot be destroyed, and retention, backups and replication will not prune it, until the hold is released. (y/n)");
+                        self.modal = Some(Modal::Confirm { choice: None, prompt, action: action(MutationCall::HoldSnapshot { dataset, name }) });
+                    } else if tags.is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG)) {
+                        self.modal = Some(Modal::ConfirmTyped {
+                            prompt: format!("Type the snapshot name to release the zfsctl hold on '{target}' — it can then be destroyed and pruned again:"),
+                            expected: target,
+                            input: String::new(),
+                            action: action(MutationCall::ReleaseSnapshot { dataset, name }),
+                        });
+                    } else if let Some(t) = tags {
+                        self.status_message = Some(match crate::display_text::tag_list(t) {
+                            l if l.is_empty() => "held by another tag (name not printable); zfsctl will not release it".to_string(),
+                            l => format!("held by another tag: {l}; zfsctl will not release it"),
+                        });
+                    } else {
+                        self.status_message = Some("hold tags not loaded yet; press r".to_string());
                     }
                 }
             }
@@ -3085,10 +3176,25 @@ impl App {
             return;
         }
         self.begin_refresh(Section::Snapshots, host);
-        let tx = self.tx.clone();
+        let generation = self.snapshot_gen.entry(host).and_modify(|g| *g += 1).or_insert(1);
+        let generation = *generation;
+        let (tx, running) = (self.tx.clone(), Arc::clone(&self.tags_running));
         std::thread::spawn(move || {
             let result = crate::zfs::snapshot::list_snapshots(runner.as_ref());
+            let held: Vec<String> = result.as_ref().map(|l| l.iter().filter(|s| s.holds > 0).map(|s| format!("{}@{}", s.dataset, s.name)).collect()).unwrap_or_default();
             let _ = tx.send(WorkerMsg::Snapshots(host, result));
+            if held.is_empty() {
+                return;
+            }
+            // One tag fetch per host at a time; a skipped one leaves the tags unknown until the next refresh.
+            if !running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(host) {
+                return;
+            }
+            // A failed chunk leaves its snapshots out: their tags stay unknown, and they cannot be released from here.
+            // The guard answers with an empty map if this thread panics, so the host's mark is always cleared.
+            let mut reply = TagsReply { tx, host, generation, sent: false };
+            let tags = crate::zfs::snapshot::hold_tags_for(runner.as_ref(), &held);
+            reply.send(tags);
         });
     }
 
@@ -3362,8 +3468,24 @@ pub(crate) fn help_text_for_book() -> String {
     help_text()
 }
 
+/// The Help text: one blank line between key lines, so a long description that wraps cannot run into the next key.
 fn help_text() -> String {
-    "\
+    let mut out = String::new();
+    let mut previous_was_key = false;
+    for line in HELP_SOURCE.lines() {
+        let is_key = line.starts_with("  ");
+        if is_key && previous_was_key {
+            out.push('\n');
+        }
+        out.push_str(line);
+        out.push('\n');
+        previous_was_key = is_key;
+    }
+    out.pop();
+    out
+}
+
+const HELP_SOURCE: &str = "\
 Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
@@ -3421,6 +3543,7 @@ Datasets: ACL sub-tab
 Snapshots
   d                destroy (type dataset@name to confirm)
   b                roll back (type dataset@name to confirm)
+  H                hold the selected snapshot, or release zfsctl's hold on it (a hold protects it from destroy and pruning)
 
 Disks
   Space            toggle-select a disk
@@ -3474,9 +3597,7 @@ Settings
   Enter            edit the setting in a form (blank = default; saved into config.toml after a y/n confirmation)
   r                reload the settings from config.toml
 
-Press any key to close."
-        .to_string()
-}
+Up / Down / PageUp / PageDown scroll; any other key closes.";
 
 /// The Add Host reachability check: plain `true` over ssh, deliberately WITHOUT sudo. The documented sudoers
 /// entry is path-pinned and has no `true`, so `sudo -n true` would reject every correctly set-up host. A

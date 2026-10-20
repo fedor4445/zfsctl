@@ -12,18 +12,18 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — ? ('r' refresh, Ente┐
-│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
-│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
-│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
-│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Dashboard             ││Name                  Health       Used          ││Property    Value      Source    │
+│Hosts                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Pools                 ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Datasets              ││zroot                 ● ONLINE     ██░░░░░░ 25%  ││                                 │
+│Snapshots             ││                                                 ││                                 │
 │Disks                 ││                                                 ││                                 │
 │Shares                ││                                                 ││                                 │
 │Boot Envs             ││                                                 ││                                 │
 │Jobs                  ││                                                 ││                                 │
+│Cloud                 ││                                                 ││                                 │
 │Alerts                ││                                                 ││                                 │
-│                      ││                                                 ││                                 │
-│                      ││                                                 ││                                 │
-│                      ││                                                 ││                                 │
+│Settings              ││                                                 ││                                 │
 │                      ││                                                 ││                                 │
 │                      ││                                                 ││                                 │
 │                      ││                                                 ││                                 │
@@ -183,19 +183,21 @@ Press `?` at any time. The Help screen lists every key for every section:
 
 ```screen
 ┌zfsctl───────────────┌Help────────────────────────────────────────────────────────────┐─────────────────────┐
-│Hosts                │Global                                                          │   Type   Used  Pools│
-│Pools                │  Tab / Shift+Tab  switch sections                              │   vm     42%   3    │
-│Datasets             │  Up / Down        select a row                                 │   vm     55%   1    │
-│Snapshots            │(host/pool/dataset/snapshot/disk/share, or a                    │   vm     72%   2    │
-│Disks                │property/permission/ACL row)                                    │   vm     72%   2    │
-│Shares               │  r                refresh the focused pane                     │                     │
-│Boot Envs            │  F2               in a form, on a field with known values      │                     │
-│Jobs                 │(Permissions, Flags, Type, Recipient, Valid user, Root user     │                     │
-│Alerts               │mapping, a pool property with fixed values such as failmode or  │                     │
-│                     │autoexpand, a from-disks Redundancy, a job's Host, Pool or      │                     │
-│                     │Dataset, a replication's Destination host, and Schedule): open a│                     │
-│                     │picker (type filter, Enter OK, Esc cancel; Space toggles in     │                     │
+│Dashboard            │Global                                                          │  Tag     Used  Pools│
+│Hosts                │  Tab / Shift+Tab  switch sections                              │          42%   3    │
+│Pools                │  Up / Down        select a row                                 │          61%   1    │
+│Datasets             │(host/pool/dataset/snapshot/disk/share, or a                    │          53%   2    │
+│Snapshots            │property/permission/ACL row)                                    │          -     -    │
+│Disks                │  r                refresh the focused pane                     │  linux   0%    1    │
+│Shares               │  F2               in a form, on a field with known values      │  illumos 96%   2    │
+│Boot Envs            │(Permissions, Flags, Type, Recipient, Valid user, Root user     │                     │
+│Jobs                 │mapping, a pool property with fixed values such as failmode or  │                     │
+│Cloud                │autoexpand, a from-disks Redundancy, a job's Host, Pool or      │                     │
+│Alerts               │Dataset, a replication's Destination host, and Schedule): open a│                     │
+│Settings             │picker (type filter, Enter OK, Esc cancel; Space toggles in     │                     │
 │                     │multi-select ones)                                              │                     │
+│                     │  F5               in the backup job form: check the repository │                     │
+│                     │check the remote (both read-only; never block saving)           │                     │
 │                     │  Esc              dismiss a status message, back out of a      │                     │
 │                     │focused pane, or cancel a modal (in a y/n confirmation Esc      │                     │
 │                     │selects No, then Enter)                                         │                     │
@@ -204,16 +206,19 @@ Press `?` at any time. The Help screen lists every key for every section:
 │                     │nothing. Forms that cannot be undone (create pool, add vdev,    │                     │
 │                     │replace disk, revoke, shrinking a volume, pool features) end in │                     │
 │                     │one, showing the exact command                                  │                     │
-│                     │  ?                this Help screen                             │                     │
-│                     │  !                open a shell on the selected host (remote    │                     │
-│                     │hosts: your unprivileged ssh login); exit returns to zfsctl     │                     │
-│                     │  A                About                                        │─────────────────────┘
-│                     │  q                quit                                         │─────────────────────┐
-│                     │                                                                │BSD_g6330a45b0       │
-│                     │Hosts                                                           │E)                   │
-│                     │  Up / Down        select the active host                       │ 62.2G               │
-│                     │  /                filter the host list by name, address, tag or│  hit 99.3%          │
-│                     │type (Enter keeps it, Esc clears it)                            │e healthy            │
+│                     │  ?                this Help screen                             │─────────────────────┘
+│                     │  !                open a shell on the selected host (remote    │─────────────────────┐
+│                     │hosts: your unprivileged ssh login); exit returns to zfsctl     │BSD_g6330a45b0       │
+│                     │  A                About                                        │E)                   │
+│                     │  q                quit                                         │ 62.2G               │
+│                     │                                                                │  hit 99.9%          │
+│                     │Hosts                                                           │e healthy            │
+│                     │  Up / Down        select the active host                       │                     │
+│                     │  /                filter the host list by name, address, tag or│                     │
+│                     │type (Enter keeps it, Esc clears it)                            │                     │
+│                     │  c                check the selected host's disks (smartctl)   │                     │
+│                     │and shares (NFS, Samba) now; the result joins the Dashboard     │                     │
+│                     │(read-only)                                                     │                     │
 │                     │  n                add a new host (prompts for Name, SSH target │                     │
 │                     │and an optional Tag)                                            │                     │
 │                     │                                                                │                     │
@@ -226,13 +231,7 @@ Press `?` at any time. The Help screen lists every key for every section:
 │                     │pool (opens the job form)                                       │                     │
 │                     │  J                (in Datasets) schedule recurring snapshots of│                     │
 │                     │the selected dataset                                            │                     │
-│                     │                                                                │                     │
-│                     │Vdevs (inside a drilled-into pool)                              │                     │
-│                     │  o / O            offline / online the selected disk           │                     │
-│                     │  x                replace the selected disk                    │                     │
-│                     │  a                add a vdev/mirror/raidz group                │                     │
-│                     │                                                                │                     │
-└─────────────────────│Pool/Dataset properties pane                                    │─────────────────────┘
+└─────────────────────│                                                                │─────────────────────┘
 any key Close         └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -244,26 +243,26 @@ The actions that destroy or overwrite data ask first, and ask in a way that a sl
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — scratch ('r' refresh┐
-│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
-│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
-│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
-│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Dashboard             ││Name                  Health       Used          ││Property    Value      Source    │
+│Hosts                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Pools                 ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Datasets              ││zroot                 ● ONLINE     ██░░░░░░ 25%  ││                                 │
+│Snapshots             ││                                                 ││                                 │
 │Disks                 ││                                                 ││                                 │
 │Shares                ││                                                 ││                                 │
 │Boot Envs             ││                                                 ││                                 │
-│Jobs                  ││                                                 ││                                 │
-│Alerts               ┌Confirm (y/n, then Enter)───────────────────────────────────────┐                     │
-│                     │Scrub pool 'scratch'? (y/n)                                     │                     │
-│                     │                                                                │─────────────────────┘
-│                     │Press y for yes or n for no, then Enter.                        │─────────────────────┐
+│Jobs                 ┌Confirm (y/n, then Enter)───────────────────────────────────────┐                     │
+│Cloud                │Scrub pool 'scratch'? (y/n)                                     │                     │
+│Alerts               │                                                                │─────────────────────┘
+│Settings             │Press y for yes or n for no, then Enter.                        │─────────────────────┐
 │                     │                                                                │ONLINE               │
-│                     └────────────────────────────────────────────────────────────────┘%  102M / 240M       │
+│                     └────────────────────────────────────────────────────────────────┘%  103M / 240M       │
 │                      ││                                                     Vdevs      1  (1 mirror)       │
 │                      ││                                                     Disks      2  (2 data)         │
-│                      ││                                                     Datasets   2 filesystems       │
-│                      ││                                                     Snapshots  3                   │
+│                      ││                                                     Datasets   4 filesystems       │
+│                      ││                                                     Snapshots  4                   │
 │                      ││                                                     Compress   on 1.00x   Trim on  │
-│                      ││                                                     Frag    40%   Dedup 1.00x      │
+│                      ││                                                     Frag    42%   Dedup 1.00x      │
 │                      ││                                                     +2 more lines: enlarge the ter…│
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
 y Yes  n/Esc No
@@ -281,7 +280,7 @@ A form is a small window of fields. `Tab` or `Down` moves to the next field, `Sh
 
 ## The shell key
 
-`!` opens a shell and returns to zfsctl when you exit it. On the hub it is your normal shell, running as the user zfsctl runs as (root). On another host it is a normal interactive `ssh` login as that host's unprivileged account, never a root shell, and it needs nothing extra in sudoers. It is handy for a quick `zpool status` or `ls` without leaving the screen.
+`!` opens a shell and returns to zfsctl when you exit it. On the hub it is your normal shell, running as the user zfsctl runs as (root). On another host it is a normal interactive `ssh` login as that host's unprivileged account, never a root shell, and it needs nothing extra in sudoers. It is handy for a quick `zpool status` or `ls` without leaving the screen. If the host stops answering (it reboots, or the network drops), the login gives up after about 15 seconds and you are back on the screen with a message, instead of staring at a frozen terminal.
 
 ## Colours and themes
 

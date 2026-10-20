@@ -77,7 +77,7 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
-        Modal::Info { .. } => vec![h("any key", "Close", 0)],
+        Modal::Info { .. } => vec![h("↑/↓", "Scroll", 0), h("any key", "Close", 0)],
         // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
         // it is only advertised once there is a selection for it to apply.
         Modal::Confirm { action, choice, .. } => match choice {
@@ -259,6 +259,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if app.snapshots_table.selected().is_some() {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("b", "Rollback", 2).tone(Tone::Danger));
+                v.push(h("H", "Hold", 2));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -565,8 +566,8 @@ mod tests {
         let mut a = base();
         go(&mut a, Section::Snapshots);
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0 },
         ];
         a.snapshots_table.select(Some(0));
         a
@@ -885,7 +886,7 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_advertised_are_no_ops() {
-        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D', 'B'];
+        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D', 'B', 'H'];
         for (name, app) in scenarios() {
             let advertised: Vec<KeyCode> = hints(&app).iter().filter_map(|h| key_code(h.key)).collect();
             for ch in probes {
@@ -1073,6 +1074,17 @@ mod tests {
     }
 
     #[test]
+    fn hints_offer_the_hold_key_when_a_snapshot_is_selected() {
+        let a = snapshots();
+        let hold = hints(&a).into_iter().find(|h| h.key == "H").expect("H is offered");
+        assert_eq!(hold.label, "Hold");
+        assert_eq!(hold.tone, Tone::Neutral);
+        let mut none = snapshots();
+        none.snapshots_table.select(None);
+        assert!(!keys(&none).contains(&"H"));
+    }
+
+    #[test]
     fn hints_for_the_hosts_screen_do_not_include_refresh() {
         // `r` is a no-op in the Hosts section (see event_loop's refresh match).
         assert!(!keys(&hosts()).contains(&"r"));
@@ -1083,8 +1095,7 @@ mod tests {
         let mut app = pools_middle();
         app.modal = Some(Modal::Info { title: "Help".to_string(), body: String::new() });
         let hs = hints(&app);
-        assert_eq!(hs.len(), 1);
-        assert_eq!(hs[0].key, "any key");
+        assert_eq!(hs.iter().map(|h| h.key).collect::<Vec<_>>(), ["↑/↓", "any key"]);
         assert!(!hs.iter().any(|h| h.pinned));
     }
 
@@ -1297,8 +1308,8 @@ mod tests {
         a.pools = vec![pool("tank"), pool("scratch")];
         a.datasets = vec![dataset("tank/a"), dataset("tank/b")];
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0 },
         ];
         a.disks = vec![
             DiskInfo { name: "da0".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },

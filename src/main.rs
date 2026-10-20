@@ -8,6 +8,7 @@ mod acl;
 mod config;
 mod config_edit;
 mod daemon;
+mod display_text;
 mod error;
 mod exec;
 mod help;

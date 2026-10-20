@@ -1,16 +1,16 @@
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for p┐┌Properties — tpool ('r' refresh, Enter to edit,┐
-│Hosts                 ││Name             Health       Used ││Property         Value               Source    │
-│Pools                 ││scratch          ● ONLINE     42%  ││size             20937965568         -         │
-│Datasets              ││tpool            ● ONLINE     41%  ││capacity         41                  -         │
-│Snapshots             ││zroot            ● ONLINE     24%  ││altroot          -                   default   │
-│Disks                 ││                                   ││health           ONLINE              -         │
-│Shares                ││                                   ││guid             5954732628176323138 -         │
-│Boot Envs             ││                                   ││version          -                   default   │
-│Jobs                  ││                                   ││bootfs           -                   default   │
-│Alerts                ││                                   ││delegation       on                  default   │
-│                      ││                                   ││autoreplace      on                  local     │
-│                      ││                                   ││cachefile        -                   default   │
-│                      ││                                   ││failmode         wait                default   │
+│Dashboard             ││Name             Health       Used ││Property         Value               Source    │
+│Hosts                 ││scratch          ● ONLINE     42%  ││size             20937965568         -         │
+│Pools                 ││tpool            ● ONLINE     41%  ││capacity         41                  -         │
+│Datasets              ││zroot            ● ONLINE     25%  ││altroot          -                   default   │
+│Snapshots             ││                                   ││health           ONLINE              -         │
+│Disks                 ││                                   ││guid             5954732628176323138 -         │
+│Shares                ││                                   ││version          -                   default   │
+│Boot Envs             ││                                   ││bootfs           -                   default   │
+│Jobs                  ││                                   ││delegation       on                  default   │
+│Cloud                 ││                                   ││autoreplace      on                  local     │
+│Alerts                ││                                   ││cachefile        -                   default   │
+│Settings              ││                                   ││failmode         wait                default   │
 │                      ││                                   ││listsnapshots    on                  local     │
 │                      │└───────────────────────────────────┘└───────────────────────────────────────────────┘
 │                      │┌Metrics — tpool─────────────────────────────────────────────────────────────────────┐
@@ -23,7 +23,7 @@
 │                      ││                                                     Compress   on 1.00x   Trim off │
 │                      ││                                                     Frag    2%   Dedup 1.00x       │
 │                      ││                                                     Errors  R0 W0 C0               │
-│                      ││                                                     Scrub   Sep 26 13:15:14 2026   │
+│                      ││                                                     Scrub   Oct 18 03:00:30 2026   │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘

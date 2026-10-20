@@ -14,18 +14,18 @@ A *boot environment* is a bootable copy of the operating system, kept as a ZFS c
 
 ```screen
 ┌zfsctl────────────────┐┌Boot Environments — local ('r' to refresh)──────────────────────────────────────────┐
-│Hosts                 ││Name                                  Active       Space    Mountpoint              │
-│Pools                 ││default                               Now+Reboot   5.28G    /                       │
+│Dashboard             ││Name                                  Active       Space    Mountpoint              │
+│Hosts                 ││default                               Now+Reboot   5.32G    /                       │
+│Pools                 ││                                                                                    │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
 │Disks                 ││                                                                                    │
 │Shares                ││                                                                                    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
 │Alerts                ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
+│Settings              ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
@@ -36,7 +36,7 @@ A *boot environment* is a bootable copy of the operating system, kept as a ZFS c
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  R Rename  n New  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  n New  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 | Column | Meaning |

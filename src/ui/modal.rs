@@ -27,6 +27,8 @@ pub enum MutationCall {
     DestroyDatasetRecursive { name: String },
     SetDatasetProperty { dataset: String, key: String, value: String },
     CreateSnapshot { dataset: String, name: String },
+    HoldSnapshot { dataset: String, name: String },
+    ReleaseSnapshot { dataset: String, name: String },
     DestroySnapshot { dataset: String, name: String },
     RollbackSnapshot { dataset: String, name: String },
     AllowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Vec<String> },
@@ -94,6 +96,8 @@ impl MutationCall {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
             MutationCall::SaveSettings { .. } => Some("Saved to config.toml".to_string()),
+            MutationCall::HoldSnapshot { dataset, name } => Some(format!("Protected {dataset}@{name}")),
+            MutationCall::ReleaseSnapshot { dataset, name } => Some(format!("Released the zfsctl hold on {dataset}@{name}")),
             MutationCall::SendTestMessage { .. } => Some("Test message sent: the mail command accepted it (run from this terminal; the daemon runs it with root's home)".to_string()),
             _ => None,
         }
@@ -123,12 +127,14 @@ impl MutationCall {
             | MutationCall::ChangeKey { .. }
             | MutationCall::CreateEncryptedDataset { .. }
             | MutationCall::ActivateBootEnv { temporary: false, .. }
+            | MutationCall::ReleaseSnapshot { .. }
             | MutationCall::DeleteJob { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
             | MutationCall::ResilverPool { .. }
             | MutationCall::OnlineDisk { .. }
             | MutationCall::CreateDataset { .. }
             | MutationCall::CreateSnapshot { .. }
+            | MutationCall::HoldSnapshot { .. }
             | MutationCall::AllowPermission { .. }
             | MutationCall::AddAclEntry { .. }
             | MutationCall::SetPoolProperty { .. }
@@ -167,6 +173,8 @@ impl MutationCall {
             MutationCall::DestroyDatasetRecursive { .. } => "DESTROY DATASET AND EVERYTHING UNDER IT",
             MutationCall::SetDatasetProperty { .. } => "SET DATASET PROPERTY",
             MutationCall::CreateSnapshot { .. } => "CREATE SNAPSHOT",
+            MutationCall::HoldSnapshot { .. } => "HOLD SNAPSHOT",
+            MutationCall::ReleaseSnapshot { .. } => "RELEASE HOLD",
             MutationCall::DestroySnapshot { .. } => "DESTROY SNAPSHOT",
             MutationCall::RollbackSnapshot { .. } => "ROLLBACK SNAPSHOT",
             MutationCall::AllowPermission { .. } => "GRANT PERMISSION",
@@ -233,6 +241,8 @@ impl MutationCall {
                 crate::zfs::dataset::set_dataset_property(runner, dataset, key, value)
             }
             MutationCall::CreateSnapshot { dataset, name } => crate::zfs::snapshot::create_snapshot(runner, dataset, name),
+            MutationCall::HoldSnapshot { dataset, name } => crate::zfs::snapshot::hold_snapshot(runner, dataset, name),
+            MutationCall::ReleaseSnapshot { dataset, name } => crate::zfs::snapshot::release_snapshot(runner, dataset, name),
             MutationCall::DestroySnapshot { dataset, name } => crate::zfs::snapshot::destroy_snapshot(runner, dataset, name),
             MutationCall::RollbackSnapshot { dataset, name } => crate::zfs::snapshot::rollback_snapshot(runner, dataset, name),
             MutationCall::AllowPermission { dataset, target, perms } => crate::zfs::permission::allow(runner, dataset, target, perms),
@@ -637,7 +647,8 @@ mod tests {
         let call = MutationCall::DestroyDataset { name: "tank/olds".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
+        let destroys: Vec<_> = calls.iter().filter(|c| c.1[0] == "destroy").collect();
+        assert_eq!(*destroys[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
     }
 
     #[test]
@@ -651,11 +662,43 @@ mod tests {
 
     #[test]
     fn destroy_snapshot_call_runs_destroy_snapshot() {
-        let runner = FakeRunner::new("");
+        let runner = FakeRunner::new("").route("zfs", "get", "tank/data@old-1\t0\n");
         let call = MutationCall::DestroySnapshot { dataset: "tank/data".to_string(), name: "old-1".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+        let destroys: Vec<_> = calls.iter().filter(|c| c.1[0] == "destroy").collect();
+        assert_eq!(destroys.len(), 1);
+        assert_eq!(*destroys[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+    }
+
+    #[test]
+    fn hold_call_runs_hold_snapshot() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::HoldSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["hold".to_string(), "--".to_string(), "zfsctl".to_string(), "tank/data@s1".to_string()]));
+    }
+
+    #[test]
+    fn release_call_runs_release_snapshot() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::ReleaseSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["release".to_string(), "--".to_string(), "zfsctl".to_string(), "tank/data@s1".to_string()]));
+    }
+
+    #[test]
+    fn tone_label_and_note_of_the_new_calls() {
+        let hold = MutationCall::HoldSnapshot { dataset: "tank/a".into(), name: "s".into() };
+        let release = MutationCall::ReleaseSnapshot { dataset: "tank/a".into(), name: "s".into() };
+        assert_eq!(hold.tone(), Tone::Neutral);
+        assert_eq!(release.tone(), Tone::Warn);
+        assert_eq!(hold.label(), "HOLD SNAPSHOT");
+        assert_eq!(release.label(), "RELEASE HOLD");
+        assert_eq!(hold.done_note().unwrap(), "Protected tank/a@s");
+        assert_eq!(release.done_note().unwrap(), "Released the zfsctl hold on tank/a@s");
     }
 
     #[test]
@@ -792,9 +835,10 @@ mod tone_tests {
         let call = MutationCall::DestroyDatasetRecursive { name: "tank/data".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "-r".to_string(), "--".to_string(), "tank/data".to_string()]));
+        let destroy = calls.iter().find(|c| c.1[0] == "destroy").unwrap();
+        assert_eq!(*destroy, ("zfs".to_string(), vec!["destroy".to_string(), "-r".to_string(), "--".to_string(), "tank/data".to_string()]));
         assert_eq!(call.tone(), Tone::Danger);
-        assert!(!calls[0].1.iter().any(|a| a == "-R"), "-R would also destroy clones elsewhere");
+        assert!(!destroy.1.iter().any(|a| a == "-R"), "-R would also destroy clones elsewhere");
     }
 
     #[test]

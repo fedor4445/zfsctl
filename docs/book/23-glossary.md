@@ -62,6 +62,8 @@ Terms are in alphabetical order.
 
 **heartbeat**: a file the daemon rewrites every second so the TUI can tell it is running.
 
+**hold**: a lock ZFS puts on a snapshot so it cannot be destroyed until the hold is released; zfsctl's own tag is `zfsctl`; chapter 10.
+
 **hook**: the `notify_command` that runs for alerts and failed jobs; the way to reach Telegram, ntfy and other services.
 
 **host**: a machine zfsctl manages; the hub itself is `local`; chapter 7.

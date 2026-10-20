@@ -8,36 +8,36 @@
 
 ## The list
 
-(On a Linux or illumos host the list comes from `lsblk` or `iostat -En` instead of `geom`; see chapter 5. The columns are the same, but a rotating disk shows `HDD` without a speed, and illumos shows no Type.)
+(On a Linux or illumos host the list comes from `lsblk` or `iostat -En` instead of `geom`, and the live activity of a selected disk from that system's own `iostat`; see chapter 5. The columns are the same, but a rotating disk shows `HDD` without a speed, and illumos shows no Type.)
 
 The Disks section lists every disk the host has, and which pool each belongs to:
 
 ```screen
 ┌zfsctl────────────────┐┌Disks — local ('r' refresh, Space select, 'n' create pool, 'a' add vdev, Esc clear s┐
-│Hosts                 ││Name               Size     Type      Status                                        │
-│Pools                 ││[ ] ada0           45.0G              in zroot (ada0p4)                             │
-│Datasets              ││[ ] ada1           5.0G               in tpool (raidz2-0)                           │
-│Snapshots             ││[ ] ada2           5.0G               in tpool (raidz2-0)                           │
-│Disks                 ││[ ] ada3           5.0G               in tpool (raidz2-0)                           │
-│Shares                ││[ ] ada4           5.0G               in tpool (raidz2-0)                           │
+│Dashboard             ││Name               Size     Type      Status                                        │
+│Hosts                 ││[ ] ada0           45.0G              in zroot (ada0p4)                             │
+│Pools                 ││[ ] ada1           5.0G               in tpool (raidz2-0)                           │
+│Datasets              ││[ ] ada2           5.0G               in tpool (raidz2-0)                           │
+│Snapshots             ││[ ] ada3           5.0G               in tpool (raidz2-0)                           │
+│Disks                 ││[ ] ada4           5.0G               in tpool (raidz2-0)                           │
+│Shares                ││                                                                                    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
 │Alerts                ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
+│Settings              ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — disk ada0─────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s      Write 0B/s  peak 0B/s     Disk     ada0  45.0G  type unk…│
-│                      ││0 ops  lat -               0 ops  lat -              Model    QEMU HARDDISK         │
-│                      ││                                                     Serial   o3q4Qrvy              │
-│                      ││                                                     Pool     zroot / ada0p4        │
-│                      ││                                                     Health   ONLINE   R0 W0 C0     │
-│                      ││                                                     Busy     0%   queue 0          │
+│                      │┌Metrics─────────────────────────────────────────────────────────────────────────────┐
+│                      ││nothing selected                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
+│                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
@@ -48,7 +48,7 @@ The Disks section lists every disk the host has, and which pool each belongs to:
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  Space Select  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 - **Name** is the system's name for the disk (`ada1`; chapter 3 explains FreeBSD's naming).
