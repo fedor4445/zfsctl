@@ -1,6 +1,6 @@
 # Snapshot recovery: hold, timeline, browse, restore as a copy (design)
 
-Status: draft for review, 2026-10-20. Nothing built.
+Status: approved by the user 2026-10-20 (all three open questions answered yes). Nothing built.
 
 ## Why
 
@@ -194,13 +194,12 @@ can be edited. The confirm is two keys and shows the **exact command**, the sour
 - Live checks on the hub (FreeBSD, real scratch pool, throwaway snapshots), OmniOS (read-only), Ubuntu (ask first).
 - Book captures taken with the capture tool, as for every other screen.
 
-## Open questions (for the user)
+## Decisions (answered by the user, 2026-10-20)
 
-1. **Slice 3 mechanism.** Is a root-read metadata listing helper behind an off-by-default `browse` feature acceptable,
-   given it can list names of files anywhere on the host? Alternative: skip browsing and rely on slice 2's entries,
-   then restore by path from those. My default is to build the gated version, after slices 1 and 2.
-2. **Folder restore** (slice 4) is out of the first version; confirm that is right.
-3. **Tag name.** `zfsctl` is proposed. A different name changes nothing else.
+1. **Slice 3 mechanism: yes.** A metadata-only listing helper behind an off-by-default `browse` sudoers feature is
+   acceptable, as specified above, built after slices 1 and 2.
+2. **Folder restore is out of the first version: yes.** Slice 4 restores one file at a time.
+3. **Hold tag: `zfsctl`: yes.**
 
 ## Left to the builder
 
