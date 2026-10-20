@@ -114,6 +114,7 @@ property: instant and cheap) so a big drop or spike stands out. `c` ("changes") 
   counts and the types involved: `Camera/ -2,498 +0 ~3 (files)`.
 - Enter on a group lists its entries: change, type (in words: file, directory, symlink, ...), change time, path.
   `zfs diff` does not give size or creation time; slice 3 does.
+- `C` runs the same view against the **live dataset** instead of the previous snapshot ("what has changed since this snapshot"): `zfs diff <snapshot> <dataset>` (my call).
 - `Esc` backs out. A key on the view holds the *older* snapshot (the one that still has the files), the moment the
   user described.
 
@@ -131,7 +132,7 @@ and Linux. Linux needs a throwaway snapshot on the Ubuntu test VM: ask the user 
 
 ### Slice 3: browse a snapshot's folders
 
-**What the user sees.** From the Snapshots section, `b` on a snapshot opens a folder browser of that snapshot. Each
+**What the user sees.** From the Snapshots section, `f` (files) on a snapshot opens a folder browser of that snapshot. (`b` is Rollback there already.) Each
 entry shows: name, **type** (file, directory, symlink, ...), **size**, **created** (when the OS records it), **modified**,
 **changed**, mode and owner. `/` filters by name; separate keys filter by date range, size range and type. Folders show
 their entry count, not a recursive size (a recursive size means walking the tree).
@@ -151,7 +152,7 @@ and there is no portable single command. The proposed default:
 
 ### Slice 4: restore as a copy
 
-**What the user sees.** `r` on a file in the browser (or in a slice 2 entry list) offers **restore as a copy**. The
+**What the user sees.** `R` on a file in the browser (or in a slice 2 entry list) offers **restore as a copy**. The
 destination defaults to the file's own folder with a suffix (`photo.jpg` becomes `photo.restored-<snapshot>.jpg`) and
 can be edited. The confirm is two keys and shows the **exact command**, the source snapshot path and the destination.
 
@@ -203,6 +204,6 @@ can be edited. The confirm is two keys and shows the **exact command**, the sour
 
 ## Left to the builder
 
-Key letters (checked against the existing hint bar for conflicts), column widths, wording of messages, default
+Key letters (the ones above were checked against the Snapshots hint bar, which uses `d`, `b`, `r`; re-check against the final bar), column widths, wording of messages, default
 grouping depth and the exact numeric limits (the figures above are starting points), the names of the new modules, and
 how the timeline view is drawn within the existing layout.
