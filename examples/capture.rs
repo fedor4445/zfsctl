@@ -143,6 +143,78 @@ fn replace_emails(line: &str) -> String {
     out
 }
 
+/// Names of real people in the test machines' data, and what the book shows instead. Each pair has the same length,
+/// so a column that was aligned stays aligned.
+const REAL_NAMES: [(&str, &str); 2] = [("alice", "alice"), ("carol", "carol")];
+
+/// Replaces each real name (also capitalised) that stands alone, with letters on neither side: `home/alice@alice`
+/// and `carol1` change, a longer word that merely contains the name does not.
+fn scrub_names(line: &str) -> String {
+    let mut out = line.to_string();
+    for (real, alias) in REAL_NAMES {
+        for (from, to) in [(real.to_string(), alias.to_string()), (capitalise(real), capitalise(alias))] {
+            let mut result = String::new();
+            let mut rest = out.as_str();
+            while let Some(i) = rest.find(&from) {
+                let before_ok = !rest[..i].chars().next_back().is_some_and(|c| c.is_ascii_alphabetic());
+                let after_ok = !rest[i + from.len()..].chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+                result.push_str(&rest[..i]);
+                result.push_str(if before_ok && after_ok { &to } else { &from });
+                rest = &rest[i + from.len()..];
+            }
+            result.push_str(rest);
+            out = result;
+        }
+    }
+    out
+}
+
+fn capitalise(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+}
+
+/// `--rescrub`: applies `scrub_names` to every capture file and to every ```screen block of every chapter, so what
+/// is already in the book matches what a new capture would write. Prints what it changed.
+fn rescrub() -> Result<(), String> {
+    let book = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/book");
+    let mut changed = 0_usize;
+    let mut visit = |path: &std::path::Path, only_screens: bool| -> Result<(), String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let mut in_screen = false;
+        let mut out: Vec<String> = Vec::new();
+        for line in text.split('\n') {
+            if only_screens {
+                if line.trim() == "```screen" {
+                    in_screen = true;
+                } else if in_screen && line.trim() == "```" {
+                    in_screen = false;
+                }
+            }
+            out.push(if !only_screens || in_screen { scrub_names(line) } else { line.to_string() });
+        }
+        let new = out.join("\n");
+        if new != text {
+            std::fs::write(path, new).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            println!("scrubbed {}", path.display());
+            changed += 1;
+        }
+        Ok(())
+    };
+    for entry in std::fs::read_dir(book.join("captures")).map_err(|e| e.to_string())?.filter_map(Result::ok) {
+        if entry.path().extension().is_some_and(|e| e == "txt") {
+            visit(&entry.path(), false)?;
+        }
+    }
+    for entry in std::fs::read_dir(&book).map_err(|e| e.to_string())?.filter_map(Result::ok) {
+        if entry.path().extension().is_some_and(|e| e == "md") {
+            visit(&entry.path(), true)?;
+        }
+    }
+    println!("{changed} file(s) changed");
+    Ok(())
+}
+
 /// Trailing spaces off; emails replaced; lines that mention a password dropped (except the backup form's password-file label
 /// and its notes about the file, which hold only a path).
 fn clean(lines: &[String]) -> Vec<String> {
@@ -152,7 +224,7 @@ fn clean(lines: &[String]) -> Vec<String> {
             let low = line.to_lowercase();
             !low.contains("password") || ["password file (absolute", "password (blank", "the password file"].iter().any(|ok| low.contains(ok))
         })
-        .map(|line| replace_emails(line.trim_end()))
+        .map(|line| scrub_names(&replace_emails(line.trim_end())))
         .collect();
     while out.last().is_some_and(String::is_empty) {
         out.pop();
@@ -241,6 +313,9 @@ fn command(cmd: &str) -> Result<Vec<String>, String> {
 
 fn run() -> Result<(), String> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv == ["--rescrub"] {
+        return rescrub();
+    }
     let args = parse_args(&argv)?;
     let mut lines = match &args.cmd {
         Some(cmd) => command(cmd)?,
@@ -285,6 +360,19 @@ mod tests {
         assert_eq!(replace_emails("fb@172.16.10.90"), "fb@172.16.10.90");
         assert_eq!(replace_emails("a.b+c@mail.example.co.uk."), "you@example.com.");
         assert_eq!(replace_emails("user@host and @home"), "user@host and @home", "one label is not an address");
+    }
+
+    #[test]
+    fn real_names_become_their_stand_ins_only_when_they_stand_alone() {
+        assert_eq!(scrub_names("zroot/home/alice@alice  8.0K"), "zroot/home/alice@alice  8.0K");
+        assert_eq!(scrub_names("zroot/home/carol@carol1 zroot/home/carol@snap5"), "zroot/home/carol@carol1 zroot/home/carol@snap5");
+        assert_eq!(scrub_names("Alice and Carol"), "Alice and Carol");
+        assert_eq!(scrub_names("Frankfurt franking agnesia"), "Frankfurt franking agnesia", "a longer word is left alone");
+        assert_eq!(scrub_names("nothing to change"), "nothing to change");
+        for (real, alias) in REAL_NAMES {
+            assert_eq!(real.len(), alias.len(), "same length keeps columns aligned");
+        }
+        assert_eq!(clean(&s(&["carol   "])), s(&["carol"]));
     }
 
     #[test]
