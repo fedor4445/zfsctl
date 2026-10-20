@@ -1,16 +1,16 @@
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — ? ('r' refresh, Ente┐
-│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
-│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
-│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
-│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Dashboard             ││Name                  Health       Used          ││Property    Value      Source    │
+│Hosts                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Pools                 ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Datasets              ││zroot                 ● ONLINE     ██░░░░░░ 25%  ││                                 │
+│Snapshots             ││                                                 ││                                 │
 │Disks                 ││                                                 ││                                 │
 │Shares                ││                                                 ││                                 │
 │Boot Envs             ││                                                 ││                                 │
-│Jobs                  ││                                                 ││                                 │
-│Alerts               ┌Create Pool─────────────────────────────────────────────────────┐                     │
-│                     │> Name:                                                         │                     │
-│                     │  Vdev spec (e.g. mirror da0 da1):                              │─────────────────────┘
-│                     │                                                                │─────────────────────┐
+│Jobs                 ┌Create Pool─────────────────────────────────────────────────────┐                     │
+│Cloud                │> Name:                                                         │                     │
+│Alerts               │  Vdev spec (e.g. mirror da0 da1):                              │─────────────────────┘
+│Settings             │                                                                │─────────────────────┐
 │                     └────────────────────────────────────────────────────────────────┘                     │
 │                      ││                                                                                    │
 │                      ││                                                                                    │

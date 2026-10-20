@@ -6,6 +6,10 @@
 - How its pieces fit together: the *hub*, the *hosts* and the *daemon*.
 - What it can do for you, what it deliberately does not do, and the promises it makes about your data.
 
+## What zfsctl is not
+
+zfsctl is not a storage appliance, a ready-made "NAS in a box". It has no operating system of its own, no web page and no installer that takes over a machine. It is an ordinary program that you install on a plain FreeBSD you already run, in the same way as any other tool, and remove the same way. Your machines stay what they were: normal servers with normal ZFS, which you can still manage by hand with `zpool` and `zfs` at any moment. zfsctl adds a screen and a scheduler on top and leaves nothing behind that you cannot see.
+
 ## The problem
 
 ZFS is wonderful and its tools are plain: `zpool`, `zfs`, and a handful of other commands that you type, one machine at a time. That is fine for one pool. It gets tiring with three machines, a schedule of snapshots, copies to a second box, backups to somewhere else, and a wish to be told when a disk misbehaves. You end up with a pile of cron jobs and shell scripts, and a mental map of what runs where.
@@ -27,39 +31,95 @@ zfsctl is one terminal program that puts that map on a screen. It shows every po
 
 You can start with one machine (just the hub) and add hosts later.
 
+## How it fits together
+
+The picture below shows the program itself, in layers (the one above showed machines). Each layer talks only to the one below it, and only the bottom layers touch your data.
+
+```text
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │  YOU                                                                  │
+ │  keyboard, terminal (ssh to the hub)       email, hook script (alerts)│
+ └──────────────┬─────────────────────────────────────────▲──────────────┘
+                │ keys                                    │ messages
+ ┌──────────────▼───────────────┐         ┌───────────────┴──────────────┐
+ │  SCREEN         zfsctl       │         │  DAEMON      zfsctl daemon   │
+ │  sections, lists, panels,    │         │  scheduler: scrubs,          │
+ │  forms, confirmations        │         │  snapshots, replication,     │
+ │  (asks twice before          │         │  backups, cloud mirrors      │
+ │  anything irreversible)      │         │  watcher: health, space,     │
+ │                              │         │  hosts that stop answering   │
+ └──────────────┬───────────────┘         └───────────────┬──────────────┘
+                │          ┌──────────────────────┐       │
+                ├─────────►│ STATE   /var/db/     │◄──────┤  jobs, history,
+                │          │         zfsctl       │       │  events, config
+                │          └──────────────────────┘       │
+ ┌──────────────▼─────────────────────────────────────────▼──────────────┐
+ │  SAFETY GATE                                                          │
+ │  one short list of allowed commands; refuses what is too broad        │
+ │  (a pool's root dataset, snapshots a job did not make)                │
+ └──────────────────────────────────┬────────────────────────────────────┘
+                                    │ one command at a time
+ ┌──────────────────────────────────▼────────────────────────────────────┐
+ │  TRANSPORT                                                            │
+ │  this machine: run the command directly (hub is root)                 │
+ │  other hosts:  ssh as an ordinary user, then sudo for that one command│
+ └───────────┬─────────────────────────────────────────────┬─────────────┘
+             │                                             │
+ ┌───────────▼─────────────────────┐        ┌──────────────▼─────────────┐
+ │  EACH HOST                      │        │  EACH HOST                 │
+ │  zpool  zfs  bectl  smartctl    │  ...   │  the same, on another      │
+ │  Samba  NFS  restic  rclone     │        │  operating system          │
+ │  (FreeBSD, Linux or illumos)    │        │                            │
+ └───────────┬─────────────────────┘        └──────────────┬─────────────┘
+             │                                             │
+ ┌───────────▼─────────────────────────────────────────────▼─────────────┐
+ │  YOUR DATA   pools, datasets, snapshots, disks                        │
+ │  and, for backups, other disks, other machines or cloud storage       │
+ └───────────────────────────────────────────────────────────────────────┘
+```
+
+Read it from the top:
+
+- **Screen and daemon** are two copies of one program. They never talk to each other directly; they leave notes in the **state** directory (jobs, history, events), so the daemon keeps working when nobody is logged in and the screen can show what happened while you were away.
+- **The safety gate** is where the promises of this chapter live. Both the screen and the daemon go through it, so a job cannot do what a form would refuse.
+- **Transport** is the only part that knows whether a host is the hub itself or somewhere on the network. Everything above it sees the same thing either way.
+- **The tools** at the bottom are the ones you already know. zfsctl does not reimplement ZFS: it runs `zpool` and `zfs` (and, for the extras, `bectl`, `smartctl`, restic and rclone) and reads what they print.
+
+The same layers apply whether you manage one machine or twenty; only the number of boxes at the bottom changes.
+
 ## What you see
 
 When you start zfsctl you land on the Hosts section. This is a real capture from the author's test machines (the hub is called `fb` and the other hosts are small virtual machines; the book's examples use the names `hub`, `backup` and `tank` in the text, but every screen is a genuine one):
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
-│Hosts                 ││Name       Address            State                               Type   Used  Pools│
-│Pools                 ││● local    local              ok                                  vm     42%   3    │
-│Datasets              ││● fbsd16   172.16.10.60       ok                                  vm     55%   1    │
-│Snapshots             ││● fbsd16t1 172.16.10.61       ok                                  vm     72%   2    │
-│Disks                 ││● fbsd16t2 172.16.10.62       ok                                  vm     72%   2    │
-│Shares                ││                                                                                    │
+│Dashboard             ││Name       Address            State                       Type   Tag     Used  Pools│
+│Hosts                 ││● local    local              ok                          vm             42%   3    │
+│Pools                 ││● fbsd16   172.16.10.60       ok                          vm             61%   1    │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                          vm             74%   2    │
+│Disks                 ││● ub24     172.16.10.52       ok                          -      linux   0%    1    │
+│Shares                ││● omnios   172.16.10.80       tank 96% full               -      illumos 96%   2    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
 │Alerts                ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
+│Settings              ││                                                                                    │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
 │                      │┌Metrics — host local (all pools)────────────────────────────────────────────────────┐
 │                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
 │                      ││OS      FreeBSD 15.1-RELEASE-p4            Pools   3 (all ONLINE)                   │
-│                      ││Up      3d 11h   rtt 2ms                   Space   30%  18.7G / 62.2G               │
-│                      ││Load    0.60 0.40 0.38                     ARC     4.4G / 18.9G  hit 99.3%          │
-│                      ││CPU     36 cores  0%                       Status  all pools are healthy            │
+│                      ││Up      8d 23h   rtt 2ms                   Space   30%  18.9G / 62.2G               │
+│                      ││Load    0.58 0.23 0.18                     ARC     4.8G / 18.9G  hit 99.9%          │
+│                      ││CPU     36 cores  2%                       Status  all pools are healthy            │
 │                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
-│                      ││Memory  19.9G  free 9.5G  wired 6.7G                                                │
+│                      ││Memory  19.9G  free 9.1G  wired 7.4G                                                │
 │                      ││Swap    0B / 2.0G                                                                   │
-│                      ││scratch       42% frag 40% ONLINE   scrub Oct  8 19:48:07 2026                      │
-│                      ││tpool         41% frag  2% ONLINE   scrub Sep 26 13:15:14 2026                      │
-│                      ││zroot         24% frag 34% ONLINE   scrub Sep  5 20:18:51 2026                      │
+│                      ││scratch       42% frag 42% ONLINE   scrub Oct  8 19:48:07 2026                      │
+│                      ││tpool         41% frag  2% ONLINE   scrub Oct 18 03:00:30 2026                      │
+│                      ││zroot         25% frag 38% ONLINE   scrub Oct 18 03:00:22 2026                      │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Host  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Host  c Check disks and shares  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 On the left is the **sidebar** with the sections: Hosts, Pools, Datasets, Snapshots, Disks, Shares, Boot Envs, Jobs and Alerts. The big area at the top right is the **list** for the section you are in. The area below it is the **panel**: live details and graphs for whatever is selected. The line at the very bottom is the **hint bar**: it always lists the keys that work right now. Chapter 6 walks through all of this.

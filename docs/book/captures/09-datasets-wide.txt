@@ -1,24 +1,24 @@
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Properties — scratch/data ('r' refresh, Enter to ┐
-│Hosts                 ││Name                                         Used     Avail    Kind      ││Property         Value            Source         │
-│Pools                 ││scratch                                      102M     18.3M    Filesystem││                                                 │
-│Datasets              ││scratch/data                                 100M     18.3M    Filesystem││                                                 │
-│Snapshots             ││tpool                                        3.9G     5.2G     Filesystem││                                                 │
-│Disks                 ││zroot                                        10.6G    30.6G    Filesystem││                                                 │
-│Shares                ││zroot/ROOT                                   5.3G     30.6G    Filesystem││                                                 │
-│Boot Envs             ││zroot/ROOT/default                           5.3G     30.6G    Filesystem││                                                 │
-│Jobs                  ││zroot/home                                   554M     30.6G    Filesystem││                                                 │
-│Alerts                ││zroot/home/alice                             144K     30.6G    Filesystem││                                                 │
-│                      ││zroot/home/fb                                554M     30.6G    Filesystem││                                                 │
-│                      │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s                 Write 0B/s  peak 0B/s                Used    85%  100M of 119M                        │
-│                      ││0 ops  lat -                          0 ops  lat -                         Refer   100M   Logical 100M                      │
-│                      ││                                                                           Data    100M   Snaps 200K                        │
-│                      ││                                                                           Kids    0B   Refres 0B                           │
-│                      ││                                                                           Compr   on 1.00x   Rec 128K                      │
-│                      ││                                                                           Quota   -   Ref -                                │
-│                      ││                                                                           Pool    ONLINE  errs 0                           │
-│                      ││                                                                                                                            │
-│                      ││                                                                                                                            │
+│Dashboard             ││Name                                  Used     Avail    Lock   Kind      ││Property         Value            Source         │
+│Hosts                 ││scratch                               103M     17.3M           Filesystem││                                                 │
+│Pools                 ││scratch/data                          100M     17.3M           Filesystem││                                                 │
+│Datasets              ││scratch/vault                         408K     17.3M    LOCKED Filesystem││                                                 │
+│Snapshots             ││scratch/vault/docs                    200K     17.3M    LOCKED Filesystem││                                                 │
+│Disks                 ││tpool                                 3.9G     5.2G            Filesystem││                                                 │
+│Shares                ││zroot                                 10.7G    30.5G           Filesystem││                                                 │
+│Boot Envs             ││zroot/ROOT                            5.3G     30.5G           Filesystem││                                                 │
+│Jobs                  ││zroot/ROOT/default                    5.3G     30.5G           Filesystem││                                                 │
+│Cloud                 ││zroot/home                            595M     30.5G           Filesystem││                                                 │
+│Alerts                │└─────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+│Settings              │┌Metrics — scratch/data (I/O of pool scratch)────────────────────────────────────────────────────────────────────────────────┐
+│                      ││Read  4.0K/s  peak 4.0K/s             Write 0B/s  peak 0B/s                Used    85%  100M of 118M                        │
+│                      ││0 ops  lat 1.6ms                      0 ops  lat -                         Refer   100M   Logical 100M                      │
+│                      ││⡇                                                                          Data    100M   Snaps 256K                        │
+│                      ││⡇                                                                          Kids    0B   Refres 0B                           │
+│                      ││⡇                                                                          Compr   on 1.00x   Rec 128K                      │
+│                      ││⡇                                                                          Quota   -   Ref -                                │
+│                      ││⡇                                                                          Pool    ONLINE  errs 0                           │
+│                      ││⡇                                                                                                                           │
+│                      ││⡇                                                                                                                           │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  → Details  n New  d Destroy  D Destroy recursively  s Snapshot  N NFS share  M SMB share  J Snapshot job  r Refresh  ? Help  q Quit
+↑↓ Move  → Details  n New  E New encrypted  d Destroy  D Destroy recursively  s Snapshot  N NFS share  M SMB share  J Snapshot job  ? Help  q Quit

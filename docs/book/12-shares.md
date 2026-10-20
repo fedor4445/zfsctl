@@ -12,30 +12,30 @@ The Shares section lists what the host is sharing, from both protocols:
 
 ```screen
 ┌zfsctl────────────────┐┌Shares — local ('r' refresh, Enter edit, 'd' remove)────────────────────────────────────────────────────┐
-│Hosts                 ││Dataset                  Protocol Details                                                               │
-│Pools                 ││scratch/data             NFS      -network 172.16.10.0/24                                               │
-│Datasets              ││tpool                    NFS      -network 172.16.10.0/24;-network 172.16.20.0/24                       │
-│Snapshots             ││zroot/home/carol         NFS      -network 172.16.10.0/24;-network 172.16.20.0/24                       │
+│Dashboard             ││Dataset                  Protocol Details                                                               │
+│Hosts                 ││scratch/data             NFS      -network 172.16.10.0/24                                               │
+│Pools                 ││tpool                    NFS      -network 172.16.10.0/24;-network 172.16.20.0/24                       │
+│Datasets              ││zroot/home/carol         NFS      -network 172.16.10.0/24;-network 172.16.20.0/24                       │
+│Snapshots             ││scratch/data             SMB      \\data  guest  rw                                                     │
 │Disks                 ││                                                                                                        │
 │Shares                ││                                                                                                        │
 │Boot Envs             ││                                                                                                        │
 │Jobs                  ││                                                                                                        │
+│Cloud                 ││                                                                                                        │
 │Alerts                ││                                                                                                        │
-│                      ││                                                                                                        │
-│                      ││                                                                                                        │
-│                      ││                                                                                                        │
+│Settings              ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      │└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — NFS share scratch/data────────────────────────────────────────────────────────────────────────┐
-│                      ││Read  0B/s  peak 0B/s           Write 0B/s  peak 0B/s           Share    NFS                            │
-│                      ││0 ops  lat -                    0 ops  lat -                    Access   172.16.10.0/24  rw             │
-│                      ││                                                                Mounted  /scratch/data                  │
-│                      ││                                                                Clients  none connected                 │
-│                      ││                                                                Space    85%  100M of 119M              │
-│                      ││                                                                Quota    -   on 1.00x                   │
-│                      ││                                                                Pool     ONLINE  errs 0                 │
+│                      │┌Metrics─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                      ││nothing selected                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
@@ -44,7 +44,7 @@ The Shares section lists what the host is sharing, from both protocols:
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  Enter Edit  d Remove  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 Each row is a dataset, the protocol (`NFS` or `SMB`) and the details: for NFS the export options (here, the networks allowed), for SMB the share name and who may use it. `Enter` edits the selected share, `d` removes it (after a yes/no question), `r` refreshes.
@@ -55,23 +55,23 @@ In Datasets, select a dataset and press `N`. (Visit the Shares section once firs
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
-│Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
-│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
-│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
-│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
-│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
-│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
-│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
-│                      ││zroot/home/fb            554M    30.6G    Filesys││                                 │
-│                     ┌NFS share: 'scratch/data'───────────────────────────────────────┐                     │
-│                     │> Networks: 172.16.10.0/24                                      │                     │
+│Dashboard             ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
+│Hosts                 ││scratch                  103M    17.3M    Filesys││                                 │
+│Pools                 ││scratch/data             100M    17.3M    Filesys││                                 │
+│Datasets              ││scratch/vault            408K    17.3M    Filesys││                                 │
+│Snapshots             ││scratch/vault/docs       200K    17.3M    Filesys││                                 │
+│Disks                 ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Shares                ││zroot                    10.7G   30.5G    Filesys││                                 │
+│Boot Envs             ││zroot/ROOT               5.3G    30.5G    Filesys││                                 │
+│Jobs                  ││zroot/ROOT/default       5.3G    30.5G    Filesys││                                 │
+│Cloud                 ││zroot/home               595M    30.5G    Filesys││                                 │
+│Alerts               ┌NFS share: 'scratch/data'───────────────────────────────────────┐                     │
+│Settings             │> Networks: 172.16.10.0/24                                      │                     │
 │                     │  Hosts:                                                        │─────────────────────┘
 │                     │  Read-only (y/n): n                                            │─────────────────────┐
-│                     │  Root user mapping:                                            │%  100M of 119M      │
+│                     │  Root user mapping:                                            │%  100M of 118M      │
 │                     └────────────────────────────────────────────────────────────────┘0M   Logical 100M    │
-│                      ││                                                     Data    100M   Snaps 200K      │
+│                      ││                                                     Data    100M   Snaps 256K      │
 │                      ││                                                     Kids    0B   Refres 0B         │
 │                      ││                                                     Compr   on 1.00x   Rec 128K    │
 │                      ││                                                     Quota   -   Ref -              │
@@ -99,29 +99,26 @@ FreeBSD's ZFS has no working `sharesmb` property (`zfs set sharesmb=on` just pri
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─┐┌Properties — scratch/data ('r' re┐
-│Hosts                 ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
-│Pools                 ││scratch                  102M    18.3M    Filesys││                                 │
-│Datasets              ││scratch/data             100M    18.3M    Filesys││                                 │
-│Snapshots             ││tpool                    3.9G    5.2G     Filesys││                                 │
-│Disks                 ││zroot                    10.6G   30.6G    Filesys││                                 │
-│Shares                ││zroot/ROOT               5.3G    30.6G    Filesys││                                 │
-│Boot Envs             ││zroot/ROOT/default       5.3G    30.6G    Filesys││                                 │
-│Jobs                  ││zroot/home               554M    30.6G    Filesys││                                 │
-│Alerts                ││zroot/home/alice         144K    30.6G    Filesys││                                 │
-│                     ┌SMB share: 'scratch/data'───────────────────────────────────────┐                     │
-│                     │Shares /scratch/data as \\<host>\<name>. The Valid user must    │                     │
-│                     │for every share they use. Blank user + guest n: any Samba user  │                     │
+│Dashboard             ││Name                     Used    Avail    Kind   ││Property    Value      Source    │
+│Hosts                 ││scratch                  103M    17.3M    Filesys││                                 │
+│Pools                 ││scratch/data             100M    17.3M    Filesys││                                 │
+│Datasets              ││scratch/vault            408K    17.3M    Filesys││                                 │
+│Snapshots             ││scratch/vault/docs       200K    17.3M    Filesys││                                 │
+│Disks                 ││tpool                    3.9G    5.2G     Filesys││                                 │
+│Shares                ││zroot                    10.7G   30.5G    Filesys││                                 │
+│Boot Envs            ┌SMB share: 'scratch/data'───────────────────────────────────────┐                     │
+│Jobs                 │Shares /scratch/data as \\<host>\<name>. The Valid user must    │                     │
+│Settings             │for every share they use. Blank user + guest n: any Samba user  │                     │
 │                     │blank user).                                                    │                     │
 │                     │                                                                │─────────────────────┘
 │                     │> Share name: data                                              │─────────────────────┐
-│                     │  Valid user (blank = any Samba user):                          │%  100M of 119M      │
+│                     │  Valid user (blank = any Samba user):                          │%  100M of 118M      │
 │                     │  Password (blank on edit = unchanged):                         │0M   Logical 100M    │
-│                     │  Read-only (y/n): n                                            │0M   Snaps 200K      │
-│                     │  Guest access (y/n): n                                         │   Refres 0B         │
+│                     │  Read-only (y/n): n                                            │0M   Snaps 256K      │
+│                     │  Guest access (y/n): y                                         │   Refres 0B         │
 │                     │                                                                │ 1.00x   Rec 128K    │
 │                     │                                                                │  Ref -              │
 │                     └────────────────────────────────────────────────────────────────┘LINE  errs 0         │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │

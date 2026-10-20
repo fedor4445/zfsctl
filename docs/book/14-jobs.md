@@ -11,29 +11,29 @@
 Jobs run unattended in the **daemon**, a background program on the hub: `zfsctl daemon`, started by the rc script you installed in chapter 4 (`service zfsctl start`). The title of the Jobs section tells you whether it is running (`daemon running (pid …)`); the screen reads a heartbeat file the daemon rewrites every second.
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────────────────────────┐
-│Hosts                 ││Job                    Host     Target         Schedule             Next run        Last                │
-│Pools                 ││scrub-local-tpool      local    tpool          Weekly, Sunday 03:00 Sun 10-11 03:00 never               │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────────────────────────┐
+│Dashboard             ││Job                    Host     Target         Schedule             Next run        Last                │
+│Hosts                 ││scrub-local-tpool      local    tpool          Weekly, Sunday 03:00 Sun 10-25 03:00 ok 2d ago           │
+│Pools                 ││scrub-local-zroot      local    zroot          Weekly, Sunday 03:00 Sun 10-25 03:00 ok 2d ago           │
 │Datasets              ││                                                                                                        │
 │Snapshots             ││                                                                                                        │
 │Disks                 ││                                                                                                        │
 │Shares                ││                                                                                                        │
 │Boot Envs             ││                                                                                                        │
 │Jobs                  ││                                                                                                        │
+│Cloud                 ││                                                                                                        │
 │Alerts                ││                                                                                                        │
-│                      ││                                                                                                        │
-│                      ││                                                                                                        │
-│                      ││                                                                                                        │
+│Settings              ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      │└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Job — scrub-local-tpool─────────────────────────────────────────────────────────────────────────────────┐
-│                      ││Last runs                                                Weekly, Sunday 03:00  (0 3 * * 0)              │
-│                      ││No runs yet                                              Next: Sun 2026-10-11 03:00, Sun 2026-10-18     │
-│                      ││                                                         03:00, Sun 2026-10-25 03:00                    │
-│                      ││                                                         enabled  catch up yes                          │
+│                      │┌Job─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                      ││nothing selected                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
+│                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
@@ -46,7 +46,7 @@ Jobs run unattended in the **daemon**, a background program on the hub: `zfsctl 
 │                      ││                                                                                                        │
 │                      ││                                                                                                        │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  Enter Edit  Space Disable  d Delete  n New scrub job  N New snapshot job  R New replication job  ? Help  q Quit
+↑↓ Move  n New scrub job  N New snapshot job  R New replication job  B New backup job  C New cloud mirror  ? Help  q Quit
 ```
 
 The Jobs section is global: it lists the jobs of every host. For the selected job, the panel shows its recent runs, its schedule in words and in cron form, and its next three run times. The **Target** column shows where data goes, and **Last** the result of the last run. Your local time zone is used everywhere.
@@ -62,24 +62,24 @@ A schedule is five fields, `minute hour day-of-month month day-of-week`, with `*
 Press `n` in Jobs, or `J` on a pool in Pools:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
+│Pools                 ││scrub-local-zroot local    zroot          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
 │Disks                 ││                                                                                    │
 │Shares                ││                                                                                    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
-│Alerts                ││                                                                                    │
-│                     ┌New scrub job───────────────────────────────────────────────────┐                     │
-│                     │> Host: local                                                   │                     │
-│                     │  Pool:                                                         │                     │
+│Cloud                ┌New scrub job───────────────────────────────────────────────────┐                     │
+│Alerts               │> Host: local                                                   │                     │
+│Settings             │  Pool:                                                         │                     │
 │                     │  Schedule: 0 3 * * 0                                           │                     │
 │                     │  Catch up (y/n): y                                             │─────────────────────┘
 │                     │                                                                │─────────────────────┐
 │                     │Weekly, Sunday 03:00                                            │                     │
-│                     │Next: Sun 2026-10-11 03:00, Sun 2026-10-18 03:00, Sun 2026-10-25│                     │
+│                     │Next: Sun 2026-10-25 03:00, Sun 2026-11-01 03:00, Sun 2026-11-08│                     │
 │                     │03:00                                                           │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
 │                      ││                                                                                    │
@@ -101,27 +101,27 @@ Choose the host (`F2` lists your configured hosts), the pool (`F2` fetches the p
 Press `N` in Jobs, or `J` on a dataset in Datasets:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 98986)───────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-11 03:00 never     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
+│Pools                 ││scrub-local-zroot local    zroot          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
-│Disks                 ││                                                                                    │
-│Shares               ┌New snapshot job────────────────────────────────────────────────┐                     │
-│Boot Envs            │Only snapshots named <prefix>-<timestamp> made by this job are  │                     │
-│Jobs                 │ever pruned.                                                    │                     │
-│Alerts               │                                                                │                     │
-│                     │> Host: local                                                   │                     │
-│                     │  Dataset:                                                      │                     │
-│                     │  Recursive (y/n): n                                            │                     │
+│Disks                ┌New snapshot job────────────────────────────────────────────────┐                     │
+│Shares               │Only snapshots named <prefix>-<timestamp> made by this job are  │                     │
+│Boot Envs            │ever pruned.                                                    │                     │
+│Jobs                 │                                                                │                     │
+│Cloud                │> Host: local                                                   │                     │
+│Alerts               │  Dataset:                                                      │                     │
+│Settings             │  Recursive (y/n): n                                            │                     │
 │                     │  Prefix: auto                                                  │                     │
 │                     │  Keep (newest N): 24                                           │─────────────────────┘
 │                     │  Schedule: 0 * * * *                                           │─────────────────────┐
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │Hourly                                                          │                     │
-│                     │Next: Sat 2026-10-10 18:00, Sat 2026-10-10 19:00, Sat 2026-10-10│                     │
-│                     │20:00                                                           │                     │
+│                     │Next: Tue 2026-10-20 08:00, Tue 2026-10-20 09:00, Tue 2026-10-20│                     │
+│                     │10:00                                                           │                     │
 │                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
 │                      ││                                                                                    │
@@ -140,35 +140,35 @@ The job takes a snapshot of the dataset named `<prefix>-<UTC timestamp>` (for ex
 Press `R` in Jobs:
 
 ```screen
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 12894)───────────────────────────────────────────────────┐
-│Hosts                 ││Job               Host     Target         Schedule        Next run        Last      │
-│Pools                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-18 03:00 ok 5d ago │
-│Datasets              ││                                                                                    │
-│Snapshots             ││                                                                                    │
-│Disks                ┌New replication job─────────────────────────────────────────────┐                     │
-│Shares               │Sends the newest <prefix>-<timestamp> snapshot, incrementally.  │                     │
-│Boot Envs            │The destination is received unmounted and rolled back only if   │                     │
-│Jobs                 │Force is y. Keep on target destroys this job's older snapshots  │                     │
-│Alerts               │on a host destination after each run.                           │                     │
-│                     │                                                                │                     │
-│                     │> Source host: local                                            │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 74775)───────────────────────────────────────────────────┐
+│Dashboard             ││Job               Host     Target         Schedule        Next run        Last      │
+│Hosts                 ││scrub-local-tpool local    tpool          Weekly, Sunday  Sun 10-25 03:00 ok 2d ago │
+│Pools                ┌New replication job─────────────────────────────────────────────┐0-25 03:00 ok 2d ago │
+│Datasets             │Sends the newest <prefix>-<timestamp> snapshot, incrementally.  │                     │
+│Snapshots            │The destination is received unmounted and rolled back only if   │                     │
+│Disks                │Force is y. Keep on target destroys this job's older snapshots  │                     │
+│Shares               │on a host destination after each run. Raw y sends an encrypted  │                     │
+│Boot Envs            │dataset as it is (it stays encrypted and locked on the          │                     │
+│Jobs                 │destination, which cannot read it without the key); an encrypted│                     │
+│Cloud                │source needs it.                                                │                     │
+│Alerts               │                                                                │                     │
+│Settings             │> Source host: local                                            │                     │
 │                     │  Source dataset:                                               │                     │
 │                     │  Prefix (snapshots to send): auto                              │                     │
-│                     │  Destination host (or file):                                   │                     │
-│                     │  Destination dataset (or directory):                           │─────────────────────┘
-│                     │  Force: roll back the destination (y/n): n                     │─────────────────────┐
+│                     │  Destination host (or file):                                   │─────────────────────┘
+│                     │  Destination dataset (or directory):                           │─────────────────────┐
+│                     │  Force: roll back the destination (y/n): n                     │                     │
 │                     │  Schedule: 30 * * * *                                          │                     │
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │  Keep on target (blank = keep everything):                     │                     │
+│                     │  Raw: keep it encrypted (y/n): n                               │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Fri 2026-10-16 22:30, Fri 2026-10-16 23:30, Sat 2026-10-17│                     │
-│                     │00:30                                                           │                     │
+│                     │Next: Tue 2026-10-20 07:30, Tue 2026-10-20 08:30, Tue 2026-10-20│                     │
+│                     │09:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │                                                                │                     │
 │                     └────────────────────────────────────────────────────────────────┘                     │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
 Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  Esc Cancel

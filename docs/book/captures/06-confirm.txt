@@ -1,24 +1,24 @@
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — scratch ('r' refresh┐
-│Hosts                 ││Name                  Health       Used          ││Property    Value      Source    │
-│Pools                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
-│Datasets              ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
-│Snapshots             ││zroot                 ● ONLINE     ██░░░░░░ 24%  ││                                 │
+│Dashboard             ││Name                  Health       Used          ││Property    Value      Source    │
+│Hosts                 ││scratch               ● ONLINE     ███░░░░░ 42%  ││                                 │
+│Pools                 ││tpool                 ● ONLINE     ███░░░░░ 41%  ││                                 │
+│Datasets              ││zroot                 ● ONLINE     ██░░░░░░ 25%  ││                                 │
+│Snapshots             ││                                                 ││                                 │
 │Disks                 ││                                                 ││                                 │
 │Shares                ││                                                 ││                                 │
 │Boot Envs             ││                                                 ││                                 │
-│Jobs                  ││                                                 ││                                 │
-│Alerts               ┌Confirm (y/n, then Enter)───────────────────────────────────────┐                     │
-│                     │Scrub pool 'scratch'? (y/n)                                     │                     │
-│                     │                                                                │─────────────────────┘
-│                     │Press y for yes or n for no, then Enter.                        │─────────────────────┐
+│Jobs                 ┌Confirm (y/n, then Enter)───────────────────────────────────────┐                     │
+│Cloud                │Scrub pool 'scratch'? (y/n)                                     │                     │
+│Alerts               │                                                                │─────────────────────┘
+│Settings             │Press y for yes or n for no, then Enter.                        │─────────────────────┐
 │                     │                                                                │ONLINE               │
-│                     └────────────────────────────────────────────────────────────────┘%  102M / 240M       │
+│                     └────────────────────────────────────────────────────────────────┘%  103M / 240M       │
 │                      ││                                                     Vdevs      1  (1 mirror)       │
 │                      ││                                                     Disks      2  (2 data)         │
-│                      ││                                                     Datasets   2 filesystems       │
-│                      ││                                                     Snapshots  3                   │
+│                      ││                                                     Datasets   4 filesystems       │
+│                      ││                                                     Snapshots  4                   │
 │                      ││                                                     Compress   on 1.00x   Trim on  │
-│                      ││                                                     Frag    40%   Dedup 1.00x      │
+│                      ││                                                     Frag    42%   Dedup 1.00x      │
 │                      ││                                                     +2 more lines: enlarge the ter…│
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
 y Yes  n/Esc No
