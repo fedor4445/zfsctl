@@ -96,11 +96,11 @@ pub fn create_dataset(runner: &dyn CommandRunner, name: &str) -> Result<()> {
 /// Refuses when any snapshot `held_in` returns is held, has an unreadable count, or the check itself cannot run.
 /// A dataset without snapshots (an empty list) is allowed.
 fn refuse_if_any_held(runner: &dyn CommandRunner, name: &str, recursive: bool) -> Result<()> {
-    let rows = crate::zfs::snapshot::held_in(runner, name, recursive).map_err(|e| AppError::Held(format!("could not check holds: {e}")))?;
+    let rows = crate::zfs::snapshot::held_in(runner, name, recursive).map_err(|e| AppError::HoldCheck(e.to_string()))?;
     match rows.iter().find(|(_, refs)| *refs != Some(0)) {
         None => Ok(()),
         Some((full, Some(n))) => Err(AppError::Held(format!("{full} is held ({n} hold(s)); release it first"))),
-        Some((full, None)) => Err(AppError::Held(format!("{full} has an unreadable hold count, so it is treated as held; release it first"))),
+        Some((full, None)) => Err(AppError::HoldCheck(format!("{full} has an unreadable hold count, so it is treated as held; release it first"))),
     }
 }
 
@@ -277,12 +277,14 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
 
     #[test]
     fn destroying_a_dataset_with_a_held_snapshot_is_refused_and_runs_no_destroy() {
-        for (recursive, held) in [(false, "tank/olds@a\t0\ntank/olds@b\t1\n"), (true, "tank/olds@a\t0\ntank/olds/kid@b\t2\n"), (false, "tank/olds@a\tx\n")] {
+        for (recursive, held) in [(false, "tank/olds@a\t0\ntank/olds@b\t1\n"), (true, "tank/olds@a\t0\ntank/olds/kid@b\t2\n"), (false, "tank/olds@a\t-\n")] {
+            let unreadable = held.ends_with("\t-\n");
             let runner = FakeRunner::new("").route("zfs", "get", held);
             let result = if recursive { destroy_dataset_recursive(&runner, "tank/olds") } else { destroy_dataset(&runner, "tank/olds") };
             match result {
-                Err(crate::error::AppError::Held(m)) => assert!(m.contains("release it first"), "{m}"),
-                other => panic!("expected Held, got {other:?}"),
+                Err(crate::error::AppError::Held(m)) if !unreadable => assert!(m.contains("release it first"), "{m}"),
+                Err(crate::error::AppError::HoldCheck(m)) if unreadable => assert!(m.contains("unreadable"), "{m}"),
+                other => panic!("unexpected result {other:?}"),
             }
             assert!(runner.calls.lock().unwrap().iter().all(|c| c.1[0] != "destroy"));
         }
@@ -291,7 +293,7 @@ tank/vol1\t50000000\t900000000\t50000000\t-\tvolume\t-
     #[test]
     fn destroying_a_dataset_refuses_when_the_hold_check_fails() {
         let runner = FakeRunner::new("").route_failure("zfs", "get", "boom", 1);
-        assert!(matches!(destroy_dataset(&runner, "tank/olds"), Err(crate::error::AppError::Held(m)) if m.contains("could not check holds")));
+        assert!(matches!(destroy_dataset(&runner, "tank/olds"), Err(crate::error::AppError::HoldCheck(m)) if m.contains("boom")));
         assert!(runner.calls.lock().unwrap().iter().all(|c| c.1[0] != "destroy"));
     }
 

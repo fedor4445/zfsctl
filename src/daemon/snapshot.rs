@@ -122,13 +122,17 @@ mod tests {
         destroy_error: String,
         /// Snapshots (full names) that report one hold.
         held: Vec<String>,
+        /// The tag `zfs holds` reports on every held snapshot.
+        hold_tag: String,
+        /// `zfs get ... userrefs` fails (the hold check cannot run).
+        check_fails: bool,
         calls: Mutex<Vec<Vec<String>>>,
     }
 
     impl Zfs {
         fn new(existing: &[&str]) -> Self {
             let listing = existing.iter().map(|n| format!("{n}\t1\t0\n")).collect::<Vec<_>>().concat();
-            Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), destroy_error: "snapshot has holds".to_string(), held: Vec::new(), calls: Mutex::new(Vec::new()) }
+            Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), destroy_error: "snapshot has holds".to_string(), held: Vec::new(), hold_tag: "keep".to_string(), check_fails: false, calls: Mutex::new(Vec::new()) }
         }
         fn calls(&self) -> Vec<Vec<String>> {
             self.calls.lock().unwrap().clone()
@@ -147,11 +151,12 @@ mod tests {
             match args[0] {
                 "snapshot" => self.snapshot_error.as_deref().map_or_else(|| ok(String::new()), fail),
                 "list" => ok(self.listing.clone()),
+                "get" if args.contains(&"userrefs") && self.check_fails => fail("get is broken"),
                 "get" if args.contains(&"userrefs") => {
                     // every listed snapshot, unheld (the guard needs a row for the one it is about to destroy)
                     ok(self.listing.lines().filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t{}\n", u8::from(self.held.iter().any(|h| h == n)))).collect::<Vec<_>>().concat())
                 }
-                "holds" => ok(String::new()),
+                "holds" => ok(self.held.iter().filter(|h| args.contains(&h.as_str())).map(|h| format!("{h}\t{}\tx\n", self.hold_tag)).collect::<Vec<_>>().concat()),
                 "destroy" => {
                     let target = args.last().unwrap();
                     if self.destroy_fails.iter().any(|t| t == target) { fail(&self.destroy_error) } else { ok(String::new()) }
@@ -318,6 +323,55 @@ mod tests {
         assert!(outcome.message.contains("tank/data@hourly-20261006T163000Z has 1 hold"), "the reason is shown: {}", outcome.message);
         // the held one is never destroyed; the later excess ones still are, oldest first
         assert_eq!(zfs.destroyed(), vec!["tank/data@hourly-20261006T173000Z", "tank/data@hourly-20261006T183000Z"]);
+    }
+
+    #[test]
+    fn the_only_prunable_snapshot_being_held_is_kept_and_the_run_is_ok() {
+        let mut zfs = Zfs::new(&["tank/data@hourly-20261006T183000Z", &format!("tank/data@{NEW}")]);
+        zfs.held = vec!["tank/data@hourly-20261006T183000Z".to_string()];
+        let (outcome, _) = run(&zfs, &Job::test_snapshot("s", "tank/data", "hourly", 1));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("pruned 0") && outcome.message.contains("kept 1 (held)"), "{}", outcome.message);
+        assert!(zfs.destroyed().is_empty());
+    }
+
+    #[test]
+    fn a_held_descendant_snapshot_refuses_the_recursive_destroy_as_a_whole() {
+        let mut zfs = Zfs::new(&[
+            "tank/data@hourly-20261006T183000Z",
+            "tank/data/kid@hourly-20261006T183000Z",
+            &format!("tank/data@{NEW}"),
+            &format!("tank/data/kid@{NEW}"),
+        ]);
+        zfs.held = vec!["tank/data/kid@hourly-20261006T183000Z".to_string()];
+        let mut job = Job::test_snapshot("s", "tank/data", "hourly", 1);
+        job.recursive = true;
+        let (outcome, _) = run(&zfs, &job);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("kept 1 (held)") && outcome.message.contains("tank/data/kid@hourly-20261006T183000Z"), "{}", outcome.message);
+        assert!(zfs.destroyed().is_empty());
+    }
+
+    #[test]
+    fn a_hold_check_that_cannot_run_fails_the_run_and_destroys_nothing() {
+        let mut zfs = Zfs::new(&["tank/data@hourly-20261006T163000Z", "tank/data@hourly-20261006T173000Z", &format!("tank/data@{NEW}")]);
+        zfs.check_fails = true;
+        let (outcome, _) = run(&zfs, &Job::test_snapshot("s", "tank/data", "hourly", 1));
+        assert_eq!(outcome.result, RunResult::Failed);
+        assert!(outcome.message.contains("could not check holds"), "{}", outcome.message);
+        assert!(!outcome.message.contains("(held)"), "{}", outcome.message);
+        assert!(zfs.destroyed().is_empty());
+    }
+
+    #[test]
+    fn the_run_message_has_no_control_character_when_the_holding_tag_has_one() {
+        let mut zfs = Zfs::new(&["tank/data@hourly-20261006T183000Z", &format!("tank/data@{NEW}")]);
+        zfs.held = vec!["tank/data@hourly-20261006T183000Z".to_string()];
+        zfs.hold_tag = "a\u{1b}[31mb\u{202e}".to_string();
+        let (outcome, history) = run(&zfs, &Job::test_snapshot("s", "tank/data", "hourly", 1));
+        assert!(outcome.message.contains("kept 1 (held)"), "{}", outcome.message);
+        assert!(!outcome.message.chars().any(|c| c.is_control() || c == '\u{202e}'), "{:?}", outcome.message);
+        assert!(history.iter().all(|r| !r.message.chars().any(|c| c.is_control() || c == '\u{202e}')));
     }
 
     #[test]

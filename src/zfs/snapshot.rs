@@ -121,6 +121,26 @@ pub fn hold_tags(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Resul
     Ok(parse_holds(&output.stdout)?.into_iter().map(|(_, tag)| tag).collect())
 }
 
+/// How many snapshots one `zfs holds` call asks about.
+const HOLDS_CHUNK: usize = 50;
+
+/// The hold tags of the given snapshots (full `dataset@name`), one `zfs holds -H -- names...`
+/// call per chunk of 50. A chunk that fails or cannot be parsed leaves its snapshots out of the
+/// map: their tags stay unknown. A snapshot with no hold is absent too.
+pub fn hold_tags_for(runner: &dyn CommandRunner, snapshots: &[String]) -> std::collections::HashMap<String, Vec<String>> {
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for chunk in snapshots.chunks(HOLDS_CHUNK) {
+        let mut args = vec!["holds", "-H", "--"];
+        args.extend(chunk.iter().map(String::as_str));
+        let Ok(output) = super::run_checked(runner, "zfs", &args, "zfs holds") else { continue };
+        let Ok(pairs) = parse_holds(&output.stdout) else { continue };
+        for (name, tag) in pairs {
+            map.entry(name).or_default().push(tag);
+        }
+    }
+    map
+}
+
 /// `zfs hold -- zfsctl dataset@name`.
 pub fn hold_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
@@ -166,11 +186,11 @@ pub fn held_in(runner: &dyn CommandRunner, dataset: &str, recursive: bool) -> Re
         .collect()
 }
 
-/// Refuses (`AppError::Held`) when `dataset@name`, or with `recursive` the same-named
-/// snapshot of any descendant, has a hold. A check that cannot run, or a `userrefs`
-/// that is not a number, also refuses: unknown is never treated as unheld.
+/// Refuses with `AppError::Held` when `dataset@name`, or with `recursive` the same-named
+/// snapshot of any descendant, has a hold. A check that cannot run, a `userrefs` that is not a
+/// number or a missing row also refuses, as `AppError::HoldCheck`: unknown is never treated as unheld.
 pub fn refuse_if_held(runner: &dyn CommandRunner, dataset: &str, name: &str, recursive: bool) -> Result<()> {
-    let rows = held_in(runner, dataset, recursive).map_err(|e| AppError::Held(format!("could not check holds on {dataset}@{name}: {e}")))?;
+    let rows = held_in(runner, dataset, recursive).map_err(|e| AppError::HoldCheck(format!("on {dataset}@{name}: {e}")))?;
     let suffix = format!("@{name}");
     let prefix = format!("{dataset}/");
     let matching: Vec<(String, Option<u64>)> = rows
@@ -183,17 +203,20 @@ pub fn refuse_if_held(runner: &dyn CommandRunner, dataset: &str, name: &str, rec
     // no row for the target means the check saw nothing: unknown, never allowed
     let target_seen = if recursive { !matching.is_empty() } else { matching.iter().any(|(f, _)| f == &format!("{dataset}{suffix}")) };
     if !target_seen {
-        return Err(AppError::Held(format!("could not check holds: no row for {dataset}@{name}")));
+        return Err(AppError::HoldCheck(format!("no row for {dataset}@{name}")));
     }
     let blocked: Vec<(String, Option<u64>)> = matching.into_iter().filter(|(_, refs)| *refs != Some(0)).collect();
     let Some((full, refs)) = blocked.first() else { return Ok(()) };
     let more = if blocked.len() > 1 { format!(" (and {} more)", blocked.len() - 1) } else { String::new() };
     let Some(n) = refs else {
-        return Err(AppError::Held(format!("{full} has an unreadable hold count, so it is treated as held{more}")));
+        return Err(AppError::HoldCheck(format!("{full} has an unreadable hold count, so it is treated as held{more}")));
     };
     let (ds, snap) = full.split_once('@').unwrap_or((full, ""));
     let tags = match hold_tags(runner, ds, snap) {
-        Ok(t) if !t.is_empty() => format!(" ({})", t.join(", ")),
+        Ok(t) => match crate::display_text::tag_list(&t) {
+            l if l.is_empty() => String::new(),
+            l => format!(" ({l})"),
+        },
         _ => String::new(),
     };
     let plural = if *n == 1 { "" } else { "s" };
@@ -385,6 +408,60 @@ tank/data@2026-09-04\t2000\t0
         assert_eq!(args_of(&r)[0], vec!["holds", "-H", "--", "tank/data@a"]);
     }
 
+    /// Answers `zfs holds` with one `name<TAB>tag<TAB>time` line per requested name; fails when
+    /// a requested name is `fail_on`. Records every call's arguments.
+    struct HoldsRunner {
+        fail_on: Option<String>,
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl CommandRunner for HoldsRunner {
+        fn run(&self, _cmd: &str, args: &[&str]) -> Result<crate::exec::CommandOutput> {
+            self.calls.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
+            let names = &args[3..];
+            if self.fail_on.as_deref().is_some_and(|f| names.contains(&f)) {
+                return Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: "boom".into(), status: 1 });
+            }
+            Ok(crate::exec::CommandOutput { stdout: names.iter().map(|n| format!("{n}\tkeep\tx\n")).collect::<Vec<_>>().concat(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, cmd: &str, args: &[&str], _: &str) -> Result<crate::exec::CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<crate::exec::CommandOutput> {
+            self.run(cmd, args)
+        }
+    }
+
+    fn snaps(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("tank/data@s{i}")).collect()
+    }
+
+    #[test]
+    fn hold_tags_for_asks_once_for_50_snapshots_and_twice_for_51() {
+        for (n, calls) in [(1, 1), (50, 1), (51, 2), (100, 2), (101, 3)] {
+            let r = HoldsRunner { fail_on: None, calls: std::sync::Mutex::default() };
+            let map = hold_tags_for(&r, &snaps(n));
+            assert_eq!(r.calls.lock().unwrap().len(), calls, "{n}");
+            assert_eq!(map.len(), n);
+            assert_eq!(map["tank/data@s0"], vec!["keep".to_string()]);
+        }
+        let r = HoldsRunner { fail_on: None, calls: std::sync::Mutex::default() };
+        hold_tags_for(&r, &snaps(2));
+        assert_eq!(r.calls.lock().unwrap()[0], vec!["holds", "-H", "--", "tank/data@s0", "tank/data@s1"]);
+        assert!(hold_tags_for(&r, &[]).is_empty());
+        assert_eq!(r.calls.lock().unwrap().len(), 1, "no names, no call");
+    }
+
+    #[test]
+    fn a_failed_chunk_leaves_only_its_own_snapshots_out() {
+        let r = HoldsRunner { fail_on: Some("tank/data@s60".into()), calls: std::sync::Mutex::default() };
+        let map = hold_tags_for(&r, &snaps(80));
+        assert_eq!(map.len(), 50, "the second chunk (s50..s79) is missing");
+        assert!(map.contains_key("tank/data@s49") && !map.contains_key("tank/data@s50"));
+        let r = FakeRunner::failing("boom", 1);
+        assert!(hold_tags_for(&r, &snaps(3)).is_empty());
+    }
+
     #[test]
     fn hold_and_release_run_the_exact_commands() {
         let r = FakeRunner::new("");
@@ -420,15 +497,15 @@ tank/data@2026-09-04\t2000\t0
         for out in ["", "tank/data@b\t0\n", "tank/data/sub@a\t0\n"] {
             let r = FakeRunner::new("").route("zfs", "get", out);
             match refuse_if_held(&r, "tank/data", "a", false) {
-                Err(AppError::Held(m)) => assert!(m.contains("no row for tank/data@a"), "{m}"),
-                other => panic!("expected Held, got {other:?}"),
+                Err(AppError::HoldCheck(m)) => assert!(m.contains("no row for tank/data@a"), "{m}"),
+                other => panic!("expected HoldCheck, got {other:?}"),
             }
             assert!(destroy_snapshot_with(&r, "tank/data", "a", false).is_err());
             assert!(destroy_calls(&r).is_empty());
         }
         for out in ["", "tank/data@b\t0\n", "tank/data2@a\t0\n"] {
             let r = FakeRunner::new("").route("zfs", "get", out);
-            assert!(matches!(refuse_if_held(&r, "tank/data", "a", true), Err(AppError::Held(_))));
+            assert!(matches!(refuse_if_held(&r, "tank/data", "a", true), Err(AppError::HoldCheck(_))));
             assert!(destroy_snapshot_with(&r, "tank/data", "a", true).is_err());
             assert!(destroy_calls(&r).is_empty());
         }
@@ -472,8 +549,8 @@ tank/data@2026-09-04\t2000\t0
     fn if_the_check_cannot_run_the_destroy_is_refused() {
         let r = FakeRunner::failing("boom", 1);
         match refuse_if_held(&r, "tank/data", "a", false) {
-            Err(AppError::Held(m)) => assert!(m.contains("could not check holds"), "{m}"),
-            other => panic!("expected Held, got {other:?}"),
+            Err(AppError::HoldCheck(m)) => assert!(m.contains("on tank/data@a"), "{m}"),
+            other => panic!("expected HoldCheck, got {other:?}"),
         }
         assert!(destroy_snapshot_with(&r, "tank/data", "a", false).is_err());
         assert!(destroy_calls(&r).is_empty());
@@ -482,7 +559,7 @@ tank/data@2026-09-04\t2000\t0
     #[test]
     fn an_unreadable_userrefs_value_refuses() {
         let r = FakeRunner::new("").route("zfs", "get", "tank/data@a\t-\n");
-        assert!(matches!(refuse_if_held(&r, "tank/data", "a", false), Err(AppError::Held(_))));
+        assert!(matches!(refuse_if_held(&r, "tank/data", "a", false), Err(AppError::HoldCheck(_))));
         assert!(destroy_snapshot(&r, "tank/data", "a").is_err());
         assert!(destroy_calls(&r).is_empty());
     }
@@ -495,5 +572,25 @@ tank/data@2026-09-04\t2000\t0
         let d = destroy_calls(&r);
         assert_eq!(d, vec![vec!["destroy", "--", "tank/data@a"], vec!["destroy", "-r", "--", "tank/data@a"]]);
         assert!(d.iter().all(|a| !a.contains(&"-d".to_string())));
+    }
+
+    #[test]
+    fn a_held_text_has_no_control_or_bidi_character_and_drops_empty_tags() {
+        let r = FakeRunner::new("")
+            .route("zfs", "get", "tank/data@a\t3\n")
+            .route("zfs", "holds", "tank/data@a\ta\u{1b}[31mb\u{202e}\tx\ntank/data@a\t\u{1b}\u{7}\tx\ntank/data@a\tkeep\tx\n");
+        match refuse_if_held(&r, "tank/data", "a", false) {
+            Err(AppError::Held(m)) => {
+                assert!(!m.chars().any(|c| c.is_control() || c == '\u{202e}'), "{m:?}");
+                assert!(m.contains("(a [31mb, keep)"), "{m}");
+            }
+            other => panic!("expected Held, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_name_that_looks_like_a_flag_is_a_hold_check_failure() {
+        let r = FakeRunner::new("");
+        assert!(matches!(refuse_if_held(&r, "-x", "a", false), Err(AppError::HoldCheck(_))));
     }
 }

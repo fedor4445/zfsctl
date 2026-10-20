@@ -195,8 +195,9 @@ pub struct PendingPruneCheck {
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
-    /// The hold tags of the held snapshots of one host's list (key `dataset@name`), sent after `Snapshots`.
-    SnapshotTags(usize, std::collections::HashMap<String, Vec<String>>),
+    /// The hold tags of the held snapshots of one host's list (key `dataset@name`), sent after `Snapshots`; the
+    /// number says which list refresh they were fetched for.
+    SnapshotTags(usize, u64, std::collections::HashMap<String, Vec<String>>),
     /// The dry run (`zpool add -n`) of a vdev add finished: the layout it would give, or the host's own refusal.
     AddChecked(AddCheck, std::result::Result<String, String>),
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
@@ -311,6 +312,10 @@ pub struct App {
     /// The hold tags of the held snapshots of the selected host, keyed `dataset@name`. A held snapshot without an
     /// entry has unknown tags.
     pub snapshot_tags: std::collections::HashMap<String, Vec<String>>,
+    /// Per host, how many snapshot list refreshes have started: tags are applied only when they were fetched for the latest one.
+    snapshot_gen: HashMap<usize, u64>,
+    /// Hosts with a tag fetch running: a refresh that finds its host here skips its own fetch (tags stay unknown until the next refresh).
+    tags_running: Arc<std::sync::Mutex<HashSet<usize>>>,
     /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
     /// snapshots can say "unknown" instead of a misleading 0.
     pub snapshots_loaded: bool,
@@ -540,6 +545,8 @@ impl App {
             encryption_for: 0,
             snapshots: Vec::new(),
             snapshot_tags: std::collections::HashMap::new(),
+            snapshot_gen: HashMap::new(),
+            tags_running: Arc::new(std::sync::Mutex::new(HashSet::new())),
             snapshots_loaded: false,
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
@@ -2229,17 +2236,15 @@ impl App {
                         self.modal = Some(Modal::Confirm { choice: None, prompt, action: action(MutationCall::HoldSnapshot { dataset, name }) });
                     } else if tags.is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG)) {
                         self.modal = Some(Modal::ConfirmTyped {
-                            prompt: format!("Type the snapshot name to release the zfsctl hold on '{target}':"),
+                            prompt: format!("Type the snapshot name to release the zfsctl hold on '{target}' — it can then be destroyed and pruned again:"),
                             expected: target,
                             input: String::new(),
                             action: action(MutationCall::ReleaseSnapshot { dataset, name }),
                         });
+                    } else if let Some(t) = tags {
+                        self.status_message = Some(format!("held by another tag: {}; zfsctl will not release it", crate::display_text::tag_list(t)));
                     } else {
-                        let shown = tags.map_or_else(
-                            || "unknown".to_string(),
-                            |t| t.iter().map(|t| crate::ui::layout::truncate_with_ellipsis(&crate::ui::layout::sanitise_for_display(t), 40)).collect::<Vec<_>>().join(", "),
-                        );
-                        self.status_message = Some(format!("held by another tag: {shown}; zfsctl will not release it"));
+                        self.status_message = Some("hold tags not loaded yet; press r".to_string());
                     }
                 }
             }
@@ -3134,20 +3139,23 @@ impl App {
             return;
         }
         self.begin_refresh(Section::Snapshots, host);
-        let tx = self.tx.clone();
+        let generation = self.snapshot_gen.entry(host).and_modify(|g| *g += 1).or_insert(1);
+        let generation = *generation;
+        let (tx, running) = (self.tx.clone(), Arc::clone(&self.tags_running));
         std::thread::spawn(move || {
             let result = crate::zfs::snapshot::list_snapshots(runner.as_ref());
-            let held: Vec<(String, String)> = result.as_ref().map(|l| l.iter().filter(|s| s.holds > 0).map(|s| (s.dataset.clone(), s.name.clone())).collect()).unwrap_or_default();
+            let held: Vec<String> = result.as_ref().map(|l| l.iter().filter(|s| s.holds > 0).map(|s| format!("{}@{}", s.dataset, s.name)).collect()).unwrap_or_default();
             let _ = tx.send(WorkerMsg::Snapshots(host, result));
             if held.is_empty() {
                 return;
             }
-            // A failed lookup leaves that snapshot out: its tags stay unknown, and it cannot be released from here.
-            let tags = held
-                .into_iter()
-                .filter_map(|(dataset, name)| crate::zfs::snapshot::hold_tags(runner.as_ref(), &dataset, &name).ok().map(|t| (format!("{dataset}@{name}"), t)))
-                .collect();
-            let _ = tx.send(WorkerMsg::SnapshotTags(host, tags));
+            // One tag fetch per host at a time; a skipped one leaves the tags unknown until the next refresh.
+            if !running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(host) {
+                return;
+            }
+            // A failed chunk leaves its snapshots out: their tags stay unknown, and they cannot be released from here.
+            let tags = crate::zfs::snapshot::hold_tags_for(runner.as_ref(), &held);
+            let _ = tx.send(WorkerMsg::SnapshotTags(host, generation, tags));
         });
     }
 

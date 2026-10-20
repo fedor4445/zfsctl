@@ -29,9 +29,15 @@ impl App {
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),
-                WorkerMsg::SnapshotTags(host, tags) => {
+                WorkerMsg::SnapshotTags(host, generation, tags) => {
+                    self.tags_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&host);
                     if host == self.selected_host {
-                        self.snapshot_tags = tags;
+                        if generation == self.snapshot_gen.get(&host).copied().unwrap_or(0) {
+                            self.snapshot_tags = tags;
+                        } else {
+                            // fetched for an older list; the list on screen has no tags yet
+                            refreshes_needed.push(Section::Snapshots);
+                        }
                     }
                 }
                 WorkerMsg::Disks(host, result) => self.on_disks(host, result, &mut refreshes_needed),

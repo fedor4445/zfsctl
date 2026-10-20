@@ -409,6 +409,8 @@ mod tests {
         snapshot_destroy_fails: bool,
         /// Snapshots (full names) that report one hold.
         held: Vec<String>,
+        /// `zfs get ... userrefs` fails (the hold check cannot run).
+        check_fails: bool,
         destroy_fails: bool,
         forget_fails: bool,
         /// What a successful `restic forget` does.
@@ -439,6 +441,7 @@ mod tests {
                 keystatus: None,
                 snapshot_destroy_fails: false,
                 held: vec![],
+                check_fails: false,
                 destroy_fails: false,
                 forget_fails: false,
                 forget_script: "exit 0".to_string(),
@@ -473,6 +476,7 @@ mod tests {
                     if self.clone_exists() { ok("tank/zit-restic-job\n") } else { fail("dataset does not exist") }
                 }
                 ("zfs", Some("get")) if args.contains(&"name,property,value") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
+                ("zfs", Some("get")) if args.contains(&"userrefs") && self.check_fails => fail("get is broken"),
                 ("zfs", Some("get")) if args.contains(&"userrefs") => {
                     ok(&self.listing.lines().filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t{}\n", u8::from(self.held.iter().any(|h| h == n)))).collect::<Vec<_>>().concat())
                 }
@@ -707,6 +711,20 @@ mod tests {
         assert!(!outcome.message.contains("could not remove"), "{}", outcome.message);
         // the held one is never destroyed; the later excess ones still are
         assert_eq!(destroyed_snapshots(&host), vec!["tank/data@zit-job-20261002T000000Z".to_string(), "tank/data@zit-job-20261003T000000Z".to_string()]);
+    }
+
+    #[test]
+    fn prune_fresh_reports_a_hold_check_that_cannot_run_as_a_failed_removal() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.listing = listing(&["zit-job-20261001T000000Z", "zit-job-20261002T000000Z"]);
+        host.check_fails = true;
+        let mut j = fresh_job();
+        j.keep = Some(1);
+        let (outcome, _) = rig.run(&host, &j);
+        assert!(outcome.message.contains("could not remove the old snapshot zit-job-20261001T000000Z (could not check holds"), "{}", outcome.message);
+        assert!(!outcome.message.contains("(held)"), "{}", outcome.message);
+        assert!(destroyed_snapshots(&host).is_empty());
     }
 
     #[test]

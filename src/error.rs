@@ -20,6 +20,8 @@ pub enum AppError {
     Config(String),
     #[error("protected: {0}")]
     Held(String),
+    #[error("could not check holds: {0}")]
+    HoldCheck(String),
     #[error("SMB: {0}")]
     Smb(String),
 }

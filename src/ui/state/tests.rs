@@ -9956,11 +9956,113 @@ fn capital_h_on_a_snapshot_held_only_by_another_tag_opens_no_modal_and_says_why(
 }
 
 #[test]
-fn capital_h_on_a_held_snapshot_with_unknown_tags_opens_no_modal() {
+fn capital_h_on_a_held_snapshot_with_unknown_tags_opens_no_modal_and_says_to_refresh() {
     let mut app = hold_app(1, None);
     app.handle_key(KeyCode::Char('H'));
     assert!(app.modal.is_none());
-    assert_eq!(app.status_message.as_deref(), Some("held by another tag: unknown; zfsctl will not release it"));
+    assert_eq!(app.status_message.as_deref(), Some("hold tags not loaded yet; press r"));
+}
+
+#[test]
+fn capital_h_message_cleans_foreign_tags_and_drops_ones_that_are_empty_after_cleaning() {
+    let mut app = hold_app(2, Some(&["a\u{1b}[31mb\u{202e}", "\u{1b}\u{7}", "keep"]));
+    app.handle_key(KeyCode::Char('H'));
+    assert_eq!(app.status_message.as_deref(), Some("held by another tag: a [31mb, keep; zfsctl will not release it"));
+}
+
+#[test]
+fn the_release_prompt_says_what_becomes_possible() {
+    let mut app = hold_app(1, Some(&["zfsctl"]));
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::ConfirmTyped { prompt, expected, .. }) => {
+            assert!(prompt.contains("'tank/data@s1' — it can then be destroyed and pruned again"), "{prompt}");
+            assert_eq!(expected, "tank/data@s1");
+        }
+        other => panic!("expected ConfirmTyped modal, got {other:?}"),
+    }
+}
+
+fn wait_for_snapshots(app: &mut App) {
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if app.snapshots_loaded && !app.is_refreshing(Section::Snapshots, 0) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.snapshots_loaded);
+}
+
+#[test]
+fn a_refresh_with_51_held_snapshots_asks_for_tags_in_two_calls() {
+    let list = (0..51).map(|i| format!("tank/data@s{i}\t10\t1\n")).collect::<Vec<_>>().concat();
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", &list).route("zfs", "holds", "tank/data@s0\tzfsctl\tx\n"));
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(dynrunner);
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if !app.snapshot_tags.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let calls = runner.calls.lock().unwrap();
+    let holds: Vec<_> = calls.iter().filter(|c| c.1[0] == "holds").collect();
+    assert_eq!(holds.len(), 2);
+    assert_eq!(&holds[0].1[..3], ["holds", "-H", "--"]);
+    assert_eq!(holds[0].1.len(), 3 + 50);
+    assert_eq!(holds[1].1.len(), 3 + 1);
+}
+
+#[test]
+fn a_refresh_while_a_tag_fetch_runs_starts_no_second_fetch() {
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.tags_running.lock().unwrap().insert(0);
+    app.refresh_snapshots(dynrunner);
+    wait_for_snapshots(&mut app);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    app.drain_worker_messages();
+    assert_eq!(runner.calls.lock().unwrap().iter().filter(|c| c.1[0] == "holds").count(), 0);
+    assert!(app.snapshot_tags.is_empty());
+    assert!(app.tags_running.lock().unwrap().contains(&0), "the running fetch's mark is not cleared by the skipped one");
+}
+
+#[test]
+fn the_tag_fetch_mark_is_cleared_when_the_tags_arrive() {
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(dynrunner);
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if !app.snapshot_tags.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!app.snapshot_tags.is_empty());
+    assert!(app.tags_running.lock().unwrap().is_empty());
+}
+
+#[test]
+fn tags_of_an_older_snapshot_list_are_ignored_and_ask_for_a_new_refresh() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.snapshot_gen.insert(0, 2);
+    app.tags_running.lock().unwrap().insert(0);
+    let tags = std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]);
+    app.tx.send(WorkerMsg::SnapshotTags(0, 1, tags.clone())).unwrap();
+    let needed = app.drain_worker_messages();
+    assert!(app.snapshot_tags.is_empty());
+    assert!(needed.contains(&Section::Snapshots));
+    assert!(app.tags_running.lock().unwrap().is_empty());
+    app.tx.send(WorkerMsg::SnapshotTags(0, 2, tags.clone())).unwrap();
+    let needed = app.drain_worker_messages();
+    assert_eq!(app.snapshot_tags, tags);
+    assert!(!needed.contains(&Section::Snapshots));
 }
 
 #[test]
@@ -9996,7 +10098,7 @@ fn a_snapshot_refresh_clears_the_old_tags() {
 #[test]
 fn tags_from_another_host_are_ignored() {
     let mut app = App::new(vec!["local".to_string(), "other".to_string()]);
-    app.tx.send(WorkerMsg::SnapshotTags(1, std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]))).unwrap();
+    app.tx.send(WorkerMsg::SnapshotTags(1, 0, std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]))).unwrap();
     app.drain_worker_messages();
     assert!(app.snapshot_tags.is_empty());
 }
