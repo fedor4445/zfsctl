@@ -4,6 +4,7 @@
 
 - What a snapshot costs, and how to read the Snapshots list and panel.
 - How to take, destroy and roll back to a snapshot.
+- How to protect a snapshot with a hold.
 - How scheduled snapshots are named, so you can recognise them.
 
 ## The list
@@ -115,9 +116,39 @@ Press `b` on a snapshot to roll its dataset back to that moment. You **type the 
 
 > **Safety:** a rollback **throws away everything written after the snapshot**, including any later snapshots. If you only need one old file, do not roll back: every snapshot is readable at `/<mountpoint>/.zfs/snapshot/<name>/`, so you can copy the file out. Use `b` when you really want the whole dataset to go back.
 
+## Protecting a snapshot
+
+A **hold** is a lock that ZFS itself puts on a snapshot. While a snapshot is held it cannot be destroyed, by anyone, until the hold is released. Use it when you want to keep a snapshot safe while you investigate something: the state before an upgrade, the last good copy before you chase a problem.
+
+The Snapshots list has a **Hold** column:
+
+| Mark | Meaning |
+|---|---|
+| `H` | held with zfsctl's own tag, `zfsctl` |
+| `h` | held by some other tag only (or the tags are not known yet) |
+| blank | not held |
+
+Select a snapshot and press `H`:
+
+- On a snapshot that is not held, you get a **y/n** question: press `y` (or `n`), then `Enter`. zfsctl then takes a hold with the tag `zfsctl`.
+- On a snapshot with zfsctl's tag, you **type its full name** to confirm, and zfsctl releases its own hold.
+- On a snapshot held only by someone else's tag, nothing happens except a message: `held by another tag: <tags>; zfsctl will not release it`.
+
+zfsctl only ever releases the tag `zfsctl`. Holds placed by other people or other tools are shown, and never released by zfsctl; release them yourself with `zfs release` if you are sure.
+
+A held snapshot is refused everywhere zfsctl could destroy it:
+
+- `d` on the snapshot shows `protected: ...` and destroys nothing.
+- `d` or `D` on a dataset refuses if any of its snapshots is held.
+- Snapshot jobs (retention), the old snapshots that a backup or cloud mirror job takes with source `new`, and the **Keep on target** pruning of a replication job all skip a held snapshot. The run's message says `kept N (held)`; this is not an error.
+
+Because a hold is ZFS's own mechanism (`zfs hold`), it is enforced by ZFS and protects the snapshot even when zfsctl is not running. It also blocks a recursive destroy of the dataset and a rollback past the snapshot. zfsctl never uses the deferred destroy (`zfs destroy -d`), which would remove the snapshot later without asking. No extra sudoers entry is needed.
+
+> **Safety:** a hold protects one snapshot from being destroyed; it is not a backup. If the pool is lost, the held snapshot is lost with it (chapter 15).
+
 ## How scheduled snapshots are named
 
-A snapshot **job** (chapter 14) names its snapshots `<prefix>-<timestamp>`, for example `auto-20261010T020000Z`, and it only ever deletes snapshots with its own prefix when it applies its retention (`keep`). Your own snapshots, with other names, are never touched by a job. A backup job uses the newest snapshot with its prefix, which is why the two share a prefix.
+A snapshot **job** (chapter 14) names its snapshots `<prefix>-<timestamp>`, for example `auto-20261010T020000Z`, and it only ever deletes snapshots with its own prefix when it applies its retention (`keep`), and it keeps a held snapshot (see above). Your own snapshots, with other names, are never touched by a job. A backup job uses the newest snapshot with its prefix, which is why the two share a prefix.
 
 ## Try it
 

@@ -70,7 +70,7 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
   - `new` (the default for a new job) takes a **fresh snapshot at the start of every run**, backs it up, and keeps the last few of the job's own snapshots (see **Snapshots to keep**). This is the easy way: nothing else to set up.
   - `@snap4` always backs up that one snapshot, whatever it is called (F2 lists every snapshot as `@name`). After the first run the job reports `skipped: up to date`; if the snapshot is later destroyed, the run **fails** so you notice.
   - Anything else is a **prefix**, such as `hourly`: the job backs up the newest `hourly-<timestamp>` snapshot and takes none itself, so pair it with a snapshot job that uses the same prefix. F2 lists the prefixes the dataset already uses.
-- **Snapshots to keep**: only for `new`. The job destroys its own older snapshots, named `zit-<job id>-<timestamp>`, beyond this many; blank means 3. It never touches any other snapshot, and zfsctl asks you to confirm when you save a job that will start doing this.
+- **Snapshots to keep**: only for `new`. The job destroys its own older snapshots, named `zit-<job id>-<timestamp>`, beyond this many; blank means 3. A snapshot with a hold (chapter 10) is kept and the run says `kept N (held)`. It never touches any other snapshot, and zfsctl asks you to confirm when you save a job that will start doing this.
 
 Press `F2` on Source to see what the dataset has: `new`, then the prefixes in use (`hourly` here), then every snapshot as `@name`. Type to filter, Enter to choose.
 
