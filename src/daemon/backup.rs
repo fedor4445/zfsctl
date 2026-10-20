@@ -137,8 +137,15 @@ fn prune_fresh(runner: &dyn CommandRunner, dataset: &str, prefix: &str, keep: us
     own.dedup();
     // Oldest first, so a failure part-way leaves the newest of the excess in place.
     for old in own.iter().skip(keep.saturating_sub(1)).rev() {
-        if let Err(e) = destroy_snapshot_with(runner, dataset, old, false) {
-            let _ = write!(note, "; could not remove the old snapshot {old} ({e})");
+        match destroy_snapshot_with(runner, dataset, old, false) {
+            Ok(()) => {}
+            // A hold (or a hold check that could not run) leaves it alone; the rest are still pruned.
+            Err(AppError::Held(why)) => {
+                let _ = write!(note, "; kept the old snapshot {old} (held); {why}");
+            }
+            Err(e) => {
+                let _ = write!(note, "; could not remove the old snapshot {old} ({e})");
+            }
         }
     }
 }
@@ -400,6 +407,8 @@ mod tests {
         keystatus: Option<&'static str>,
         /// Destroying a snapshot (not the clone) fails.
         snapshot_destroy_fails: bool,
+        /// Snapshots (full names) that report one hold.
+        held: Vec<String>,
         destroy_fails: bool,
         forget_fails: bool,
         /// What a successful `restic forget` does.
@@ -429,6 +438,7 @@ mod tests {
                 snapshot_error: None,
                 keystatus: None,
                 snapshot_destroy_fails: false,
+                held: vec![],
                 destroy_fails: false,
                 forget_fails: false,
                 forget_script: "exit 0".to_string(),
@@ -464,8 +474,9 @@ mod tests {
                 }
                 ("zfs", Some("get")) if args.contains(&"name,property,value") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
                 ("zfs", Some("get")) if args.contains(&"userrefs") => {
-                    ok(&self.listing.lines().filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t0\n")).collect::<Vec<_>>().concat())
+                    ok(&self.listing.lines().filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t{}\n", u8::from(self.held.iter().any(|h| h == n)))).collect::<Vec<_>>().concat())
                 }
+                ("zfs", Some("holds")) => ok(""),
                 ("zfs", Some("get")) => ok("1791500000\n"),
                 ("zfs", Some("clone")) => {
                     if self.clone_fails {
@@ -679,6 +690,23 @@ mod tests {
         let (outcome, _) = rig.run(&host, &j);
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
         assert!(outcome.message.contains("could not remove the old snapshot zit-job-20261001T000000Z"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn prune_fresh_leaves_a_held_snapshot_and_says_so() {
+        let rig = Rig::new();
+        let mut host = Host::new();
+        host.listing = listing(&["zit-job-20261001T000000Z", "zit-job-20261002T000000Z", "zit-job-20261003T000000Z"]);
+        host.held = vec!["tank/data@zit-job-20261001T000000Z".to_string()];
+        let mut j = fresh_job();
+        j.keep = Some(1);
+        let (outcome, _) = rig.run(&host, &j);
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("kept the old snapshot zit-job-20261001T000000Z (held)"), "{}", outcome.message);
+        assert!(outcome.message.contains("has 1 hold"), "the reason is shown: {}", outcome.message);
+        assert!(!outcome.message.contains("could not remove"), "{}", outcome.message);
+        // the held one is never destroyed; the later excess ones still are
+        assert_eq!(destroyed_snapshots(&host), vec!["tank/data@zit-job-20261002T000000Z".to_string(), "tank/data@zit-job-20261003T000000Z".to_string()]);
     }
 
     #[test]

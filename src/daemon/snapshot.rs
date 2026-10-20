@@ -9,6 +9,7 @@ use crate::exec::CommandRunner;
 use crate::jobs::{effective_prefix, Job};
 use crate::zfs::snapshot::{create_snapshot_with, destroy_snapshot_with, list_snapshots_of};
 use chrono::{DateTime, Utc};
+use std::fmt::Write;
 
 /// `<prefix>-<UTC YYYYMMDDTHHMMSSZ>`: no colons, sorts chronologically as a string, and does not
 /// depend on the hub's local time zone.
@@ -64,17 +65,28 @@ pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, schedu
     let mut own: Vec<String> = listed.into_iter().filter(|s| s.dataset == dataset && s.name != name && is_own(&prefix, &s.name)).map(|s| s.name).collect();
     own.sort_unstable_by(|a, b| b.cmp(a));
     own.dedup();
-    let (mut pruned, mut failures, mut in_use) = (0_usize, Vec::new(), 0_usize);
+    let (mut pruned, mut failures, mut in_use, mut held) = (0_usize, Vec::new(), 0_usize, 0_usize);
+    let mut held_reason = String::new();
     // Oldest first, so a failure part-way leaves the newest of the excess in place.
     for old in own.iter().skip(keep.saturating_sub(1)).rev() {
         match destroy_snapshot_with(runner, &dataset, old, job.recursive) {
             Ok(()) => pruned += 1,
             // A backup run's clone pins its snapshot for the length of the run: leave it for the next slot.
             Err(AppError::CommandFailed { stderr, .. }) if stderr.contains("dependent clones") => in_use += 1,
+            // A hold (or a hold check that could not run) leaves the snapshot alone and goes on with the rest.
+            Err(AppError::Held(why)) => {
+                if held == 0 {
+                    held_reason = why;
+                }
+                held += 1;
+            }
             Err(e) => failures.push(format!("{old}: {e}")),
         }
     }
-    let kept = if in_use == 0 { String::new() } else { format!("; kept {in_use} in use by a clone") };
+    let mut kept = if in_use == 0 { String::new() } else { format!("; kept {in_use} in use by a clone") };
+    if held > 0 {
+        let _ = write!(kept, "; kept {held} (held); {held_reason}");
+    }
     if failures.is_empty() {
         finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("created {name}; pruned {pruned}{kept}"), slot)
     } else {
@@ -108,13 +120,15 @@ mod tests {
         snapshot_error: Option<String>,
         destroy_fails: Vec<String>,
         destroy_error: String,
+        /// Snapshots (full names) that report one hold.
+        held: Vec<String>,
         calls: Mutex<Vec<Vec<String>>>,
     }
 
     impl Zfs {
         fn new(existing: &[&str]) -> Self {
             let listing = existing.iter().map(|n| format!("{n}\t1\t0\n")).collect::<Vec<_>>().concat();
-            Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), destroy_error: "snapshot has holds".to_string(), calls: Mutex::new(Vec::new()) }
+            Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), destroy_error: "snapshot has holds".to_string(), held: Vec::new(), calls: Mutex::new(Vec::new()) }
         }
         fn calls(&self) -> Vec<Vec<String>> {
             self.calls.lock().unwrap().clone()
@@ -135,8 +149,9 @@ mod tests {
                 "list" => ok(self.listing.clone()),
                 "get" if args.contains(&"userrefs") => {
                     // every listed snapshot, unheld (the guard needs a row for the one it is about to destroy)
-                    ok(self.listing.lines().filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t0\n")).collect::<Vec<_>>().concat())
+                    ok(self.listing.lines().filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t{}\n", u8::from(self.held.iter().any(|h| h == n)))).collect::<Vec<_>>().concat())
                 }
+                "holds" => ok(String::new()),
                 "destroy" => {
                     let target = args.last().unwrap();
                     if self.destroy_fails.iter().any(|t| t == target) { fail(&self.destroy_error) } else { ok(String::new()) }
@@ -286,6 +301,23 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Failed);
         assert!(outcome.message.contains(NEW) && outcome.message.contains("hourly-20261006T163000Z") && outcome.message.contains("holds"), "{}", outcome.message);
         assert_eq!(zfs.destroyed().len(), 2, "the second old snapshot was still attempted");
+    }
+
+    #[test]
+    fn a_held_old_snapshot_is_kept_not_failed() {
+        let mut zfs = Zfs::new(&[
+            "tank/data@hourly-20261006T163000Z",
+            "tank/data@hourly-20261006T173000Z",
+            "tank/data@hourly-20261006T183000Z",
+            &format!("tank/data@{NEW}"),
+        ]);
+        zfs.held = vec!["tank/data@hourly-20261006T163000Z".to_string()];
+        let (outcome, _) = run(&zfs, &Job::test_snapshot("s", "tank/data", "hourly", 1));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains("pruned 2") && outcome.message.contains("kept 1 (held)"), "{}", outcome.message);
+        assert!(outcome.message.contains("tank/data@hourly-20261006T163000Z has 1 hold"), "the reason is shown: {}", outcome.message);
+        // the held one is never destroyed; the later excess ones still are, oldest first
+        assert_eq!(zfs.destroyed(), vec!["tank/data@hourly-20261006T173000Z", "tank/data@hourly-20261006T183000Z"]);
     }
 
     #[test]

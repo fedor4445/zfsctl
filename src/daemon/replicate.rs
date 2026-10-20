@@ -72,7 +72,12 @@ fn prune_destination(dst: &dyn CommandRunner, dest_ds: &str, prefix: &str, keep:
     let mut pruned = Pruned { destroyed: 0, remaining: own, refused: 0, failures: Vec::new() };
     for name in &doomed {
         let target = format!("{dest_ds}@{name}");
-        match crate::zfs::run_checked(dst, "zfs", &["destroy", &target], &format!("zfs destroy {target}")) {
+        // The same guard as every other destroy: a hold, or a hold check that cannot run, leaves it alone.
+        if crate::zfs::snapshot::refuse_if_held(dst, dest_ds, name, false).is_err() {
+            pruned.refused += 1;
+            continue;
+        }
+        match crate::zfs::run_checked(dst, "zfs", &["destroy", "--", &target], &format!("zfs destroy {target}")) {
             Ok(_) => pruned.destroyed += 1,
             Err(AppError::CommandFailed { stderr, .. }) if stderr.contains(HELD) || stderr.contains(CLONED) => pruned.refused += 1,
             Err(e) => pruned.failures.push(format!("{name}: {e}")),
@@ -252,6 +257,8 @@ mod tests {
         later_listing: Option<String>,
         /// `(snapshot target, stderr)` pairs that `zfs destroy` refuses.
         destroy_fails: Vec<(String, String)>,
+        /// Snapshots (full names) that report one hold.
+        held: Vec<String>,
         /// The source's `keystatus` when it is encrypted.
         keystatus: Option<&'static str>,
         /// What `zfs send -nv -t <token>` prints (the decoded resume token).
@@ -262,7 +269,7 @@ mod tests {
 
     impl Host {
         fn new(listing: &str) -> Self {
-            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], keystatus: None, token_decode: String::new(), queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
+            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], held: vec![], keystatus: None, token_decode: String::new(), queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
         }
         fn commands(&self) -> Vec<Vec<String>> {
             self.commands.lock().unwrap().clone()
@@ -288,6 +295,11 @@ mod tests {
                         None => ok(""),
                     }
                 }
+                Some("get") if args.contains(&"userrefs") => {
+                    let rows: Vec<String> = [Some(&self.listing), self.later_listing.as_ref()].into_iter().flatten().flat_map(|l| l.lines()).filter_map(|l| l.split('\t').next()).map(|n| format!("{n}\t{}\n", u8::from(self.held.iter().any(|h| h == n)))).collect();
+                    ok(&rows.concat())
+                }
+                Some("holds") => ok(""),
                 Some("get") if args.contains(&"name,property,value") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
                 Some("get") => ok(&self.token),
                 Some("send") if args.contains(&"-nv") => ok(&self.token_decode),
@@ -364,7 +376,7 @@ mod tests {
     }
 
     fn doomed(hours: &[u32]) -> Vec<Vec<String>> {
-        hours.iter().map(|h| vec![format!("backup/data@{}", older(*h))]).collect()
+        hours.iter().map(|h| vec!["--".to_string(), format!("backup/data@{}", older(*h))]).collect()
     }
 
     #[test]
@@ -374,7 +386,7 @@ mod tests {
         dst.later_listing = Some(target_with_history(&format!("backup/data@{B}\t2\t7\n")));
         let (outcome, history) = rig.run(&src, &dst, &keeping(3));
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
-        assert_eq!(dst.destroys(), doomed(&[5, 6, 7, 8]), "oldest first, no -r, no --");
+        assert_eq!(dst.destroys(), doomed(&[5, 6, 7, 8]), "oldest first, no -r, `--` before the name");
         assert!(outcome.message.contains("pruned 4, kept 3 on fbsd16"), "{}", outcome.message);
         assert_eq!(history.len(), 1);
     }
@@ -441,6 +453,18 @@ mod tests {
     }
 
     #[test]
+    fn the_destination_pruner_skips_a_held_snapshot_on_the_target_host() {
+        let rig = Rig::new();
+        let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
+        dst.later_listing = Some(target_with_history(&format!("backup/data@{B}\t2\t7\n")));
+        dst.held = vec![format!("backup/data@{}", older(5))];
+        let (outcome, _) = rig.run(&src, &dst, &keeping(3));
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(dst.destroys(), doomed(&[6, 7, 8]), "the held one is never destroyed, the later excess ones still are");
+        assert!(outcome.message.contains("pruned 3, kept 4 on fbsd16") && outcome.message.contains("1 held or cloned left alone"), "{}", outcome.message);
+    }
+
+    #[test]
     fn another_destroy_failure_fails_the_run_but_the_rest_are_still_pruned() {
         let rig = Rig::new();
         let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
@@ -459,7 +483,7 @@ mod tests {
         let dst = Host::new(&target_with_history("backup/data@hourly-20261006T120000Z\t500\t99\n"));
         let (outcome, _) = rig.run(&src, &dst, &keeping(1));
         assert_eq!(outcome.result, RunResult::Skipped, "{}", outcome.message);
-        let names: Vec<String> = dst.destroys().into_iter().map(|d| d[0].clone()).collect();
+        let names: Vec<String> = dst.destroys().into_iter().map(|d| d[1].clone()).collect();
         assert!(!names.contains(&format!("backup/data@{A}")), "the shared snapshot is the next incremental's base: {names:?}");
         assert!(!names.iter().any(|n| n.contains("120000Z")), "the newest is kept: {names:?}");
         assert_eq!(names.len(), 5, "{names:?}");
@@ -483,7 +507,7 @@ mod tests {
         let (src, mut dst) = (Host::new(&src_listing()), Host::new(&target_with_history("")));
         dst.later_listing = Some(target_with_history("backup/data@hourly-latest\t900\t1\nbackup/data@manual\t901\t1\nbackup/data@hourly-20261006T0900Z\t902\t1\n"));
         rig.run(&src, &dst, &keeping(1));
-        let names: Vec<String> = dst.destroys().into_iter().map(|d| d[0].clone()).collect();
+        let names: Vec<String> = dst.destroys().into_iter().map(|d| d[1].clone()).collect();
         assert_eq!(names.len(), 5);
         assert!(names.iter().all(|n| n.contains("hourly-2026") && !n.contains("0900Z")), "{names:?}");
     }
