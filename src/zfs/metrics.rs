@@ -273,7 +273,7 @@ pub fn sample_target(runner: &dyn CommandRunner, target: &MetricsTarget, with_co
         if let MetricsTarget::Snapshot(name) = target {
             sample.snapshot = Some(super::snapshot_detail::sample_snapshot(runner, name)?);
         } else if let MetricsTarget::Disk { name, pool } = target {
-            let (io, live) = super::disk_detail::sample_disk(runner, name, pool.as_deref())?;
+            let (io, live) = super::disk_detail::sample_disk(runner, name, pool.as_deref(), os)?;
             sample.pool.io = io;
             sample.disk = Some(live);
         } else {
