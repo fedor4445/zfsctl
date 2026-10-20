@@ -122,7 +122,6 @@ pub fn hold_tags(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Resul
 }
 
 /// `zfs hold -- zfsctl dataset@name`.
-#[allow(dead_code)] // wired into the Snapshots screen in a later task
 pub fn hold_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
     super::run_checked(runner, "zfs", &["hold", "--", HOLD_TAG, &target], &format!("zfs hold {target}"))?;
@@ -130,7 +129,6 @@ pub fn hold_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> R
 }
 
 /// `zfs release -- zfsctl dataset@name`.
-#[allow(dead_code)] // wired into the Snapshots screen in a later task
 pub fn release_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
     let target = format!("{dataset}@{name}");
     super::run_checked(runner, "zfs", &["release", "--", HOLD_TAG, &target], &format!("zfs release {target}"))?;
