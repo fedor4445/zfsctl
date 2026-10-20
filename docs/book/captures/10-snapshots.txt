@@ -1,36 +1,36 @@
 ┌zfsctl────────────────┐┌Snapshots — local ('r' to refresh)──────────────────────────────────────────────────┐
-│Dashboard             ││Snapshot                           Used                                             │
+│Dashboard             ││Snapshot                           Used     Hold                                    │
 │Hosts                 ││scratch/data@snap1                 64.0K                                            │
 │Pools                 ││scratch/data@snap2                 64.0K                                            │
 │Datasets              ││scratch/data@snap4                 72.0K                                            │
 │Snapshots             ││scratch/data@sphrase1              56.0K                                            │
-│Disks                 ││tpool@snap1                        93.0K                                            │
-│Shares                ││tpool@snap2                        2.0G                                             │
-│Boot Envs             ││zroot@09052026                     80.0K                                            │
-│Jobs                  ││zroot/ROOT@snap1                   0B                                               │
-│Cloud                 ││zroot/home/alice@alice             8.0K                                             │
-│Alerts                ││zroot/home/fb@09052026             88.0K                                            │
-│Settings              ││zroot/home/fb@09062026             88.0K                                            │
+│Disks                 ││scratch/data@before-cleanup        0B       H                                       │
+│Shares                ││tpool@snap1                        93.0K                                            │
+│Boot Envs             ││tpool@snap2                        2.0G                                             │
+│Jobs                  ││zroot@09052026                     80.0K                                            │
+│Cloud                 ││zroot/ROOT@snap1                   0B                                               │
+│Alerts                ││zroot/home/alice@alice             8.0K                                             │
+│Settings              ││zroot/home/fb@09052026             88.0K                                            │
+│                      ││zroot/home/fb@09062026             88.0K                                            │
 │                      ││zroot/home/carol@carol1            0B                                               │
 │                      ││zroot/home/carol@snap5             0B                                               │
 │                      ││zroot/var@snap1                    0B                                               │
-│                      ││zroot/var/log@09052026             224K                                             │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics─────────────────────────────────────────────────────────────────────────────┐
-│                      ││nothing selected                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
+│                      │┌Metrics — scratch/data@before-cleanup───────────────────────────────────────────────┐
+│                      ││Snapshot  before-cleanup                      Snapshot sizes                        │
+│                      ││Created   1m ago                              oldest → newest, this one lit         │
+│                      ││Used      0B   Refer 100M   Written 56.0K       █                                   │
+│                      ││Reclaim   0B  (freed if destroyed)            ▄▄█                                   │
+│                      ││Holds     1   Clones -  (blocks destroy)      ███                                   │
+│                      ││Dataset   5 snaps, 256K = <1% of used         ████                                  │
+│                      ││Oldest    44d 19h ago                         ████                                  │
+│                      ││Newest    1m ago                              ████                                  │
+│                      ││                                              ████                                  │
+│                      ││                                              ████                                  │
+│                      ││                                              ████                                  │
+│                      ││                                              ████                                  │
+│                      ││                                              ████                                  │
+│                      ││                                              ████                                  │
+│                      ││                                              ████                                  │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  d Destroy  b Rollback  H Hold  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
