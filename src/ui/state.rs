@@ -195,6 +195,8 @@ pub struct PendingPruneCheck {
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
+    /// The hold tags of the held snapshots of one host's list (key `dataset@name`), sent after `Snapshots`.
+    SnapshotTags(usize, std::collections::HashMap<String, Vec<String>>),
     /// The dry run (`zpool add -n`) of a vdev add finished: the layout it would give, or the host's own refusal.
     AddChecked(AddCheck, std::result::Result<String, String>),
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
@@ -306,6 +308,9 @@ pub struct App {
     /// The host index `encryption` was read for (a job form may be for another host).
     pub encryption_for: usize,
     pub snapshots: Vec<Snapshot>,
+    /// The hold tags of the held snapshots of the selected host, keyed `dataset@name`. A held snapshot without an
+    /// entry has unknown tags.
+    pub snapshot_tags: std::collections::HashMap<String, Vec<String>>,
     /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
     /// snapshots can say "unknown" instead of a misleading 0.
     pub snapshots_loaded: bool,
@@ -534,6 +539,7 @@ impl App {
             encryption: std::collections::BTreeMap::new(),
             encryption_for: 0,
             snapshots: Vec::new(),
+            snapshot_tags: std::collections::HashMap::new(),
             snapshots_loaded: false,
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
@@ -1325,6 +1331,20 @@ impl App {
         self.status_message = Some(msg);
     }
 
+    /// The Hold column: `H` when zfsctl's own tag is on the snapshot, `h` when it is held but not (known to be) by
+    /// zfsctl, blank when unheld.
+    pub fn hold_marker(&self, s: &Snapshot) -> &'static str {
+        if s.holds == 0 {
+            return "";
+        }
+        let ours = self.snapshot_tags.get(&format!("{}@{}", s.dataset, s.name)).is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG));
+        if ours {
+            "H"
+        } else {
+            "h"
+        }
+    }
+
     pub fn status_is_error(&self) -> bool {
         self.status_message.is_some() && self.status_message == self.status_error
     }
@@ -1450,6 +1470,7 @@ impl App {
         self.datasets.clear();
         self.encryption.clear();
         self.snapshots.clear();
+        self.snapshot_tags.clear();
         self.snapshots_loaded = false;
         self.pools_table.select(None);
         self.datasets_table.select(None);
@@ -2194,6 +2215,28 @@ impl App {
                                 call: MutationCall::DestroySnapshot { dataset: snap.dataset.clone(), name: snap.name.clone() },
                             },
                         });
+                    }
+                }
+            }
+            KeyCode::Char('H') if self.current_section() == Section::Snapshots => {
+                if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
+                    let target = format!("{}@{}", snap.dataset, snap.name);
+                    let (dataset, name) = (snap.dataset.clone(), snap.name.clone());
+                    let tags = self.snapshot_tags.get(&target);
+                    let action = |call| PendingAction { host: self.selected_host, section: Section::Snapshots, call };
+                    if snap.holds == 0 {
+                        let prompt = format!("Protect {target} with a hold?\nIt cannot be destroyed, and retention, backups and replication will not prune it, until the hold is released. (y/n)");
+                        self.modal = Some(Modal::Confirm { choice: None, prompt, action: action(MutationCall::HoldSnapshot { dataset, name }) });
+                    } else if tags.is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG)) {
+                        self.modal = Some(Modal::ConfirmTyped {
+                            prompt: format!("Type the snapshot name to release the zfsctl hold on '{target}':"),
+                            expected: target,
+                            input: String::new(),
+                            action: action(MutationCall::ReleaseSnapshot { dataset, name }),
+                        });
+                    } else {
+                        let shown = tags.map_or_else(|| "unknown".to_string(), |t| t.join(", "));
+                        self.status_message = Some(format!("held by another tag: {shown}; zfsctl will not release it"));
                     }
                 }
             }
@@ -3091,7 +3134,17 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = crate::zfs::snapshot::list_snapshots(runner.as_ref());
+            let held: Vec<(String, String)> = result.as_ref().map(|l| l.iter().filter(|s| s.holds > 0).map(|s| (s.dataset.clone(), s.name.clone())).collect()).unwrap_or_default();
             let _ = tx.send(WorkerMsg::Snapshots(host, result));
+            if held.is_empty() {
+                return;
+            }
+            // A failed lookup leaves that snapshot out: its tags stay unknown, and it cannot be released from here.
+            let tags = held
+                .into_iter()
+                .filter_map(|(dataset, name)| crate::zfs::snapshot::hold_tags(runner.as_ref(), &dataset, &name).ok().map(|t| (format!("{dataset}@{name}"), t)))
+                .collect();
+            let _ = tx.send(WorkerMsg::SnapshotTags(host, tags));
         });
     }
 
@@ -3440,6 +3493,7 @@ Datasets: ACL sub-tab
 Snapshots
   d                destroy (type dataset@name to confirm)
   b                roll back (type dataset@name to confirm)
+  H                hold the selected snapshot, or release zfsctl's hold on it (a hold protects it from destroy and pruning)
 
 Disks
   Space            toggle-select a disk

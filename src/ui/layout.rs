@@ -771,11 +771,11 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .snapshots
         .iter()
-        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used)]));
-    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W)];
+        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used), app.hold_marker(s).to_string()]));
+    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W), Constraint::Length(4)];
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Snapshot", "Used"]))
+        .header(Row::new(vec!["Snapshot", "Used", "Hold"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
@@ -1739,6 +1739,28 @@ mod tests {
         terminal.draw(|f| draw(f, app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn the_hold_column_shows_a_capital_for_ours_and_a_small_h_for_others() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        let snap = |name: &str, holds| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: name.to_string(), used: 1, holds };
+        app.snapshots = vec![snap("free", 0), snap("ours", 1), snap("theirs", 1)];
+        app.snapshot_tags.insert("tank/a@ours".to_string(), vec!["zfsctl".to_string(), "x".to_string()]);
+        app.snapshot_tags.insert("tank/a@theirs".to_string(), vec!["x".to_string()]);
+        app.snapshots_table.select(Some(0));
+        let rows = render(&mut app, 100, 12);
+        let row = |name: &str| rows.iter().find(|r| r.contains(name)).unwrap_or_else(|| panic!("{rows:?}")).clone();
+        assert!(rows.iter().any(|r| r.contains("Hold")), "{rows:?}");
+        let hold_of = |name: &str| {
+            let r = row(name);
+            let after = &r[r.find(name).unwrap() + name.len()..];
+            after.split_whitespace().nth(1).filter(|t| *t != "│").map(str::to_string)
+        };
+        assert_eq!(hold_of("tank/a@free"), None, "{rows:?}");
+        assert_eq!(hold_of("tank/a@ours").as_deref(), Some("H"), "{rows:?}");
+        assert_eq!(hold_of("tank/a@theirs").as_deref(), Some("h"), "{rows:?}");
     }
 
     fn identity_disk(name: &str, model: &str, serial: &str) -> crate::zfs::disk::DiskInfo {

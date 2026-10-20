@@ -27,9 +27,7 @@ pub enum MutationCall {
     DestroyDatasetRecursive { name: String },
     SetDatasetProperty { dataset: String, key: String, value: String },
     CreateSnapshot { dataset: String, name: String },
-    #[allow(dead_code)] // constructed by the Snapshots screen in a later task
     HoldSnapshot { dataset: String, name: String },
-    #[allow(dead_code)] // constructed by the Snapshots screen in a later task
     ReleaseSnapshot { dataset: String, name: String },
     DestroySnapshot { dataset: String, name: String },
     RollbackSnapshot { dataset: String, name: String },

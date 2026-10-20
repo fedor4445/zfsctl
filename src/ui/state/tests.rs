@@ -9901,3 +9901,131 @@ fn an_info_popup_scrolls_with_the_navigation_keys_and_any_other_key_closes_it() 
     assert!(app.modal.is_none());
     assert_eq!(app.info_scroll, 0, "the next pop-up starts at the top");
 }
+
+fn hold_app(holds: u64, tags: Option<&[&str]>) -> App {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds }];
+    if let Some(tags) = tags {
+        app.snapshot_tags.insert("tank/data@s1".to_string(), tags.iter().map(|t| (*t).to_string()).collect());
+    }
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app
+}
+
+#[test]
+fn capital_h_on_an_unheld_snapshot_opens_a_y_n_confirm_for_a_hold() {
+    let mut app = hold_app(0, None);
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+            assert_eq!(action.call, crate::ui::modal::MutationCall::HoldSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() });
+        }
+        other => panic!("expected Confirm modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn capital_h_on_a_held_snapshot_opens_a_typed_confirm_for_a_release() {
+    let mut app = hold_app(2, Some(&["keepme", "zfsctl"]));
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::ConfirmTyped { expected, action, .. }) => {
+            assert_eq!(expected, "tank/data@s1");
+            assert_eq!(action.call, crate::ui::modal::MutationCall::ReleaseSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() });
+        }
+        other => panic!("expected ConfirmTyped modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn capital_h_with_nothing_selected_does_nothing() {
+    let mut app = hold_app(0, None);
+    app.snapshots_table.select(None);
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none());
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn capital_h_on_a_snapshot_held_only_by_another_tag_opens_no_modal_and_says_why() {
+    let mut app = hold_app(1, Some(&["backup-keep"]));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none());
+    assert_eq!(app.status_message.as_deref(), Some("held by another tag: backup-keep; zfsctl will not release it"));
+}
+
+#[test]
+fn capital_h_on_a_held_snapshot_with_unknown_tags_opens_no_modal() {
+    let mut app = hold_app(1, None);
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none());
+    assert_eq!(app.status_message.as_deref(), Some("held by another tag: unknown; zfsctl will not release it"));
+}
+
+#[test]
+fn a_snapshot_refresh_fetches_tags_for_the_held_snapshots_only() {
+    let runner = Arc::new(
+        FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t0\ntank/data@s2\t10\t2\n").route("zfs", "holds", "tank/data@s2\tzfsctl\tThu Oct 1 00:00 2026\ntank/data@s2\tother\tThu Oct 1 00:00 2026\n"),
+    );
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(dynrunner);
+    for _ in 0..200 {
+        app.drain_worker_messages();
+        if !app.snapshot_tags.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(app.snapshot_tags.get("tank/data@s2"), Some(&vec!["zfsctl".to_string(), "other".to_string()]));
+    assert!(!app.snapshot_tags.contains_key("tank/data@s1"));
+    let calls = runner.calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|c| c.1[0] == "holds").count(), 1);
+}
+
+#[test]
+fn a_snapshot_refresh_clears_the_old_tags() {
+    let mut app = hold_app(1, Some(&["zfsctl"]));
+    app.begin_refresh(Section::Snapshots, 0);
+    app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0 }]))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.snapshot_tags.is_empty());
+}
+
+#[test]
+fn tags_from_another_host_are_ignored() {
+    let mut app = App::new(vec!["local".to_string(), "other".to_string()]);
+    app.tx.send(WorkerMsg::SnapshotTags(1, std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.snapshot_tags.is_empty());
+}
+
+#[test]
+fn d_on_a_held_snapshot_shows_the_refusal_and_runs_no_destroy() {
+    let mut app = hold_app(1, Some(&["zfsctl"]));
+    app.handle_key(KeyCode::Char('d'));
+    for c in "tank/data@s1".chars() {
+        assert_eq!(app.handle_modal_key(KeyCode::Char(c)), None);
+    }
+    let action = app.handle_modal_key(KeyCode::Enter).expect("the typed name confirms");
+    let fake = Arc::new(FakeRunner::new("").route("zfs", "get", "tank/data@s1\t1\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tThu Oct 1 00:00 2026\n"));
+    let runner: Arc<dyn CommandRunner> = fake.clone();
+    app.dispatch_mutation(action, runner);
+    for _ in 0..200 {
+        app.drain_worker_messages();
+        if app.status_message.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let status = app.status_message.clone().unwrap_or_default();
+    assert!(status.starts_with("protected:"), "{status}");
+    assert!(app.status_is_error());
+    assert!(!fake.calls.lock().unwrap().iter().any(|c| c.1[0] == "destroy"));
+}
+
+#[test]
+fn help_lists_the_hold_key() {
+    assert!(help_text().contains("  H                hold the selected snapshot"), "{}", help_text());
+}

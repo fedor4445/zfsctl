@@ -259,6 +259,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if app.snapshots_table.selected().is_some() {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("b", "Rollback", 2).tone(Tone::Danger));
+                v.push(h("H", "Hold", 2));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -885,7 +886,7 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_advertised_are_no_ops() {
-        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D', 'B'];
+        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D', 'B', 'H'];
         for (name, app) in scenarios() {
             let advertised: Vec<KeyCode> = hints(&app).iter().filter_map(|h| key_code(h.key)).collect();
             for ch in probes {
@@ -1070,6 +1071,17 @@ mod tests {
         let ks = keys(&app);
         assert!(ks.contains(&"Enter") && ks.contains(&"Esc"));
         assert!(!ks.contains(&"↑↓") && !ks.contains(&"n") && !ks.contains(&"q"), "{ks:?}");
+    }
+
+    #[test]
+    fn hints_offer_the_hold_key_when_a_snapshot_is_selected() {
+        let a = snapshots();
+        let hold = hints(&a).into_iter().find(|h| h.key == "H").expect("H is offered");
+        assert_eq!(hold.label, "Hold");
+        assert_eq!(hold.tone, Tone::Neutral);
+        let mut none = snapshots();
+        none.snapshots_table.select(None);
+        assert!(!keys(&none).contains(&"H"));
     }
 
     #[test]

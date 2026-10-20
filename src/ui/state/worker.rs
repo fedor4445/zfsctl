@@ -29,6 +29,11 @@ impl App {
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),
+                WorkerMsg::SnapshotTags(host, tags) => {
+                    if host == self.selected_host {
+                        self.snapshot_tags = tags;
+                    }
+                }
                 WorkerMsg::Disks(host, result) => self.on_disks(host, result, &mut refreshes_needed),
                 WorkerMsg::Shares(host, result) => self.on_shares(host, result, &mut refreshes_needed),
                 WorkerMsg::BootEnvs(host, result) => self.on_boot_envs(host, result, &mut refreshes_needed),
@@ -179,6 +184,7 @@ impl App {
             Ok(snapshots) => {
                 let previous = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)).map(|s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots = snapshots;
+                self.snapshot_tags.clear();
                 pin_selection(&mut self.snapshots_table, previous, &self.snapshots, |s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots_loaded = true;
                 self.clear_status_after_refresh(quiet);
