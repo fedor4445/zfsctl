@@ -1,16 +1,16 @@
-┌zfsctl────────────────┐┌Jobs — daemon running (pid 25913)───────────────────────────────────────────────────┐
-│Hosts                ┌New cloud mirror job────────────────────────────────────────────┐run        Last      │
-│Pools                │Copies a read-only clone of a snapshot to <remote>/current as   │0-18 03:00 ok 6d ago │
-│Datasets             │plain files. What a run replaces or deletes is first moved to   │                     │
-│Snapshots            │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
-│Disks                │old/. Symlinks, devices, empty folders and child datasets are   │                     │
-│Shares               │not copied.                                                     │                     │
-│Boot Envs            │                                                                │                     │
-│Jobs                 │  Host (where rclone runs): local                               │                     │
-│Alerts               │  Dataset: scratch/zt-mir-b2                                    │                     │
-│                     │  Path inside the dataset (blank = all of it):                  │                     │
-│                     │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
-│                     │  Snapshots to keep (Source new only; blank = 3):               │                     │
+┌zfsctl────────────────┐┌Jobs — daemon running (pid 32361)───────────────────────────────────────────────────┐
+│Dashboard            ┌New cloud mirror job────────────────────────────────────────────┐run        Last      │
+│Hosts                │Copies a read-only clone of a snapshot to <remote>/current as   │0-25 03:00 ok 2d ago │
+│Pools                │plain files. What a run replaces or deletes is first moved to   │0-25 03:00 ok 2d ago │
+│Datasets             │<remote>/old/<date and time>/; zfsctl never deletes anything in │                     │
+│Snapshots            │old/. Symlinks, devices, empty folders and child datasets are   │                     │
+│Disks                │not copied.                                                     │                     │
+│Shares               │                                                                │                     │
+│Boot Envs            │  Host (where rclone runs): local                               │                     │
+│Jobs                 │  Dataset: scratch/data                                         │                     │
+│Cloud                │  Path inside the dataset (blank = all of it):                  │                     │
+│Alerts               │  Source (F2 to pick: new, a prefix, or @snapshot): new         │                     │
+│Settings             │  Snapshots to keep (Source new only; blank = 3):               │                     │
 │                     │> Remote (rclone name:path, e.g. aws:mybucket/photos; no keys in│                     │
 │                     │it): b2:zfsctl/photos                                           │─────────────────────┘
 │                     │  Speed limit (bytes/s, e.g. 5M; blank = none):                 │─────────────────────┐
@@ -18,7 +18,7 @@
 │                     │  Catch up (y/n): y                                             │                     │
 │                     │                                                                │                     │
 │                     │custom schedule                                                 │                     │
-│                     │Next: Sun 2026-10-18 03:30, Mon 2026-10-19 03:30, Tue 2026-10-20│                     │
+│                     │Next: Wed 2026-10-21 03:30, Thu 2026-10-22 03:30, Fri 2026-10-23│                     │
 │                     │03:30                                                           │                     │
 │                     │                                                                │                     │
 │                     │Check: OK, the remote opens.                                    │                     │
