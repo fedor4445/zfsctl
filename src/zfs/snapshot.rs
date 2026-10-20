@@ -12,7 +12,6 @@ pub struct Snapshot {
 }
 
 /// The tag zfsctl puts on the snapshots it holds.
-#[allow(dead_code)] // read by the destroy guard and the hold action, added in the next tasks
 pub const HOLD_TAG: &str = "zfsctl";
 
 pub const SNAPSHOT_LIST_ARGS: &[&str] = &["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs"];
@@ -75,6 +74,7 @@ pub fn destroy_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -
 
 /// `zfs destroy [-r] -- dataset@name`; `-r` also destroys the same-named snapshot of each descendant.
 pub fn destroy_snapshot_with(runner: &dyn CommandRunner, dataset: &str, name: &str, recursive: bool) -> Result<()> {
+    refuse_if_held(runner, dataset, name, recursive)?;
     let target = format!("{dataset}@{name}");
     let mut args = vec!["destroy"];
     if recursive {
@@ -100,7 +100,6 @@ pub fn list_snapshots_of(runner: &dyn CommandRunner, dataset: &str, recursive: b
 
 /// Parses `zfs holds -H` output: `snapshot<TAB>tag<TAB>timestamp` per line, as
 /// (full snapshot name, tag) pairs. The timestamp is ignored.
-#[allow(dead_code)] // read by the destroy guard and the hold action, added in the next tasks
 pub fn parse_holds(output: &str) -> Result<Vec<(String, String)>> {
     output
         .lines()
@@ -116,11 +115,85 @@ pub fn parse_holds(output: &str) -> Result<Vec<(String, String)>> {
 }
 
 /// The hold tags on `dataset@name` (`zfs holds -H -- target`).
-#[allow(dead_code)] // read by the destroy guard and the hold action, added in the next tasks
 pub fn hold_tags(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<Vec<String>> {
     let target = format!("{dataset}@{name}");
     let output = super::run_checked(runner, "zfs", &["holds", "-H", "--", &target], &format!("zfs holds {target}"))?;
     Ok(parse_holds(&output.stdout)?.into_iter().map(|(_, tag)| tag).collect())
+}
+
+#[allow(dead_code)] // wired into the Snapshots screen in a later task
+/// `zfs hold -- zfsctl dataset@name`.
+pub fn hold_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
+    let target = format!("{dataset}@{name}");
+    super::run_checked(runner, "zfs", &["hold", "--", HOLD_TAG, &target], &format!("zfs hold {target}"))?;
+    Ok(())
+}
+
+#[allow(dead_code)] // wired into the Snapshots screen in a later task
+/// `zfs release -- zfsctl dataset@name`.
+pub fn release_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
+    let target = format!("{dataset}@{name}");
+    super::run_checked(runner, "zfs", &["release", "--", HOLD_TAG, &target], &format!("zfs release {target}"))?;
+    Ok(())
+}
+
+/// The snapshots of `dataset` (and of its descendants when `recursive`) with their
+/// `userrefs`: `None` when the value is not a number. One `zfs get` call.
+pub fn held_in(runner: &dyn CommandRunner, dataset: &str, recursive: bool) -> Result<Vec<(String, Option<u64>)>> {
+    // illumos stops reading options at the first non-option, so a `get` takes no `--` after the
+    // property list; a name that could be read as an option is refused instead
+    if dataset.starts_with('-') {
+        return Err(AppError::Parse(format!("refusing a dataset name that starts with '-': {dataset}")));
+    }
+    let mut args = vec!["get"];
+    if recursive {
+        args.push("-r");
+    } else {
+        // without a depth, `zfs get -t snapshot <fs>` may not list the snapshots at all
+        args.extend(["-d", "1"]);
+    }
+    args.extend(["-H", "-p", "-t", "snapshot", "-o", "name,value", "userrefs", dataset]);
+    let output = super::run_checked(runner, "zfs", &args, &format!("zfs get userrefs {dataset}"))?;
+    output
+        .stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.split('\t');
+            match (fields.next(), fields.next()) {
+                (Some(name), Some(value)) if name.contains('@') => Ok((name.to_string(), value.trim().parse::<u64>().ok())),
+                _ => Err(AppError::Parse(format!("expected snapshot and userrefs in line: {line:?}"))),
+            }
+        })
+        .collect()
+}
+
+/// Refuses (`AppError::Held`) when `dataset@name`, or with `recursive` the same-named
+/// snapshot of any descendant, has a hold. A check that cannot run, or a `userrefs`
+/// that is not a number, also refuses: unknown is never treated as unheld.
+pub fn refuse_if_held(runner: &dyn CommandRunner, dataset: &str, name: &str, recursive: bool) -> Result<()> {
+    let rows = held_in(runner, dataset, recursive).map_err(|e| AppError::Held(format!("could not check holds on {dataset}@{name}: {e}")))?;
+    let suffix = format!("@{name}");
+    let prefix = format!("{dataset}/");
+    let blocked: Vec<(String, Option<u64>)> = rows
+        .into_iter()
+        .filter(|(full, refs)| {
+            let Some(ds) = full.strip_suffix(&suffix) else { return false };
+            (ds == dataset || (recursive && ds.starts_with(&prefix))) && *refs != Some(0)
+        })
+        .collect();
+    let Some((full, refs)) = blocked.first() else { return Ok(()) };
+    let more = if blocked.len() > 1 { format!(" (and {} more)", blocked.len() - 1) } else { String::new() };
+    let Some(n) = refs else {
+        return Err(AppError::Held(format!("{full} has an unreadable hold count, so it is treated as held{more}")));
+    };
+    let (ds, snap) = full.split_once('@').unwrap_or((full, ""));
+    let tags = match hold_tags(runner, ds, snap) {
+        Ok(t) if !t.is_empty() => format!(" ({})", t.join(", ")),
+        _ => String::new(),
+    };
+    let plural = if *n == 1 { "" } else { "s" };
+    Err(AppError::Held(format!("{full} has {n} hold{plural}{tags}; release it first{more}")))
 }
 
 pub fn rollback_snapshot(runner: &dyn CommandRunner, dataset: &str, name: &str) -> Result<()> {
@@ -154,7 +227,7 @@ tank/data@2026-09-04\t2000\t0
 
     #[test]
     fn rejects_line_missing_at_sign() {
-        let result = parse_snapshot_list("tank-data-no-at-sign\t10000\n");
+        let result = parse_snapshot_list("tank-data-no-at-sign\t10000\t0\n");
         assert!(result.is_err());
     }
 
@@ -188,8 +261,7 @@ tank/data@2026-09-04\t2000\t0
     fn destroy_snapshot_joins_dataset_and_name() {
         let runner = FakeRunner::new("");
         destroy_snapshot(&runner, "tank/data", "old-1").unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+        assert_eq!(destroy_calls(&runner), vec![vec!["destroy", "--", "tank/data@old-1"]]);
     }
 
     #[test]
@@ -223,10 +295,16 @@ tank/data@2026-09-04\t2000\t0
 
     #[test]
     fn guards_against_dataset_names_that_look_like_flags() {
+        // the holds check takes no `--` (illumos), so a dataset that looks like a flag is refused before anything runs
         let runner = FakeRunner::new("");
-        destroy_snapshot(&runner, "-r", "snap1").unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0].1[1], "--", "a leading '--' must precede the target so zfs cannot parse it as an option");
+        assert!(destroy_snapshot(&runner, "-r", "snap1").is_err());
+        assert!(destroy_calls(&runner).is_empty());
+        destroy_snapshot(&runner, "tank/data", "snap1").unwrap();
+        assert_eq!(destroy_calls(&runner)[0][1], "--", "a leading '--' must precede the target so zfs cannot parse it as an option");
+    }
+
+    fn destroy_calls(runner: &FakeRunner) -> Vec<Vec<String>> {
+        args_of(runner).into_iter().filter(|a| a[0] == "destroy").collect()
     }
 
     fn args_of(runner: &FakeRunner) -> Vec<Vec<String>> {
@@ -235,13 +313,13 @@ tank/data@2026-09-04\t2000\t0
 
     #[test]
     fn create_and_destroy_add_dash_r_only_when_recursive() {
-        let r = FakeRunner::new("");
+        let r = FakeRunner::new("").route("zfs", "get", "tank/data@h-1\t0\n");
         create_snapshot_with(&r, "tank/data", "h-1", false).unwrap();
         create_snapshot_with(&r, "tank/data", "h-1", true).unwrap();
         destroy_snapshot_with(&r, "tank/data", "h-1", false).unwrap();
         destroy_snapshot_with(&r, "tank/data", "h-1", true).unwrap();
         assert_eq!(
-            args_of(&r),
+            args_of(&r).into_iter().filter(|a| a[0] != "get").collect::<Vec<_>>(),
             vec![
                 vec!["snapshot", "--", "tank/data@h-1"],
                 vec!["snapshot", "-r", "--", "tank/data@h-1"],
@@ -301,5 +379,86 @@ tank/data@2026-09-04\t2000\t0
         let r = FakeRunner::new("tank/data@a\tzfsctl\tx\n");
         assert_eq!(hold_tags(&r, "tank/data", "a").unwrap(), vec!["zfsctl".to_string()]);
         assert_eq!(args_of(&r)[0], vec!["holds", "-H", "--", "tank/data@a"]);
+    }
+
+    #[test]
+    fn hold_and_release_run_the_exact_commands() {
+        let r = FakeRunner::new("");
+        hold_snapshot(&r, "tank/data", "a").unwrap();
+        release_snapshot(&r, "tank/data", "a").unwrap();
+        assert_eq!(
+            args_of(&r),
+            vec![vec!["hold", "--", "zfsctl", "tank/data@a"], vec!["release", "--", "zfsctl", "tank/data@a"]]
+        );
+    }
+
+    #[test]
+    fn refuse_if_held_allows_an_unheld_snapshot() {
+        let r = FakeRunner::new("").route("zfs", "get", "tank/data@a\t0\n");
+        refuse_if_held(&r, "tank/data", "a", false).unwrap();
+        assert_eq!(
+            args_of(&r)[0],
+            vec!["get", "-d", "1", "-H", "-p", "-t", "snapshot", "-o", "name,value", "userrefs", "tank/data"]
+        );
+    }
+
+    #[test]
+    fn refuse_if_held_names_the_holder_and_the_tags() {
+        let r = FakeRunner::new("")
+            .route("zfs", "get", "tank/data@a\t1\n")
+            .route("zfs", "holds", "tank/data@a\tkeep\tx\n");
+        match refuse_if_held(&r, "tank/data", "a", false) {
+            Err(AppError::Held(m)) => {
+                assert!(m.contains("tank/data@a"), "{m}");
+                assert!(m.contains("1 hold"), "{m}");
+                assert!(m.contains("keep"), "{m}");
+            }
+            other => panic!("expected Held, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_recursive_check_looks_at_descendants_of_the_same_name_only() {
+        let out = "tank/data@a\t0\ntank/data/sub@a\t2\ntank/data/sub@b\t5\n";
+        let r = FakeRunner::new("").route("zfs", "get", out).route("zfs", "holds", "tank/data/sub@a\tkeep\tx\n");
+        match refuse_if_held(&r, "tank/data", "a", true) {
+            Err(AppError::Held(m)) => {
+                assert!(m.contains("tank/data/sub@a"), "{m}");
+                assert!(!m.contains("@b"), "{m}");
+            }
+            other => panic!("expected Held, got {other:?}"),
+        }
+        assert_eq!(
+            args_of(&r)[0],
+            vec!["get", "-r", "-H", "-p", "-t", "snapshot", "-o", "name,value", "userrefs", "tank/data"]
+        );
+        let r = FakeRunner::new("").route("zfs", "get", out);
+        refuse_if_held(&r, "tank/data", "a", false).unwrap();
+    }
+
+    #[test]
+    fn if_the_check_cannot_run_the_destroy_is_refused() {
+        let r = FakeRunner::failing("boom", 1);
+        assert!(refuse_if_held(&r, "tank/data", "a", false).is_err());
+        assert!(destroy_snapshot_with(&r, "tank/data", "a", false).is_err());
+        assert!(destroy_calls(&r).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_userrefs_value_refuses() {
+        let r = FakeRunner::new("").route("zfs", "get", "tank/data@a\t-\n");
+        assert!(matches!(refuse_if_held(&r, "tank/data", "a", false), Err(AppError::Held(_))));
+        assert!(destroy_snapshot(&r, "tank/data", "a").is_err());
+        assert!(destroy_calls(&r).is_empty());
+    }
+
+    #[test]
+    fn destroy_snapshot_never_uses_the_deferred_flag() {
+        let r = FakeRunner::new("");
+        destroy_snapshot_with(&r, "tank/data", "a", false).unwrap();
+        destroy_snapshot_with(&r, "tank/data", "a", true).unwrap();
+        let d = destroy_calls(&r);
+        assert_eq!(d, vec![vec!["destroy", "--", "tank/data@a"], vec!["destroy", "-r", "--", "tank/data@a"]]);
+        assert!(d.iter().all(|a| !a.contains(&"-d".to_string())));
     }
 }

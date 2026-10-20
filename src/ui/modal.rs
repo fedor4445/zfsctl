@@ -655,7 +655,8 @@ mod tests {
         let call = MutationCall::DestroySnapshot { dataset: "tank/data".to_string(), name: "old-1".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+        let destroy = calls.iter().find(|c| c.1[0] == "destroy").unwrap();
+        assert_eq!(*destroy, ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
     }
 
     #[test]

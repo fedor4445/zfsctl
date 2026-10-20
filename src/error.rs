@@ -18,6 +18,8 @@ pub enum AppError {
     Parse(String),
     #[error("config error: {0}")]
     Config(String),
+    #[error("protected: {0}")]
+    Held(String),
     #[error("SMB: {0}")]
     Smb(String),
 }

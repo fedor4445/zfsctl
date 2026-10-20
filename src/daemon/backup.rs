@@ -463,6 +463,7 @@ mod tests {
                     if self.clone_exists() { ok("tank/zit-restic-job\n") } else { fail("dataset does not exist") }
                 }
                 ("zfs", Some("get")) if args.contains(&"name,property,value") => ok(&crate::daemon::guard::fake_answer("tank/data", self.keystatus)),
+                ("zfs", Some("get")) if args.contains(&"userrefs") => ok(""),
                 ("zfs", Some("get")) => ok("1791500000\n"),
                 ("zfs", Some("clone")) => {
                     if self.clone_fails {

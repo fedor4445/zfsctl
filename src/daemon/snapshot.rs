@@ -133,6 +133,7 @@ mod tests {
             match args[0] {
                 "snapshot" => self.snapshot_error.as_deref().map_or_else(|| ok(String::new()), fail),
                 "list" => ok(self.listing.clone()),
+                "get" => ok(String::new()),
                 "destroy" => {
                     let target = args.last().unwrap();
                     if self.destroy_fails.iter().any(|t| t == target) { fail(&self.destroy_error) } else { ok(String::new()) }
