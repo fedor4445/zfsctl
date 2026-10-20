@@ -131,7 +131,7 @@ mod tests {
 
     impl Zfs {
         fn new(existing: &[&str]) -> Self {
-            let listing = existing.iter().map(|n| format!("{n}\t1\t0\n")).collect::<Vec<_>>().concat();
+            let listing = existing.iter().map(|n| format!("{n}\t1\t0\t0\n")).collect::<Vec<_>>().concat();
             Zfs { listing, snapshot_error: None, destroy_fails: Vec::new(), destroy_error: "snapshot has holds".to_string(), held: Vec::new(), hold_tag: "keep".to_string(), check_fails: false, calls: Mutex::new(Vec::new()) }
         }
         fn calls(&self) -> Vec<Vec<String>> {

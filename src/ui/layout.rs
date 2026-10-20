@@ -771,11 +771,11 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .snapshots
         .iter()
-        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used), app.hold_marker(s).to_string()]));
-    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W), Constraint::Length(4)];
+        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used), crate::zfs::disk::human_size(s.written), app.hold_marker(s).to_string()]));
+    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W), Constraint::Length(SIZE_COL_W), Constraint::Length(4)];
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Snapshot", "Used", "Hold"]))
+        .header(Row::new(vec!["Snapshot", "Used", "Written", "Hold"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
@@ -1703,7 +1703,7 @@ mod tests {
     fn the_hold_column_shows_a_capital_for_ours_and_a_small_h_for_others() {
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        let snap = |name: &str, holds| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: name.to_string(), used: 1, holds };
+        let snap = |name: &str, holds| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: name.to_string(), used: 1, holds, written: 0 };
         app.snapshots = vec![snap("free", 0), snap("ours", 1), snap("theirs", 1)];
         app.snapshot_tags.insert("tank/a@ours".to_string(), vec!["zfsctl".to_string(), "x".to_string()]);
         app.snapshot_tags.insert("tank/a@theirs".to_string(), vec!["x".to_string()]);
@@ -1714,11 +1714,25 @@ mod tests {
         let hold_of = |name: &str| {
             let r = row(name);
             let after = &r[r.find(name).unwrap() + name.len()..];
-            after.split_whitespace().nth(1).filter(|t| *t != "│").map(str::to_string)
+            after.split_whitespace().nth(2).filter(|t| *t != "│").map(str::to_string)
         };
         assert_eq!(hold_of("tank/a@free"), None, "{rows:?}");
         assert_eq!(hold_of("tank/a@ours").as_deref(), Some("H"), "{rows:?}");
         assert_eq!(hold_of("tank/a@theirs").as_deref(), Some("h"), "{rows:?}");
+    }
+
+    #[test]
+    fn the_snapshot_list_has_a_written_column() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: "s".to_string(), used: 1024, holds: 0, written: 2048 }];
+        app.snapshots_table.select(Some(0));
+        let rows = render(&mut app, 100, 12);
+        let header = rows.iter().find(|r| r.contains("Snapshot") && r.contains("Used")).unwrap_or_else(|| panic!("{rows:?}")).clone();
+        assert!(header.find("Used").unwrap() < header.find("Written").unwrap(), "Written comes after Used: {header:?}");
+        let row = rows.iter().find(|r| r.contains("tank/a@s")).unwrap_or_else(|| panic!("{rows:?}")).clone();
+        let after: Vec<&str> = row[row.find("tank/a@s").unwrap()..].split_whitespace().collect();
+        assert_eq!(&after[1..3], ["1.0K", "2.0K"], "{row:?}");
     }
 
     fn identity_disk(name: &str, model: &str, serial: &str) -> crate::zfs::disk::DiskInfo {
@@ -2004,7 +2018,7 @@ mod tests {
     fn snapshots_list_shows_human_sizes_not_raw_bytes() {
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848, holds: 0 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848, holds: 0, written: 0 }];
         app.snapshots_table.select(Some(0));
         let text = render(&mut app, 110, 30).join("\n");
         assert!(text.contains("tank/data@b") && text.contains("2.0G"), "{text}");
@@ -2017,7 +2031,7 @@ mod tests {
         use crate::zfs::snapshot_detail::{SnapshotDetail, SnapshotEntry};
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096, holds: 0 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096, holds: 0, written: 0 }];
         app.snapshots_table.select(Some(0));
         let target = MetricsTarget::Snapshot("tank/data@b".to_string());
         assert_eq!(app.metrics_target(), Some(target.clone()));
