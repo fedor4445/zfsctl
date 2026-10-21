@@ -14,9 +14,9 @@ const MAX_PATH: usize = 4096;
 const MAX_COMPONENT: usize = 255;
 
 /// Whether `name` may be one step of a path zfsctl builds: 1 to 255 bytes, not `.` or `..`, no `/`, no control character
-/// (a newline or an escape in a name is shown but never sent back to a host).
+/// (a newline or an escape in a name is shown but never sent back to a host), and no U+FFFD (a name that was not text).
 pub fn valid_component(name: &str) -> bool {
-    !name.is_empty() && name.len() <= MAX_COMPONENT && name != "." && name != ".." && !name.contains('/') && !name.chars().any(char::is_control)
+    !name.is_empty() && name.len() <= MAX_COMPONENT && name != "." && name != ".." && !name.contains(['/', '\u{fffd}']) && !name.chars().any(char::is_control)
 }
 
 /// `a/b/c` from valid steps; `None` when a step is invalid or the whole is longer than 4096 bytes. No steps give `""`.
@@ -804,6 +804,16 @@ mod tests {
         assert_eq!(l.unreadable, 0);
         assert!(!valid_component(&l.entries[1].entry.name), "so the folder is never opened under a wrong name");
         assert_eq!(l.entries[1].changed, Some(100), "the later listings glue the same way, so the times still match");
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_does_not_cut_the_folder_short_and_cannot_be_opened() {
+        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 a'; printf -- '-rw-r--r-- 1 u g 5 100 caf\\351\\n'; echo '-rw-r--r-- 1 u g 5 100 z'";
+        let r = LsRunner::new(&[script]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
+        assert_eq!(names, ["a", "caf\u{fffd}", "z"], "entries after the odd name are still listed");
+        assert!(!valid_component(names[1]), "a name that did not survive as text is never sent back");
     }
 
     #[test]
