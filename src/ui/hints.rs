@@ -252,6 +252,18 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("←", "Back", 1));
             v.push(h("r", "Refresh", 4));
         }
+        (Section::Snapshots, _) if app.changes_view_active() => {
+            let ready = app.changes_view.as_ref().is_some_and(|view| matches!(view.phase, crate::ui::changes::Phase::Ready { .. }));
+            if ready {
+                v.push(h("↑↓", "Move", 1));
+                v.push(h("Enter", "Open", 2));
+                v.push(h("[ ]", "Depth", 2));
+                v.push(h("H", "Hold older", 2));
+                v.push(h("Esc", "Back", 1));
+            } else {
+                v.push(h("Esc", "Close", 1));
+            }
+        }
         (Section::Snapshots, _) => {
             if !app.snapshots.is_empty() {
                 v.push(h("↑↓", "Move", 1));
@@ -260,6 +272,8 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("b", "Rollback", 2).tone(Tone::Danger));
                 v.push(h("H", "Hold", 2));
+                v.push(h("c", "Changes", 2));
+                v.push(h("C", "Since", 3));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -566,8 +580,8 @@ mod tests {
         let mut a = base();
         go(&mut a, Section::Snapshots);
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0, written: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0, written: 0 },
         ];
         a.snapshots_table.select(Some(0));
         a
@@ -794,6 +808,7 @@ mod tests {
         focus: PaneFocus,
         tab: DatasetDetailTab,
         drilled: Option<String>,
+        changes_view: Option<(bool, usize, usize)>,
         host: usize,
         host_filter: (String, bool),
         alerts_scroll: usize,
@@ -813,6 +828,7 @@ mod tests {
             focus: a.pane_focus,
             tab: a.dataset_detail_tab,
             drilled: a.drilled_pool.clone(),
+            changes_view: a.changes_view.as_ref().map(|v| (matches!(v.phase, crate::ui::changes::Phase::Ready { .. }), v.depth, v.selected)),
             host: a.selected_host,
             host_filter: (a.host_filter.clone(), a.host_filter_editing),
             alerts_scroll: a.alerts_view.scroll,
@@ -1085,6 +1101,36 @@ mod tests {
     }
 
     #[test]
+    fn hints_offer_the_changes_keys_when_a_snapshot_is_selected() {
+        let a = snapshots();
+        let ks = keys(&a);
+        assert!(ks.contains(&"c") && ks.contains(&"C"), "{ks:?}");
+        let mut none = snapshots();
+        none.snapshots_table.select(None);
+        let ks = keys(&none);
+        assert!(!ks.contains(&"c") && !ks.contains(&"C"), "{ks:?}");
+    }
+
+    #[test]
+    fn hints_in_the_changes_view_offer_what_works_in_each_phase() {
+        use crate::ui::changes::{Against, ChangesView, PendingChanges, Phase};
+        use crate::zfs::snapshot_changes::{ChangeSummary, Limits};
+        let pending = PendingChanges { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), against: Against::Previous, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        let mut a = snapshots();
+        a.changes_view = Some(ChangesView::new(&pending));
+        let reading = keys(&a);
+        assert!(reading.contains(&"Esc") && !reading.contains(&"Enter") && !reading.contains(&"d"), "{reading:?}");
+        let mut view = ChangesView::new(&pending);
+        view.phase = Phase::Ready { older: "tank/a@o".to_string(), newer: "tank/a@s".to_string(), summary: ChangeSummary::new(&Limits::default(), None) };
+        a.changes_view = Some(view);
+        let ready = keys(&a);
+        for want in ["↑↓", "Enter", "[ ]", "H", "Esc"] {
+            assert!(ready.contains(&want), "{want} in {ready:?}");
+        }
+        assert!(!ready.contains(&"d"), "the snapshot list's own keys are not offered inside the view: {ready:?}");
+    }
+
+    #[test]
     fn hints_for_the_hosts_screen_do_not_include_refresh() {
         // `r` is a no-op in the Hosts section (see event_loop's refresh match).
         assert!(!keys(&hosts()).contains(&"r"));
@@ -1308,8 +1354,8 @@ mod tests {
         a.pools = vec![pool("tank"), pool("scratch")];
         a.datasets = vec![dataset("tank/a"), dataset("tank/b")];
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0, written: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0, written: 0 },
         ];
         a.disks = vec![
             DiskInfo { name: "da0".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },

@@ -9,14 +9,16 @@ pub struct Snapshot {
     /// `userrefs`: how many holds the snapshot has (0 = none, or unknown). Display only;
     /// the destroy guard reads the real tags with `hold_tags`.
     pub holds: u64,
+    /// `written`: bytes written since the previous snapshot (0 when the host does not say).
+    pub written: u64,
 }
 
 /// The tag zfsctl puts on the snapshots it holds.
 pub const HOLD_TAG: &str = "zfsctl";
 
-pub const SNAPSHOT_LIST_ARGS: &[&str] = &["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs"];
+pub const SNAPSHOT_LIST_ARGS: &[&str] = &["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs,written"];
 
-/// Parses `zfs list -t snapshot -H -p -o name,used,userrefs` output. Each line's
+/// Parses `zfs list -t snapshot -H -p -o name,used,userrefs,written` output. Each line's
 /// first field is `dataset@snapshot`, split on the first `@` (dataset
 /// names cannot themselves contain `@`, so this is unambiguous).
 pub fn parse_snapshot_list(output: &str) -> Result<Vec<Snapshot>> {
@@ -25,9 +27,9 @@ pub fn parse_snapshot_list(output: &str) -> Result<Vec<Snapshot>> {
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            let &[full_name, used, holds] = fields.as_slice() else {
+            let &[full_name, used, holds, written] = fields.as_slice() else {
                 return Err(AppError::Parse(format!(
-                    "expected 3 fields in snapshot list line: {line:?}"
+                    "expected 4 fields in snapshot list line: {line:?}"
                 )));
             };
             let (dataset, name) = full_name
@@ -40,6 +42,8 @@ pub fn parse_snapshot_list(output: &str) -> Result<Vec<Snapshot>> {
                     .ok_or_else(|| AppError::Parse(format!("bad used in: {line:?}")))?,
                 holds: super::parse_numeric_or_dash(holds)
                     .ok_or_else(|| AppError::Parse(format!("bad userrefs in: {line:?}")))?,
+                written: super::parse_numeric_or_dash(written)
+                    .ok_or_else(|| AppError::Parse(format!("bad written in: {line:?}")))?,
             })
         })
         .collect()
@@ -237,8 +241,8 @@ mod tests {
     use crate::exec::test_support::FakeRunner;
 
     const SNAPSHOT_LIST_FIXTURE: &str = "\
-tank/data@2026-09-01\t10000\t0
-tank/data@2026-09-04\t2000\t0
+tank/data@2026-09-01\t10000\t0\t0
+tank/data@2026-09-04\t2000\t0\t0
 ";
 
     #[test]
@@ -247,8 +251,8 @@ tank/data@2026-09-04\t2000\t0
         assert_eq!(
             snapshots,
             vec![
-                Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 10_000, holds: 0 },
-                Snapshot { dataset: "tank/data".to_string(), name: "2026-09-04".to_string(), used: 2_000, holds: 0 },
+                Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 10_000, holds: 0, written: 0 },
+                Snapshot { dataset: "tank/data".to_string(), name: "2026-09-04".to_string(), used: 2_000, holds: 0, written: 0 },
             ]
         );
     }
@@ -261,10 +265,10 @@ tank/data@2026-09-04\t2000\t0
 
     #[test]
     fn parses_snapshot_list_line_with_dash_used_field() {
-        let snapshots = parse_snapshot_list("tank/data@old\t-\t-\n").unwrap();
+        let snapshots = parse_snapshot_list("tank/data@old\t-\t-\t-\n").unwrap();
         assert_eq!(
             snapshots,
-            vec![Snapshot { dataset: "tank/data".to_string(), name: "old".to_string(), used: 0, holds: 0 }]
+            vec![Snapshot { dataset: "tank/data".to_string(), name: "old".to_string(), used: 0, holds: 0, written: 0 }]
         );
     }
 
@@ -274,7 +278,7 @@ tank/data@2026-09-04\t2000\t0
         let snapshots = list_snapshots(&runner).unwrap();
         assert_eq!(snapshots.len(), 2);
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0].1, vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs"]);
+        assert_eq!(calls[0].1, vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs,written"]);
     }
 
     #[test]
@@ -359,26 +363,26 @@ tank/data@2026-09-04\t2000\t0
 
     #[test]
     fn listing_one_datasets_snapshots_is_depth_one_unless_recursive() {
-        let r = FakeRunner::new("tank/data@a\t1\t0\n");
+        let r = FakeRunner::new("tank/data@a\t1\t0\t0\n");
         let flat = list_snapshots_of(&r, "tank/data", false).unwrap();
         let tree = list_snapshots_of(&r, "tank/data", true).unwrap();
         assert_eq!(flat[0].name, "a");
         assert_eq!(tree.len(), 1);
         let calls = args_of(&r);
-        assert_eq!(calls[0], vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs", "-d", "1", "tank/data"]);
-        assert_eq!(calls[1], vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs", "-r", "tank/data"]);
+        assert_eq!(calls[0], vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs,written", "-d", "1", "tank/data"]);
+        assert_eq!(calls[1], vec!["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs,written", "-r", "tank/data"]);
     }
 
     #[test]
     fn parses_the_holds_column() {
-        let s = parse_snapshot_list("tank/data@a\t10\t2\ntank/data@b\t5\t0\n").unwrap();
+        let s = parse_snapshot_list("tank/data@a\t10\t2\t0\ntank/data@b\t5\t0\t0\n").unwrap();
         assert_eq!(s[0].holds, 2);
         assert_eq!(s[1].holds, 0);
     }
 
     #[test]
     fn a_dash_for_holds_is_zero_held_unknown() {
-        let s = parse_snapshot_list("tank/data@a\t10\t-\n").unwrap();
+        let s = parse_snapshot_list("tank/data@a\t10\t-\t0\n").unwrap();
         assert_eq!(s[0].holds, 0);
     }
 
@@ -388,8 +392,25 @@ tank/data@2026-09-04\t2000\t0
     }
 
     #[test]
-    fn list_snapshots_asks_for_userrefs() {
-        assert_eq!(SNAPSHOT_LIST_ARGS, ["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs"]);
+    fn parses_the_written_column() {
+        let s = parse_snapshot_list("tank/data@a\t10\t0\t4096\n").unwrap();
+        assert_eq!(s[0].written, 4096);
+    }
+
+    #[test]
+    fn a_dash_for_written_is_zero() {
+        let s = parse_snapshot_list("tank/data@a\t10\t0\t-\n").unwrap();
+        assert_eq!(s[0].written, 0);
+    }
+
+    #[test]
+    fn rejects_a_line_with_three_fields() {
+        assert!(parse_snapshot_list("tank/data@a\t10\t0\n").is_err());
+    }
+
+    #[test]
+    fn list_snapshots_asks_for_written() {
+        assert_eq!(SNAPSHOT_LIST_ARGS, ["list", "-t", "snapshot", "-H", "-p", "-o", "name,used,userrefs,written"]);
     }
 
     #[test]

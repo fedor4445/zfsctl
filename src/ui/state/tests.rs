@@ -713,7 +713,7 @@ fn switching_selected_host_clears_pane_data() {
         referenced: 1,
         mountpoint: None, quota: 0, refquota: 0,
     }];
-    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "snap1".to_string(), used: 1, holds: 0 }];
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "snap1".to_string(), used: 1, holds: 0, written: 0 }];
     app.pools_table.select(Some(0));
     app.datasets_table.select(Some(0));
     app.snapshots_table.select(Some(0));
@@ -813,8 +813,8 @@ fn drain_worker_messages_clamps_selected_dataset_row_when_list_shrinks() {
 fn handle_key_navigates_snapshot_rows_and_wraps() {
     let mut app = App::new(vec!["local".to_string()]);
     app.snapshots = vec![
-        Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0, holds: 0 },
-        Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0, holds: 0 },
+        Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0, holds: 0, written: 0 },
+        Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0, holds: 0, written: 0 },
     ];
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     assert_eq!(app.current_section(), Section::Snapshots);
@@ -835,6 +835,7 @@ fn drain_worker_messages_clamps_selected_snapshot_row_when_list_shrinks() {
             name: "only".to_string(),
             used: 0,
             holds: 0,
+            written: 0,
         }])))
         .unwrap();
     app.drain_worker_messages();
@@ -1346,7 +1347,7 @@ fn handle_modal_key_create_snapshot_form_submits_with_implied_dataset() {
 #[test]
 fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0, holds: 0 }];
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0, holds: 0, written: 0 }];
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     app.snapshots_table.select(Some(0));
     app.handle_key(KeyCode::Char('d'));
@@ -1365,7 +1366,7 @@ fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
 #[test]
 fn handle_key_b_on_snapshots_opens_rollback_confirm_typed_modal() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0, holds: 0 }];
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0, holds: 0, written: 0 }];
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     app.snapshots_table.select(Some(0));
     app.handle_key(KeyCode::Char('b'));
@@ -4958,7 +4959,7 @@ fn refreshing_datasets_also_reads_which_are_encrypted_and_locked() {
 #[test]
 fn refresh_snapshots_populates_snapshots_from_fake_runner() {
     let mut app = App::new(vec!["local".to_string()]);
-    let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data@s1\t10\t0\n"));
+    let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data@s1\t10\t0\t0\n"));
     app.refresh_snapshots(runner);
     wait_until(&mut app, |a| !a.snapshots.is_empty());
     assert_eq!(app.snapshots.len(), 1);
@@ -5687,7 +5688,7 @@ fn up_and_down_move_the_row_list_of_the_active_dataset_detail_tab() {
 #[test]
 fn up_and_down_move_the_snapshot_disk_and_share_rows() {
     let mut app = in_section(Section::Snapshots);
-    let snap = |n: &str| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: n.to_string(), used: 1, holds: 0 };
+    let snap = |n: &str| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: n.to_string(), used: 1, holds: 0, written: 0 };
     app.snapshots = vec![snap("s1"), snap("s2")];
     up_moves(&mut app, |a| &mut a.snapshots_table, &[|a| &mut a.disks_table, |a| &mut a.shares_table]);
     down_moves(&mut app, |a| &mut a.snapshots_table);
@@ -5825,7 +5826,7 @@ fn auto_refresh_tracks_each_section_and_host_separately() {
     wait_until(&mut app, |a| !a.pools.is_empty());
     // Switching to Snapshots right after must not be held back by Pools' timer.
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-    app.auto_refresh(runner("tank/a@s1\t10\t0\n"), t0 + Duration::from_secs(1), TEN);
+    app.auto_refresh(runner("tank/a@s1\t10\t0\t0\n"), t0 + Duration::from_secs(1), TEN);
     wait_until(&mut app, |a| !a.snapshots.is_empty());
     assert_eq!(app.snapshots.len(), 1);
 }
@@ -5897,7 +5898,7 @@ fn selection_is_pinned_by_identity_in_datasets_snapshots_and_disks_too() {
     app.drain_worker_messages();
     assert_eq!(app.selected_dataset_name().as_deref(), Some("tank/b"));
 
-    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 1, holds: 0 };
+    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 1, holds: 0, written: 0 };
     app.snapshots = vec![snap("tank/a", "s1"), snap("tank/b", "s1")];
     app.snapshots_table.select(Some(1)); // tank/b@s1: same snapshot name as another dataset's
     app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![snap("tank/b", "s1"), snap("tank/a", "s1")]))).unwrap();
@@ -6793,7 +6794,7 @@ fn destroy_app() -> App {
     let ds = |name: &str| crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 };
     app.datasets = vec![ds("tank/data"), ds("tank/data/a"), ds("tank/data/b"), ds("tank/data2"), ds("tank/other")];
     app.datasets_table.select(Some(0));
-    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 0, holds: 0 };
+    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 0, holds: 0, written: 0 };
     app.snapshots = vec![snap("tank/data", "s1"), snap("tank/data", "s2"), snap("tank/data/a", "s1"), snap("tank/data2", "x"), snap("tank/other", "x")];
     app.snapshots_loaded = true;
     app
@@ -7493,7 +7494,7 @@ fn backup_job(retention: Option<&str>) -> crate::jobs::Job {
 }
 
 fn snaps(dataset: &str, names: &[&str]) -> Vec<crate::zfs::snapshot::Snapshot> {
-    names.iter().map(|n| crate::zfs::snapshot::Snapshot { dataset: dataset.into(), name: (*n).into(), used: 0, holds: 0 }).collect()
+    names.iter().map(|n| crate::zfs::snapshot::Snapshot { dataset: dataset.into(), name: (*n).into(), used: 0, holds: 0, written: 0 }).collect()
 }
 
 #[test]
@@ -9905,7 +9906,7 @@ fn an_info_popup_scrolls_with_the_navigation_keys_and_any_other_key_closes_it() 
 
 fn hold_app(holds: u64, tags: Option<&[&str]>) -> App {
     let mut app = App::new(vec!["local".to_string()]);
-    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds }];
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds, written: 0 }];
     if let Some(tags) = tags {
         app.snapshot_tags.insert("tank/data@s1".to_string(), tags.iter().map(|t| (*t).to_string()).collect());
     }
@@ -9997,7 +9998,7 @@ fn wait_for_snapshots(app: &mut App) {
 
 #[test]
 fn a_refresh_with_51_held_snapshots_asks_for_tags_in_two_calls() {
-    let list = (0..51).map(|i| format!("tank/data@s{i}\t10\t1\n")).collect::<Vec<_>>().concat();
+    let list = (0..51).map(|i| format!("tank/data@s{i}\t10\t1\t0\n")).collect::<Vec<_>>().concat();
     let runner = Arc::new(FakeRunner::new("").route("zfs", "list", &list).route("zfs", "holds", "tank/data@s0\tzfsctl\tx\n"));
     let dynrunner: Arc<dyn CommandRunner> = runner.clone();
     let mut app = App::new(vec!["local".to_string()]);
@@ -10019,7 +10020,7 @@ fn a_refresh_with_51_held_snapshots_asks_for_tags_in_two_calls() {
 
 #[test]
 fn a_refresh_while_a_tag_fetch_runs_starts_no_second_fetch() {
-    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\t0\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
     let dynrunner: Arc<dyn CommandRunner> = runner.clone();
     let mut app = App::new(vec!["local".to_string()]);
     app.tags_running.lock().unwrap().insert(0);
@@ -10034,7 +10035,7 @@ fn a_refresh_while_a_tag_fetch_runs_starts_no_second_fetch() {
 
 #[test]
 fn the_tag_fetch_mark_is_cleared_when_the_tags_arrive() {
-    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\t0\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
     let dynrunner: Arc<dyn CommandRunner> = runner.clone();
     let mut app = App::new(vec!["local".to_string()]);
     app.refresh_snapshots(dynrunner);
@@ -10069,7 +10070,7 @@ fn tags_of_an_older_snapshot_list_are_ignored_and_ask_for_a_new_refresh() {
 #[test]
 fn a_snapshot_refresh_fetches_tags_for_the_held_snapshots_only() {
     let runner = Arc::new(
-        FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t0\ntank/data@s2\t10\t2\n").route("zfs", "holds", "tank/data@s2\tzfsctl\tThu Oct 1 00:00 2026\ntank/data@s2\tother\tThu Oct 1 00:00 2026\n"),
+        FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t0\t0\ntank/data@s2\t10\t2\t0\n").route("zfs", "holds", "tank/data@s2\tzfsctl\tThu Oct 1 00:00 2026\ntank/data@s2\tother\tThu Oct 1 00:00 2026\n"),
     );
     let dynrunner: Arc<dyn CommandRunner> = runner.clone();
     let mut app = App::new(vec!["local".to_string()]);
@@ -10091,7 +10092,7 @@ fn a_snapshot_refresh_fetches_tags_for_the_held_snapshots_only() {
 fn a_snapshot_refresh_clears_the_old_tags() {
     let mut app = hold_app(1, Some(&["zfsctl"]));
     app.begin_refresh(Section::Snapshots, 0);
-    app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0 }]))).unwrap();
+    app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }]))).unwrap();
     app.drain_worker_messages();
     assert!(app.snapshot_tags.is_empty());
 }
@@ -10129,7 +10130,7 @@ struct PanickingList;
 impl CommandRunner for PanickingList {
     fn run(&self, _: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
         assert_ne!(args[0], "holds", "boom");
-        Ok(crate::exec::CommandOutput { stdout: "tank/data@s1\t10\t1\n".into(), stderr: String::new(), status: 0 })
+        Ok(crate::exec::CommandOutput { stdout: "tank/data@s1\t10\t1\t0\n".into(), stderr: String::new(), status: 0 })
     }
     fn run_with_stdin(&self, cmd: &str, args: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
         self.run(cmd, args)
@@ -10224,4 +10225,212 @@ fn a_very_long_foreign_tag_is_truncated_in_the_status() {
     let msg = app.status_message.clone().unwrap();
     assert!(msg.contains(&format!("{}…", "x".repeat(39))), "{msg:?}");
     assert!(msg.chars().count() < 100, "{msg:?}");
+}
+
+// ---- the changes view (c and C in Snapshots) ----
+
+fn changes_app() -> App {
+    let mut app = hold_app(0, None);
+    app.snapshots.push(Snapshot { dataset: "tank/data".to_string(), name: "s2".to_string(), used: 0, holds: 0, written: 0 });
+    app.snapshots_table.select(Some(1));
+    app
+}
+
+fn ready_outcome(entries: &[(&str, crate::zfs::snapshot_diff::Change)]) -> crate::ui::changes::ChangesOutcome {
+    use crate::zfs::snapshot_changes::{ChangeSummary, Limits};
+    use crate::zfs::snapshot_diff::{DiffEntry, FileKind};
+    let mut summary = ChangeSummary::new(&Limits::default(), Some("/ds".to_string()));
+    for (path, change) in entries {
+        summary.add(DiffEntry { changed_at: 1_788_654_605, change: *change, kind: FileKind::File, path: (*path).to_string(), renamed_to: None });
+    }
+    crate::ui::changes::ChangesOutcome::Done { older: "tank/data@s1".to_string(), newer: "tank/data@s2".to_string(), summary }
+}
+
+fn deliver(app: &mut App, host: usize, request: u64, outcome: crate::error::Result<crate::ui::changes::ChangesOutcome>) {
+    app.tx.send(WorkerMsg::Changes(host, request, outcome)).unwrap();
+    app.drain_worker_messages();
+}
+
+fn ready_app() -> App {
+    use crate::zfs::snapshot_diff::Change;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request, Ok(ready_outcome(&[("/ds/a/f1", Change::Added), ("/ds/a/f2", Change::Added), ("/ds/b/g", Change::Removed)])));
+    app
+}
+
+#[test]
+fn c_on_a_snapshot_opens_a_reading_view_and_queues_one_read() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let view = app.changes_view.as_ref().expect("a view");
+    assert!(matches!(view.phase, crate::ui::changes::Phase::Reading));
+    assert_eq!(app.pending_changes.len(), 1);
+    let p = &app.pending_changes[0];
+    assert_eq!((p.host, p.dataset.as_str(), p.name.as_str(), p.against), (0, "tank/data", "s2", crate::ui::changes::Against::Previous));
+    assert_eq!(p.request, view.request);
+}
+
+#[test]
+fn capital_c_compares_with_the_live_dataset() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(app.pending_changes[0].against, crate::ui::changes::Against::Live);
+    assert_eq!(app.changes_view.as_ref().unwrap().against, crate::ui::changes::Against::Live);
+}
+
+#[test]
+fn c_with_nothing_selected_does_nothing() {
+    let mut app = changes_app();
+    app.snapshots_table.select(None);
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('C'));
+    assert!(app.changes_view.is_none() && app.pending_changes.is_empty());
+}
+
+#[test]
+fn c_while_a_read_is_running_starts_no_second_one() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(app.pending_changes.len(), 1);
+}
+
+#[test]
+fn a_result_for_an_older_request_or_another_host_is_ignored() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request + 99, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::Reading));
+    deliver(&mut app, 5, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::Reading));
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::NoPrevious));
+}
+
+#[test]
+fn esc_while_reading_sets_the_cancel_flag_and_closes_the_view() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let cancel = std::sync::Arc::clone(&app.pending_changes[0].cancel);
+    assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.is_none());
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn esc_in_an_open_group_returns_to_the_groups_and_then_closes_the_view() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Enter);
+    assert!(app.changes_view.as_ref().unwrap().open_group.is_some());
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.as_ref().is_some_and(|v| v.open_group.is_none()));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.is_none());
+}
+
+#[test]
+fn up_down_select_and_the_brackets_change_the_depth_inside_the_limits() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.changes_view.as_ref().unwrap().selected, 1);
+    app.handle_key(KeyCode::Up);
+    assert_eq!(app.changes_view.as_ref().unwrap().selected, 0);
+    app.handle_key(KeyCode::Char(']'));
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 3);
+    for _ in 0..5 {
+        app.handle_key(KeyCode::Char(']'));
+    }
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 4);
+    for _ in 0..9 {
+        app.handle_key(KeyCode::Char('['));
+    }
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 1);
+}
+
+#[test]
+fn capital_h_in_the_view_holds_the_older_snapshot_with_a_y_n_confirm() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+            assert_eq!(action.call, crate::ui::modal::MutationCall::HoldSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() });
+        }
+        other => panic!("expected Confirm modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn capital_h_in_the_view_does_nothing_without_an_older_snapshot() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none(), "still reading");
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none(), "the oldest snapshot has no older one");
+}
+
+#[test]
+fn help_and_quit_keep_working_inside_the_view() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('?'));
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Info { .. })));
+    app.modal = None;
+    app.handle_key(KeyCode::Char('q'));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn a_view_of_another_host_is_dropped_on_the_next_key() {
+    let mut app = ready_app();
+    app.selected_host = 3;
+    app.handle_key(KeyCode::Down);
+    assert!(app.changes_view.is_none());
+}
+
+#[test]
+fn the_help_lists_the_changes_keys() {
+    let text = help_text_for_book();
+    assert!(text.contains("  c ") && text.contains("  C "), "{text}");
+}
+
+#[test]
+fn a_read_whose_runner_cannot_run_the_diff_ends_failed_not_stuck() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let pending = app.pending_changes.remove(0);
+    let request = pending.request;
+    app.start_changes(std::sync::Arc::new(FakeRunner::new("")), pending);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while matches!(app.changes_view.as_ref().map(|v| &v.phase), Some(crate::ui::changes::Phase::Reading)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.drain_worker_messages();
+    }
+    let view = app.changes_view.as_ref().unwrap();
+    assert_eq!(view.request, request);
+    assert!(matches!(view.phase, crate::ui::changes::Phase::Failed(_)), "{:?}", view.phase);
+}
+
+#[test]
+fn a_changes_view_does_not_survive_a_host_switch_and_its_read_is_cancelled() {
+    let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }];
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app.handle_key(KeyCode::Char('c'));
+    let (request, cancel) = (app.pending_changes[0].request, std::sync::Arc::clone(&app.pending_changes[0].cancel));
+    app.selected_host = 1;
+    app.clear_host_data();
+    assert!(app.changes_view.is_none(), "the view belonged to the other host");
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst), "and its diff is cancelled, not left running");
+    // The answer arrives late, and the user comes back to the first host: no view is stuck on "reading".
+    app.selected_host = 0;
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(app.changes_view.is_none());
 }
