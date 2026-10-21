@@ -6,6 +6,7 @@
 - How to take, destroy and roll back to a snapshot.
 - How to protect a snapshot with a hold.
 - How to see what changed between two snapshots, folder by folder.
+- How to look inside a snapshot, folder by folder, with each entry's type, size, dates, mode and owner.
 - How scheduled snapshots are named, so you can recognise them.
 
 ## The list
@@ -226,6 +227,57 @@ A few things worth knowing:
 - **Odd lines.** A line zfsctl cannot read is counted (`N unreadable`), never guessed at.
 
 > **Tip:** to find out *when* files vanished, move down the snapshot list one at a time with `c`: the snapshot where the `removed` count jumps is the first one made after the deletion, and the one before it is the one to hold.
+
+## Looking inside a snapshot
+
+Sometimes the question is not "what changed" but "what was in there": a folder you half remember, a file you think was a few megabytes, from last spring. Select a snapshot and press `f`. zfsctl opens the snapshot's top folder, the way ZFS shows it under the dataset's hidden `.zfs/snapshot` directory.
+
+SCREEN_BROWSE
+
+Each line is one entry, folders first, then by name:
+
+| Column | Meaning |
+|---|---|
+| **Type** | file, folder, symlink, and the rarer kinds (char, block, socket, pipe, door, port) |
+| **Size** | the size of a file; for a folder, how many entries it holds (`3 items`), not the size of everything under it, which would mean walking the whole tree |
+| **Modified** | when its contents last changed, in the host's own time zone |
+| **Mode**, **Owner** | permissions and owner, as the host prints them |
+| **Name** | the name, cleaned of anything that could disturb your terminal |
+
+The line under the list describes the selected entry: **Created** (when the file system recorded its creation; FreeBSD and Linux do, illumos does not and says `not recorded on this OS`), **Changed** (when ZFS last touched its metadata, which is not the same as modified), and its group. A symlink also shows where it points.
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` | move |
+| `Enter` or `→` | open the selected folder (a symlink is shown but never entered) |
+| `←` or `Backspace` | go up one folder |
+| `/` | keep only names that contain what you type (not case sensitive; `*` and `%` are ordinary characters) |
+| `m` | keep only entries modified within a range of days: `2026-10-01..2026-10-20`, `2026-10-01..`, `..2026-10-20`, or one day |
+| `s` | keep only a range of sizes: `10M..`, `..1G`, `1K..1M` or one size (units are K, M, G, T) |
+| `t` | cycle through all, files only, folders only and symlinks only |
+| `x` | clear the filters |
+| `Esc` | close the browser (also while it is still reading) |
+
+Folders are never hidden by a size or date filter, so you can still walk down to what you are looking for. While a filter prompt is open, every key you type is text; `Enter` applies it and `Esc` cancels it. A line above the list says how many entries the filters leave.
+
+### It only reads names and metadata
+
+The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never follows a symlink.
+
+On the hub itself it needs nothing extra. On another host the unprivileged account zfsctl logs in as is not allowed to read other people's folders, so listing a snapshot needs one more `sudo` entry, the **`browse`** feature, which is **off by default**. Print it, read it, and install it the way chapter 5 describes:
+
+```sh
+zfsctl print-sudoers HOST --with browse
+```
+
+It adds `ls` with eight fixed argument lists that all end in `-- *`, so no option can be added; sudo's `*` also matches spaces and `/`, so the path itself cannot be confined to `.zfs/snapshot`. That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run.
+
+### Limits and odd cases
+
+- **Big folders.** At most 20,000 entries are listed, or whatever was read in 30 seconds, whichever comes first. The header says `the folder is larger` when that happens. `Esc` stops a read that is still running.
+- **Names that are not ordinary.** A name with a control character (a newline, an escape sequence) is shown cleaned and never opened, and a line zfsctl cannot read is counted (`N entries could not be read`), not guessed at.
+- **`this snapshot cannot be browsed here`.** Some datasets have no visible `.zfs/snapshot` folder, for example one given to a zone on OmniOS. zfsctl does not clone the snapshot to get around that, because cloning changes the pool. Use `c` to see what changed instead.
+- **A dataset that is not mounted** (mountpoint `none` or `legacy`) has no snapshot folder to list.
 
 ## How scheduled snapshots are named
 

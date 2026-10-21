@@ -294,7 +294,17 @@ fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, de
                 }
                 Some(entry) => once.entries.push(entry),
                 None if line.trim().is_empty() => {}
-                None => once.unreadable += 1,
+                // A name with a newline in it prints on several lines; the later ones do not parse, so they are glued back
+                // onto the entry before them (its name then has a control character and is never opened).
+                None => {
+                    if let Some(prev) = once.entries.last_mut() {
+                        let text = prev.link_target.as_mut().unwrap_or(&mut prev.name);
+                        text.push('\n');
+                        text.push_str(line);
+                    } else {
+                        once.unreadable += 1;
+                    }
+                }
             }
         });
         finish.store(true, Ordering::SeqCst);
@@ -778,10 +788,22 @@ mod tests {
     }
 
     #[test]
-    fn unparsable_lines_are_counted_not_shown() {
-        let r = LsRunner::new(&[&format!("{} echo 'garbage line'; echo 'more garbage';", files(&["a"], 1))]);
+    fn unparsable_lines_before_any_entry_are_counted_not_shown() {
+        let r = LsRunner::new(&[&format!("echo 'garbage line'; echo 'more garbage'; {}", files(&["a"], 1))]);
         let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
         assert_eq!((l.entries.len(), l.unreadable), (1, 2));
+    }
+
+    #[test]
+    fn a_name_with_a_newline_is_rebuilt_from_its_continuation_line_and_cannot_be_opened() {
+        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'drwxr-xr-x 2 u g 5 100 dir'; echo 'newline'; echo '-rw-r--r-- 1 u g 5 100 last'";
+        let r = LsRunner::new(&[script, script]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits { max_entries: 20_000, max_seconds: 30 }, &AtomicBool::new(false)).unwrap();
+        let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
+        assert_eq!(names, ["first", "dir\nnewline", "last"]);
+        assert_eq!(l.unreadable, 0);
+        assert!(!valid_component(&l.entries[1].entry.name), "so the folder is never opened under a wrong name");
+        assert_eq!(l.entries[1].changed, Some(100), "the later listings glue the same way, so the times still match");
     }
 
     #[test]
