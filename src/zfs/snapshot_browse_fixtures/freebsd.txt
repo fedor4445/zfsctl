@@ -1,0 +1,7 @@
+total 541
+drwxr-xr-x  2 root wheel        2 1784933440 X11
+lrwxr-xr-x  1 root wheel       12 1790619566 aliases -> mail/aliases
+drwxr-xr-x  2 root wheel        2 1784933436 authpf
+-rw-r--r--  1 root wheel      151 1785266797 auto_master
+-rw-r--r--  1 root wheel      151 1785266797 auto_master
+-rw-r--r--  1 root wheel      615 1781224678 blacklistd.conf
