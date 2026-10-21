@@ -30,6 +30,7 @@ impl App {
                 }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),
                 WorkerMsg::Changes(host, request, result) => self.on_changes(host, request, result),
+                WorkerMsg::Browse(host, request, result) => self.on_browse(host, request, result),
                 WorkerMsg::SnapshotTags(host, generation, tags) => {
                     self.tags_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&host);
                     if host == self.selected_host {
@@ -183,6 +184,14 @@ impl App {
     fn on_changes(&mut self, host: usize, request: u64, result: Result<crate::ui::changes::ChangesOutcome>) {
         if let Some(view) = self.changes_view.as_mut().filter(|v| v.request == request && v.host == host) {
             view.apply(result);
+        }
+    }
+
+    /// A folder listing finished: it counts only for the view that asked, on the host it was asked for.
+    fn on_browse(&mut self, host: usize, request: u64, result: Result<crate::ui::browse::BrowseOutcome>) {
+        let name = self.hosts.get(host).cloned().unwrap_or_default();
+        if let Some(view) = self.browse_view.as_mut().filter(|v| v.request == request && v.host == host) {
+            view.apply(&name, result);
         }
     }
 

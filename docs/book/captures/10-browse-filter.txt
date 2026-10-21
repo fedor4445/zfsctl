@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Browse — local · scratch/data@zt-brw-b──────────────────────────────────────────────┐
+│Dashboard             ││/zt-brw/docs                                                                        │
+│Hosts                 ││showing 1 of 4: name has "note"                                                     │
+│Pools                 ││Type     Size         Modified         Mode        Owner        Name                │
+│Datasets              ││file     2B           2026-10-21 18:57 -rw-r--r--  root         my notes (final).txt│
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
+│Alerts                ││                                                                                    │
+│Settings              ││Created: 2026-10-21 18:57   Changed: 2026-10-21 18:57   Group: wheel                │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Metrics — scratch/data@zt-brw-b─────────────────────────────────────────────────────┐
+│                      ││Snapshot  zt-brw-b                            Snapshot sizes                        │
+│                      ││Created   9m ago                              oldest → newest, this one lit         │
+│                      ││Used      88.0K   Refer 104M   Written 128K       █                                 │
+│                      ││Reclaim   88.0K  (freed if destroyed)             █                                 │
+│                      ││Holds     0   Clones -                            █                                 │
+│                      ││Dataset   6 snaps, 504K = <1% of used             █▇                                │
+│                      ││Oldest    45d 22h ago                           ▅▅██                                │
+│                      ││Newest    9m ago                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  ← Up  / Name  m Modified  s Size  t Type  x Clear  Esc Close  Tab Section  ! Shell  ? Help  q Quit

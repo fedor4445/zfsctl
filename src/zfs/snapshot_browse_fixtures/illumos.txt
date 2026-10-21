@@ -1,0 +1,7 @@
+total 483
+-rw-r--r--   1 root     root        2236 2026-10-20 05:25:30.508633786 -0400 .cpr_config
+-rw-r--r--   1 root     sys         1481 2025-09-07 17:39:25.385186416 -0400 .login
+lrwxrwxrwx   1 root     root          22 2026-10-20 05:25:35.059896862 -0400 .syslog_door -> ../var/run/syslog_door
+lrwxrwxrwx   1 root     root          14 2025-09-07 17:39:30.954428525 -0400 TIMEZONE -> ./default/init
+crw-rw-rw-   1 root     sys        3, 1280 2026-10-21 14:37:52.000000000 -0400 acpi_drv@0:hotkey
+crw-------   1 root     sys        5,  0 2026-10-21 14:37:52.000000000 -0400 acpippm@0:acpi-ppm

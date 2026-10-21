@@ -1,36 +1,30 @@
 ┌zfsctl────────────────┐┌Snapshots — local ('r' to refresh)──────────────────────────────────────────────────┐
-│Dashboard             ││Snapshot                           Used     Hold                                    │
-│Hosts                 ││scratch/data@snap1                 64.0K                                            │
-│Pools                 ││scratch/data@snap2                 64.0K                                            │
-│Datasets              ││scratch/data@snap4                 72.0K                                            │
-│Snapshots             ││scratch/data@sphrase1              56.0K                                            │
-│Disks                 ││scratch/data@before-cleanup        0B       H                                       │
-│Shares                ││tpool@snap1                        93.0K                                            │
-│Boot Envs             ││tpool@snap2                        2.0G                                             │
-│Jobs                  ││zroot@09052026                     80.0K                                            │
-│Cloud                 ││zroot/ROOT@snap1                   0B                                               │
-│Alerts                ││zroot/home/alice@alice             8.0K                                             │
-│Settings              ││zroot/home/fb@09052026             88.0K                                            │
-│                      ││zroot/home/fb@09062026             88.0K                                            │
-│                      ││zroot/home/carol@carol1            0B                                               │
-│                      ││zroot/home/carol@snap5             0B                                               │
-│                      ││zroot/var@snap1                    0B                                               │
+│Dashboard             ││Snapshot                           Used     Written  Hold                           │
+│Hosts                 ││scratch/data@snap1                 64.0K    96.0K                                   │
+│Pools                 ││scratch/data@snap2                 64.0K    64.0K                                   │
+│Datasets              ││scratch/data@snap4                 72.0K    100M                                    │
+│Snapshots             ││scratch/data@sphrase1              72.0K    72.0K                                   │
+│Disks                 ││tpool@snap1                        93.0K    2.0G                                    │
+│Shares                ││tpool@snap2                        2.0G     2.0G                                    │
+│Boot Envs             ││zroot@09052026                     80.0K    96.0K                                   │
+│Jobs                  ││zroot/ROOT@snap1                   0B       96.0K                                   │
+│Cloud                 ││zroot/home/alice@alice             8.0K     136K                                    │
+│Alerts                ││zroot/home/fb@09052026             88.0K    114M                                    │
+│Settings              ││zroot/home/fb@09062026             88.0K    88.0K                                   │
+│                      ││zroot/home/carol@carol1            0B       128K                                    │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data@before-cleanup───────────────────────────────────────────────┐
-│                      ││Snapshot  before-cleanup                      Snapshot sizes                        │
-│                      ││Created   1m ago                              oldest → newest, this one lit         │
-│                      ││Used      0B   Refer 100M   Written 56.0K       █                                   │
-│                      ││Reclaim   0B  (freed if destroyed)            ▄▄█                                   │
-│                      ││Holds     1   Clones -  (blocks destroy)      ███                                   │
-│                      ││Dataset   5 snaps, 256K = <1% of used         ████                                  │
-│                      ││Oldest    44d 19h ago                         ████                                  │
-│                      ││Newest    1m ago                              ████                                  │
-│                      ││                                              ████                                  │
-│                      ││                                              ████                                  │
-│                      ││                                              ████                                  │
+│                      │┌Metrics — scratch/data@snap4────────────────────────────────────────────────────────┐
+│                      ││Snapshot  snap4                               Snapshot sizes                        │
+│                      ││Created   18d 21h ago                         oldest → newest, this one lit         │
+│                      ││Used      72.0K   Refer 100M   Written 100M     ██                                  │
+│                      ││Reclaim   72.0K  (freed if destroyed)         ▇▇██                                  │
+│                      ││Holds     0   Clones -                        ████                                  │
+│                      ││Dataset   4 snaps, 288K = <1% of used         ████                                  │
+│                      ││Oldest    45d 22h ago                         ████                                  │
+│                      ││Newest    3d 4h ago                           ████                                  │
 │                      ││                                              ████                                  │
 │                      ││                                              ████                                  │
 │                      ││                                              ████                                  │
 │                      ││                                              ████                                  │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  d Destroy  b Rollback  H Hold  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  d Destroy  b Rollback  H Hold  c Changes  C Since  f Browse  r Refresh  Tab Section  ? Help  q Quit

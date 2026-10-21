@@ -6,6 +6,7 @@
 - How to take, destroy and roll back to a snapshot.
 - How to protect a snapshot with a hold.
 - How to see what changed between two snapshots, folder by folder.
+- How to look inside a snapshot, folder by folder, with each entry's type, size, dates, mode and owner.
 - How scheduled snapshots are named, so you can recognise them.
 
 ## The list
@@ -14,41 +15,35 @@ A snapshot is a read-only picture of a dataset at one moment. Go to Snapshots an
 
 ```screen
 ┌zfsctl────────────────┐┌Snapshots — local ('r' to refresh)──────────────────────────────────────────────────┐
-│Dashboard             ││Snapshot                           Used     Hold                                    │
-│Hosts                 ││scratch/data@snap1                 64.0K                                            │
-│Pools                 ││scratch/data@snap2                 64.0K                                            │
-│Datasets              ││scratch/data@snap4                 72.0K                                            │
-│Snapshots             ││scratch/data@sphrase1              56.0K                                            │
-│Disks                 ││scratch/data@before-cleanup        0B       H                                       │
-│Shares                ││tpool@snap1                        93.0K                                            │
-│Boot Envs             ││tpool@snap2                        2.0G                                             │
-│Jobs                  ││zroot@09052026                     80.0K                                            │
-│Cloud                 ││zroot/ROOT@snap1                   0B                                               │
-│Alerts                ││zroot/home/alice@alice             8.0K                                             │
-│Settings              ││zroot/home/fb@09052026             88.0K                                            │
-│                      ││zroot/home/fb@09062026             88.0K                                            │
-│                      ││zroot/home/carol@carol1            0B                                               │
-│                      ││zroot/home/carol@snap5             0B                                               │
-│                      ││zroot/var@snap1                    0B                                               │
+│Dashboard             ││Snapshot                           Used     Written  Hold                           │
+│Hosts                 ││scratch/data@snap1                 64.0K    96.0K                                   │
+│Pools                 ││scratch/data@snap2                 64.0K    64.0K                                   │
+│Datasets              ││scratch/data@snap4                 72.0K    100M                                    │
+│Snapshots             ││scratch/data@sphrase1              72.0K    72.0K                                   │
+│Disks                 ││tpool@snap1                        93.0K    2.0G                                    │
+│Shares                ││tpool@snap2                        2.0G     2.0G                                    │
+│Boot Envs             ││zroot@09052026                     80.0K    96.0K                                   │
+│Jobs                  ││zroot/ROOT@snap1                   0B       96.0K                                   │
+│Cloud                 ││zroot/home/alice@alice             8.0K     136K                                    │
+│Alerts                ││zroot/home/fb@09052026             88.0K    114M                                    │
+│Settings              ││zroot/home/fb@09062026             88.0K    88.0K                                   │
+│                      ││zroot/home/carol@carol1            0B       128K                                    │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data@before-cleanup───────────────────────────────────────────────┐
-│                      ││Snapshot  before-cleanup                      Snapshot sizes                        │
-│                      ││Created   1m ago                              oldest → newest, this one lit         │
-│                      ││Used      0B   Refer 100M   Written 56.0K       █                                   │
-│                      ││Reclaim   0B  (freed if destroyed)            ▄▄█                                   │
-│                      ││Holds     1   Clones -  (blocks destroy)      ███                                   │
-│                      ││Dataset   5 snaps, 256K = <1% of used         ████                                  │
-│                      ││Oldest    44d 19h ago                         ████                                  │
-│                      ││Newest    1m ago                              ████                                  │
-│                      ││                                              ████                                  │
-│                      ││                                              ████                                  │
-│                      ││                                              ████                                  │
+│                      │┌Metrics — scratch/data@snap4────────────────────────────────────────────────────────┐
+│                      ││Snapshot  snap4                               Snapshot sizes                        │
+│                      ││Created   18d 21h ago                         oldest → newest, this one lit         │
+│                      ││Used      72.0K   Refer 100M   Written 100M     ██                                  │
+│                      ││Reclaim   72.0K  (freed if destroyed)         ▇▇██                                  │
+│                      ││Holds     0   Clones -                        ████                                  │
+│                      ││Dataset   4 snaps, 288K = <1% of used         ████                                  │
+│                      ││Oldest    45d 22h ago                         ████                                  │
+│                      ││Newest    3d 4h ago                           ████                                  │
 │                      ││                                              ████                                  │
 │                      ││                                              ████                                  │
 │                      ││                                              ████                                  │
 │                      ││                                              ████                                  │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  d Destroy  b Rollback  H Hold  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  d Destroy  b Rollback  H Hold  c Changes  C Since  f Browse  r Refresh  Tab Section  ? Help  q Quit
 ```
 
 The list shows every snapshot on the host, named `dataset@name`, with the space it **Used**: the space that would be freed if you destroyed only that snapshot. A snapshot that has just been taken uses nothing; it grows as the dataset changes, because it keeps the old blocks. The **Written** column is how much new data went into the dataset since the snapshot before it: a very large number marks a busy period. (Sizes are in human units, like everywhere else.)
@@ -226,6 +221,123 @@ A few things worth knowing:
 - **Odd lines.** A line zfsctl cannot read is counted (`N unreadable`), never guessed at.
 
 > **Tip:** to find out *when* files vanished, move down the snapshot list one at a time with `c`: the snapshot where the `removed` count jumps is the first one made after the deletion, and the one before it is the one to hold.
+
+## Looking inside a snapshot
+
+Sometimes the question is not "what changed" but "what was in there": a folder you half remember, a file you think was a few megabytes, from last spring. Select a snapshot and press `f`. zfsctl opens the snapshot's top folder, the way ZFS shows it under the dataset's hidden `.zfs/snapshot` directory.
+
+```screen
+┌zfsctl────────────────┐┌Browse — local · scratch/data@zt-brw-b──────────────────────────────────────────────┐
+│Dashboard             ││/zt-brw                                                                             │
+│Hosts                 ││Type     Size         Modified         Mode        Owner        Name                │
+│Pools                 ││folder   9,275 items  2026-10-21 19:15 drwxr-xr-x  root         big                 │
+│Datasets              ││folder   0 items      2026-10-21 19:15 drwxr-xr-x  root         dir newline         │
+│Snapshots             ││folder   4 items      2026-10-21 18:57 drwxr-xr-x  root         docs                │
+│Disks                 ││folder   0 items      2026-10-21 18:57 drwxr-xr-x  root         empty               │
+│Shares                ││folder   2 items      2026-10-21 18:57 drwxr-xr-x  root         pics                │
+│Boot Envs             ││file     0B           2026-10-21 19:15 -rw-r--r--  root         esc [2Jname         │
+│Jobs                  ││symlink  4B           2026-10-21 18:57 lrwxr-xr-x  root         link-to-etc         │
+│Cloud                 ││file     0B           2026-10-21 19:15 -rw-r--r--  root         odd name            │
+│Alerts                ││file     1B           2026-10-21 18:57 -rw-r--r--  root         oddname             │
+│Settings              ││Created: 2026-10-21 18:57   Changed: 2026-10-21 19:15   Group: wheel                │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Metrics — scratch/data@zt-brw-b─────────────────────────────────────────────────────┐
+│                      ││Snapshot  zt-brw-b                            Snapshot sizes                        │
+│                      ││Created   6m ago                              oldest → newest, this one lit         │
+│                      ││Used      88.0K   Refer 104M   Written 128K       █                                 │
+│                      ││Reclaim   88.0K  (freed if destroyed)             █                                 │
+│                      ││Holds     0   Clones -                            █                                 │
+│                      ││Dataset   6 snaps, 504K = <1% of used             █▇                                │
+│                      ││Oldest    45d 22h ago                           ▅▅██                                │
+│                      ││Newest    6m ago                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Open  ← Up  / Name  m Modified  s Size  t Type  Esc Close  Tab Section  ! Shell  ? Help  q Quit
+```
+
+This is a real capture of the top folder of a test snapshot. It holds a folder of 9,275 files (`big`), a symlink, and two entries whose names contain a newline and an escape character; those are shown cleaned, and the folder with a newline in its name is not opened (`unusual name, not opened`).
+
+Each line is one entry, folders first, then by name:
+
+| Column | Meaning |
+|---|---|
+| **Type** | file, folder, symlink, and the rarer kinds (char, block, socket, pipe, door, port) |
+| **Size** | the size of a file; for a folder, how many entries it holds (`3 items`), not the size of everything under it, which would mean walking the whole tree |
+| **Modified** | when its contents last changed, in the host's time zone as it is now (a date from the other side of a daylight-saving change can be an hour off) |
+| **Mode**, **Owner** | permissions and owner, as the host prints them |
+| **Name** | the name, cleaned of anything that could disturb your terminal |
+
+The line under the list describes the selected entry: **Created** (when the file system recorded its creation; FreeBSD and Linux do, illumos does not and says `not recorded on this OS`), **Changed** (when ZFS last touched its metadata, which is not the same as modified), and its group. A symlink also shows where it points.
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` | move |
+| `Enter` or `→` | open the selected folder (a symlink is shown but never entered) |
+| `←` or `Backspace` | go up one folder |
+| `/` | keep only names that contain what you type (not case sensitive; `*` and `%` are ordinary characters) |
+| `m` | keep only entries modified within a range of days: `2026-10-01..2026-10-20`, `2026-10-01..`, `..2026-10-20`, or one day |
+| `s` | keep only a range of sizes: `10M..`, `..1G`, `1K..1M` or one size (units are K, M, G, T) |
+| `t` | cycle through all, files only, folders only and symlinks only |
+| `x` | clear the filters |
+| `Esc` | close the browser (also while it is still reading) |
+
+Folders are never hidden by a size or date filter, so you can still walk down to what you are looking for. While a filter prompt is open, every key you type is text; `Enter` applies it and `Esc` cancels it. A line above the list says how many entries the filters leave. Here `/` and `note` in the `docs` folder:
+
+```screen
+┌zfsctl────────────────┐┌Browse — local · scratch/data@zt-brw-b──────────────────────────────────────────────┐
+│Dashboard             ││/zt-brw/docs                                                                        │
+│Hosts                 ││showing 1 of 4: name has "note"                                                     │
+│Pools                 ││Type     Size         Modified         Mode        Owner        Name                │
+│Datasets              ││file     2B           2026-10-21 18:57 -rw-r--r--  root         my notes (final).txt│
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
+│Alerts                ││                                                                                    │
+│Settings              ││Created: 2026-10-21 18:57   Changed: 2026-10-21 18:57   Group: wheel                │
+│                      ││                                                                                    │
+│                      │└────────────────────────────────────────────────────────────────────────────────────┘
+│                      │┌Metrics — scratch/data@zt-brw-b─────────────────────────────────────────────────────┐
+│                      ││Snapshot  zt-brw-b                            Snapshot sizes                        │
+│                      ││Created   9m ago                              oldest → newest, this one lit         │
+│                      ││Used      88.0K   Refer 104M   Written 128K       █                                 │
+│                      ││Reclaim   88.0K  (freed if destroyed)             █                                 │
+│                      ││Holds     0   Clones -                            █                                 │
+│                      ││Dataset   6 snaps, 504K = <1% of used             █▇                                │
+│                      ││Oldest    45d 22h ago                           ▅▅██                                │
+│                      ││Newest    9m ago                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+│                      ││                                              ██████                                │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  ← Up  / Name  m Modified  s Size  t Type  x Clear  Esc Close  Tab Section  ! Shell  ? Help  q Quit
+```
+
+### It only reads names and metadata
+
+The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never opens a symlink itself. One honest limit: file names are text that anyone who can write to the dataset controls. A name crafted with a newline can make a listing show a folder that is really a path through a symlink, so treat what the browser shows of a snapshot you do not trust as a read-only hint, not as proof.
+
+On the hub itself it needs nothing extra. On another host the unprivileged account zfsctl logs in as is not allowed to read other people's folders, so listing a snapshot needs one more `sudo` entry, the **`browse`** feature, which is **off by default**. Print it, read it, and install it the way chapter 5 describes:
+
+```sh
+zfsctl print-sudoers HOST --with browse
+```
+
+It adds `ls` with eight fixed argument lists that all end in `-- *`. Sudo matches the words as one string and its `*` also matches spaces and `/`, so an extra option or path can be slipped in by merging words, and the path cannot be confined to `.zfs/snapshot`. `ls` has no option that writes or runs anything (the worst is a recursive listing). That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run.
+
+### Limits and odd cases
+
+- **Big folders.** At most 20,000 entries are listed, or whatever was read in 30 seconds, whichever comes first. The header says `the folder is larger` when that happens. `Esc` stops a read that is still running.
+- **Names that are not ordinary.** A name with a control character (a newline, an escape sequence) is shown cleaned and never opened, and a line zfsctl cannot read is counted (`N entries could not be read`), not guessed at.
+- **`this snapshot cannot be browsed here`.** Some datasets have no visible `.zfs/snapshot` folder, for example one given to a zone on OmniOS. zfsctl does not clone the snapshot to get around that, because cloning changes the pool. Use `c` to see what changed instead.
+- **A dataset that is not mounted** (mountpoint `none` or `legacy`) has no snapshot folder to list.
 
 ## How scheduled snapshots are named
 

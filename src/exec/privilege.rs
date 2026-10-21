@@ -17,10 +17,12 @@ pub enum Feature {
     Smart,
     /// `beadm`, the boot environment tool of illumos (FreeBSD's is `bootenvs`/`bectl`).
     Beadm,
+    /// A read-only `ls` of a snapshot's folders (names and metadata, never contents); off by default everywhere.
+    Browse,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 10] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart, Feature::Beadm];
+    pub const ALL: [Feature; 11] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart, Feature::Beadm, Feature::Browse];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -34,6 +36,7 @@ impl Feature {
             Feature::Rclone => "rclone",
             Feature::Smart => "smart",
             Feature::Beadm => "beadm",
+            Feature::Browse => "browse",
         }
     }
 
@@ -41,8 +44,8 @@ impl Feature {
     /// (`smartctl`) do on Linux and illumos so far.
     pub fn works_on(self, os: HostOs) -> bool {
         match os {
-            HostOs::Linux => matches!(self, Feature::Core | Feature::Smart),
-            HostOs::Illumos => matches!(self, Feature::Core | Feature::Smart | Feature::Beadm),
+            HostOs::Linux => matches!(self, Feature::Core | Feature::Smart | Feature::Browse),
+            HostOs::Illumos => matches!(self, Feature::Core | Feature::Smart | Feature::Beadm | Feature::Browse),
             HostOs::FreeBsd | HostOs::Other => self != Feature::Beadm,
         }
     }
@@ -73,6 +76,20 @@ pub struct Entry {
 
 const ANY: Kind = Kind::Privileged { pinned: &[], probe: "" };
 const SMARTCTL: Kind = Kind::Privileged { pinned: &[&["--scan", "-j"], &["-j", "-H", "-A", "-i", "/dev/*"]], probe: "" };
+/// The eight forms of `ls` that `browse` allows, one trio per OS family (FreeBSD, Linux, illumos); Linux's long options take their value as a separate word because sudoers needs `=` escaped. Each ends in `--` and a
+/// path. That does not keep options out (sudo matches the words as one string, so words can be merged), but `ls` has no option that
+/// writes or runs anything; an `ls` form for another OS is simply never used on a host.
+const BROWSE_FORMS: &[&[&str]] = &[
+    &["-lA", "-D", "%s", "--", "*"],
+    &["-lAc", "-D", "%s", "--", "*"],
+    &["-lAU", "-D", "%s", "--", "*"],
+    &["-lA", "--time-style", "+%s", "--", "*"],
+    &["-lA", "--time-style", "+%s", "--time", "ctime", "--", "*"],
+    &["-lA", "--time-style", "+%s", "--time", "birth", "--", "*"],
+    &["-lAE", "--", "*"],
+    &["-lAEc", "--", "*"],
+];
+const LS: Kind = Kind::Privileged { pinned: BROWSE_FORMS, probe: "" };
 const SMB_CONF: Kind = Kind::Privileged { pinned: &[&[crate::zfs::smb::CONF_PATH]], probe: "/etc/master.passwd" };
 
 pub const ENTRIES: &[Entry] = &[
@@ -91,6 +108,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "rclone", features: &[Feature::Rclone], kind: ANY },
     Entry { name: "readlink", features: &[Feature::Restic], kind: ANY },
     Entry { name: "smartctl", features: &[Feature::Smart], kind: SMARTCTL },
+    Entry { name: "ls", features: &[Feature::Browse], kind: LS },
     Entry { name: "getent", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "uname", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "date", features: &[Feature::Core], kind: Kind::Unprivileged },
@@ -172,7 +190,7 @@ pub fn select_for_os(os: HostOs, with: &[String], without: &[String]) -> Result<
     Ok(Feature::ALL.into_iter().filter(|f| f.works_on(os) && (default(f) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
-/// The features a run covers: all but `restic`, `rclone`, `smart` and `beadm` (illumos's), plus `with`, minus `without`.
+/// The features a run covers: all but `restic`, `rclone`, `smart`, `browse` and `beadm` (illumos's), plus `with`, minus `without`.
 pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     let parse = |name: &String| {
         Feature::parse(name).ok_or_else(|| {
@@ -185,7 +203,7 @@ pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     if let Some(f) = added.iter().find(|f| removed.contains(f)) {
         return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
     }
-    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart | Feature::Beadm) || added.contains(f)) && !removed.contains(f)).collect())
+    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart | Feature::Beadm | Feature::Browse) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
 fn serving(entry: &Entry, features: &[Feature]) -> bool {
@@ -292,6 +310,31 @@ mod tests {
         assert_eq!(select_for_os(HostOs::Illumos, &[], &[]).unwrap(), [Feature::Core, Feature::Beadm], "illumos also gets beadm");
         for os in [HostOs::FreeBsd, HostOs::Other] {
             assert_eq!(select_for_os(os, &["restic".to_string()], &["acl".to_string()]).unwrap(), select(&["restic".to_string()], &["acl".to_string()]).unwrap(), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn browse_is_a_known_feature_and_off_by_default_on_every_os() {
+        use crate::zfs::host_health::HostOs;
+        let browse = ["browse".to_string()];
+        assert!(!select(&[], &[]).unwrap().contains(&Feature::Browse));
+        assert!(select(&browse, &[]).unwrap().contains(&Feature::Browse));
+        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other] {
+            assert!(!select_for_os(os, &[], &[]).unwrap().contains(&Feature::Browse), "{os:?} default");
+            assert!(select_for_os(os, &browse, &[]).unwrap().contains(&Feature::Browse), "{os:?} with browse");
+        }
+    }
+
+    #[test]
+    fn the_ls_entry_is_privileged_and_only_pinned_forms_with_a_double_dash() {
+        let Some(Entry { features, kind: Kind::Privileged { pinned, .. }, .. }) = lookup("ls") else { panic!("ls is not a privileged entry") };
+        assert_eq!(*features, [Feature::Browse]);
+        assert_eq!(pinned.len(), 8);
+        for form in *pinned {
+            assert_eq!(form[form.len() - 2..], ["--", "*"], "{form:?}");
+            for banned in ["-R", "-L", "-H", "-e", "-d"] {
+                assert!(!form.contains(&banned), "{form:?} contains {banned}");
+            }
         }
     }
 
@@ -424,7 +467,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm`";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm` `ls` ls -lA -D %s -- * ls -lAc -D %s -- * ls -lAU -D %s -- * ls -lA --time-style +%s -- * ls -lA --time-style +%s --time ctime -- * ls -lA --time-style +%s --time birth -- * ls -lAE -- * ls -lAEc -- *";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);

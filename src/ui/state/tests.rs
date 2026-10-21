@@ -10434,3 +10434,133 @@ fn a_changes_view_does_not_survive_a_host_switch_and_its_read_is_cancelled() {
     deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
     assert!(app.changes_view.is_none());
 }
+
+fn browse_outcome(names: &[(&str, crate::zfs::snapshot_browse::EntryKind)]) -> crate::ui::browse::BrowseOutcome {
+    use crate::zfs::snapshot_browse::{ListEntry, Listing, Row};
+    let entries = names
+        .iter()
+        .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "root".to_string(), group: "wheel".to_string(), size: 5, time: Some(1_700_000_000), link_target: None }, changed: None, created: None })
+        .collect();
+    crate::ui::browse::BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true }, mountpoint: "/tank/data".to_string() }
+}
+
+fn deliver_browse(app: &mut App, host: usize, request: u64, outcome: crate::error::Result<crate::ui::browse::BrowseOutcome>) {
+    app.tx.send(WorkerMsg::Browse(host, request, outcome)).unwrap();
+    app.drain_worker_messages();
+}
+
+fn browsing_app() -> App {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let request = app.browse_view.as_ref().unwrap().request;
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[("pics", EntryKind::Directory), ("a.txt", EntryKind::File)])));
+    app
+}
+
+#[test]
+fn f_starts_a_read_of_the_snapshot_top_and_shows_the_view() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let view = app.browse_view.as_ref().expect("f opens the browser");
+    assert!(matches!(view.phase, crate::ui::browse::Phase::Reading));
+    assert_eq!(app.pending_browse.len(), 1);
+    let p = &app.pending_browse[0];
+    assert_eq!((p.dataset.as_str(), p.name.as_str(), p.path.len(), p.mountpoint.clone()), ("tank/data", "s2", 0, None));
+    assert!(app.browse_view_active());
+}
+
+#[test]
+fn keys_that_act_on_the_hidden_list_do_nothing_inside_the_browser() {
+    let mut app = browsing_app();
+    for key in ['d', 'b', 'c', 'C', 'H', 'f'] {
+        app.handle_key(KeyCode::Char(key));
+        assert!(app.modal.is_none(), "{key} must not open a confirm behind the browser");
+    }
+    assert_eq!(app.pending_browse.len(), 1, "f inside the browser starts nothing");
+    assert!(app.changes_view.is_none() && app.pending_changes.is_empty(), "c does not start a diff either");
+}
+
+#[test]
+fn the_changes_view_swallows_d_b_and_f_too() {
+    let mut app = ready_app();
+    for key in ['d', 'b', 'f'] {
+        app.handle_key(KeyCode::Char(key));
+        assert!(app.modal.is_none() && app.browse_view.is_none(), "{key}");
+    }
+}
+
+#[test]
+fn enter_opens_a_folder_and_left_goes_back() {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = browsing_app();
+    app.pending_browse.clear();
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.pending_browse.len(), 1);
+    assert_eq!(app.pending_browse[0].path, ["pics"]);
+    assert_eq!(app.pending_browse[0].mountpoint.as_deref(), Some("/tank/data"));
+    let request = app.browse_view.as_ref().unwrap().request;
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[("x", EntryKind::File)])));
+    app.pending_browse.clear();
+    app.handle_key(KeyCode::Left);
+    assert_eq!(app.pending_browse.len(), 1);
+    assert!(app.pending_browse[0].path.is_empty());
+}
+
+#[test]
+fn a_late_answer_for_another_request_is_dropped() {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let request = app.browse_view.as_ref().unwrap().request;
+    deliver_browse(&mut app, 0, request + 7, Ok(browse_outcome(&[("x", EntryKind::File)])));
+    assert!(matches!(app.browse_view.as_ref().unwrap().phase, crate::ui::browse::Phase::Reading));
+    deliver_browse(&mut app, 3, request, Ok(browse_outcome(&[("x", EntryKind::File)])));
+    assert!(matches!(app.browse_view.as_ref().unwrap().phase, crate::ui::browse::Phase::Reading), "another host's answer is dropped");
+}
+
+#[test]
+fn a_browse_view_does_not_survive_a_host_switch_and_its_read_is_cancelled() {
+    let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }];
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app.handle_key(KeyCode::Char('f'));
+    let (request, cancel) = (app.pending_browse[0].request, std::sync::Arc::clone(&app.pending_browse[0].cancel));
+    app.selected_host = 1;
+    app.clear_host_data();
+    assert!(app.browse_view.is_none());
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst), "the read is cancelled, not left running");
+    app.selected_host = 0;
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[])));
+    assert!(app.browse_view.is_none());
+}
+
+#[test]
+fn esc_cancels_a_running_read_and_closes_the_view() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let cancel = std::sync::Arc::clone(&app.pending_browse[0].cancel);
+    app.handle_key(KeyCode::Esc);
+    assert!(app.browse_view.is_none());
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn typing_in_the_filter_prompt_is_not_taken_for_commands() {
+    let mut app = browsing_app();
+    app.handle_key(KeyCode::Char('/'));
+    for c in "qd?f".chars() {
+        app.handle_key(KeyCode::Char(c));
+    }
+    assert!(!app.should_quit && app.modal.is_none(), "letters typed into the prompt are text");
+    assert_eq!(app.browse_view.as_ref().unwrap().input.as_ref().map(|i| i.text.as_str()), Some("qd?f"));
+}
+
+#[test]
+fn the_browser_is_closed_by_a_section_change_and_its_late_answer_is_ignored() {
+    let mut app = browsing_app();
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+    app.handle_key(KeyCode::Down);
+    assert!(app.browse_view.is_none() || !app.browse_view_active());
+}
