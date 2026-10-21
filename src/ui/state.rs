@@ -1515,6 +1515,11 @@ impl App {
     /// Clears data panes so a stale render from the previously-selected
     /// host is never left on screen looking current after switching hosts.
     fn clear_host_data(&mut self) {
+        // A changes view belongs to the host it was opened on: leaving it cancels its diff and drops it, so it can
+        // never be left saying "reading" for an answer that was thrown away.
+        if let Some(view) = self.changes_view.take() {
+            view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         self.metrics = crate::ui::metrics::MetricsView::default();
         self.pools.clear();
         self.datasets.clear();

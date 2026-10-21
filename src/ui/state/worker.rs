@@ -181,9 +181,6 @@ impl App {
 
     /// A changes read finished: it counts only for the view that asked, on the host still selected.
     fn on_changes(&mut self, host: usize, request: u64, result: Result<crate::ui::changes::ChangesOutcome>) {
-        if host != self.selected_host {
-            return;
-        }
         if let Some(view) = self.changes_view.as_mut().filter(|v| v.request == request && v.host == host) {
             view.apply(result);
         }

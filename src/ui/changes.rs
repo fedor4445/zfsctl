@@ -4,7 +4,7 @@
 use crate::display_text::{sanitise_for_display, truncate_with_ellipsis};
 use crate::error::{AppError, Result};
 use crate::ui::theme::Theme;
-use crate::zfs::snapshot_changes::{ChangeSummary, Stop, MAX_DEPTH};
+use crate::zfs::snapshot_changes::{ChangeSummary, Counts, Row as ChangeRow, Stop, MAX_DEPTH};
 use crate::zfs::snapshot_diff::Change;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 /// Entries listed for one group; the rest are counted ("... N more").
 pub const ENTRIES_PER_GROUP: usize = 5_000;
+/// Folders listed; the busiest come first and the rest are counted ("... N more folders"). The totals stay exact.
+pub const GROUPS_SHOWN: usize = 5_000;
 const DEFAULT_DEPTH: usize = 2;
 
 /// What `c` and `C` compare with.
@@ -65,6 +67,13 @@ pub struct ChangesView {
     pub depth: usize,
     pub selected: usize,
     pub open_group: Option<String>,
+    /// The folders at the current depth (at most `GROUPS_SHOWN`), computed when the result arrives or the depth
+    /// changes, so a redraw or a key press never regroups the diff; how many more there are.
+    pub groups: Vec<(String, Counts)>,
+    pub groups_more: usize,
+    /// The rows of the open folder, copied when it is opened; how many more there are.
+    pub entries: Vec<ChangeRow>,
+    pub entries_more: usize,
 }
 
 /// 2505 as `2,505`.
@@ -100,6 +109,10 @@ impl ChangesView {
             depth: DEFAULT_DEPTH,
             selected: 0,
             open_group: None,
+            groups: Vec::new(),
+            groups_more: 0,
+            entries: Vec::new(),
+            entries_more: 0,
         }
     }
 
@@ -111,14 +124,28 @@ impl ChangesView {
         };
         self.selected = 0;
         self.open_group = None;
+        self.entries.clear();
+        self.recompute_groups();
+    }
+
+    fn recompute_groups(&mut self) {
+        let Phase::Ready { summary, .. } = &self.phase else {
+            self.groups.clear();
+            self.groups_more = 0;
+            return;
+        };
+        let mut all = summary.groups(self.depth);
+        self.groups_more = all.len().saturating_sub(GROUPS_SHOWN);
+        all.truncate(GROUPS_SHOWN);
+        self.groups = all;
     }
 
     /// How many rows the list on screen has: the groups, or the entries of the open group.
     pub fn list_len(&self) -> usize {
-        let Phase::Ready { summary, .. } = &self.phase else { return 0 };
-        match &self.open_group {
-            None => summary.groups(self.depth).len(),
-            Some(group) => summary.entries_in(group, self.depth, ENTRIES_PER_GROUP).0.len(),
+        if self.open_group.is_some() {
+            self.entries.len()
+        } else {
+            self.groups.len()
         }
     }
 
@@ -136,7 +163,10 @@ impl ChangesView {
         if self.open_group.is_some() {
             return;
         }
-        if let Some((name, _)) = summary.groups(self.depth).get(self.selected) {
+        if let Some((name, _)) = self.groups.get(self.selected) {
+            let (rows, more) = summary.entries_in(name, self.depth, ENTRIES_PER_GROUP);
+            self.entries = rows.into_iter().cloned().collect();
+            self.entries_more = more;
             self.open_group = Some(name.clone());
             self.selected = 0;
         }
@@ -147,6 +177,7 @@ impl ChangesView {
         let closed = self.open_group.take().is_some();
         if closed {
             self.selected = 0;
+            self.entries.clear();
         }
         closed
     }
@@ -155,6 +186,8 @@ impl ChangesView {
         self.depth = depth.clamp(1, MAX_DEPTH);
         self.selected = 0;
         self.open_group = None;
+        self.entries.clear();
+        self.recompute_groups();
     }
 
     /// The older snapshot as (dataset, name), once the diff is ready: what `H` would protect.
@@ -187,6 +220,9 @@ impl ChangesView {
         }
         if summary.unreadable() > 0 {
             lines.push(format!("{} unreadable line(s) were counted, not shown", group_digits(summary.unreadable())));
+        }
+        if self.groups_more > 0 {
+            lines.push(format!("{} more folders are counted but not listed (the busiest {} are)", group_digits(self.groups_more as u64), group_digits(GROUPS_SHOWN as u64)));
         }
         if summary.entries_dropped() > 0 {
             lines.push(format!("{} entries are counted but not listed", group_digits(summary.entries_dropped())));
@@ -234,56 +270,56 @@ pub fn draw(f: &mut Frame, view: &ChangesView, theme: &Theme, host: &str, area: 
             theme.dim(),
         ),
         Phase::Failed(text) => say(f, &format!("Could not read the changes: {text}"), theme.err),
-        Phase::Ready { summary, .. } => {
+        Phase::Ready { .. } => {
             let header = view.header();
             let [top, list] = Layout::vertical([Constraint::Length(u16::try_from(header.len()).unwrap_or(4).saturating_add(1)), Constraint::Min(1)]).areas(inner);
             let lines: Vec<Line> = header.iter().map(|l| Line::from(sanitise_for_display(l))).collect();
             f.render_widget(Paragraph::new(lines), top);
             let mut state = TableState::default();
             state.select(Some(view.selected));
-            match &view.open_group {
-                None => {
-                    let rows: Vec<Row> = summary
-                        .groups(view.depth)
-                        .into_iter()
-                        .map(|(name, c)| {
-                            Row::new(vec![
-                                truncate_with_ellipsis(&sanitise_for_display(&name), 60),
-                                group_digits(c.added),
-                                group_digits(c.removed),
-                                group_digits(c.modified),
-                                group_digits(c.renamed),
-                            ])
-                        })
-                        .collect();
-                    let widths = [Constraint::Min(20), Constraint::Length(9), Constraint::Length(9), Constraint::Length(9), Constraint::Length(9)];
-                    let table = Table::new(rows, widths).header(Row::new(vec!["Folder", "Added", "Removed", "Modified", "Renamed"])).row_highlight_style(theme.selected_row());
-                    f.render_stateful_widget(table, list, &mut state);
+            if view.open_group.is_none() {
+                let mut rows: Vec<Row> = view
+                    .groups
+                    .iter()
+                    .map(|(name, c)| {
+                        Row::new(vec![
+                            truncate_with_ellipsis(&sanitise_for_display(name), 60),
+                            group_digits(c.added),
+                            group_digits(c.removed),
+                            group_digits(c.modified),
+                            group_digits(c.renamed),
+                        ])
+                    })
+                    .collect();
+                if view.groups_more > 0 {
+                    rows.push(Row::new(vec![format!("… {} more folders", group_digits(view.groups_more as u64))]));
                 }
-                Some(group) => {
-                    let (rows, more) = summary.entries_in(group, view.depth, ENTRIES_PER_GROUP);
-                    let mut table_rows: Vec<Row> = rows
-                        .iter()
-                        .map(|r| {
-                            let mut path = sanitise_for_display(&r.shown_path);
-                            if let Some(new) = &r.shown_renamed_to {
-                                path = format!("{path} → {}", sanitise_for_display(new));
-                            }
-                            Row::new(vec![
-                                format!("{} {}", change_mark(r.entry.change), r.entry.change.word()),
-                                r.entry.kind.word().to_string(),
-                                time_text(r.entry.changed_at),
-                                path,
-                            ])
-                        })
-                        .collect();
-                    if more > 0 {
-                        table_rows.push(Row::new(vec![format!("… {} more", group_digits(more as u64))]));
-                    }
-                    let widths = [Constraint::Length(12), Constraint::Length(17), Constraint::Length(20), Constraint::Min(20)];
-                    let table = Table::new(table_rows, widths).header(Row::new(vec!["Change", "Type", "Changed", "Path"])).row_highlight_style(theme.selected_row());
-                    f.render_stateful_widget(table, list, &mut state);
+                let widths = [Constraint::Min(20), Constraint::Length(9), Constraint::Length(9), Constraint::Length(9), Constraint::Length(9)];
+                let table = Table::new(rows, widths).header(Row::new(vec!["Folder", "Added", "Removed", "Modified", "Renamed"])).row_highlight_style(theme.selected_row());
+                f.render_stateful_widget(table, list, &mut state);
+            } else {
+                let mut table_rows: Vec<Row> = view
+                    .entries
+                    .iter()
+                    .map(|r| {
+                        let mut path = sanitise_for_display(&r.shown_path);
+                        if let Some(new) = &r.shown_renamed_to {
+                            path = format!("{path} → {}", sanitise_for_display(new));
+                        }
+                        Row::new(vec![
+                            format!("{} {}", change_mark(r.entry.change), r.entry.change.word()),
+                            r.entry.kind.word().to_string(),
+                            time_text(r.entry.changed_at),
+                            path,
+                        ])
+                    })
+                    .collect();
+                if view.entries_more > 0 {
+                    table_rows.push(Row::new(vec![format!("… {} more", group_digits(view.entries_more as u64))]));
                 }
+                let widths = [Constraint::Length(12), Constraint::Length(17), Constraint::Length(20), Constraint::Min(20)];
+                let table = Table::new(table_rows, widths).header(Row::new(vec!["Change", "Type", "Changed", "Path"])).row_highlight_style(theme.selected_row());
+                f.render_stateful_widget(table, list, &mut state);
             }
         }
     }
@@ -377,6 +413,33 @@ mod tests {
         assert_eq!((v.depth, v.selected, v.open_group.as_deref()), (1, 0, None));
         v.set_depth(9);
         assert_eq!(v.depth, 4);
+    }
+
+    #[test]
+    fn a_view_with_very_many_folders_lists_a_capped_number_and_counts_the_rest() {
+        let mut summary = ChangeSummary::new(&Limits::default(), Some("/ds".to_string()));
+        for i in 0..(GROUPS_SHOWN + 1_000) {
+            summary.add(entry(&format!("/ds/d{i}/f"), Change::Added, 1_788_654_605));
+        }
+        let mut v = ChangesView::new(&pending(Against::Previous));
+        v.apply(Ok(ChangesOutcome::Done { older: "tank/data@s1".to_string(), newer: "tank/data@s2".to_string(), summary }));
+        assert_eq!(v.list_len(), GROUPS_SHOWN, "only the busiest folders are listed");
+        assert_eq!(v.groups_more, 1_000);
+        let text = draw_to_rows(&v, 110, 14).join("\n");
+        assert!(text.contains("1,000 more folders"), "{text}");
+        assert!(text.contains(&format!("{} added", group_digits((GROUPS_SHOWN + 1_000) as u64))) || text.contains("0 removed"), "the totals still count every folder: {text}");
+    }
+
+    #[test]
+    fn the_groups_and_the_open_folders_rows_are_kept_not_recomputed() {
+        let mut v = ready(Some("/ds"), &[("/ds/a/f1", Change::Added), ("/ds/a/f2", Change::Added), ("/ds/b/g", Change::Removed)]);
+        assert_eq!(v.groups.len(), 2, "computed when the result arrived");
+        v.set_depth(1);
+        assert_eq!(v.groups.len(), 2);
+        v.open_selected();
+        assert_eq!(v.entries.len(), 2, "the open folder's rows are cached at Enter");
+        assert!(v.back());
+        assert!(v.entries.is_empty());
     }
 
     #[test]

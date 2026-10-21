@@ -10416,3 +10416,21 @@ fn a_read_whose_runner_cannot_run_the_diff_ends_failed_not_stuck() {
     assert_eq!(view.request, request);
     assert!(matches!(view.phase, crate::ui::changes::Phase::Failed(_)), "{:?}", view.phase);
 }
+
+#[test]
+fn a_changes_view_does_not_survive_a_host_switch_and_its_read_is_cancelled() {
+    let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }];
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app.handle_key(KeyCode::Char('c'));
+    let (request, cancel) = (app.pending_changes[0].request, std::sync::Arc::clone(&app.pending_changes[0].cancel));
+    app.selected_host = 1;
+    app.clear_host_data();
+    assert!(app.changes_view.is_none(), "the view belonged to the other host");
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst), "and its diff is cancelled, not left running");
+    // The answer arrives late, and the user comes back to the first host: no view is stuck on "reading".
+    app.selected_host = 0;
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(app.changes_view.is_none());
+}
