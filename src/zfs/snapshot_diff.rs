@@ -237,6 +237,27 @@ mod tests {
         assert_eq!(parse_diff_line("1.0\t+\tF\t/a/b\\0040c").unwrap().path, "/a/b c");
     }
 
+    // Lines copied from real hosts on 2026-10-20 (a FreeBSD 15 hub, an OmniOS zone dataset, Ubuntu 24.04 with its OpenZFS).
+    #[test]
+    fn real_output_from_three_systems_parses_and_reads_relative_to_the_dataset() {
+        let freebsd = parse_diff_line("1792530621.342899000\t+\tF\t/scratch/data/zt-tmp/photo\\0040dir/new\\0040file.txt").unwrap();
+        assert_eq!(relative_to_mount(&freebsd.path, "/scratch/data").as_deref(), Some("zt-tmp/photo dir/new file.txt"));
+        let rename = parse_diff_line("1792530621.338421000\tR\tF\t/scratch/data/zt-tmp/docs/f2.txt\t/scratch/data/zt-tmp/docs/f2-renamed.txt").unwrap();
+        assert_eq!((rename.change, rename.kind), (Change::Renamed, FileKind::File));
+        assert_eq!(relative_to_mount(rename.renamed_to.as_deref().unwrap(), "/scratch/data").as_deref(), Some("zt-tmp/docs/f2-renamed.txt"));
+        let link = parse_diff_line("1792530621.344011000\t+\t@\t/scratch/data/zt-tmp/link").unwrap();
+        assert_eq!(link.kind, FileKind::Symlink);
+
+        let illumos = parse_diff_line("1785097718.962873562\t+\tF\t/rpool/zones/syncthing/root/omni30/syncthing/Camera/Camera/20260101_120000.jpg").unwrap();
+        assert_eq!(relative_to_mount(&illumos.path, "/omni30/syncthing").as_deref(), Some("Camera/Camera/20260101_120000.jpg"));
+
+        let dir = parse_diff_line("1792529230.252399441\t+\t/\t/ztest/data/zt-sub").unwrap();
+        assert_eq!((dir.change, dir.kind), (Change::Added, FileKind::Directory));
+        assert_eq!(relative_to_mount(&dir.path, "/ztest/data").as_deref(), Some("zt-sub"));
+        let root = parse_diff_line("1792529230.252399441\tM\t/\t/ztest/data/").unwrap();
+        assert_eq!(relative_to_mount(&root.path, "/ztest/data").as_deref(), Some(""), "the dataset's own root directory");
+    }
+
     #[test]
     fn relative_to_mount_strips_a_plain_prefix() {
         assert_eq!(relative_to_mount("/scratch/data/test.txt", "/scratch/data").as_deref(), Some("test.txt"));

@@ -1,0 +1,22 @@
+┌zfsctl────────────────┐┌Changes — local · scratch/data@zt-chg-b vs scratch/data@zt-chg-a────────────────────┐
+│Dashboard             ││2 removed · 3 added · 4 modified · 1 renamed                                        │
+│Hosts                 ││changed between 2026-10-20 17:10:19 and 2026-10-20 17:10:21                         │
+│Pools                 ││                                                                                    │
+│Datasets              ││Folder                                       Added     Removed   Modified  Renamed  │
+│Snapshots             ││zt-tmp/                                      2         1         2         0        │
+│Disks                 ││zt-tmp/docs/                                 0         1         1         1        │
+│Shares                ││/                                            0         0         1         0        │
+│Boot Envs             ││zt-tmp/photo dir/                            1         0         0         0        │
+│Jobs                  ││                                                                                    │
+│Cloud                 │└────────────────────────────────────────────────────────────────────────────────────┘
+│Alerts                │┌Metrics — scratch/data@zt-chg-b─────────────────────────────────────────────────────┐
+│Settings              ││Snapshot  zt-chg-b                            Snapshot sizes                        │
+│                      ││Created   15h 51m ago                         oldest → newest, this one lit         │
+│                      ││Used      64.0K   Refer 100M   Written 96.0K  ▂▂███▂                                │
+│                      ││Reclaim   64.0K  (freed if destroyed)         ██████                                │
+│                      ││Holds     0   Clones -                        ██████                                │
+│                      ││Dataset   6 snaps, 424K = <1% of used         ██████                                │
+│                      ││Oldest    45d 12h ago                         ██████                                │
+│                      ││Newest    15h 51m ago                         ██████                                │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Open  [ ] Depth  H Hold older  Esc Back  Tab Section  ! Shell  A About  ? Help  q Quit

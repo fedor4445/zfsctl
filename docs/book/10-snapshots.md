@@ -153,6 +153,31 @@ If zfsctl cannot find out whether a snapshot is held (the check fails, or the ho
 
 When something has gone wrong (a folder emptied, a mass delete, a sync gone astray) the first question is *when*. Select a snapshot and press `c`: zfsctl compares it with the snapshot made just before it and shows what changed in between. Press `C` instead to compare it with the dataset **as it is now**, which answers "what has changed since this snapshot?".
 
+```screen
+┌zfsctl────────────────┐┌Changes — local · scratch/data@zt-chg-b vs scratch/data@zt-chg-a────────────────────┐
+│Dashboard             ││2 removed · 3 added · 4 modified · 1 renamed                                        │
+│Hosts                 ││changed between 2026-10-20 17:10:19 and 2026-10-20 17:10:21                         │
+│Pools                 ││                                                                                    │
+│Datasets              ││Folder                                       Added     Removed   Modified  Renamed  │
+│Snapshots             ││zt-tmp/                                      2         1         2         0        │
+│Disks                 ││zt-tmp/docs/                                 0         1         1         1        │
+│Shares                ││/                                            0         0         1         0        │
+│Boot Envs             ││zt-tmp/photo dir/                            1         0         0         0        │
+│Jobs                  ││                                                                                    │
+│Cloud                 │└────────────────────────────────────────────────────────────────────────────────────┘
+│Alerts                │┌Metrics — scratch/data@zt-chg-b─────────────────────────────────────────────────────┐
+│Settings              ││Snapshot  zt-chg-b                            Snapshot sizes                        │
+│                      ││Created   15h 51m ago                         oldest → newest, this one lit         │
+│                      ││Used      64.0K   Refer 100M   Written 96.0K  ▂▂███▂                                │
+│                      ││Reclaim   64.0K  (freed if destroyed)         ██████                                │
+│                      ││Holds     0   Clones -                        ██████                                │
+│                      ││Dataset   6 snaps, 424K = <1% of used         ██████                                │
+│                      ││Oldest    45d 12h ago                         ██████                                │
+│                      ││Newest    15h 51m ago                         ██████                                │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Open  [ ] Depth  H Hold older  Esc Back  Tab Section  ! Shell  A About  ? Help  q Quit
+```
+
 The view opens with a header of counts, for example `2,505 removed · 12 added · 31 modified · 0 renamed`, and the time span the changes cover. Below it the changes are grouped by **folder**, busiest first, with one count per kind. Press `Enter` on a folder to list its entries, newest first. Each entry shows:
 
 | Column | Meaning |
@@ -161,6 +186,33 @@ The view opens with a header of counts, for example `2,505 removed · 12 added �
 | **Type** | file, directory, symlink, and the rarer kinds (socket, pipe, device) |
 | **Changed** | when ZFS last recorded a change to it. This is not the date the file was created, and the view does not show sizes: it tells you what changed and when, not how big it was |
 | **Path** | where it is, written relative to the dataset (see below) |
+
+A folder opened with `Enter`, from the same example (the `docs` folder: one file changed, one renamed, one removed):
+
+```screen
+┌zfsctl────────────────┐┌Changes — local · scratch/data@zt-chg-b vs scratch/data@zt-chg-a────────────────────┐
+│Dashboard             ││2 removed · 3 added · 4 modified · 1 renamed                                        │
+│Hosts                 ││changed between 2026-10-20 17:10:19 and 2026-10-20 17:10:21                         │
+│Pools                 ││                                                                                    │
+│Datasets              ││Change       Type              Changed              Path                            │
+│Snapshots             ││~ modified   file              2026-10-20 17:10:21  zt-tmp/docs/f1.txt              │
+│Disks                 ││R renamed    file              2026-10-20 17:10:21  zt-tmp/docs/f2.txt → zt-tmp/docs│
+│Shares                ││- removed    file              2026-10-20 17:10:19  zt-tmp/docs/f3.txt              │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Cloud                 │└────────────────────────────────────────────────────────────────────────────────────┘
+│Alerts                │┌Metrics — scratch/data@zt-chg-b─────────────────────────────────────────────────────┐
+│Settings              ││Snapshot  zt-chg-b                            Snapshot sizes                        │
+│                      ││Created   15h 52m ago                         oldest → newest, this one lit         │
+│                      ││Used      64.0K   Refer 100M   Written 96.0K  ▂▂███▂                                │
+│                      ││Reclaim   64.0K  (freed if destroyed)         ██████                                │
+│                      ││Holds     0   Clones -                        ██████                                │
+│                      ││Dataset   6 snaps, 424K = <1% of used         ██████                                │
+│                      ││Oldest    45d 12h ago                         ██████                                │
+│                      ││Newest    15h 52m ago                         ██████                                │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ Move  Enter Open  [ ] Depth  H Hold older  Esc Back  Tab Section  ! Shell  A About  ? Help  q Quit
+```
 
 `[` and `]` make the folders shallower or deeper (one to four levels; two is the start), `Esc` closes a folder and then the view, and `Up` and `Down` move. Everything here only **reads**: the view never changes your data.
 
