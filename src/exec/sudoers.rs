@@ -129,6 +129,9 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
     if resolved.iter().any(|r| r.entry.name == "smartctl") {
         text.push_str("# smartctl: the /dev/* form cannot stop an extra flag (sudo's * also matches spaces); zfsctl only ever sends read-only flags,\n# and this account already holds zfs and zpool, which are as powerful as root.\n");
     }
+    if resolved.iter().any(|r| r.entry.name == "ls") {
+        text.push_str("# ls: the -- * forms cannot stop an extra path (sudo's * also matches spaces and /); zfsctl only reads .zfs/snapshot folders with them,\n# and this account already holds zfs and zpool, which are as powerful as root.\n");
+    }
     let path = install_path(os);
     let _ = write!(text, "# Install as {path} (owner root, mode 0440) after checking it:\n#   visudo -c -f {path}\n");
     let unprivileged: Vec<&str> = privilege::unprivileged_for(features).iter().map(|e| e.name).collect();
@@ -780,6 +783,16 @@ mod tests {
         let text = print_sudoers(&host_with(SMART_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Smart], "d").unwrap();
         assert!(text.contains("/usr/local/sbin/smartctl --scan -j") && text.contains("/usr/local/sbin/smartctl -j -H -A -i /dev/*"), "{text}");
         assert!(text.contains("# smartctl: the /dev/* form cannot stop an extra flag"), "{text}");
+    }
+
+    #[test]
+    fn print_sudoers_with_browse_lists_every_ls_form_and_without_it_lists_none() {
+        const LS_PATHS: &[(&str, &str)] = &[("ls", "/bin/ls")];
+        let text = print_sudoers(&host_with(LS_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Browse], "d").unwrap();
+        assert!(text.contains("/bin/ls -lA -D %s -- *") && text.contains("/bin/ls -lAU -D %s -- *") && text.contains("/bin/ls -lAE -- *"), "{text}");
+        assert!(text.contains("# ls: the -- * forms cannot stop an extra path"), "{text}");
+        let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
+        assert!(!without.contains("/bin/ls") && !without.contains("# ls:"), "{without}");
     }
 
     #[test]
