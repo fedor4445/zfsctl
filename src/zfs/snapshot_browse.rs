@@ -1,8 +1,12 @@
 //! Looking inside a snapshot: the directory path of a snapshot's folder, the `ls` command lines that list it, and what they print.
 
+use crate::daemon::transfer::run_lines;
 use crate::error::{AppError, Result};
 use crate::exec::privilege::{lookup, Kind};
+use crate::exec::CommandRunner;
 use crate::zfs::host_health::HostOs;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// The longest path zfsctl will send to a host.
 const MAX_PATH: usize = 4096;
@@ -216,6 +220,147 @@ pub fn parse_ls_line(os: HostOs, line: &str) -> Option<ListEntry> {
     Some(ListEntry { name, kind, mode: mode.to_string(), owner: owner.to_string(), group: group.to_string(), size, time: Some(time), link_target })
 }
 
+/// Where a folder read stops: the most entries kept and the most seconds all of its listings may take together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseLimits {
+    pub max_entries: usize,
+    pub max_seconds: u64,
+}
+
+impl Default for BrowseLimits {
+    fn default() -> Self {
+        Self { max_entries: 20_000, max_seconds: 30 }
+    }
+}
+
+/// An entry with the three times of its listings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub entry: ListEntry,
+    pub changed: Option<i64>,
+    pub created: Option<i64>,
+}
+
+/// One folder as read: its entries, whether the read stopped early, how many lines could not be understood, and whether
+/// this OS records a creation time at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub entries: Vec<Row>,
+    pub truncated: bool,
+    pub unreadable: usize,
+    pub has_created: bool,
+}
+
+struct Once {
+    entries: Vec<ListEntry>,
+    truncated: bool,
+    unreadable: usize,
+    failure: Option<(i32, String)>,
+}
+
+/// Runs one `ls`, keeping at most `max_entries` parsed entries; the child is killed at the entry cap, the deadline or `cancel`.
+fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, deadline: Instant, os: HostOs, cancel: &AtomicBool) -> Result<Once> {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let cmd = runner.command("ls", &words)?;
+    let stop = AtomicBool::new(false);
+    let finish = AtomicBool::new(false);
+    let timed_out = AtomicBool::new(false);
+    let cancelled = AtomicBool::new(false);
+    let mut once = Once { entries: Vec::new(), truncated: false, unreadable: 0, failure: None };
+    let ran = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !finish.load(Ordering::SeqCst) {
+                if cancel.load(Ordering::SeqCst) {
+                    cancelled.store(true, Ordering::SeqCst);
+                    stop.store(true, Ordering::SeqCst);
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    timed_out.store(true, Ordering::SeqCst);
+                    stop.store(true, Ordering::SeqCst);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let ran = run_lines(cmd, &stop, |line| {
+            if stop.load(Ordering::SeqCst) || line.starts_with("total ") {
+                return;
+            }
+            match parse_ls_line(os, line) {
+                Some(_) if once.entries.len() >= max_entries => {
+                    once.truncated = true;
+                    stop.store(true, Ordering::SeqCst);
+                }
+                Some(entry) => once.entries.push(entry),
+                None if line.trim().is_empty() => {}
+                None => once.unreadable += 1,
+            }
+        });
+        finish.store(true, Ordering::SeqCst);
+        ran
+    });
+    let lines = ran.map_err(|source| AppError::Spawn { cmd: "ls".to_string(), source })?;
+    if cancelled.load(Ordering::SeqCst) {
+        return Err(AppError::Config("cancelled".to_string()));
+    }
+    if timed_out.load(Ordering::SeqCst) {
+        once.truncated = true;
+    } else if !once.truncated && lines.code != Some(0) {
+        let first = lines.stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no message").to_string();
+        once.failure = Some((lines.code.unwrap_or(-1), first));
+    }
+    Ok(once)
+}
+
+/// Reads one folder of a snapshot (`dir` comes from [`snapshot_dir`]): the modified-time listing decides the entries, the
+/// changed- and created-time listings are matched to them line by line and left unknown where they disagree.
+pub fn read_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
+    if !dir.starts_with('/') || !dir.contains("/.zfs/snapshot/") || dir.len() > MAX_PATH || dir.chars().any(char::is_control) {
+        return Err(AppError::Config("refusing to list a folder that is not inside a snapshot".to_string()));
+    }
+    let deadline = Instant::now() + Duration::from_secs(limits.max_seconds);
+    let first_args = ls_args(os, Times::Modified, dir).ok_or_else(|| AppError::Config("no ls form for this host".to_string()))?;
+    let first = list_once(runner, &first_args, limits.max_entries, deadline, os, cancel)?;
+    if let Some((status, stderr)) = &first.failure {
+        if first.entries.is_empty() {
+            return Err(AppError::CommandFailed { cmd: "ls".to_string(), status: *status, stderr: stderr.clone() });
+        }
+    }
+    let unreadable = first.unreadable + usize::from(first.failure.is_some());
+    let mut rows: Vec<Row> = first.entries.into_iter().map(|entry| Row { entry, changed: None, created: None }).collect();
+    for times in times_for(os).iter().copied().filter(|t| *t != Times::Modified) {
+        let Some(args) = ls_args(os, times, dir) else { continue };
+        let other = list_once(runner, &args, limits.max_entries, deadline, os, cancel)?;
+        if other.failure.is_some() {
+            continue;
+        }
+        for (row, entry) in rows.iter_mut().zip(&other.entries) {
+            if entry.name == row.entry.name && entry.kind == row.entry.kind {
+                match times {
+                    Times::Changed => row.changed = entry.time,
+                    Times::Created => row.created = entry.time,
+                    Times::Modified => {}
+                }
+            }
+        }
+    }
+    Ok(Listing { entries: rows, truncated: first.truncated, unreadable, has_created: times_for(os).contains(&Times::Created) })
+}
+
+/// What to tell the user about a failed listing on `host`: the sudoers entry that is missing, a snapshot folder that is not
+/// visible, or the host's own words (sanitised).
+pub fn explain(host: &str, error_text: &str) -> String {
+    let lower = error_text.to_lowercase();
+    if ["password is required", "not allowed to execute", "no tty present", "may not run sudo"].iter().any(|p| lower.contains(p)) {
+        return format!("browse is not enabled for this host: run zfsctl print-sudoers {host} --with browse, install the file as the host's sudoers entry and try again");
+    }
+    if lower.contains("no such file or directory") {
+        return "this snapshot cannot be browsed here: its .zfs/snapshot folder is not visible on the host (for example a dataset given to a zone); zfsctl does not clone to work around that".to_string();
+    }
+    crate::display_text::sanitise_for_display(error_text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +515,172 @@ mod tests {
         assert_eq!(mk(EntryKind::File, 5).folder_entries(), None);
         assert_eq!(EntryKind::Directory.word(), "folder");
         assert_eq!(EntryKind::Symlink.word(), "symlink");
+    }
+
+    use crate::error::AppError;
+    use crate::exec::{CommandOutput, CommandRunner};
+    use std::process::Command;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const DIR: &str = "/m/.zfs/snapshot/s";
+
+    /// Hands out `sh -c <script>` for each `ls` call in turn (the last script repeats) and records the arguments.
+    struct LsRunner {
+        scripts: Vec<String>,
+        spawned: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl LsRunner {
+        fn new(scripts: &[&str]) -> Self {
+            Self { scripts: scripts.iter().map(|s| (*s).to_string()).collect(), spawned: Mutex::new(vec![]) }
+        }
+        fn spawned(&self) -> Vec<Vec<String>> {
+            self.spawned.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandRunner for LsRunner {
+        fn run(&self, _cmd: &str, _args: &[&str]) -> crate::error::Result<CommandOutput> {
+            Err(AppError::Config("run is not used".to_string()))
+        }
+        fn run_with_stdin(&self, _cmd: &str, _args: &[&str], _stdin: &str) -> crate::error::Result<CommandOutput> {
+            Err(AppError::Config("no stdin here".to_string()))
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn command(&self, cmd: &str, args: &[&str]) -> crate::error::Result<Command> {
+            assert_eq!(cmd, "ls");
+            let mut spawned = self.spawned.lock().unwrap();
+            let script = self.scripts.get(spawned.len()).or(self.scripts.last()).cloned().unwrap_or_default();
+            spawned.push(args.iter().map(|a| (*a).to_string()).collect());
+            let mut c = Command::new("sh");
+            c.args(["-c", &script]);
+            Ok(c)
+        }
+    }
+
+    fn files(names: &[&str], epoch: u64) -> String {
+        let mut script = "echo 'total 3'; ".to_string();
+        for n in names {
+            script.push_str(&format!("printf '%s\\n' '-rw-r--r-- 1 u g 5 {epoch} {n}'; "));
+        }
+        script
+    }
+
+    #[test]
+    fn read_folder_joins_modified_changed_and_created() {
+        let r = LsRunner::new(&[&files(&["a", "b"], 100), &files(&["a", "b"], 200), &files(&["a", "b"], 300)]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        let times: Vec<_> = l.entries.iter().map(|r| (r.entry.name.as_str(), r.entry.time, r.changed, r.created)).collect();
+        assert_eq!(times, [("a", Some(100), Some(200), Some(300)), ("b", Some(100), Some(200), Some(300))]);
+        assert!(l.has_created && !l.truncated && l.unreadable == 0);
+        let spawned = r.spawned();
+        assert_eq!(spawned[0], ["-lA", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[1], ["-lAc", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[2], ["-lAU", "-D", "%s", "--", DIR]);
+    }
+
+    #[test]
+    fn illumos_has_no_created_time() {
+        let one = "echo 'total 1'; echo '-rw-r--r--   1 u g 5 2026-10-20 05:25:30.5 -0400 a'";
+        let r = LsRunner::new(&[one]);
+        let l = read_folder(&r, HostOs::Illumos, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        assert!(!l.has_created);
+        assert_eq!((l.entries[0].created, l.entries[0].changed), (None, Some(1_792_488_330)));
+        assert_eq!(r.spawned().len(), 2);
+        assert_eq!(r.spawned()[1], ["-lAEc", "--", DIR]);
+    }
+
+    #[test]
+    fn the_entry_cap_stops_the_read_and_says_so() {
+        let r = LsRunner::new(&[&format!("{} sleep 30", files(&["a", "b", "c", "d", "e"], 1))]);
+        let limits = BrowseLimits { max_entries: 3, ..BrowseLimits::default() };
+        let started = Instant::now();
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &limits, &AtomicBool::new(false)).unwrap();
+        assert_eq!((l.entries.len(), l.truncated), (3, true));
+        assert!(started.elapsed() < Duration::from_secs(10), "the child was killed, not waited for");
+    }
+
+    #[test]
+    fn exactly_the_cap_is_not_truncated() {
+        let r = LsRunner::new(&[&files(&["a", "b", "c"], 1)]);
+        let limits = BrowseLimits { max_entries: 3, ..BrowseLimits::default() };
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &limits, &AtomicBool::new(false)).unwrap();
+        assert_eq!((l.entries.len(), l.truncated), (3, false));
+    }
+
+    #[test]
+    fn the_time_limit_stops_the_read() {
+        let r = LsRunner::new(&[&format!("{} sleep 30", files(&["a"], 1))]);
+        let limits = BrowseLimits { max_seconds: 1, ..BrowseLimits::default() };
+        let started = Instant::now();
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &limits, &AtomicBool::new(false)).unwrap();
+        assert_eq!((l.entries.len(), l.truncated), (1, true));
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn cancel_is_an_error_and_returns_quickly() {
+        let r = LsRunner::new(&["sleep 30"]);
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let result = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &cancel)
+        });
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_failing_first_call_is_an_error_with_the_first_stderr_line() {
+        let r = LsRunner::new(&["echo 'ls: /x: Permission denied' >&2; echo second >&2; exit 2"]);
+        let err = read_folder(&r, HostOs::Linux, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap_err().to_string();
+        assert!(err.contains("Permission denied") && !err.contains("second"), "{err}");
+    }
+
+    #[test]
+    fn a_mismatched_second_listing_leaves_changed_empty_not_wrong() {
+        let r = LsRunner::new(&[&files(&["a", "b"], 100), &files(&["a", "zzz"], 200), "exit 3"]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        assert_eq!((l.entries[0].changed, l.entries[1].changed), (Some(200), None));
+        assert_eq!((l.entries[0].created, l.entries[1].created), (None, None), "a failing later listing leaves the time unknown");
+    }
+
+    #[test]
+    fn unparsable_lines_are_counted_not_shown() {
+        let r = LsRunner::new(&[&format!("{} echo 'garbage line'; echo 'more garbage';", files(&["a"], 1))]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        assert_eq!((l.entries.len(), l.unreadable), (1, 2));
+    }
+
+    #[test]
+    fn a_directory_that_was_not_built_by_snapshot_dir_is_refused_before_anything_runs() {
+        let r = LsRunner::new(&["true"]);
+        for bad in ["/etc", "/m/.zfs/snapshot/s\nfoo", "relative/.zfs/snapshot/s", "/m/.zfs/snapshot/s/\u{1b}x"] {
+            assert!(read_folder(&r, HostOs::FreeBsd, bad, &BrowseLimits::default(), &AtomicBool::new(false)).is_err(), "{bad:?}");
+        }
+        assert!(r.spawned().is_empty());
+    }
+
+    #[test]
+    fn explain_names_the_sudoers_command_when_sudo_refuses() {
+        for text in ["sudo: a password is required", "Sorry, user ub is not allowed to execute '/usr/bin/ls -lA -- /x' as root", "sudo: no tty present and no askpass program specified"] {
+            let msg = explain("ub24", text);
+            assert!(msg.contains("browse is not enabled") && msg.contains("print-sudoers ub24 --with browse"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn explain_handles_the_missing_snapshot_folder_and_other_errors() {
+        let msg = explain("h", "ls: /m/.zfs/snapshot/s: No such file or directory");
+        assert!(msg.contains("cannot be browsed here") && msg.contains("does not clone"), "{msg}");
+        assert_eq!(explain("h", "weird \u{1b}[31m failure"), "weird [31m failure");
     }
 }
