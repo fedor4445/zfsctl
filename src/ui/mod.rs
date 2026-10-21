@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod browse;
 pub mod changes;
 pub mod cloud;
 pub mod dashboard;
@@ -214,6 +215,18 @@ fn apply_pending_cloud(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued snapshot folder read its host's runner.
+fn apply_pending_browse(app: &mut App, inventory: &HostInventory) {
+    for pending in std::mem::take(&mut app.pending_browse) {
+        if let Some(h) = inventory.hosts.get(pending.host) {
+            app.start_browse(h.runner.clone(), pending);
+        } else {
+            let why = crate::error::AppError::Config(format!("unknown host #{}", pending.host));
+            app.fail_browse(&pending, why);
+        }
+    }
+}
+
 /// Hands each queued changes read its host's runner.
 fn apply_pending_changes(app: &mut App, inventory: &HostInventory) {
     for pending in std::mem::take(&mut app.pending_changes) {
@@ -300,6 +313,7 @@ fn event_loop(
         apply_pending_cloud(app, inventory);
         apply_pending_prune_checks(app, inventory);
         apply_pending_changes(app, inventory);
+        apply_pending_browse(app, inventory);
         poll_host_probes(app, inventory);
         app.clear_stale_scan_status();
 

@@ -224,6 +224,8 @@ pub struct PendingPruneCheck {
 pub enum WorkerMsg {
     /// A changes read finished: host, the request number it was started for, and what it found.
     Changes(usize, u64, Result<crate::ui::changes::ChangesOutcome>),
+    /// A snapshot folder was listed: host, the request number it was started for, and what it found.
+    Browse(usize, u64, Result<crate::ui::browse::BrowseOutcome>),
     /// The hold tags of the held snapshots of one host's list (key `dataset@name`), sent after `Snapshots`; the
     /// number says which list refresh they were fetched for.
     SnapshotTags(usize, u64, std::collections::HashMap<String, Vec<String>>),
@@ -381,6 +383,10 @@ pub struct App {
     pub changes_view: Option<crate::ui::changes::ChangesView>,
     pub changes_request: u64,
     pub pending_changes: Vec<crate::ui::changes::PendingChanges>,
+    /// The browse view of the Snapshots section (`f`), its latest request number, and the reads waiting for a runner.
+    pub browse_view: Option<crate::ui::browse::BrowseView>,
+    pub browse_request: u64,
+    pub pending_browse: Vec<crate::ui::browse::PendingBrowse>,
     /// Lookups that were started and have not answered: `remotes:<host>` or `size:<job id>`.
     cloud_busy: HashSet<String>,
     /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
@@ -613,6 +619,9 @@ impl App {
             changes_view: None,
             changes_request: 0,
             pending_changes: Vec::new(),
+            browse_view: None,
+            browse_request: 0,
+            pending_browse: Vec::new(),
             cloud_busy: HashSet::new(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
             last_jobs_refresh: None,
@@ -1520,6 +1529,9 @@ impl App {
         if let Some(view) = self.changes_view.take() {
             view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         }
+        if let Some(view) = self.browse_view.take() {
+            view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         self.metrics = crate::ui::metrics::MetricsView::default();
         self.pools.clear();
         self.datasets.clear();
@@ -1568,6 +1580,7 @@ impl App {
             return;
         }
         let _handled = self.key_changes_view(key)
+            || self.key_browse_view(key)
             || self.key_global(key)
             || self.key_navigation(key)
             // A section the host's OS has no equivalent for (see `ui::support`) is dimmed: its keys do nothing.
@@ -2288,6 +2301,27 @@ impl App {
                     };
                     self.changes_view = Some(ChangesView::new(&pending));
                     self.pending_changes.push(pending);
+                }
+            }
+            KeyCode::Char('f') if self.current_section() == Section::Snapshots && self.changes_view.is_none() && self.browse_view.is_none() => {
+                if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
+                    use crate::ui::browse::{BrowseView, PendingBrowse};
+                    let probe = self.hosts.get(self.selected_host).and_then(|name| self.host_probes.get(name));
+                    let os = probe.and_then(|p| p.os).unwrap_or(crate::zfs::host_health::HostOs::Other);
+                    let utc_offset = probe.and_then(|p| p.utc_offset_secs).unwrap_or(0);
+                    self.browse_request += 1;
+                    let pending = PendingBrowse {
+                        host: self.selected_host,
+                        request: self.browse_request,
+                        dataset: snap.dataset.clone(),
+                        name: snap.name.clone(),
+                        path: Vec::new(),
+                        mountpoint: None,
+                        os,
+                        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    };
+                    self.browse_view = Some(BrowseView::new(&pending, utc_offset));
+                    self.pending_browse.push(pending);
                 }
             }
             KeyCode::Char('H') if self.current_section() == Section::Snapshots => {
@@ -3239,10 +3273,85 @@ impl App {
                     self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Snapshots, call } });
                 }
             }
-            KeyCode::Char('c' | 'C' | 'd' | 'b') => {}
+            KeyCode::Char('c' | 'C' | 'd' | 'b' | 'f') => {}
             _ => return false,
         }
         true
+    }
+
+    /// The browse view, when it belongs to the host and section on screen.
+    pub fn browse_view_active(&self) -> bool {
+        self.current_section() == Section::Snapshots && self.browse_view.as_ref().is_some_and(|v| v.host == self.selected_host)
+    }
+
+    /// Keys while the browser is open: they move in it, open a folder, go up, set the filters or close it; the snapshot
+    /// list's own destructive keys do nothing behind it. While a filter prompt is open every key is text. Everything else
+    /// (quit, Help, the shell, Tab) works as everywhere. Returns whether the key was handled.
+    fn key_browse_view(&mut self, key: KeyCode) -> bool {
+        use crate::ui::browse::InputKind;
+        if self.browse_view.is_none() || self.modal.is_some() || self.picker.is_some() || self.current_section() != Section::Snapshots {
+            return false;
+        }
+        if !self.browse_view_active() {
+            if let Some(view) = self.browse_view.take() {
+                view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            return false;
+        }
+        let request = self.browse_request + 1;
+        let Some(view) = self.browse_view.as_mut() else { return false };
+        if view.input_key(key) {
+            return true;
+        }
+        let mut next = None;
+        match key {
+            KeyCode::Esc => {
+                view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.browse_view = None;
+            }
+            KeyCode::Down => view.move_selection(true),
+            KeyCode::Up => view.move_selection(false),
+            KeyCode::Enter | KeyCode::Right => next = view.enter_selected(request).unwrap_or(None),
+            KeyCode::Left | KeyCode::Backspace => next = view.go_up(request),
+            KeyCode::Char('/') => view.start_input(InputKind::Name),
+            KeyCode::Char('m') => view.start_input(InputKind::Modified),
+            KeyCode::Char('s') => view.start_input(InputKind::Size),
+            KeyCode::Char('t') => view.cycle_kind(),
+            KeyCode::Char('x') => view.clear_filters(),
+            KeyCode::Char('c' | 'C' | 'd' | 'b' | 'H' | 'f') => {}
+            _ => return false,
+        }
+        if let Some(pending) = next {
+            self.browse_request = request;
+            self.pending_browse.push(pending);
+        }
+        true
+    }
+
+    /// Ends a queued browse read that cannot run (its host is gone) as a failed one.
+    pub fn fail_browse(&mut self, pending: &crate::ui::browse::PendingBrowse, why: crate::error::AppError) {
+        let _ = self.tx.send(WorkerMsg::Browse(pending.host, pending.request, Err(why)));
+    }
+
+    /// Lists one snapshot folder on a worker thread and sends the outcome back (an error as an error).
+    pub fn start_browse(&mut self, runner: Arc<dyn CommandRunner>, pending: crate::ui::browse::PendingBrowse) {
+        use crate::ui::browse::BrowseOutcome;
+        use crate::zfs::snapshot_browse::{read_folder, snapshot_dir, BrowseLimits};
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<BrowseOutcome> {
+                let mountpoint = match pending.mountpoint.clone() {
+                    Some(m) => m,
+                    None => crate::zfs::snapshot_changes::dataset_mountpoint(runner.as_ref(), &pending.dataset)?
+                        .ok_or_else(|| crate::error::AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string()))?,
+                };
+                let steps: Vec<&str> = pending.path.iter().map(String::as_str).collect();
+                let dir = snapshot_dir(&mountpoint, &pending.name, &steps)?;
+                let listing = read_folder(runner.as_ref(), pending.os, &dir, &BrowseLimits::default(), &pending.cancel)?;
+                Ok(BrowseOutcome { listing, mountpoint })
+            })();
+            let _ = tx.send(WorkerMsg::Browse(pending.host, pending.request, result));
+        });
     }
 
     /// Ends a queued read that cannot run (its host is gone) as a failed one.
@@ -3655,6 +3764,7 @@ Snapshots
   H                hold the selected snapshot, or release zfsctl's hold on it (a hold protects it from destroy and pruning)
   c                show what changed since the previous snapshot, by folder (read-only; Enter opens a folder, [ ] sets the depth, H holds the older snapshot, Esc closes)
   C                show what has changed since this snapshot, compared with the live dataset
+  f                look inside the selected snapshot: its folders with type, size, dates, mode and owner (read-only, metadata only; needs the `browse` sudoers feature on other hosts). Enter opens a folder, ← goes up, / m s t filter by name, modified date, size and type, x clears, Esc closes
 
 Disks
   Space            toggle-select a disk

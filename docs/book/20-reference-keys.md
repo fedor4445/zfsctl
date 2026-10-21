@@ -97,6 +97,7 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `H` | hold the selected snapshot, or release zfsctl's hold on it (a hold stops it being destroyed or pruned; other tags are never released) |
 | `c` | show what changed since the previous snapshot, by folder (read-only): `Enter` opens a folder, `[` and `]` set how deep the folders go, `H` holds the older snapshot, `Esc` goes back and closes |
 | `C` | the same, but compared with the live dataset: what has changed since this snapshot |
+| `f` | look inside the selected snapshot (read-only, names and metadata only; other hosts need the `browse` sudoers feature): `Enter` opens a folder, `←` goes up, `/` `m` `s` `t` filter by name, modified date, size and type, `x` clears the filters, `Esc` closes |
 
 ## Disks
 

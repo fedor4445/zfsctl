@@ -120,12 +120,12 @@ impl EntryKind {
             EntryKind::File => "file",
             EntryKind::Directory => "folder",
             EntryKind::Symlink => "symlink",
-            EntryKind::Block => "block device",
-            EntryKind::Character => "character device",
+            EntryKind::Block => "block",
+            EntryKind::Character => "char",
             EntryKind::Pipe => "pipe",
             EntryKind::Socket => "socket",
             EntryKind::Door => "door",
-            EntryKind::Port => "event port",
+            EntryKind::Port => "port",
             EntryKind::Other => "other",
         }
     }

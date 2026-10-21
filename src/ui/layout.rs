@@ -768,6 +768,12 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
+    if app.browse_view_active() {
+        if let Some(view) = &app.browse_view {
+            crate::ui::browse::draw(f, view, &theme, app.active_host_name(), area);
+        }
+        return;
+    }
     if app.changes_view_active() {
         if let Some(view) = &app.changes_view {
             crate::ui::changes::draw(f, view, &theme, app.active_host_name(), area);
@@ -1755,6 +1761,24 @@ mod tests {
         app.selected_host = 3;
         let other = render(&mut app, 100, 12).join("\n");
         assert!(!other.contains("Changes —"), "a view of another host is not shown: {other}");
+    }
+
+    #[test]
+    fn the_snapshots_section_shows_the_browser_in_place_of_the_list_and_only_for_its_host() {
+        use crate::ui::browse::{BrowseView, PendingBrowse};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: "s".to_string(), used: 1, holds: 0, written: 0 }];
+        let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, os: crate::zfs::host_health::HostOs::FreeBsd, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        app.browse_view = Some(BrowseView::new(&pending, 0));
+        for (w, h) in [(100, 12), (70, 8)] {
+            let shown = render(&mut app, w, h).join("\n");
+            assert!(shown.contains("Browse —") && shown.contains("reading the folder"), "{w}x{h}: {shown}");
+            assert!(!shown.contains("Snapshot  "), "the list is not drawn under the view: {shown}");
+        }
+        app.selected_host = 3;
+        let other = render(&mut app, 100, 12).join("\n");
+        assert!(!other.contains("Browse —"), "a view of another host is not shown: {other}");
     }
 
     fn identity_disk(name: &str, model: &str, serial: &str) -> crate::zfs::disk::DiskInfo {
