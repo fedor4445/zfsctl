@@ -361,6 +361,129 @@ pub fn explain(host: &str, error_text: &str) -> String {
     crate::display_text::sanitise_for_display(error_text)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KindFilter {
+    #[default]
+    All,
+    Files,
+    Folders,
+    Links,
+}
+
+/// What the browser hides: by name (a case-insensitive piece of it), modified time, size and kind. Folders are never hidden by
+/// size or date, so the user can still walk down to what they are looking for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filter {
+    pub name: String,
+    pub modified_from: Option<i64>,
+    pub modified_to: Option<i64>,
+    pub size_min: Option<u64>,
+    pub size_max: Option<u64>,
+    pub kind: KindFilter,
+}
+
+impl Filter {
+    pub fn is_empty(&self) -> bool {
+        *self == Filter::default()
+    }
+
+    pub fn matches(&self, row: &Row) -> bool {
+        let e = &row.entry;
+        let kind_ok = match self.kind {
+            KindFilter::All => true,
+            KindFilter::Files => !matches!(e.kind, EntryKind::Directory | EntryKind::Symlink),
+            KindFilter::Folders => e.kind == EntryKind::Directory,
+            KindFilter::Links => e.kind == EntryKind::Symlink,
+        };
+        if !kind_ok || (!self.name.is_empty() && !e.name.to_lowercase().contains(&self.name.to_lowercase())) {
+            return false;
+        }
+        if e.kind == EntryKind::Directory {
+            return true;
+        }
+        if self.size_min.is_some_and(|min| e.size < min) || self.size_max.is_some_and(|max| e.size > max) {
+            return false;
+        }
+        match e.time {
+            Some(t) => !(self.modified_from.is_some_and(|from| t < from) || self.modified_to.is_some_and(|to| t > to)),
+            None => self.modified_from.is_none() && self.modified_to.is_none(),
+        }
+    }
+}
+
+/// One size such as `500`, `10M`, `2KB` (units are powers of 1024).
+fn parse_size(text: &str) -> Option<u64> {
+    let upper = text.to_ascii_uppercase();
+    let body = upper.strip_suffix('B').unwrap_or(&upper);
+    let (digits, factor) = [('K', 1u64 << 10), ('M', 1 << 20), ('G', 1 << 30), ('T', 1 << 40)].into_iter().find_map(|(unit, factor)| body.strip_suffix(unit).map(|d| (d, factor))).unwrap_or((body, 1));
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok()?.checked_mul(factor)
+}
+
+/// `10M..`, `..1G`, `1K..1M` or one size (exactly that many bytes); `None` for anything else or a reversed range.
+pub fn parse_size_range(text: &str) -> Option<(Option<u64>, Option<u64>)> {
+    let parts: Vec<&str> = text.split("..").collect();
+    let range = match parts.as_slice() {
+        [one] => {
+            let n = parse_size(one)?;
+            (Some(n), Some(n))
+        }
+        [lo, hi] => {
+            let lo = if lo.is_empty() { None } else { Some(parse_size(lo)?) };
+            let hi = if hi.is_empty() { None } else { Some(parse_size(hi)?) };
+            if lo.is_none() && hi.is_none() {
+                return None;
+            }
+            (lo, hi)
+        }
+        _ => return None,
+    };
+    match range {
+        (Some(lo), Some(hi)) if lo > hi => None,
+        ok => Some(ok),
+    }
+}
+
+/// The start of `YYYY-MM-DD` in a zone `utc_offset_secs` east of UTC, as epoch seconds.
+fn day_start(text: &str, utc_offset_secs: i32) -> Option<i64> {
+    let day = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
+    Some(day.and_hms_opt(0, 0, 0)?.and_utc().timestamp() - i64::from(utc_offset_secs))
+}
+
+/// `2026-10-01..2026-10-20`, `2026-10-01..`, `..2026-10-20` or one day; the end day is included to its last second.
+pub fn parse_date_range(text: &str, utc_offset_secs: i32) -> Option<(Option<i64>, Option<i64>)> {
+    let parts: Vec<&str> = text.split("..").collect();
+    let range = match parts.as_slice() {
+        [one] => {
+            let start = day_start(one, utc_offset_secs)?;
+            (Some(start), Some(start + 86_399))
+        }
+        [lo, hi] => {
+            let lo = if lo.is_empty() { None } else { Some(day_start(lo, utc_offset_secs)?) };
+            let hi = if hi.is_empty() { None } else { Some(day_start(hi, utc_offset_secs)? + 86_399) };
+            if lo.is_none() && hi.is_none() {
+                return None;
+            }
+            (lo, hi)
+        }
+        _ => return None,
+    };
+    match range {
+        (Some(lo), Some(hi)) if lo > hi => None,
+        ok => Some(ok),
+    }
+}
+
+/// Folders first, then by name (case-insensitive, then bytewise so the order is the same every time).
+pub fn sort_rows(rows: &mut [Row]) {
+    rows.sort_by(|a, b| {
+        let folder = |r: &Row| r.entry.kind != EntryKind::Directory;
+        folder(a).cmp(&folder(b)).then_with(|| a.entry.name.to_lowercase().cmp(&b.entry.name.to_lowercase())).then_with(|| a.entry.name.cmp(&b.entry.name))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,9 +686,10 @@ mod tests {
     }
 
     fn files(names: &[&str], epoch: u64) -> String {
+        use std::fmt::Write;
         let mut script = "echo 'total 3'; ".to_string();
         for n in names {
-            script.push_str(&format!("printf '%s\\n' '-rw-r--r-- 1 u g 5 {epoch} {n}'; "));
+            let _ = write!(script, "printf '%s\\n' '-rw-r--r-- 1 u g 5 {epoch} {n}'; ");
         }
         script
     }
@@ -682,5 +806,67 @@ mod tests {
         let msg = explain("h", "ls: /m/.zfs/snapshot/s: No such file or directory");
         assert!(msg.contains("cannot be browsed here") && msg.contains("does not clone"), "{msg}");
         assert_eq!(explain("h", "weird \u{1b}[31m failure"), "weird [31m failure");
+    }
+
+    fn row(name: &str, kind: EntryKind, size: u64, time: Option<i64>) -> Row {
+        Row { entry: ListEntry { name: name.into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time, link_target: None }, changed: None, created: None }
+    }
+
+    #[test]
+    fn size_ranges_parse_with_units() {
+        assert_eq!(parse_size_range("10M.."), Some((Some(10 << 20), None)));
+        assert_eq!(parse_size_range("..1G"), Some((None, Some(1 << 30))));
+        assert_eq!(parse_size_range("1K..1M"), Some((Some(1024), Some(1 << 20))));
+        assert_eq!(parse_size_range("1k..1m"), parse_size_range("1K..1M"));
+        assert_eq!(parse_size_range("500"), Some((Some(500), Some(500))));
+        assert_eq!(parse_size_range("2KB..3 K"), None, "no spaces inside a number");
+        assert_eq!(parse_size_range("2KB..3K"), Some((Some(2048), Some(3072))));
+        for bad in ["", "..", "5G..1G", "abc", "1X", "-5..", "1..2..3", "99999999999999999999T.."] {
+            assert_eq!(parse_size_range(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn date_ranges_parse_in_the_hosts_zone_and_a_day_is_inclusive() {
+        // 2026-10-05 00:00:00 UTC is 1791158400; a host at UTC-4 starts that day 4 hours later.
+        assert_eq!(parse_date_range("2026-10-05", 0), Some((Some(1_791_158_400), Some(1_791_158_400 + 86_399))));
+        assert_eq!(parse_date_range("2026-10-05", -4 * 3600), Some((Some(1_791_158_400 + 4 * 3600), Some(1_791_158_400 + 4 * 3600 + 86_399))));
+        assert_eq!(parse_date_range("2026-10-01..", 0), Some((Some(1_790_812_800), None)));
+        assert_eq!(parse_date_range("..2026-10-05", 0), Some((None, Some(1_791_158_400 + 86_399))));
+        assert_eq!(parse_date_range("2026-10-01..2026-10-05", 0), Some((Some(1_790_812_800), Some(1_791_158_400 + 86_399))));
+        for bad in ["", "..", "2026-02-30", "2026-10-05..2026-10-01", "yesterday", "2026-10", "2026-10-01..x"] {
+            assert_eq!(parse_date_range(bad, 0), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn filters_narrow_by_name_kind_size_and_date() {
+        let f = row("Photo.JPG", EntryKind::File, 5000, Some(100));
+        let d = row("pics", EntryKind::Directory, 7, Some(100));
+        let l = row("link", EntryKind::Symlink, 4, Some(100));
+        assert!(Filter::default().matches(&f) && Filter::default().is_empty());
+        let name = Filter { name: "photo".into(), ..Filter::default() };
+        assert!(name.matches(&f) && !name.matches(&d) && !name.is_empty());
+        let special = Filter { name: "%*\\".into(), ..Filter::default() };
+        assert!(!special.matches(&f), "wildcards are plain characters");
+        let size = Filter { size_min: Some(1000), ..Filter::default() };
+        assert!(size.matches(&f) && !size.matches(&l) && size.matches(&d), "a size filter never hides a folder");
+        let date = Filter { modified_from: Some(200), ..Filter::default() };
+        assert!(!date.matches(&f) && date.matches(&d));
+        let unknown = row("x", EntryKind::File, 1, None);
+        assert!(!date.matches(&unknown), "an unknown time does not satisfy a date range");
+        let links = Filter { kind: KindFilter::Links, ..Filter::default() };
+        assert!(links.matches(&l) && !links.matches(&f) && !links.matches(&d));
+        let folders = Filter { kind: KindFilter::Folders, name: "PIC".into(), ..Filter::default() };
+        assert!(folders.matches(&d) && !folders.matches(&f));
+        let files = Filter { kind: KindFilter::Files, ..Filter::default() };
+        assert!(files.matches(&f) && !files.matches(&d) && !files.matches(&l));
+    }
+
+    #[test]
+    fn rows_sort_folders_first_then_by_name_ignoring_case() {
+        let mut rows = vec![row("b.txt", EntryKind::File, 1, None), row("Zed", EntryKind::Directory, 2, None), row("A.txt", EntryKind::File, 1, None), row("alpha", EntryKind::Directory, 2, None)];
+        sort_rows(&mut rows);
+        assert_eq!(rows.iter().map(|r| r.entry.name.as_str()).collect::<Vec<_>>(), ["alpha", "Zed", "A.txt", "b.txt"]);
     }
 }
