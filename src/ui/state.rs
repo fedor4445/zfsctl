@@ -3342,8 +3342,7 @@ impl App {
             let result = (|| -> Result<BrowseOutcome> {
                 let mountpoint = match pending.mountpoint.clone() {
                     Some(m) => m,
-                    None => crate::zfs::snapshot_changes::dataset_mountpoint(runner.as_ref(), &pending.dataset)?
-                        .ok_or_else(|| crate::error::AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string()))?,
+                    None => crate::zfs::snapshot_browse::browse_mountpoint(runner.as_ref(), pending.os, &pending.dataset)?,
                 };
                 let steps: Vec<&str> = pending.path.iter().map(String::as_str).collect();
                 let dir = snapshot_dir(&mountpoint, &pending.name, &steps)?;

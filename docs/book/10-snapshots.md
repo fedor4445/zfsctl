@@ -322,7 +322,7 @@ Folders are never hidden by a size or date filter, so you can still walk down to
 
 ### It only reads names and metadata
 
-The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never follows a symlink.
+The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never opens a symlink itself. One honest limit: file names are text that anyone who can write to the dataset controls. A name crafted with a newline can make a listing show a folder that is really a path through a symlink, so treat what the browser shows of a snapshot you do not trust as a read-only hint, not as proof.
 
 On the hub itself it needs nothing extra. On another host the unprivileged account zfsctl logs in as is not allowed to read other people's folders, so listing a snapshot needs one more `sudo` entry, the **`browse`** feature, which is **off by default**. Print it, read it, and install it the way chapter 5 describes:
 
@@ -330,7 +330,7 @@ On the hub itself it needs nothing extra. On another host the unprivileged accou
 zfsctl print-sudoers HOST --with browse
 ```
 
-It adds `ls` with eight fixed argument lists that all end in `-- *`, so no option can be added; sudo's `*` also matches spaces and `/`, so the path itself cannot be confined to `.zfs/snapshot`. That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run.
+It adds `ls` with eight fixed argument lists that all end in `-- *`. Sudo matches the words as one string and its `*` also matches spaces and `/`, so an extra option or path can be slipped in by merging words, and the path cannot be confined to `.zfs/snapshot`. `ls` has no option that writes or runs anything (the worst is a recursive listing). That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run.
 
 ### Limits and odd cases
 

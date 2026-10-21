@@ -36,14 +36,14 @@ pub fn valid_snapshot_name(name: &str) -> bool {
 /// `<mountpoint>/.zfs/snapshot/<snapshot>[/<step>...]`, after validating every part. A dataset that is not mounted at a path
 /// (`none`, `legacy`, `-`) has no snapshot folder to list.
 pub fn snapshot_dir(mountpoint: &str, snapshot: &str, relative: &[&str]) -> Result<String> {
-    if matches!(mountpoint, "none" | "legacy" | "-" | "" | "/") {
+    if matches!(mountpoint, "none" | "legacy" | "-" | "") {
         return Err(AppError::Config(format!("this dataset is not mounted at a path (mountpoint '{}'), so there is no snapshot folder to browse", crate::display_text::sanitise_for_display(mountpoint))));
     }
     let Some(rest) = mountpoint.strip_prefix('/') else {
         return Err(AppError::Config("the dataset's mountpoint is not an absolute path, so it cannot be browsed".to_string()));
     };
     let steps: Vec<&str> = rest.split('/').collect();
-    if join_relative(&steps).is_none() {
+    if !rest.is_empty() && join_relative(&steps).is_none() {
         return Err(AppError::Config("the dataset's mountpoint is not a plain path, so it cannot be browsed".to_string()));
     }
     if !valid_snapshot_name(snapshot) {
@@ -52,7 +52,8 @@ pub fn snapshot_dir(mountpoint: &str, snapshot: &str, relative: &[&str]) -> Resu
     let Some(inside) = join_relative(relative) else {
         return Err(AppError::Config("that folder's name cannot be sent to the host (it has a control character, a slash or is too long)".to_string()));
     };
-    let mut dir = format!("{mountpoint}/.zfs/snapshot/{snapshot}");
+    let base = if rest.is_empty() { "" } else { mountpoint };
+    let mut dir = format!("{base}/.zfs/snapshot/{snapshot}");
     if !inside.is_empty() {
         dir.push('/');
         dir.push_str(&inside);
@@ -61,6 +62,26 @@ pub fn snapshot_dir(mountpoint: &str, snapshot: &str, relative: &[&str]) -> Resu
         return Err(AppError::Config("that path is longer than 4096 bytes".to_string()));
     }
     Ok(dir)
+}
+
+/// Where `dataset` can be browsed: its mountpoint, but only when ZFS says it is mounted there (an unmounted, `canmount=noauto`,
+/// key-not-loaded or `recv -u` dataset still reports a mountpoint, and another dataset may be mounted at that path), and, on
+/// illumos, not given to a zone (its path is the zone's, not the global zone's).
+pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) -> Result<String> {
+    super::not_an_option(dataset)?;
+    let props = if os == HostOs::Illumos { "mounted,mountpoint,zoned" } else { "mounted,mountpoint" };
+    let out = super::run_checked(runner, "zfs", &["get", "-H", "-o", "property,value", props, dataset], &format!("zfs get {props} {dataset}"))?;
+    let value = |name: &str| out.stdout.lines().filter_map(|l| l.split_once('\t')).find(|(k, _)| *k == name).map(|(_, v)| v.trim().to_string());
+    if value("mounted").as_deref() != Some("yes") {
+        return Err(AppError::Config("this dataset is not mounted, so there is no snapshot folder to browse".to_string()));
+    }
+    if value("zoned").as_deref() == Some("on") {
+        return Err(AppError::Config("this dataset is given to a zone, whose paths the host's own namespace does not show, so its snapshots cannot be browsed from here".to_string()));
+    }
+    match value("mountpoint") {
+        Some(m) if m.starts_with('/') => Ok(m),
+        _ => Err(AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string())),
+    }
 }
 
 /// Which of a file's times a listing prints.
@@ -536,7 +557,7 @@ mod tests {
     fn snapshot_dir_builds_the_path_and_refuses_the_rest() {
         assert_eq!(snapshot_dir("/scratch/data", "snap4", &["sub", "x y"]).unwrap(), "/scratch/data/.zfs/snapshot/snap4/sub/x y");
         assert_eq!(snapshot_dir("/scratch/data", "snap4", &[]).unwrap(), "/scratch/data/.zfs/snapshot/snap4");
-        for bad in ["/", "none", "legacy", "-", "relative/path", "/a/../b", "/a//b", "/a/", "", "/a\nb"] {
+        for bad in ["none", "legacy", "-", "relative/path", "/a/../b", "/a//b", "/a/", "", "/a\nb"] {
             assert!(snapshot_dir(bad, "s", &[]).is_err(), "mountpoint {bad:?}");
         }
         assert!(snapshot_dir("/m", "a/b", &[]).is_err());
@@ -544,6 +565,76 @@ mod tests {
         assert!(snapshot_dir("/m", "s", &["ok", "a\nb"]).is_err());
         let err = snapshot_dir("legacy", "s", &[]).unwrap_err().to_string();
         assert!(err.contains("not mounted"), "{err}");
+    }
+
+    /// Answers `zfs get` with canned text and records the arguments.
+    struct GetRunner {
+        out: String,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl GetRunner {
+        fn new(out: &str) -> Self {
+            Self { out: out.to_string(), calls: Mutex::new(vec![]) }
+        }
+    }
+
+    impl CommandRunner for GetRunner {
+        fn run(&self, _cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
+            self.calls.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
+            Ok(CommandOutput { stdout: self.out.clone(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, _cmd: &str, _args: &[&str], _stdin: &str) -> crate::error::Result<CommandOutput> {
+            Err(AppError::Config("no stdin here".to_string()))
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn command(&self, _cmd: &str, _args: &[&str]) -> crate::error::Result<Command> {
+            Err(AppError::Config("no command here".to_string()))
+        }
+    }
+
+    #[test]
+    fn browse_mountpoint_needs_the_dataset_to_be_mounted_at_a_path() {
+        let ok = GetRunner::new("mounted\tyes\nmountpoint\t/m\n");
+        assert_eq!(browse_mountpoint(&ok, HostOs::FreeBsd, "tank/d").unwrap(), "/m");
+        assert_eq!(ok.calls.lock().unwrap()[0], ["get", "-H", "-o", "property,value", "mounted,mountpoint", "tank/d"], "options first, no zoned on FreeBSD");
+        for (out, why) in [
+            ("mounted\tno\nmountpoint\t/m\n", "not mounted"),
+            ("mounted\t-\nmountpoint\t/m\n", "not mounted"),
+            ("mounted\tyes\nmountpoint\tlegacy\n", "not mounted at a path"),
+            ("mounted\tyes\nmountpoint\tnone\n", "not mounted at a path"),
+            ("mountpoint\t/m\n", "not mounted"),
+        ] {
+            let err = browse_mountpoint(&GetRunner::new(out), HostOs::Linux, "tank/d").unwrap_err().to_string();
+            assert!(err.contains(why), "{out:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_zoned_dataset_on_illumos_is_not_browsed_from_the_global_zone() {
+        let zoned = GetRunner::new("mounted\tyes\nmountpoint\t/omni30/syncthing\nzoned\ton\n");
+        let err = browse_mountpoint(&zoned, HostOs::Illumos, "omni30/syncthing").unwrap_err().to_string();
+        assert!(err.contains("given to a zone"), "{err}");
+        assert_eq!(zoned.calls.lock().unwrap()[0].last().map(String::as_str), Some("omni30/syncthing"));
+        assert!(zoned.calls.lock().unwrap()[0].contains(&"mounted,mountpoint,zoned".to_string()));
+        let plain = GetRunner::new("mounted\tyes\nmountpoint\t/tank/photos\nzoned\toff\n");
+        assert_eq!(browse_mountpoint(&plain, HostOs::Illumos, "tank/photos").unwrap(), "/tank/photos");
+    }
+
+    #[test]
+    fn a_dataset_mounted_at_the_root_can_be_browsed() {
+        assert_eq!(browse_mountpoint(&GetRunner::new("mounted\tyes\nmountpoint\t/\n"), HostOs::FreeBsd, "zroot/ROOT/default").unwrap(), "/");
+        assert_eq!(snapshot_dir("/", "s", &["etc"]).unwrap(), "/.zfs/snapshot/s/etc");
+        assert_eq!(snapshot_dir("/", "s", &[]).unwrap(), "/.zfs/snapshot/s");
+    }
+
+    #[test]
+    fn a_dataset_name_starting_with_a_dash_is_refused_before_anything_runs() {
+        let r = GetRunner::new("");
+        assert!(browse_mountpoint(&r, HostOs::FreeBsd, "-r").is_err());
+        assert!(r.calls.lock().unwrap().is_empty());
     }
 
     #[test]

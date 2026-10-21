@@ -77,7 +77,8 @@ pub struct Entry {
 const ANY: Kind = Kind::Privileged { pinned: &[], probe: "" };
 const SMARTCTL: Kind = Kind::Privileged { pinned: &[&["--scan", "-j"], &["-j", "-H", "-A", "-i", "/dev/*"]], probe: "" };
 /// The eight forms of `ls` that `browse` allows, one trio per OS family (FreeBSD, Linux, illumos); Linux's long options take their value as a separate word because sudoers needs `=` escaped. Each ends in `--` and a
-/// path, so no option can follow; an `ls` form for another OS is simply never used on a host.
+/// path. That does not keep options out (sudo matches the words as one string, so words can be merged), but `ls` has no option that
+/// writes or runs anything; an `ls` form for another OS is simply never used on a host.
 const BROWSE_FORMS: &[&[&str]] = &[
     &["-lA", "-D", "%s", "--", "*"],
     &["-lAc", "-D", "%s", "--", "*"],

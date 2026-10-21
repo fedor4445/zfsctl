@@ -130,7 +130,7 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
         text.push_str("# smartctl: the /dev/* form cannot stop an extra flag (sudo's * also matches spaces); zfsctl only ever sends read-only flags,\n# and this account already holds zfs and zpool, which are as powerful as root.\n");
     }
     if resolved.iter().any(|r| r.entry.name == "ls") {
-        text.push_str("# ls: the -- * forms cannot stop an extra path (sudo's * also matches spaces and /); zfsctl only reads .zfs/snapshot folders with them,\n# and this account already holds zfs and zpool, which are as powerful as root.\n");
+        text.push_str("# ls: sudo matches the words as one string, so these forms cannot stop an extra path or an option slipped in by merging words\n# (sudo's * also matches spaces and /). ls has no option that writes or runs anything (the worst is a recursive listing), zfsctl only\n# reads .zfs/snapshot folders with them, and this account already holds zfs and zpool, which are as powerful as root.\n");
     }
     let path = install_path(os);
     let _ = write!(text, "# Install as {path} (owner root, mode 0440) after checking it:\n#   visudo -c -f {path}\n");
@@ -790,7 +790,7 @@ mod tests {
         const LS_PATHS: &[(&str, &str)] = &[("ls", "/bin/ls")];
         let text = print_sudoers(&host_with(LS_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Browse], "d").unwrap();
         assert!(text.contains("/bin/ls -lA -D %s -- *") && text.contains("/bin/ls -lAU -D %s -- *") && text.contains("/bin/ls -lAE -- *"), "{text}");
-        assert!(text.contains("# ls: the -- * forms cannot stop an extra path"), "{text}");
+        assert!(text.contains("# ls: sudo matches the words as one string"), "{text}");
         let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
         assert!(!without.contains("/bin/ls") && !without.contains("# ls:"), "{without}");
     }
