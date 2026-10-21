@@ -18,6 +18,7 @@ Terms are in alphabetical order.
 
 **bhyve**: FreeBSD's built-in hypervisor for virtual machines.
 
+**browse**: looking inside a snapshot's folders (`f` in Snapshots) with each entry's type, size, dates, mode and owner; names and metadata only, never contents; other hosts need the off-by-default `browse` sudoers feature; chapter 10.
 **boot environment**: a bootable copy of the operating system kept as a ZFS clone, so a bad upgrade can be undone; chapter 13.
 
 **catch up**: running a missed scheduled job once when the daemon starts.
