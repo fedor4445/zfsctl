@@ -151,7 +151,7 @@ The Hosts list is a table: `● Name | Address | State | Type | Tag | Used | Poo
 
 State also tells a network failure (`unreachable`) from an ssh refusal (`ssh login refused`, `host key not accepted`). The other columns:
 
-- **Type**: `metal`, `vm` or `jail`, read once per host with `sysctl -n kern.vm_guest security.jail.jailed` (no sudo; a host where that fails shows `-`). `vm` is coloured cyan and `jail` magenta, apart from the health colours.
+- **Type**: `metal`, `vm` or `jail`, read once per host without sudo: FreeBSD `sysctl -n kern.vm_guest security.jail.jailed`, Linux `systemd-detect-virt` (or the DMI vendor in `/sys/class/dmi/id/sys_vendor`), illumos `zonename` and `smbios` (a container or a non-global zone shows as `jail`; a host where nothing can be read shows `-`). `vm` is coloured cyan and `jail` magenta, apart from the health colours.
 - **Tag**: a free label per host, `tag = "backup"` under its `[[hosts]]` entry in `config.toml` or the optional third field of the Add Host form (change it later by editing `config.toml` and restarting). Shown only when some host has one.
 - **Used**: the fullest pool's capacity, yellow from 80%, red from 90%. **Pools**: how many. **Scrub**: `running 34%` or `paused` if any pool is, else `never` if any pool never scrubbed, else the date of the oldest last scrub.
 - **Jobs**: `failed/total` of the host's enabled jobs (a job counts as failed when its latest run failed).
