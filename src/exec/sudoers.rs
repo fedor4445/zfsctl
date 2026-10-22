@@ -791,13 +791,13 @@ mod tests {
     fn print_sudoers_with_browse_lists_only_the_ls_forms_of_the_hosts_os_and_without_it_lists_none() {
         const LS_PATHS: &[(&str, &str)] = &[("ls", "/bin/ls")];
         let freebsd = print_sudoers(&host_with(LS_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Browse], "d").unwrap();
-        assert!(freebsd.contains("/bin/ls -lA -D %s -- *") && freebsd.contains("/bin/ls -lAU -D %s -- *"), "{freebsd}");
-        assert!(!freebsd.contains("--time-style") && !freebsd.contains("-lAE"), "no Linux or illumos forms on FreeBSD: {freebsd}");
+        assert!(freebsd.contains("/bin/ls -lAb -D %s -- *") && freebsd.contains("/bin/ls -lAbU -D %s -- *"), "{freebsd}");
+        assert!(!freebsd.contains("--time-style") && !freebsd.contains("-lAbE"), "no Linux or illumos forms on FreeBSD: {freebsd}");
         assert!(freebsd.contains("# ls: sudo matches the words as one string"), "{freebsd}");
         let linux = print_sudoers(&host_with(LS_PATHS), "h", "ub@h", HostOs::Linux, &[Feature::Browse], "d").unwrap();
-        assert!(linux.contains("/bin/ls -lA --time-style +%s --time birth -- *") && !linux.contains("-D %s") && !linux.contains("-lAE"), "{linux}");
+        assert!(linux.contains("/bin/ls -lAQ --time-style +%s --time birth -- *") && !linux.contains("-D %s") && !linux.contains("-lAbE"), "{linux}");
         let illumos = print_sudoers(&host_with(LS_PATHS), "h", "omni@h", HostOs::Illumos, &[Feature::Browse], "d").unwrap();
-        assert!(illumos.contains("/bin/ls -lAE -- *") && illumos.contains("/bin/ls -lAEc -- *") && !illumos.contains("-D %s") && !illumos.contains("--time-style"), "{illumos}");
+        assert!(illumos.contains("/bin/ls -lAbE -- *") && illumos.contains("/bin/ls -lAbEc -- *") && !illumos.contains("-D %s") && !illumos.contains("--time-style"), "{illumos}");
         let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
         assert!(!without.contains("/bin/ls") && !without.contains("# ls:"), "{without}");
     }

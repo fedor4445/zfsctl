@@ -76,18 +76,18 @@ pub struct Entry {
 
 const ANY: Kind = Kind::Privileged { pinned: &[], probe: "" };
 const SMARTCTL: Kind = Kind::Privileged { pinned: &[&["--scan", "-j"], &["-j", "-H", "-A", "-i", "/dev/*"]], probe: "" };
-/// The forms of `ls` that `browse` allows, one trio per OS family (FreeBSD, Linux, illumos); Linux's long options take their value as a separate word because sudoers needs `=` escaped. Each ends in `--` and a
+/// The forms of `ls` that `browse` allows (escaped, so one line is one entry: `-b` on FreeBSD and illumos, `-Q` on GNU), one trio per OS family (FreeBSD, Linux, illumos); Linux's long options take their value as a separate word because sudoers needs `=` escaped. Each ends in `--` and a
 /// path. That does not keep options out (sudo matches the words as one string, so words can be merged), but `ls` has no option that
 /// writes or runs anything; an `ls` form for another OS is simply never used on a host.
 const BROWSE_FORMS: &[&[&str]] = &[
-    &["-lA", "-D", "%s", "--", "*"],
-    &["-lAc", "-D", "%s", "--", "*"],
-    &["-lAU", "-D", "%s", "--", "*"],
-    &["-lA", "--time-style", "+%s", "--", "*"],
-    &["-lA", "--time-style", "+%s", "--time", "ctime", "--", "*"],
-    &["-lA", "--time-style", "+%s", "--time", "birth", "--", "*"],
-    &["-lAE", "--", "*"],
-    &["-lAEc", "--", "*"],
+    &["-lAb", "-D", "%s", "--", "*"],
+    &["-lAbc", "-D", "%s", "--", "*"],
+    &["-lAbU", "-D", "%s", "--", "*"],
+    &["-lAQ", "--time-style", "+%s", "--", "*"],
+    &["-lAQ", "--time-style", "+%s", "--time", "ctime", "--", "*"],
+    &["-lAQ", "--time-style", "+%s", "--time", "birth", "--", "*"],
+    &["-lAbE", "--", "*"],
+    &["-lAbEc", "--", "*"],
 ];
 const LS: Kind = Kind::Privileged { pinned: BROWSE_FORMS, probe: "" };
 const SMB_CONF: Kind = Kind::Privileged { pinned: &[&[crate::zfs::smb::CONF_PATH]], probe: "/etc/master.passwd" };
@@ -355,14 +355,24 @@ mod tests {
     }
 
     #[test]
+    fn the_ls_forms_are_the_escaped_one_line_per_entry_ones() {
+        let Some(Entry { kind: Kind::Privileged { pinned, .. }, .. }) = lookup("ls") else { panic!("no ls entry") };
+        for form in *pinned {
+            let word = form[0];
+            let gnu = form.contains(&"--time-style");
+            assert!(if gnu { word.contains('Q') } else { word.contains('b') }, "{form:?} must escape names (-Q on GNU, -b elsewhere)");
+        }
+    }
+
+    #[test]
     fn the_ls_forms_follow_the_hosts_operating_system() {
         use crate::zfs::host_health::HostOs;
         let ls = lookup("ls").unwrap();
         let forms = |os| pinned_forms(ls, os).iter().map(|f| f.join(" ")).collect::<Vec<_>>();
-        assert_eq!(forms(HostOs::FreeBsd), ["-lA -D %s -- *", "-lAc -D %s -- *", "-lAU -D %s -- *"]);
+        assert_eq!(forms(HostOs::FreeBsd), ["-lAb -D %s -- *", "-lAbc -D %s -- *", "-lAbU -D %s -- *"]);
         assert_eq!(forms(HostOs::Other), forms(HostOs::FreeBsd));
-        assert_eq!(forms(HostOs::Linux), ["-lA --time-style +%s -- *", "-lA --time-style +%s --time ctime -- *", "-lA --time-style +%s --time birth -- *"]);
-        assert_eq!(forms(HostOs::Illumos), ["-lAE -- *", "-lAEc -- *"]);
+        assert_eq!(forms(HostOs::Linux), ["-lAQ --time-style +%s -- *", "-lAQ --time-style +%s --time ctime -- *", "-lAQ --time-style +%s --time birth -- *"]);
+        assert_eq!(forms(HostOs::Illumos), ["-lAbE -- *", "-lAbEc -- *"]);
         let smartctl = lookup("smartctl").unwrap();
         assert_eq!(pinned_forms(smartctl, HostOs::Linux).len(), 2, "every other entry keeps all of its forms");
     }
@@ -509,7 +519,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm` `ls` ls -lA -D %s -- * ls -lAc -D %s -- * ls -lAU -D %s -- * ls -lA --time-style +%s -- * ls -lA --time-style +%s --time ctime -- * ls -lA --time-style +%s --time birth -- * ls -lAE -- * ls -lAEc -- *";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm` `ls` ls -lAb -D %s -- * ls -lAbc -D %s -- * ls -lAbU -D %s -- * ls -lAQ --time-style +%s -- * ls -lAQ --time-style +%s --time ctime -- * ls -lAQ --time-style +%s --time birth -- * ls -lAbE -- * ls -lAbEc -- *";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);

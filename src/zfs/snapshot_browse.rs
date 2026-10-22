@@ -925,9 +925,9 @@ mod tests {
             }
         }
         assert_eq!(used, 11);
-        assert_eq!(ls_args(HostOs::Illumos, Times::Changed, dir).unwrap(), ["-lAEc", "--", dir]);
-        assert_eq!(ls_args(HostOs::Linux, Times::Created, dir).unwrap(), ["-lA", "--time-style", "+%s", "--time", "birth", "--", dir]);
-        assert_eq!(ls_args(HostOs::Other, Times::Modified, dir).unwrap(), ["-lA", "-D", "%s", "--", dir]);
+        assert_eq!(ls_args(HostOs::Illumos, Times::Changed, dir).unwrap(), ["-lAbEc", "--", dir]);
+        assert_eq!(ls_args(HostOs::Linux, Times::Created, dir).unwrap(), ["-lAQ", "--time-style", "+%s", "--time", "birth", "--", dir]);
+        assert_eq!(ls_args(HostOs::Other, Times::Modified, dir).unwrap(), ["-lAb", "-D", "%s", "--", dir]);
         assert_eq!(times_for(HostOs::Illumos), [Times::Modified, Times::Changed]);
         assert_eq!(times_for(HostOs::Linux), [Times::Modified, Times::Changed, Times::Created]);
     }
@@ -1072,9 +1072,9 @@ mod tests {
         assert_eq!(times, [("a", Some(100), Some(200), Some(300)), ("b", Some(100), Some(200), Some(300))]);
         assert!(l.has_created && !l.truncated && l.unreadable == 0);
         let spawned = r.spawned();
-        assert_eq!(spawned[0], ["-lA", "-D", "%s", "--", DIR]);
-        assert_eq!(spawned[1], ["-lAc", "-D", "%s", "--", DIR]);
-        assert_eq!(spawned[2], ["-lAU", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[0], ["-lAb", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[1], ["-lAbc", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[2], ["-lAbU", "-D", "%s", "--", DIR]);
     }
 
     #[test]
@@ -1085,7 +1085,7 @@ mod tests {
         assert!(!l.has_created);
         assert_eq!((l.entries[0].created, l.entries[0].changed), (None, Some(1_792_488_330)));
         assert_eq!(r.spawned().len(), 2);
-        assert_eq!(r.spawned()[1], ["-lAEc", "--", DIR]);
+        assert_eq!(r.spawned()[1], ["-lAbEc", "--", DIR]);
     }
 
     #[test]
