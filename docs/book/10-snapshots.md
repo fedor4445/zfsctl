@@ -333,7 +333,7 @@ On the hub itself it needs nothing extra. On another host the unprivileged accou
 zfsctl print-sudoers HOST --with browse
 ```
 
-It adds `ls` with fixed argument lists (three for FreeBSD or Linux, two for illumos, chosen by the host's own OS) that all end in `-- *`. Sudo matches the words as one string and its `*` also matches spaces and `/`, so an extra option or path can be slipped in by merging words, and the path cannot be confined to `.zfs/snapshot`. `ls` has no option that writes or runs anything (the worst is a recursive listing). That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run.
+It adds `ls` with fixed argument lists (three for FreeBSD or Linux, two for illumos, chosen by the host's own OS) that all end in `-- *`. Sudo matches the words as one string and its `*` also matches spaces and `/`, so an extra option or path can be slipped in by merging words, and the path cannot be confined to `.zfs/snapshot`. `ls` has no option that writes or runs anything (the worst is a recursive listing). That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run. A host set up before the escaped listings needs the browse entry installed again: run `zfsctl print-sudoers HOST --with browse` and install the new file.
 
 ### Limits and odd cases
 
@@ -415,7 +415,7 @@ The form is one line, **Restore as**. It starts with the file's name, `.restored
 y Yes  n/Esc No
 ```
 
-The confirm shows where the file comes from, where it will go and the exact command (`cp -p -n`), with every name quoted so spaces and odd characters cannot hide where one path ends. `-p` keeps the original's owner, permissions and times; `-n` means *never overwrite*. Press `y`, then `Enter`, to copy; `n` or `Esc` then `Enter` cancels. It takes two keys on purpose, so a stray key or a held-down `Enter` cannot copy anything.
+The confirm shows where the file comes from, where it will go and the exact command (`cp -p -n`), with every name quoted so spaces and odd characters cannot hide where one path ends. `-p` keeps the original's owner, permissions and times (on FreeBSD, where the copy runs as root, it also keeps file flags and ACLs); `-n` means *never overwrite*. Press `y`, then `Enter`, to copy; `n` or `Esc` then `Enter` cancels. It takes two keys on purpose, so a stray key or a held-down `Enter` cannot copy anything.
 
 ### What zfsctl checks, and what it refuses
 
@@ -430,11 +430,11 @@ After the copy it lists the destination again and checks that the new file is th
 
 ### Honest limits
 
-- **It needs the `restore` sudoers entry on other hosts.** The hub itself, which runs as root, needs nothing. On any other host run `zfsctl print-sudoers HOST --with restore` and install the file as chapter 5 describes. The entry allows a root `cp -p -n` of any path the host can read to any new path: sudo cannot confine the paths, and the account that zfsctl logs in as already holds `zfs` and `zpool`, which are as powerful as root. The entry is **off by default** and printed with that warning.
-- **A short race remains.** The folder checks run right before the copy, but a local user who can write to that dataset could swap a folder for a symlink in that tiny gap. Restore into a folder only you control when the dataset is shared with people you do not trust.
+- **It needs the `restore` sudoers entry on other hosts.** The hub itself, which runs as root, needs nothing. On any other host run `zfsctl print-sudoers HOST --with restore` and install the file as chapter 5 describes. The entry allows a root `cp -p -n` (with `-T` on Linux) of any path the host can read to any new path: sudo cannot confine the paths, and the account that zfsctl logs in as already holds `zfs` and `zpool`, which are as powerful as root. The entry is **off by default** and printed with that warning.
+- **A short race remains.** The folder checks and the check that the new name is free run right before the copy, but a local user who can write to the destination folder could, in that tiny gap, swap a folder for a symlink, or plant a directory or a symlink at the new name itself, and the root `cp` would then put the file somewhere else on the host (a copy into a directory works on every OS; on Linux `-T` stops the directory case; FreeBSD also writes through a dangling symlink). Restore only into folders you control when the dataset is shared with people you do not trust.
 - **The copy lands in the live dataset.** If that folder is synced (to your phone, to another machine), the copy will sync too.
 - **A dataset given to a zone is refused.** `restore from a dataset given to a zone must be done inside the zone`: such a dataset can be browsed from the host but not restored from it, because the host would have to write through the zone's own folders, which the zone controls.
-- **A name the filesystem treats as an existing one** (for instance `PHOTO.jpg` on a case-insensitive dataset) is skipped silently by `cp -n`. zfsctl reports `not copied`, never success.
+- **A name the filesystem treats as an existing one** (for instance `PHOTO.jpg` when you restore `photo.jpg` on a dataset that ignores case) is refused up front: any entry whose name differs from the new name only by case counts as taken, whatever it is (a file, a folder or a link), and so is a non-ASCII name on a dataset that normalizes names. Should a copy still end up missing, zfsctl reports `not copied`, never success, and you should check the destination folder yourself.
 
 ## How scheduled snapshots are named
 
