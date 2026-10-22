@@ -19,10 +19,12 @@ pub enum Feature {
     Beadm,
     /// A read-only `ls` of a snapshot's folders (names and metadata, never contents); off by default everywhere.
     Browse,
+    /// A `cp` that never overwrites, so a file can be copied out of a snapshot to a new path; off by default everywhere.
+    Restore,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 11] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart, Feature::Beadm, Feature::Browse];
+    pub const ALL: [Feature; 12] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart, Feature::Beadm, Feature::Browse, Feature::Restore];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -37,6 +39,7 @@ impl Feature {
             Feature::Smart => "smart",
             Feature::Beadm => "beadm",
             Feature::Browse => "browse",
+            Feature::Restore => "restore",
         }
     }
 
@@ -44,8 +47,8 @@ impl Feature {
     /// (`smartctl`) do on Linux and illumos so far.
     pub fn works_on(self, os: HostOs) -> bool {
         match os {
-            HostOs::Linux => matches!(self, Feature::Core | Feature::Smart | Feature::Browse),
-            HostOs::Illumos => matches!(self, Feature::Core | Feature::Smart | Feature::Beadm | Feature::Browse),
+            HostOs::Linux => matches!(self, Feature::Core | Feature::Smart | Feature::Browse | Feature::Restore),
+            HostOs::Illumos => matches!(self, Feature::Core | Feature::Smart | Feature::Beadm | Feature::Browse | Feature::Restore),
             HostOs::FreeBsd | HostOs::Other => self != Feature::Beadm,
         }
     }
@@ -90,6 +93,11 @@ const BROWSE_FORMS: &[&[&str]] = &[
     &["-lAbEc", "--", "*"],
 ];
 const LS: Kind = Kind::Privileged { pinned: BROWSE_FORMS, probe: "" };
+/// The one form of `cp` that `restore` allows, the same on every OS: `-p` keeps times and modes, `-n` never overwrites an existing file
+/// (FreeBSD, GNU and illumos all have it; GNU's `--update=none` would need an `=`, which sudoers makes us escape), then `--`, the source
+/// and the destination. sudo matches the words as one string, so it cannot confine the paths.
+const RESTORE_FORMS: &[&[&str]] = &[&["-p", "-n", "--", "*", "*"]];
+const CP: Kind = Kind::Privileged { pinned: RESTORE_FORMS, probe: "" };
 const SMB_CONF: Kind = Kind::Privileged { pinned: &[&[crate::zfs::smb::CONF_PATH]], probe: "/etc/master.passwd" };
 
 pub const ENTRIES: &[Entry] = &[
@@ -109,6 +117,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "readlink", features: &[Feature::Restic], kind: ANY },
     Entry { name: "smartctl", features: &[Feature::Smart], kind: SMARTCTL },
     Entry { name: "ls", features: &[Feature::Browse], kind: LS },
+    Entry { name: "cp", features: &[Feature::Restore], kind: CP },
     // illumos zones: which zone a dataset is given to, read without sudo (the browser reads such a dataset through the zone's root).
     Entry { name: "zoneadm", features: &[Feature::Browse], kind: Kind::Unprivileged },
     Entry { name: "zonecfg", features: &[Feature::Browse], kind: Kind::Unprivileged },
@@ -222,7 +231,7 @@ pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     if let Some(f) = added.iter().find(|f| removed.contains(f)) {
         return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
     }
-    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart | Feature::Beadm | Feature::Browse) || added.contains(f)) && !removed.contains(f)).collect())
+    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart | Feature::Beadm | Feature::Browse | Feature::Restore) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
 fn serving(entry: &Entry, features: &[Feature]) -> bool {
@@ -391,6 +400,38 @@ mod tests {
     }
 
     #[test]
+    fn restore_is_a_known_feature_off_by_default_on_every_os() {
+        use crate::zfs::host_health::HostOs;
+        let restore = ["restore".to_string()];
+        assert!(!select(&[], &[]).unwrap().contains(&Feature::Restore));
+        assert!(select(&restore, &[]).unwrap().contains(&Feature::Restore));
+        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other] {
+            assert!(!select_for_os(os, &[], &[]).unwrap().contains(&Feature::Restore), "{os:?} default");
+            assert!(select_for_os(os, &restore, &[]).unwrap().contains(&Feature::Restore), "{os:?} with restore");
+        }
+    }
+
+    #[test]
+    fn the_cp_entry_is_privileged_and_its_forms_never_allow_overwriting() {
+        use crate::zfs::host_health::HostOs;
+        let Some(Entry { features, kind: Kind::Privileged { pinned, .. }, .. }) = lookup("cp") else { panic!("cp is not a privileged entry") };
+        assert_eq!(*features, [Feature::Restore]);
+        let cp = lookup("cp").unwrap();
+        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other] {
+            let forms = pinned_forms(cp, os);
+            assert_eq!(forms.len(), 1, "{os:?}");
+            assert_eq!(forms[0].join(" "), "-p -n -- * *", "{os:?}: the same form on every OS");
+        }
+        for form in *pinned {
+            for banned in ["-f", "-i", "-r", "-R", "-a", "-l", "-s", "-u"] {
+                assert!(!form.contains(&banned), "{form:?} contains {banned}");
+            }
+            assert!(form.contains(&"-n"), "{form:?} needs the no-clobber word");
+            assert_eq!(form[form.len() - 3..], ["--", "*", "*"], "{form:?}");
+        }
+    }
+
+    #[test]
     fn with_a_feature_the_os_does_not_support_is_refused_with_its_name_and_smart_is_allowed() {
         use crate::zfs::host_health::HostOs;
         for name in ["bootenvs", "disks", "acl", "shares", "samba", "restic", "rclone", "beadm"] {
@@ -519,7 +560,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm` `ls` ls -lAb -D %s -- * ls -lAbc -D %s -- * ls -lAbU -D %s -- * ls -lAQ --time-style +%s -- * ls -lAQ --time-style +%s --time ctime -- * ls -lAQ --time-style +%s --time birth -- * ls -lAbE -- * ls -lAbEc -- *";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm` `ls` ls -lAb -D %s -- * ls -lAbc -D %s -- * ls -lAbU -D %s -- * ls -lAQ --time-style +%s -- * ls -lAQ --time-style +%s --time ctime -- * ls -lAQ --time-style +%s --time birth -- * ls -lAbE -- * ls -lAbEc -- * `cp` cp -p -n -- * *";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);

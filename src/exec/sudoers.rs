@@ -134,6 +134,9 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
     if resolved.iter().any(|r| r.entry.name == "ls") {
         text.push_str("# ls: sudo matches the words as one string, so these forms cannot stop an extra path or an option slipped in by merging words\n# (sudo's * also matches spaces and /). ls has no option that writes or runs anything (the worst is a recursive listing), zfsctl only\n# reads .zfs/snapshot folders with them, and this account already holds zfs and zpool, which are as powerful as root.\n");
     }
+    if resolved.iter().any(|r| r.entry.name == "cp") {
+        text.push_str("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths\n# (sudo's * also matches spaces and /). The form is the same on every OS: -p -n -- SOURCE DESTINATION, where -n never overwrites an existing file.\n");
+    }
     let path = install_path(os);
     let _ = write!(text, "# Install as {path} (owner root, mode 0440) after checking it:\n#   visudo -c -f {path}\n");
     // zoneadm and zonecfg exist on illumos only.
@@ -800,6 +803,19 @@ mod tests {
         assert!(illumos.contains("/bin/ls -lAbE -- *") && illumos.contains("/bin/ls -lAbEc -- *") && !illumos.contains("-D %s") && !illumos.contains("--time-style"), "{illumos}");
         let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
         assert!(!without.contains("/bin/ls") && !without.contains("# ls:"), "{without}");
+    }
+
+    #[test]
+    fn print_sudoers_with_restore_lists_only_the_hosts_cp_form_and_says_what_it_allows() {
+        const CP_PATHS: &[(&str, &str)] = &[("cp", "/bin/cp")];
+        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos] {
+            let text = print_sudoers(&host_with(CP_PATHS), "h", "u@h", os, &[Feature::Restore], "d").unwrap();
+            assert!(text.contains("/bin/cp -p -n -- * *"), "{os:?}: {text}");
+            assert_eq!(text.matches("/bin/cp ").count(), 1, "{os:?}: {text}");
+            assert!(text.contains("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths"), "{text}");
+        }
+        let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
+        assert!(!without.contains("/bin/cp") && !without.contains("# cp"), "{without}");
     }
 
     #[test]

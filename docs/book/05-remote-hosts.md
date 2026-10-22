@@ -101,6 +101,7 @@ Twelve programs may run as root through sudo; each is there for a feature, so a 
 | `readlink` | backup jobs with a path (comes with `--with restic`) |
 | `smartctl` | the daily disk health check (add with `--with smart`) |
 | `ls` | looking inside snapshots (add with `--with browse`; metadata only, never file contents) |
+| `cp` | copying a file out of a snapshot (add with `--with restore`; the form is the same on every OS, and `-n` means it never overwrites) |
 
 Small read-only programs run over ssh **without** sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` (FreeBSD), and `sh` (one `sh -c` that reads `/proc`, `/sys` or `kstat`, and detects the OS), `lsblk` (Linux disks), `systemctl`, `svcs` and `pgrep` (service state on Linux and illumos), `stat` (restic), and `zoneadm` and `zonecfg` (illumos zones, for the snapshot browser). They need no entry, unless the ssh key on that host is locked to a single forced command, in which case that command must allow them.
 
