@@ -144,6 +144,9 @@ pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) 
     let props = if os == HostOs::Illumos { "mounted,mountpoint,zoned" } else { "mounted,mountpoint" };
     let out = super::run_checked(runner, "zfs", &["get", "-H", "-o", "property,value", props, dataset], &format!("zfs get {props} {dataset}"))?;
     let value = |name: &str| out.stdout.lines().filter_map(|l| l.split_once('\t')).find(|(k, _)| *k == name).map(|(_, v)| v.trim().to_string());
+    // A dataset given to a zone is looked up first: a halted zone has its datasets unmounted, and "the zone is not running" is the
+    // useful message, not "not mounted".
+    let zone = if os == HostOs::Illumos && value("zoned").as_deref() == Some("on") { Some(zone_for_dataset(runner, dataset)?) } else { None };
     if value("mounted").as_deref() != Some("yes") {
         return Err(AppError::Config("this dataset is not mounted, so there is no snapshot folder to browse".to_string()));
     }
@@ -151,8 +154,10 @@ pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) 
         Some(m) if m.starts_with('/') => m,
         _ => return Err(AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string())),
     };
-    if os == HostOs::Illumos && value("zoned").as_deref() == Some("on") {
-        let (zone, zone_path) = zone_for_dataset(runner, dataset)?;
+    if let Some((zone, zone_path)) = zone {
+        // Everything after `<zone path>/root` is controlled by the zone's own root user (folders, symlinks, even this
+        // mountpoint), so the global zone's `ls` can be pointed elsewhere on the host by a hostile zone. What is shown is a
+        // hint, and a restore must never read or write through this path.
         let inside = mountpoint.trim_start_matches('/');
         let path = if inside.is_empty() { format!("{zone_path}/root") } else { format!("{zone_path}/root/{inside}") };
         return Ok(BrowseBase { path, zone: Some(zone) });
@@ -785,7 +790,25 @@ mod tests {
     }
 
     #[test]
-    fn a_zoned_dataset_on_a_non_illumos_host_is_still_refused() {
+    fn a_zoned_dataset_whose_zone_is_stopped_names_the_zone_not_a_vague_unmounted_message() {
+        let r = ScriptedRunner::new(&[
+            ("zfs get", "mounted\tno\nmountpoint\t/omni30/syncthing\nzoned\ton\n"),
+            ("zoneadm list -cp", "0:global:running:/::ipkg:shared:0\n3:syncthing:installed:/rpool/zones/syncthing:u:lipkg:excl:-\n"),
+            ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n"),
+        ]);
+        let err = browse_mountpoint(&r, HostOs::Illumos, "omni30/syncthing").unwrap_err().to_string();
+        assert!(err.contains("syncthing") && err.contains("not running"), "{err}");
+    }
+
+    #[test]
+    fn an_unzoned_dataset_on_illumos_is_browsed_at_its_mountpoint_without_asking_about_zones() {
+        let r = ScriptedRunner::new(&[("zfs get", "mounted\tyes\nmountpoint\t/tank/photos\nzoned\toff\n")]);
+        assert_eq!(browse_mountpoint(&r, HostOs::Illumos, "tank/photos").unwrap(), BrowseBase { path: "/tank/photos".to_string(), zone: None });
+        assert_eq!(r.calls().len(), 1, "only the zfs get ran: {:?}", r.calls());
+    }
+
+    #[test]
+    fn only_illumos_asks_for_zoned_so_other_hosts_browse_the_mountpoint() {
         let r = ScriptedRunner::new(&[("zfs get", "mounted\tyes\nmountpoint\t/m\nzoned\ton\n")]);
         assert_eq!(browse_mountpoint(&r, HostOs::Linux, "tank/d").unwrap().path, "/m", "only illumos asks for zoned; Linux hosts browse the mountpoint");
     }
