@@ -23,6 +23,8 @@ pub struct PendingBrowse {
     pub path: Vec<String>,
     /// The dataset's mountpoint once known, so only the first read asks for it.
     pub mountpoint: Option<String>,
+    /// The zone the base path goes through, once known (illumos datasets given to a zone).
+    pub zone: Option<String>,
     pub os: HostOs,
     pub cancel: Arc<AtomicBool>,
 }
@@ -31,7 +33,9 @@ pub struct PendingBrowse {
 #[derive(Debug)]
 pub struct BrowseOutcome {
     pub listing: Listing,
+    /// The directory that holds the dataset's `.zfs/snapshot` (the zone-root path for a dataset given to a zone).
     pub mountpoint: String,
+    pub zone: Option<String>,
 }
 
 #[derive(Debug)]
@@ -62,8 +66,11 @@ pub struct BrowseView {
     pub name: String,
     pub os: HostOs,
     pub utc_offset: i32,
+    /// Whether `utc_offset` was read from the host; when not, times are shown in UTC and the header says so.
+    pub offset_known: bool,
     pub cancel: Arc<AtomicBool>,
     pub mountpoint: Option<String>,
+    pub zone: Option<String>,
     pub path: Vec<String>,
     pub phase: Phase,
     listing: Option<Listing>,
@@ -82,16 +89,18 @@ pub struct BrowseView {
 const INPUT_MAX: usize = 80;
 
 impl BrowseView {
-    pub fn new(p: &PendingBrowse, utc_offset: i32) -> Self {
+    pub fn new(p: &PendingBrowse, utc_offset: Option<i32>) -> Self {
         Self {
             host: p.host,
             request: p.request,
             dataset: p.dataset.clone(),
             name: p.name.clone(),
             os: p.os,
-            utc_offset,
+            utc_offset: utc_offset.unwrap_or(0),
+            offset_known: utc_offset.is_some(),
             cancel: Arc::clone(&p.cancel),
             mountpoint: p.mountpoint.clone(),
+            zone: p.zone.clone(),
             path: p.path.clone(),
             phase: Phase::Reading,
             listing: None,
@@ -110,6 +119,7 @@ impl BrowseView {
         match result {
             Ok(outcome) => {
                 self.mountpoint = Some(outcome.mountpoint);
+                self.zone = outcome.zone;
                 self.listing = Some(outcome.listing);
                 self.phase = Phase::Ready;
                 self.refilter();
@@ -148,7 +158,7 @@ impl BrowseView {
         self.request = request;
         self.phase = Phase::Reading;
         self.notice = None;
-        PendingBrowse { host: self.host, request, dataset: self.dataset.clone(), name: self.name.clone(), path: self.path.clone(), mountpoint: self.mountpoint.clone(), os: self.os, cancel: Arc::clone(&self.cancel) }
+        PendingBrowse { host: self.host, request, dataset: self.dataset.clone(), name: self.name.clone(), path: self.path.clone(), mountpoint: self.mountpoint.clone(), zone: self.zone.clone(), os: self.os, cancel: Arc::clone(&self.cancel) }
     }
 
     /// Opens the selected folder: the read to queue, `None` when the row is not a folder (a symlink is never entered), or
@@ -285,13 +295,24 @@ impl BrowseView {
     }
 
     fn header(&self) -> Vec<String> {
-        let mut lines = vec![format!("/{}", self.path.join("/"))];
+        let top = format!("/{}", self.path.join("/"));
+        let top = match &self.zone {
+            Some(zone) => format!("{top}   (zone {zone})"),
+            None => top,
+        };
+        let mut lines = vec![top];
         if let Some(text) = self.filter_text() {
             lines.push(text);
+        }
+        if !self.offset_known {
+            lines.push("times are in UTC (this host's time zone is not known yet)".to_string());
         }
         if let Some(listing) = &self.listing {
             if listing.truncated {
                 lines.push("the folder is larger: only the first 20,000 entries (or what was read in 30 s) are listed".to_string());
+            }
+            if listing.times_incomplete {
+                lines.push("some times (changed, created) could not be read in time and show -".to_string());
             }
             if listing.unreadable > 0 {
                 lines.push(format!("{} entries could not be read (unusual names or output)", group_digits(listing.unreadable as u64)));
@@ -400,7 +421,7 @@ mod tests {
             dataset: "tank/data".to_string(),
             name: "s1".to_string(),
             path: path.iter().map(|s| (*s).to_string()).collect(),
-            mountpoint: None,
+            mountpoint: None, zone: None,
             os: HostOs::FreeBsd,
             cancel: Arc::new(AtomicBool::new(false)),
         }
@@ -412,12 +433,12 @@ mod tests {
     }
 
     fn listing(rows: Vec<BrowseRow>) -> Listing {
-        Listing { entries: rows, truncated: false, unreadable: 0, has_created: true }
+        Listing { entries: rows, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }
     }
 
     fn ready(rows: Vec<BrowseRow>) -> BrowseView {
-        let mut view = BrowseView::new(&pending(&[]), 0);
-        view.apply("local", Ok(BrowseOutcome { listing: listing(rows), mountpoint: "/m".to_string() }));
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
+        view.apply("local", Ok(BrowseOutcome { listing: listing(rows), mountpoint: "/m".to_string(), zone: None }));
         view
     }
 
@@ -455,11 +476,11 @@ mod tests {
         let next = view.enter_selected(2).unwrap().expect("pics is a folder");
         assert_eq!((next.path.clone(), next.request, next.mountpoint.as_deref()), (vec!["pics".to_string()], 2, Some("/m")));
         assert!(matches!(view.phase, Phase::Reading) && view.request == 2);
-        view.apply("local", Ok(BrowseOutcome { listing: listing(vec![entry("x.txt", EntryKind::File, 1, 1)]), mountpoint: "/m".to_string() }));
+        view.apply("local", Ok(BrowseOutcome { listing: listing(vec![entry("x.txt", EntryKind::File, 1, 1)]), mountpoint: "/m".to_string(), zone: None }));
         assert_eq!(view.path, ["pics"]);
         let up = view.go_up(3).expect("one level up");
         assert!(up.path.is_empty());
-        view.apply("local", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/m".to_string() }));
+        view.apply("local", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/m".to_string(), zone: None }));
         assert_eq!(view.selected, 0, "back on the folder it came from");
         assert!(view.go_up(4).is_none(), "at the top there is nowhere to go");
     }
@@ -528,11 +549,11 @@ mod tests {
 
     #[test]
     fn the_list_notes_truncation_and_unreadable_entries() {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         let mut l = listing(sample());
         l.truncated = true;
         l.unreadable = 3;
-        view.apply("local", Ok(BrowseOutcome { listing: l, mountpoint: "/m".to_string() }));
+        view.apply("local", Ok(BrowseOutcome { listing: l, mountpoint: "/m".to_string(), zone: None }));
         let shown = draw_to_rows(&view, 120, 16).join("\n");
         assert!(shown.contains("first 20,000") && shown.contains("3 entries could not be read"), "{shown}");
     }
@@ -547,14 +568,14 @@ mod tests {
         for r in &mut l.entries {
             r.created = None;
         }
-        view.apply("local", Ok(BrowseOutcome { listing: l, mountpoint: "/m".to_string() }));
+        view.apply("local", Ok(BrowseOutcome { listing: l, mountpoint: "/m".to_string(), zone: None }));
         let shown = draw_to_rows(&view, 120, 16).join("\n");
         assert!(shown.contains("not recorded on this OS"), "{shown}");
     }
 
     #[test]
     fn a_failed_read_shows_the_explained_text_and_a_huge_folder_draws_only_a_window() {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         view.apply("ub24", Err(crate::error::AppError::CommandFailed { cmd: "ls".to_string(), status: 1, stderr: "sudo: a password is required".to_string() }));
         let shown = draw_to_rows(&view, 120, 10).join("\n");
         assert!(shown.contains("print-sudoers ub24 --with browse"), "{shown}");
@@ -566,5 +587,46 @@ mod tests {
         }
         let shown = draw_to_rows(&big, 110, 14).join("\n");
         assert!(shown.contains("file00500"), "the selected row is in the window: {shown}");
+    }
+
+    #[test]
+    fn the_header_names_the_zone_a_folder_was_read_through() {
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
+        view.apply("omnios", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/rpool/zones/syncthing/root/omni30/syncthing".to_string(), zone: Some("syncthing".to_string()) }));
+        let shown = draw_to_rows(&view, 110, 16).join("\n");
+        assert!(shown.contains("(zone syncthing)"), "{shown}");
+        let plain = draw_to_rows(&ready(sample()), 110, 16).join("\n");
+        assert!(!plain.contains("zone"), "a dataset that is not in a zone shows no zone text: {plain}");
+    }
+
+    #[test]
+    fn the_zone_and_base_path_are_kept_for_the_folders_below_without_asking_again() {
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
+        view.apply("omnios", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/rpool/zones/z/root/d".to_string(), zone: Some("z".to_string()) }));
+        let next = view.enter_selected(2).unwrap().expect("pics is a folder");
+        assert_eq!((next.mountpoint.as_deref(), next.zone.as_deref()), (Some("/rpool/zones/z/root/d"), Some("z")));
+        view.apply("omnios", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/rpool/zones/z/root/d".to_string(), zone: Some("z".to_string()) }));
+        let up = view.go_up(3).expect("up");
+        assert_eq!(up.zone.as_deref(), Some("z"));
+    }
+
+    #[test]
+    fn the_header_says_when_times_could_not_be_read_in_time() {
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
+        let mut l = listing(sample());
+        l.times_incomplete = true;
+        view.apply("local", Ok(BrowseOutcome { listing: l, mountpoint: "/m".to_string(), zone: None }));
+        let shown = draw_to_rows(&view, 120, 16).join("\n");
+        assert!(shown.contains("could not be read in time"), "{shown}");
+    }
+
+    #[test]
+    fn the_header_says_when_the_hosts_time_zone_is_not_known() {
+        let mut unknown = BrowseView::new(&pending(&[]), None);
+        unknown.apply("local", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/m".to_string(), zone: None }));
+        let shown = draw_to_rows(&unknown, 120, 16).join("\n");
+        assert!(shown.contains("times are in UTC"), "{shown}");
+        let known = draw_to_rows(&ready(sample()), 120, 16).join("\n");
+        assert!(!known.contains("times are in UTC"), "{known}");
     }
 }

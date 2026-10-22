@@ -261,7 +261,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     if !view.rows.is_empty() {
                         v.push(h("↑↓", "Move", 1));
                     }
-                    if view.rows.get(view.selected).is_some_and(|r| r.entry.kind == crate::zfs::snapshot_browse::EntryKind::Directory) {
+                    if view.rows.get(view.selected).is_some_and(|r| r.entry.kind == crate::zfs::snapshot_browse::EntryKind::Directory && crate::zfs::snapshot_browse::valid_component(&r.entry.name)) {
                         v.push(h("Enter", "Open", 1));
                     }
                     if !view.path.is_empty() {
@@ -1167,13 +1167,13 @@ mod tests {
     fn browsing(rows: &[(&str, crate::zfs::snapshot_browse::EntryKind)], path: &[&str]) -> App {
         use crate::ui::browse::{BrowseOutcome, BrowseView, PendingBrowse};
         use crate::zfs::snapshot_browse::{ListEntry, Listing, Row};
-        let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s1".to_string(), path: path.iter().map(|s| (*s).to_string()).collect(), mountpoint: None, os: crate::zfs::host_health::HostOs::FreeBsd, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
-        let mut view = BrowseView::new(&pending, 0);
+        let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s1".to_string(), path: path.iter().map(|s| (*s).to_string()).collect(), mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::FreeBsd, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        let mut view = BrowseView::new(&pending, Some(0));
         let entries = rows
             .iter()
             .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "o".to_string(), group: "g".to_string(), size: 5, time: Some(1), link_target: None }, changed: None, created: None })
             .collect();
-        view.apply("h", Ok(BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true }, mountpoint: "/m".to_string() }));
+        view.apply("h", Ok(BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/m".to_string(), zone: None }));
         let mut a = snapshots();
         a.browse_view = Some(view);
         a
@@ -1192,8 +1192,8 @@ mod tests {
         use crate::zfs::snapshot_browse::EntryKind::{Directory, File};
         let keys = |a: &App| -> Vec<&'static str> { keys(a).into_iter().filter(|k| !["Tab", "!", "A", "?", "q"].contains(k)).collect() };
         let mut reading = snapshots();
-        let pending = crate::ui::browse::PendingBrowse { host: 0, request: 1, dataset: "d".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, os: crate::zfs::host_health::HostOs::Other, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
-        reading.browse_view = Some(crate::ui::browse::BrowseView::new(&pending, 0));
+        let pending = crate::ui::browse::PendingBrowse { host: 0, request: 1, dataset: "d".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::Other, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        reading.browse_view = Some(crate::ui::browse::BrowseView::new(&pending, Some(0)));
         assert_eq!(keys(&reading), ["Esc"]);
         let top = browsing(&[("pics", Directory), ("a", File)], &[]);
         let ks = keys(&top);
@@ -1209,6 +1209,15 @@ mod tests {
         let mut typing = browsing(&[("a", File)], &[]);
         typing.browse_view.as_mut().unwrap().start_input(crate::ui::browse::InputKind::Name);
         assert_eq!(keys(&typing), ["Enter", "Esc"]);
+    }
+
+    #[test]
+    fn open_is_not_offered_on_a_folder_whose_name_will_be_refused() {
+        use crate::zfs::snapshot_browse::EntryKind::Directory;
+        let odd = browsing(&[("dir\nnewline", Directory)], &[]);
+        assert!(!keys(&odd).contains(&"Enter"), "{:?}", keys(&odd));
+        let plain = browsing(&[("dir", Directory)], &[]);
+        assert!(keys(&plain).contains(&"Enter"));
     }
 
     #[test]

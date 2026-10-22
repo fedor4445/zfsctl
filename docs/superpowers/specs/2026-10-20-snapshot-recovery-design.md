@@ -150,6 +150,8 @@ and there is no portable single command. The proposed default:
   displayed, never executed or interpolated.
 - Symlinks are shown as symlinks and never followed.
 
+**Hard rules for slice 4, found while building slice 3 (2026-10-21).** (1) A listing must be one line per entry before anything is restored from it: a crafted name (a newline and a forged line, or a symlink whose target text holds one) can today make the browser show a folder that is really a path through a symlink. Use escaped output (new pinned `ls` forms) or entry-count checks. (2) The source must be resolved without following symlinks. (3) Never send a name containing a control character or U+FFFD. (4) For a dataset given to a zone, never read or write through `<zone path>/root`: that tree is controlled by the zone's root user and can lead anywhere on the host.
+
 ### Slice 4: restore as a copy
 
 **What the user sees.** `R` on a file in the browser (or in a slice 2 entry list) offers **restore as a copy**. The

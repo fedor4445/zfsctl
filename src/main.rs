@@ -150,7 +150,7 @@ fn admin(command: &Command, config: &config::Config) -> error::Result<i32> {
     let os = exec::sudoers::detect_os(found.runner.as_ref());
     let features = exec::privilege::select_for_os(os, with, without)?;
     let result = if check {
-        exec::sudoers::check_host_target(found.runner.as_ref(), host, target, &features).map(|report| (report.render(), report.exit_code()))
+        exec::sudoers::check_host_target(found.runner.as_ref(), host, target, os, &features).map(|report| (report.render(), report.exit_code()))
     } else {
         let generated = chrono::Utc::now().format("%Y-%m-%d").to_string();
         exec::sudoers::print_sudoers(found.runner.as_ref(), host, target, os, &features, &generated).map(|text| (text, 0))
