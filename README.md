@@ -1,4 +1,4 @@
-# zfsctl
+<h1 align="center"><img src="docs/logo/zfsctl-logo.svg" alt="zfsctl" width="360"></h1>
 
 A terminal UI and daemon for managing ZFS storage: a FreeBSD hub that manages FreeBSD, Linux and illumos hosts over ssh.
 
