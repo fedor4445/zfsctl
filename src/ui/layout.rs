@@ -1493,7 +1493,14 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
             f.render_widget(p, popup_area);
         }
         Modal::Info { title, body } => {
-            let p = Paragraph::new(body.as_str())
+            // The wordmark (About) is drawn in the warn colour, and left out when the pop-up is too narrow for it: wrapped, it is garbage.
+            let fits = usize::from(popup_area.width.saturating_sub(2)) >= crate::ui::logo::WIDTH;
+            let lines: Vec<Line> = body
+                .lines()
+                .filter(|l| fits || !crate::ui::logo::is_wordmark_line(l))
+                .map(|l| if crate::ui::logo::is_wordmark_line(l) { Line::styled(l.to_string(), theme.warn) } else { Line::raw(l.to_string()) })
+                .collect();
+            let p = Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
                 .scroll((info_scroll, 0))
                 .block(Block::default().borders(Borders::ALL).title(title.as_str()));
@@ -3110,6 +3117,21 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn the_about_screen_draws_the_wordmark_in_the_warn_colour_and_leaves_it_out_when_it_cannot_fit() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(crossterm::event::KeyCode::Char('A'));
+        let rows = render(&mut app, 120, 40);
+        let logo = crate::ui::logo::wordmark();
+        assert!(logo.iter().all(|line| rows.iter().any(|r| r.contains(line.as_str()))), "{rows:?}");
+        assert_eq!(fg_of(&mut app, "▀▀▀▀▀", 120, 40), Some(ratatui::style::Color::Yellow), "the theme's warn colour");
+        assert!(rows.iter().any(|r| r.contains("zfsctl v")), "the version stays");
+        // a pop-up too narrow for the drawing shows the text without it (a wrapped wordmark would be garbage)
+        let narrow = render(&mut app, 60, 40);
+        assert!(narrow.iter().all(|r| !r.contains('▀') && !r.contains('█')), "{narrow:?}");
+        assert!(narrow.iter().any(|r| r.contains("zfsctl v")), "{narrow:?}");
     }
 
     #[test]
