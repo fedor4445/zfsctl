@@ -182,6 +182,8 @@ The view opens with a header of counts, for example `2,505 removed · 12 added �
 | **Changed** | when ZFS last recorded a change to it. This is not the date the file was created, and the view does not show sizes: it tells you what changed and when, not how big it was |
 | **Path** | where it is, written relative to the dataset (see below) |
 
+Inside an opened folder, `/` filters its entries by name as you type, just as in the snapshot browser below: `.jpg|.jpeg` keeps the pictures, `*.docx` the documents. A line under the counts says `showing 2 of 31`. The filter looks only at the entries already read for that folder (at most 5,000; the header says so), and it is cleared when you leave the folder.
+
 A folder opened with `Enter`, from the same example (the `docs` folder: one file changed, one renamed, one removed):
 
 ```screen
@@ -278,7 +280,7 @@ The line under the list describes the selected entry: **Created** (when the file
 | `↑` `↓` | move |
 | `Enter` or `→` | open the selected folder (a symlink is shown but never entered) |
 | `←` or `Backspace` | go up one folder |
-| `/` | keep only names that contain what you type (not case sensitive; `*` and `%` are ordinary characters) |
+| `/` | keep only names that match what you type, **as you type** (not case sensitive). Plain text is a piece of the name; `a|b` keeps names matching either (`.jpg|.jpeg|.png`); `*` and `?` are wildcards over the whole name (`IMG_????.jpg`, `*.jp*g`). `Enter` keeps the filter, `Esc` brings back the one that was there |
 | `m` | keep only entries modified within a range of days: `2026-10-01..2026-10-20`, `2026-10-01..`, `..2026-10-20`, or one day |
 | `s` | keep only a range of sizes: `10M..`, `..1G`, `1K..1M` or one size (units are K, M, G, T) |
 | `t` | cycle through all, files only, folders only and symlinks only |

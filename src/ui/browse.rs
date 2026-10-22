@@ -79,6 +79,8 @@ pub struct BrowseView {
     pub selected: usize,
     pub filter: Filter,
     pub input: Option<Input>,
+    /// The name filter in force when the prompt was opened, brought back by `Esc` (the filter changes live while typing).
+    name_before: Option<crate::zfs::name_filter::NameFilter>,
     /// A one-line message: why a filter was refused or a folder not opened.
     pub notice: Option<String>,
     /// The row each level was left from, to come back to it.
@@ -108,6 +110,7 @@ impl BrowseView {
             selected: 0,
             filter: Filter::default(),
             input: None,
+            name_before: None,
             notice: None,
             back: Vec::new(),
             restore: None,
@@ -193,9 +196,19 @@ impl BrowseView {
     }
 
     pub fn start_input(&mut self, kind: InputKind) {
-        let text = if kind == InputKind::Name { self.filter.name.clone() } else { String::new() };
+        let text = if kind == InputKind::Name { self.filter.name.text().to_string() } else { String::new() };
+        self.name_before = (kind == InputKind::Name).then(|| self.filter.name.clone());
         self.input = Some(Input { kind, text });
         self.notice = None;
+    }
+
+    /// Applies the name being typed to the list at once (the other filters wait for `Enter`).
+    fn apply_live_name(&mut self) {
+        if let Some(Input { kind: InputKind::Name, text }) = &self.input {
+            self.filter.name = crate::zfs::name_filter::NameFilter::new(text);
+            self.selected = 0;
+            self.refilter();
+        }
     }
 
     /// A key while a filter is being typed. Returns whether it was taken (it is, whenever a prompt is open).
@@ -203,16 +216,28 @@ impl BrowseView {
         let Some(input) = self.input.as_mut() else { return false };
         match key {
             KeyCode::Esc => {
+                let was_name = input.kind == InputKind::Name;
                 self.input = None;
                 self.notice = None;
+                if was_name {
+                    if let Some(before) = self.name_before.take() {
+                        self.filter.name = before;
+                        self.selected = 0;
+                        self.refilter();
+                    }
+                }
             }
             KeyCode::Backspace => {
                 input.text.pop();
+                self.apply_live_name();
             }
-            KeyCode::Char(c) if !c.is_control() && input.text.chars().count() < INPUT_MAX => input.text.push(c),
+            KeyCode::Char(c) if !c.is_control() && input.text.chars().count() < INPUT_MAX => {
+                input.text.push(c);
+                self.apply_live_name();
+            }
             KeyCode::Enter => {
-                let (kind, text) = (input.kind, input.text.trim().to_string());
-                self.commit_input(kind, &text);
+                let (kind, text) = (input.kind, input.text.clone());
+                self.commit_input(kind, text.trim());
             }
             _ => {}
         }
@@ -221,7 +246,10 @@ impl BrowseView {
 
     fn commit_input(&mut self, kind: InputKind, text: &str) {
         match kind {
-            InputKind::Name => self.filter.name = text.to_string(),
+            InputKind::Name => {
+                self.filter.name = crate::zfs::name_filter::NameFilter::new(text);
+                self.name_before = None;
+            }
             InputKind::Modified => {
                 if text.is_empty() {
                     (self.filter.modified_from, self.filter.modified_to) = (None, None);
@@ -275,7 +303,7 @@ impl BrowseView {
         }
         let mut parts = Vec::new();
         if !self.filter.name.is_empty() {
-            parts.push(format!("name has \"{}\"", self.filter.name));
+            parts.push(format!("name matches \"{}\"", self.filter.name.text().trim()));
         }
         if self.filter.modified_from.is_some() || self.filter.modified_to.is_some() {
             let day = |s: Option<i64>| s.map_or_else(String::new, |s| time_text(Some(s), self.utc_offset).chars().take(10).collect());
@@ -356,11 +384,11 @@ fn size_text(row: &BrowseRow) -> String {
 
 fn input_prompt(input: &Input) -> String {
     let what = match input.kind {
-        InputKind::Name => "name contains",
+        InputKind::Name => "name matches (a|b for either, * ? are wildcards)",
         InputKind::Modified => "modified (2026-10-01..2026-10-20)",
         InputKind::Size => "size (10M.. or ..1G or 1K..1M)",
     };
-    format!("{what}: {}▏  (Enter applies, Esc cancels)", sanitise_for_display(&input.text))
+    format!("{what}: {}▏  (Enter keeps, Esc cancels)", sanitise_for_display(&input.text))
 }
 
 /// Draws the view in `area`, in place of the snapshot list.
@@ -677,5 +705,68 @@ mod tests {
         let out = read_pending(&runner, &p).unwrap();
         assert_eq!((out.mountpoint.as_str(), out.zone.as_deref(), out.listing.entries.len()), ("/rpool/zones/z/root/d", Some("z"), 1));
         assert_eq!(runner.spawned.lock().unwrap()[0].last().map(String::as_str), Some("/rpool/zones/z/root/d/.zfs/snapshot/s1/docs"));
+    }
+
+    #[test]
+    fn typing_in_the_name_prompt_filters_the_list_at_once_without_enter() {
+        let mut view = ready(sample());
+        view.start_input(InputKind::Name);
+        type_text(&mut view, "pic");
+        assert!(view.input.is_some(), "the prompt is still open");
+        assert_eq!(names(&view), ["pics"], "the list narrowed as the letters were typed");
+        assert!(view.input_key(KeyCode::Backspace));
+        assert_eq!(names(&view), ["pics"]);
+        assert!(view.input_key(KeyCode::Backspace));
+        assert!(view.input_key(KeyCode::Backspace));
+        assert_eq!(view.rows.len(), 4, "an empty filter shows everything again");
+    }
+
+    #[test]
+    fn alternatives_and_wildcards_work_in_the_name_prompt() {
+        let mut view = ready(sample());
+        view.start_input(InputKind::Name);
+        type_text(&mut view, ".jpg|.TXT");
+        assert_eq!(names(&view), ["Alpha.jpg", "b.txt"]);
+        for _ in 0..9 {
+            view.input_key(KeyCode::Backspace);
+        }
+        type_text(&mut view, "*.jp*g");
+        assert_eq!(names(&view), ["Alpha.jpg"]);
+    }
+
+    #[test]
+    fn esc_in_the_name_prompt_restores_the_filter_that_was_there_and_enter_keeps_the_new_one() {
+        let mut view = ready(sample());
+        view.start_input(InputKind::Name);
+        type_text(&mut view, "txt");
+        view.input_key(KeyCode::Enter);
+        assert_eq!(names(&view), ["b.txt"]);
+        view.start_input(InputKind::Name);
+        for _ in 0..3 {
+            view.input_key(KeyCode::Backspace);
+        }
+        type_text(&mut view, "jpg");
+        assert_eq!(names(&view), ["Alpha.jpg"], "live");
+        view.input_key(KeyCode::Esc);
+        assert_eq!(names(&view), ["b.txt"], "Esc brought back what was there before");
+        assert_eq!(view.filter.name.text(), "txt");
+        view.start_input(InputKind::Name);
+        for _ in 0..3 {
+            view.input_key(KeyCode::Backspace);
+        }
+        type_text(&mut view, "jpg");
+        view.input_key(KeyCode::Enter);
+        assert_eq!(names(&view), ["Alpha.jpg"], "Enter keeps it");
+        assert!(view.input.is_none());
+    }
+
+    #[test]
+    fn the_header_shows_the_typed_filter_while_the_prompt_is_open() {
+        let mut view = ready(sample());
+        view.start_input(InputKind::Name);
+        type_text(&mut view, "jp");
+        let shown = draw_to_rows(&view, 120, 16).join("\n");
+        assert!(shown.contains("showing 1 of 4") && shown.contains("name matches"), "{shown}");
+        assert!(shown.contains("| separates") || shown.contains("* ?"), "the prompt explains alternatives and wildcards: {shown}");
     }
 }

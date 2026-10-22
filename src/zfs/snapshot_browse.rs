@@ -524,7 +524,7 @@ pub enum KindFilter {
 /// size or date, so the user can still walk down to what they are looking for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
-    pub name: String,
+    pub name: crate::zfs::name_filter::NameFilter,
     pub modified_from: Option<i64>,
     pub modified_to: Option<i64>,
     pub size_min: Option<u64>,
@@ -534,7 +534,7 @@ pub struct Filter {
 
 impl Filter {
     pub fn is_empty(&self) -> bool {
-        *self == Filter::default()
+        self.name.is_empty() && self.modified_from.is_none() && self.modified_to.is_none() && self.size_min.is_none() && self.size_max.is_none() && self.kind == KindFilter::All
     }
 
     pub fn matches(&self, row: &Row) -> bool {
@@ -545,7 +545,7 @@ impl Filter {
             KindFilter::Folders => e.kind == EntryKind::Directory,
             KindFilter::Links => e.kind == EntryKind::Symlink,
         };
-        if !kind_ok || (!self.name.is_empty() && !e.name.to_lowercase().contains(&self.name.to_lowercase())) {
+        if !kind_ok || !self.name.matches(&e.name) {
             return false;
         }
         if e.kind == EntryKind::Directory {
@@ -1278,9 +1278,9 @@ mod tests {
         let d = row("pics", EntryKind::Directory, 7, Some(100));
         let l = row("link", EntryKind::Symlink, 4, Some(100));
         assert!(Filter::default().matches(&f) && Filter::default().is_empty());
-        let name = Filter { name: "photo".into(), ..Filter::default() };
+        let name = Filter { name: crate::zfs::name_filter::NameFilter::new("photo"), ..Filter::default() };
         assert!(name.matches(&f) && !name.matches(&d) && !name.is_empty());
-        let special = Filter { name: "%*\\".into(), ..Filter::default() };
+        let special = Filter { name: crate::zfs::name_filter::NameFilter::new("%*\\"), ..Filter::default() };
         assert!(!special.matches(&f), "wildcards are plain characters");
         let size = Filter { size_min: Some(1000), ..Filter::default() };
         assert!(size.matches(&f) && !size.matches(&l) && size.matches(&d), "a size filter never hides a folder");
@@ -1290,7 +1290,7 @@ mod tests {
         assert!(!date.matches(&unknown), "an unknown time does not satisfy a date range");
         let links = Filter { kind: KindFilter::Links, ..Filter::default() };
         assert!(links.matches(&l) && !links.matches(&f) && !links.matches(&d));
-        let folders = Filter { kind: KindFilter::Folders, name: "PIC".into(), ..Filter::default() };
+        let folders = Filter { kind: KindFilter::Folders, name: crate::zfs::name_filter::NameFilter::new("PIC"), ..Filter::default() };
         assert!(folders.matches(&d) && !folders.matches(&f));
         let files = Filter { kind: KindFilter::Files, ..Filter::default() };
         assert!(files.matches(&f) && !files.matches(&d) && !files.matches(&l));

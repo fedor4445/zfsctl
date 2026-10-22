@@ -74,6 +74,12 @@ pub struct ChangesView {
     /// The rows of the open folder, copied when it is opened; how many more there are.
     pub entries: Vec<ChangeRow>,
     pub entries_more: usize,
+    /// All rows read for the open folder; `entries` is these narrowed by the name filter.
+    pub entries_all: Vec<ChangeRow>,
+    /// The name filter of the open folder (cleared when the folder is left), the text being typed, and the filter to bring back on `Esc`.
+    pub name_filter: crate::zfs::name_filter::NameFilter,
+    pub name_input: Option<String>,
+    name_before: Option<crate::zfs::name_filter::NameFilter>,
 }
 
 /// 2505 as `2,505`.
@@ -113,6 +119,10 @@ impl ChangesView {
             groups_more: 0,
             entries: Vec::new(),
             entries_more: 0,
+            entries_all: Vec::new(),
+            name_filter: crate::zfs::name_filter::NameFilter::default(),
+            name_input: None,
+            name_before: None,
         }
     }
 
@@ -165,8 +175,11 @@ impl ChangesView {
         }
         if let Some((name, _)) = self.groups.get(self.selected) {
             let (rows, more) = summary.entries_in(name, self.depth, ENTRIES_PER_GROUP);
-            self.entries = rows.into_iter().cloned().collect();
+            self.entries_all = rows.into_iter().cloned().collect();
             self.entries_more = more;
+            self.name_filter = crate::zfs::name_filter::NameFilter::default();
+            self.name_input = None;
+            self.entries = self.entries_all.clone();
             self.open_group = Some(name.clone());
             self.selected = 0;
         }
@@ -177,7 +190,7 @@ impl ChangesView {
         let closed = self.open_group.take().is_some();
         if closed {
             self.selected = 0;
-            self.entries.clear();
+            self.clear_entries();
         }
         closed
     }
@@ -186,8 +199,63 @@ impl ChangesView {
         self.depth = depth.clamp(1, MAX_DEPTH);
         self.selected = 0;
         self.open_group = None;
-        self.entries.clear();
+        self.clear_entries();
         self.recompute_groups();
+    }
+
+    fn clear_entries(&mut self) {
+        self.entries.clear();
+        self.entries_all.clear();
+        self.name_filter = crate::zfs::name_filter::NameFilter::default();
+        self.name_input = None;
+        self.name_before = None;
+    }
+
+    /// Narrows the open folder's entries to those whose path (or, for a rename, new path) matches the name filter.
+    fn refilter_entries(&mut self) {
+        self.entries = self.entries_all.iter().filter(|r| self.name_filter.matches(&r.shown_path) || r.shown_renamed_to.as_deref().is_some_and(|n| self.name_filter.matches(n))).cloned().collect();
+        self.selected = 0;
+    }
+
+    /// `/` inside an open folder: starts typing a name filter. `false` anywhere else.
+    pub fn start_filter(&mut self) -> bool {
+        if self.open_group.is_none() || !matches!(self.phase, Phase::Ready { .. }) {
+            return false;
+        }
+        self.name_before = Some(self.name_filter.clone());
+        self.name_input = Some(self.name_filter.text().to_string());
+        true
+    }
+
+    /// A key while the filter is being typed; the list narrows with every letter. Returns whether the key was taken.
+    pub fn filter_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode;
+        let Some(text) = self.name_input.as_mut() else { return false };
+        match key {
+            KeyCode::Esc => {
+                self.name_input = None;
+                if let Some(before) = self.name_before.take() {
+                    self.name_filter = before;
+                    self.refilter_entries();
+                }
+            }
+            KeyCode::Enter => {
+                self.name_input = None;
+                self.name_before = None;
+            }
+            KeyCode::Backspace => {
+                text.pop();
+                self.name_filter = crate::zfs::name_filter::NameFilter::new(text);
+                self.refilter_entries();
+            }
+            KeyCode::Char(c) if !c.is_control() && text.chars().count() < 80 => {
+                text.push(c);
+                self.name_filter = crate::zfs::name_filter::NameFilter::new(text);
+                self.refilter_entries();
+            }
+            _ => {}
+        }
+        true
     }
 
     /// The older snapshot as (dataset, name), once the diff is ready: what `H` would protect.
@@ -229,6 +297,13 @@ impl ChangesView {
         }
         if !summary.paths_relative() {
             lines.push("paths as the host prints them".to_string());
+        }
+        if let Some(text) = &self.name_input {
+            lines.push(format!("filter (a|b for either, * ? are wildcards): {}▏  (Enter keeps, Esc cancels)", sanitise_for_display(text)));
+        }
+        if self.open_group.is_some() && !self.name_filter.is_empty() {
+            let loaded = if self.entries_more > 0 { format!(" (the {} entries read; {} more are not loaded)", group_digits(self.entries_all.len() as u64), group_digits(self.entries_more as u64)) } else { String::new() };
+            lines.push(format!("showing {} of {}: name matches \"{}\"{loaded}", group_digits(self.entries.len() as u64), group_digits(self.entries_all.len() as u64), sanitise_for_display(self.name_filter.text().trim())));
         }
         lines
     }
@@ -509,5 +584,93 @@ mod tests {
         v.apply(Ok(ChangesOutcome::NoPrevious));
         let text = draw_to_rows(&v, 110, 10).join("\n");
         assert!(text.contains("oldest snapshot") && text.contains('C'), "{text}");
+    }
+
+    fn open_folder_view() -> ChangesView {
+        let mut v = ready(Some("/ds"), &[("/ds/a/one.jpg", Change::Added), ("/ds/a/two.txt", Change::Modified), ("/ds/a/three.JPEG", Change::Removed), ("/ds/b/g.png", Change::Added)]);
+        v.set_depth(1);
+        v.open_selected();
+        v
+    }
+
+    fn paths(v: &ChangesView) -> Vec<String> {
+        v.entries.iter().map(|r| r.shown_path.clone()).collect()
+    }
+
+    fn type_text(v: &mut ChangesView, text: &str) {
+        for c in text.chars() {
+            assert!(v.filter_key(crossterm::event::KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn the_filter_only_starts_inside_an_open_folder() {
+        let mut v = ready(Some("/ds"), &[("/ds/a/f1", Change::Added)]);
+        assert!(!v.start_filter(), "not at the folder list");
+        v.open_selected();
+        assert!(v.start_filter());
+        assert!(v.name_input.is_some());
+    }
+
+    #[test]
+    fn typing_narrows_a_folders_entries_at_once_and_alternatives_work() {
+        let mut v = open_folder_view();
+        assert_eq!(v.entries.len(), 3);
+        v.start_filter();
+        type_text(&mut v, "jpg");
+        assert_eq!(paths(&v), ["a/one.jpg"], "{:?}", paths(&v));
+        assert_eq!(v.entries_all.len(), 3, "the rows read are kept");
+        for _ in 0..3 {
+            v.filter_key(crossterm::event::KeyCode::Backspace);
+        }
+        type_text(&mut v, ".jpg|.jpeg");
+        assert_eq!(v.entries.len(), 2, "{:?}", paths(&v));
+        assert_eq!(v.selected, 0);
+    }
+
+    #[test]
+    fn esc_restores_the_previous_filter_enter_keeps_and_leaving_the_folder_clears_it() {
+        let mut v = open_folder_view();
+        v.start_filter();
+        type_text(&mut v, "txt");
+        v.filter_key(crossterm::event::KeyCode::Enter);
+        assert!(v.name_input.is_none());
+        assert_eq!(v.entries.len(), 1);
+        v.start_filter();
+        for _ in 0..3 {
+            v.filter_key(crossterm::event::KeyCode::Backspace);
+        }
+        type_text(&mut v, "jpeg");
+        assert_eq!(v.entries.len(), 1);
+        v.filter_key(crossterm::event::KeyCode::Esc);
+        assert_eq!(paths(&v), ["a/two.txt"], "Esc brought back the filter that was there");
+        assert!(v.back());
+        assert!(v.name_filter.is_empty() && v.entries_all.is_empty());
+        v.open_selected();
+        assert_eq!(v.entries.len(), 3, "a folder opens unfiltered");
+    }
+
+    #[test]
+    fn the_view_says_what_the_filter_shows_and_prompts_while_typing() {
+        let mut v = open_folder_view();
+        v.start_filter();
+        type_text(&mut v, "jp");
+        let shown = draw_to_rows(&v, 120, 16).join("\n");
+        assert!(shown.contains("showing 2 of 3") && shown.contains("* ?"), "{shown}");
+        v.filter_key(crossterm::event::KeyCode::Enter);
+        let kept = draw_to_rows(&v, 120, 16).join("\n");
+        assert!(kept.contains("showing 2 of 3") && kept.contains("name matches"), "{kept}");
+    }
+
+    #[test]
+    fn a_rename_matches_on_its_new_path_too() {
+        let mut summary = ChangeSummary::new(&Limits::default(), Some("/ds".to_string()));
+        summary.add(DiffEntry { changed_at: 1_788_654_605, change: Change::Renamed, kind: FileKind::File, path: "/ds/a/old.txt".to_string(), renamed_to: Some("/ds/a/new.jpg".to_string()) });
+        let mut v = ChangesView::new(&pending(Against::Previous));
+        v.apply(Ok(ChangesOutcome::Done { older: "o".to_string(), newer: "n".to_string(), summary }));
+        v.open_selected();
+        v.start_filter();
+        type_text(&mut v, "new.jpg");
+        assert_eq!(v.entries.len(), 1);
     }
 }

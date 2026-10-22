@@ -3258,7 +3258,14 @@ impl App {
         }
         let older = self.changes_view.as_ref().and_then(crate::ui::changes::ChangesView::older_snapshot);
         let Some(view) = self.changes_view.as_mut() else { return false };
+        // While a name filter is being typed every key is text (Esc and Enter end it).
+        if view.filter_key(key) {
+            return true;
+        }
         match key {
+            KeyCode::Char('/') => {
+                view.start_filter();
+            }
             KeyCode::Esc | KeyCode::Backspace => {
                 if !view.back() {
                     view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -3754,9 +3761,9 @@ Snapshots
   d                destroy (type dataset@name to confirm)
   b                roll back (type dataset@name to confirm)
   H                hold the selected snapshot, or release zfsctl's hold on it (a hold protects it from destroy and pruning)
-  c                show what changed since the previous snapshot, by folder (read-only; Enter opens a folder, [ ] sets the depth, H holds the older snapshot, Esc closes)
+  c                show what changed since the previous snapshot, by folder (read-only; Enter opens a folder, / filters its entries by name as you type (a|b for either, * ? wildcards), [ ] sets the depth, H holds the older snapshot, Esc closes)
   C                show what has changed since this snapshot, compared with the live dataset
-  f                look inside the selected snapshot: its folders with type, size, dates, mode and owner (read-only, metadata only; needs the `browse` sudoers feature on other hosts). Enter opens a folder, ← goes up, / m s t filter by name, modified date, size and type, x clears, Esc closes
+  f                look inside the selected snapshot: its folders with type, size, dates, mode and owner (read-only, metadata only; needs the `browse` sudoers feature on other hosts). Enter opens a folder, ← goes up, / filters by name as you type (a|b for either, * ? wildcards), m s t by modified date, size and type, x clears, Esc closes
 
 Disks
   Space            toggle-select a disk
