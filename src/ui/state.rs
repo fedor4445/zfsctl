@@ -3339,21 +3339,9 @@ impl App {
 
     /// Lists one snapshot folder on a worker thread and sends the outcome back (an error as an error).
     pub fn start_browse(&mut self, runner: Arc<dyn CommandRunner>, pending: crate::ui::browse::PendingBrowse) {
-        use crate::ui::browse::BrowseOutcome;
-        use crate::zfs::snapshot_browse::{read_folder, snapshot_dir, BrowseLimits};
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = (|| -> Result<BrowseOutcome> {
-                // The first read finds where the snapshots can be read (and through which zone); the folders below reuse it.
-                let base = match pending.mountpoint.clone() {
-                    Some(path) => crate::zfs::snapshot_browse::BrowseBase { path, zone: pending.zone.clone() },
-                    None => crate::zfs::snapshot_browse::browse_mountpoint(runner.as_ref(), pending.os, &pending.dataset)?,
-                };
-                let steps: Vec<&str> = pending.path.iter().map(String::as_str).collect();
-                let dir = snapshot_dir(&base.path, &pending.name, &steps)?;
-                let listing = read_folder(runner.as_ref(), pending.os, &dir, &BrowseLimits::default(), &pending.cancel)?;
-                Ok(BrowseOutcome { listing, mountpoint: base.path, zone: base.zone })
-            })();
+            let result = crate::ui::browse::read_pending(runner.as_ref(), &pending);
             let _ = tx.send(WorkerMsg::Browse(pending.host, pending.request, result));
         });
     }

@@ -58,7 +58,7 @@ fbsd ALL=(root) NOPASSWD: \
 
 Check the output, then on the host save it as `/usr/local/etc/sudoers.d/zfsctl` (owner `root`, mode `0440`) and test it first with `visudo -c -f /usr/local/etc/sudoers.d/zfsctl`, as the comment says.
 
-Options: `--with restic` adds the restic entry (needed only on hosts that run backup jobs), `--with smart` adds `smartctl` for the daily disk health check (the host needs `smartmontools`), and `--without samba` (or `acl`, `disks`, `bootenvs`, `shares`) leaves a feature out. If a program cannot be found on the host, or is found in an unexpected place (such as a home directory), zfsctl says so and prints nothing rather than a risky line. The exit code is 0 on success, 1 for a problem such as a missing program, and 2 if the host cannot be reached. `--with browse` adds a pinned, read-only `ls` so the snapshot browser can list a snapshot's folders (on OmniOS it also runs `zoneadm` and `zonecfg`, without sudo, to find which zone holds a dataset).
+Options: `--with restic` adds the restic entry (needed only on hosts that run backup jobs), `--with smart` adds `smartctl` for the daily disk health check (the host needs `smartmontools`), and `--without samba` (or `acl`, `disks`, `bootenvs`, `shares`) leaves a feature out. If a program cannot be found on the host, or is found in an unexpected place (such as a home directory), zfsctl says so and prints nothing rather than a risky line. The exit code is 0 on success, 1 for a problem such as a missing program, and 2 if the host cannot be reached. `--with browse` adds a pinned, read-only `ls` so the snapshot browser can list a snapshot's folders (on OmniOS it also runs `zoneadm` and `zonecfg`, without sudo, to find which zone holds a dataset; a zone that cannot be checked makes the browser refuse rather than guess).
 
 Then check that the host really allows exactly what is needed:
 
@@ -102,7 +102,7 @@ Twelve programs may run as root through sudo; each is there for a feature, so a 
 | `smartctl` | the daily disk health check (add with `--with smart`) |
 | `ls` | looking inside snapshots (add with `--with browse`; metadata only, never file contents) |
 
-Small read-only programs run over ssh **without** sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` (FreeBSD), and `sh` (one `sh -c` that reads `/proc`, `/sys` or `kstat`, and detects the OS), `lsblk` (Linux disks), `systemctl`, `svcs` and `pgrep` (service state on Linux and illumos), and `stat` (restic). They need no entry, unless the ssh key on that host is locked to a single forced command, in which case that command must allow them.
+Small read-only programs run over ssh **without** sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` (FreeBSD), and `sh` (one `sh -c` that reads `/proc`, `/sys` or `kstat`, and detects the OS), `lsblk` (Linux disks), `systemctl`, `svcs` and `pgrep` (service state on Linux and illumos), `stat` (restic), and `zoneadm` and `zonecfg` (illumos zones, for the snapshot browser). They need no entry, unless the ssh key on that host is locked to a single forced command, in which case that command must allow them.
 
 The `cat` and `tee` entries are pinned to one file on purpose: a bare `sudo cat` would let the account read any file as root.
 

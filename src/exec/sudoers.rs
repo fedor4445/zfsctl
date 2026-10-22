@@ -136,7 +136,8 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
     }
     let path = install_path(os);
     let _ = write!(text, "# Install as {path} (owner root, mode 0440) after checking it:\n#   visudo -c -f {path}\n");
-    let unprivileged: Vec<&str> = privilege::unprivileged_for(features).iter().map(|e| e.name).collect();
+    // zoneadm and zonecfg exist on illumos only.
+    let unprivileged: Vec<&str> = privilege::unprivileged_for(features).iter().map(|e| e.name).filter(|n| os == HostOs::Illumos || !matches!(*n, "zoneadm" | "zonecfg")).collect();
     if !unprivileged.is_empty() {
         let _ = writeln!(text, "# These run without sudo (needed only if the ssh key is locked to a forced command): {}", unprivileged.join(", "));
     }
@@ -799,6 +800,17 @@ mod tests {
         assert!(illumos.contains("/bin/ls -lAE -- *") && illumos.contains("/bin/ls -lAEc -- *") && !illumos.contains("-D %s") && !illumos.contains("--time-style"), "{illumos}");
         let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
         assert!(!without.contains("/bin/ls") && !without.contains("# ls:"), "{without}");
+    }
+
+    #[test]
+    fn the_no_sudo_comment_names_the_zone_tools_only_for_illumos() {
+        const LS_PATHS: &[(&str, &str)] = &[("ls", "/bin/ls")];
+        for os in [HostOs::FreeBsd, HostOs::Linux] {
+            let text = print_sudoers(&host_with(LS_PATHS), "h", "u@h", os, &[Feature::Browse], "d").unwrap();
+            assert!(!text.contains("zoneadm") && !text.contains("zonecfg"), "{os:?}: {text}");
+        }
+        let illumos = print_sudoers(&host_with(LS_PATHS), "h", "u@h", HostOs::Illumos, &[Feature::Browse], "d").unwrap();
+        assert!(illumos.contains("zoneadm") && illumos.contains("zonecfg"), "{illumos}");
     }
 
     #[test]

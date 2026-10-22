@@ -325,6 +325,20 @@ impl BrowseView {
     }
 }
 
+/// Lists the folder a queued read asks for. The first read of a session finds where the snapshots can be read (and through
+/// which zone); the folders below reuse the base the first read returned, so the host is not asked again.
+pub fn read_pending(runner: &dyn crate::exec::CommandRunner, pending: &PendingBrowse) -> Result<BrowseOutcome> {
+    use crate::zfs::snapshot_browse::{browse_mountpoint, read_folder, snapshot_dir, BrowseBase, BrowseLimits};
+    let base = match pending.mountpoint.clone() {
+        Some(path) => BrowseBase { path, zone: pending.zone.clone() },
+        None => browse_mountpoint(runner, pending.os, &pending.dataset)?,
+    };
+    let steps: Vec<&str> = pending.path.iter().map(String::as_str).collect();
+    let dir = snapshot_dir(&base.path, &pending.name, &steps)?;
+    let listing = read_folder(runner, pending.os, &dir, &BrowseLimits::default(), &pending.cancel)?;
+    Ok(BrowseOutcome { listing, mountpoint: base.path, zone: base.zone })
+}
+
 /// `2026-10-20 05:25` in the host's own zone; `-` when unknown.
 fn time_text(secs: Option<i64>, utc_offset: i32) -> String {
     let zone = chrono::FixedOffset::east_opt(utc_offset).unwrap_or_else(|| chrono::FixedOffset::east_opt(0).expect("UTC"));
@@ -628,5 +642,40 @@ mod tests {
         assert!(shown.contains("times are in UTC"), "{shown}");
         let known = draw_to_rows(&ready(sample()), 120, 16).join("\n");
         assert!(!known.contains("times are in UTC"), "{known}");
+    }
+
+    /// A runner whose `run` (zfs get) must never be called and whose `command` is an `sh -c` script.
+    struct KnownBaseRunner {
+        script: String,
+        spawned: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl crate::exec::CommandRunner for KnownBaseRunner {
+        fn run(&self, cmd: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            panic!("the lookup must be skipped when the base is known, but {cmd} {args:?} ran");
+        }
+        fn run_with_stdin(&self, _cmd: &str, _args: &[&str], _stdin: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+            panic!("no stdin");
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn command(&self, _cmd: &str, args: &[&str]) -> crate::error::Result<std::process::Command> {
+            self.spawned.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", &self.script]);
+            Ok(c)
+        }
+    }
+
+    #[test]
+    fn a_read_with_a_known_base_never_asks_the_host_where_the_snapshots_are() {
+        let runner = KnownBaseRunner { script: "echo '-rw-r--r-- 1 u g 5 100 f'".to_string(), spawned: std::sync::Mutex::new(vec![]) };
+        let mut p = pending(&["docs"]);
+        p.mountpoint = Some("/rpool/zones/z/root/d".to_string());
+        p.zone = Some("z".to_string());
+        let out = read_pending(&runner, &p).unwrap();
+        assert_eq!((out.mountpoint.as_str(), out.zone.as_deref(), out.listing.entries.len()), ("/rpool/zones/z/root/d", Some("z"), 1));
+        assert_eq!(runner.spawned.lock().unwrap()[0].last().map(String::as_str), Some("/rpool/zones/z/root/d/.zfs/snapshot/s1/docs"));
     }
 }

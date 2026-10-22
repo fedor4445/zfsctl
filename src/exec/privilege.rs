@@ -345,6 +345,16 @@ mod tests {
     }
 
     #[test]
+    fn the_zone_tools_are_unprivileged_entries_of_the_browse_feature() {
+        for name in ["zoneadm", "zonecfg"] {
+            let e = lookup(name).unwrap();
+            assert_eq!(e.features, [Feature::Browse], "{name}");
+            assert!(matches!(e.kind, Kind::Unprivileged), "{name} must run without sudo");
+            assert!(is_registered_as(name, false) && !is_registered_as(name, true));
+        }
+    }
+
+    #[test]
     fn the_ls_forms_follow_the_hosts_operating_system() {
         use crate::zfs::host_health::HostOs;
         let ls = lookup("ls").unwrap();
