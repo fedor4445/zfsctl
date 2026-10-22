@@ -53,6 +53,52 @@ pub fn wordmark() -> Vec<String> {
     }).collect()
 }
 
+/// The sidebar's compact mark: the same six letters in a 3x5 grid, three lines of `COMPACT_WIDTH` columns, no cursor.
+pub const COMPACT_WIDTH: usize = 21;
+
+/// Dots of the compact letters, top to bottom (`l` is one column wide).
+const COMPACT_GLYPHS: [&[&str]; 6] = [
+    &["111", "001", "010", "100", "111"],
+    &["011", "100", "111", "100", "100"],
+    &["011", "100", "010", "001", "110"],
+    &["011", "100", "100", "100", "011"],
+    &["010", "111", "010", "010", "011"],
+    &["1", "1", "1", "1", "1"],
+];
+
+pub fn compact() -> Vec<String> {
+    const SMALL_ROWS: usize = 5;
+    let mut grid = vec![vec![false; COMPACT_WIDTH]; SMALL_ROWS];
+    let mut x = 0;
+    for glyph in COMPACT_GLYPHS {
+        let width = glyph.first().map_or(0, |l| l.len());
+        for (r, line) in glyph.iter().enumerate() {
+            for (c, dot) in line.bytes().enumerate() {
+                if let Some(cell) = grid.get_mut(r).and_then(|row| row.get_mut(x + c)) {
+                    *cell = dot == b'1';
+                }
+            }
+        }
+        x += width + 1;
+    }
+    (0..SMALL_ROWS)
+        .step_by(2)
+        .map(|top| {
+            (0..COMPACT_WIDTH)
+                .map(|c| {
+                    let at = |r: usize| grid.get(r).and_then(|row| row.get(c)).copied().unwrap_or(false);
+                    match (at(top), at(top + 1)) {
+                        (true, true) => '█',
+                        (true, false) => '▀',
+                        (false, true) => '▄',
+                        (false, false) => ' ',
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Whether `line` is a row of the drawing (blocks and spaces, at least one block), so the pop-up can colour it.
 pub fn is_wordmark_line(line: &str) -> bool {
     line.chars().any(|c| matches!(c, '█' | '▀' | '▄')) && line.chars().all(|c| matches!(c, '█' | '▀' | '▄' | ' '))
@@ -87,6 +133,17 @@ mod tests {
         let first: Vec<char> = lines[0].chars().collect();
         assert!(first.iter().take(6).all(|c| *c == ' ') && first.iter().skip(12).take(6).all(|c| *c == ' '), "{first:?}");
         assert!(first.iter().skip(6).take(6).any(|c| *c != ' '), "the f has an ascender");
+    }
+
+    #[test]
+    fn the_compact_mark_is_three_lines_that_fit_the_sidebar() {
+        let lines = compact();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.chars().count() == COMPACT_WIDTH && is_wordmark_line(l)), "{lines:?}");
+        // the z's top bar; the l is a one-column bar at the far right, five dots tall
+        assert!(lines[0].starts_with("▀▀█"), "the z: a bar on top, its diagonal starting under the right end: {lines:?}");
+        let last = |l: &String| l.chars().last();
+        assert_eq!((last(&lines[0]), last(&lines[1]), last(&lines[2])), (Some('█'), Some('█'), Some('▀')), "{lines:?}");
     }
 
     #[test]

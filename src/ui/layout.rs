@@ -189,8 +189,20 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let title = if app.is_loading() { "zfsctl (refreshing...)" } else { "zfsctl" };
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(list, area);
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    // The mark sits above the sections, with a blank line under it, when the sidebar has room for it and all of them.
+    let logo = crate::ui::logo::compact();
+    let logo_rows = u16::try_from(logo.len()).unwrap_or(0) + 1;
+    let list_area = if usize::from(inner.height) >= app.sections.len() + usize::from(logo_rows) && usize::from(inner.width) >= crate::ui::logo::COMPACT_WIDTH {
+        let [top, rest] = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(logo_rows), Constraint::Min(0)]).areas(inner);
+        f.render_widget(Paragraph::new(logo.into_iter().map(|l| Line::styled(l, theme.warn)).collect::<Vec<_>>()), top);
+        rest
+    } else {
+        inner
+    };
+    f.render_widget(List::new(items), list_area);
 }
 
 /// Default share of the Pools/Datasets row given to the list (the rest goes to the detail pane).
@@ -3133,7 +3145,7 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("zfsctl v")), "the version stays");
         // a pop-up too narrow for the drawing shows the text without it (a wrapped wordmark would be garbage)
         let narrow = render(&mut app, 60, 40);
-        assert!(narrow.iter().all(|r| !r.contains('▀') && !r.contains('█')), "{narrow:?}");
+        assert!(logo.iter().all(|line| narrow.iter().all(|r| !r.contains(line.as_str()))), "the big wordmark is left out: {narrow:?}");
         assert!(narrow.iter().any(|r| r.contains("zfsctl v")), "{narrow:?}");
     }
 
@@ -3159,6 +3171,22 @@ mod tests {
         assert!((l - r).abs() <= 1 && l > 0, "the version line has {l} on its left and {r} on its right");
         let (_, x) = find("A terminal UI for managing ZFS");
         assert_eq!(x, left + 1, "the description stays flush left");
+    }
+
+    #[test]
+    fn the_sidebar_has_the_logo_above_the_sections_in_the_warn_colour_when_there_is_room_for_it() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let rows = render(&mut app, 120, 40);
+        let logo = crate::ui::logo::compact();
+        let at = |needle: &str, rows: &[String]| rows.iter().position(|r| r.contains(needle));
+        let first = at(&logo[0], &rows).expect("the logo is in the sidebar");
+        assert_eq!(rows.iter().skip(first).take(3).map(|r| r.chars().skip(1).take(crate::ui::logo::COMPACT_WIDTH).collect::<String>()).collect::<Vec<_>>(), logo);
+        assert!(at("Dashboard", &rows).unwrap() > first + 2, "the sections start under the logo: {rows:?}");
+        assert!(rows.iter().take(first).all(|r| !r.contains("Dashboard")));
+        assert_eq!(fg_of(&mut app, &logo[0], 120, 40), Some(ratatui::style::Color::Yellow), "the warn colour, as on the About screen");
+        // too short for the logo and all twelve sections: the sections win
+        let short = render(&mut app, 120, 15);
+        assert!(at(&logo[0], &short).is_none() && at("Settings", &short).is_some(), "{short:?}");
     }
 
     #[test]

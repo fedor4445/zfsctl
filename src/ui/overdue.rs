@@ -31,7 +31,7 @@ fn interval(schedule: &str, now: DateTime<Utc>) -> Option<Duration> {
     let mut gaps = Vec::new();
     for _ in 0..LOOKAHEAD {
         let next = schedule.next_after(&at)?;
-        gaps.push(next.clone() - at);
+        gaps.push(next - at);
         at = next;
     }
     // the first "gap" is from `now`, not between two fires: leave it out
