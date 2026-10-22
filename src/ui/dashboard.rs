@@ -541,6 +541,11 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         let what = if why.is_empty() { format!("failed {age}") } else { format!("failed {age}: {why}") };
         attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs, target: Some(job.id.clone()) });
     }
+    if daemon.level == Level::Fine {
+        for late in crate::ui::overdue::overdue(inputs.jobs, now) {
+            attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
+        }
+    }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
             Some(Fill::Full) => Level::Issue,
@@ -983,6 +988,24 @@ mod tests {
         assert!(!busy.cloud[1].text.contains('▸') && !busy.cloud[1].text.contains("/s"), "{}", busy.cloud[1].text);
         // the traffic column is as wide for the idle row as for the busy one, so In bucket lines up
         assert_eq!(busy.cloud[0].text.chars().count(), busy.cloud[1].text.chars().count(), "{:?}", busy.cloud);
+    }
+
+    #[test]
+    fn a_job_that_stopped_succeeding_is_a_line_in_needs_attention_that_goes_to_the_job() {
+        let snap = Job::test_snapshot("snap-a", "tank/data", "hourly", 24);
+        let mut fx = Fixture::new(view(vec![snap], &[("snap-a", RunResult::Ok, "ok")], beat(1)));
+        // `view` puts the finished runs two hours before now: an hourly job is not late yet
+        assert!(fx.build(vec![]).attention.iter().all(|i| i.subject != "snap-a"), "{:?}", fx.build(vec![]).attention);
+        for run in &mut fx.view.runs {
+            run.finished_at = Some(now() - Duration::hours(6));
+        }
+        let item = fx.build(vec![]).attention.into_iter().find(|i| i.subject == "snap-a").expect("a late job is listed");
+        assert_eq!((item.level, item.goto, item.target.as_deref()), (Level::Issue, Section::Jobs, Some("snap-a")));
+        assert_eq!(item.what, "snapshot tank/data: last ok 6h ago (Hourly)");
+        // with the daemon down the job is not blamed: the daemon's own line says why nothing runs
+        let down = Fixture::new(JobsView { heartbeat: None, ..fx.view.clone() }).build(vec![]);
+        assert!(down.attention.iter().all(|i| i.subject != "snap-a"), "{:?}", down.attention);
+        assert!(down.attention.iter().any(|i| i.subject == "daemon"));
     }
 
     #[test]
