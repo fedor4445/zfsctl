@@ -76,7 +76,7 @@ pub struct Entry {
 
 const ANY: Kind = Kind::Privileged { pinned: &[], probe: "" };
 const SMARTCTL: Kind = Kind::Privileged { pinned: &[&["--scan", "-j"], &["-j", "-H", "-A", "-i", "/dev/*"]], probe: "" };
-/// The eight forms of `ls` that `browse` allows, one trio per OS family (FreeBSD, Linux, illumos); Linux's long options take their value as a separate word because sudoers needs `=` escaped. Each ends in `--` and a
+/// The forms of `ls` that `browse` allows, one trio per OS family (FreeBSD, Linux, illumos); Linux's long options take their value as a separate word because sudoers needs `=` escaped. Each ends in `--` and a
 /// path. That does not keep options out (sudo matches the words as one string, so words can be merged), but `ls` has no option that
 /// writes or runs anything; an `ls` form for another OS is simply never used on a host.
 const BROWSE_FORMS: &[&[&str]] = &[
@@ -138,6 +138,22 @@ pub const ENTRIES: &[Entry] = &[
 #[cfg(test)]
 pub(crate) fn privileged_names() -> Vec<&'static str> {
     ENTRIES.iter().filter(|e| matches!(e.kind, Kind::Privileged { .. })).map(|e| e.name).collect()
+}
+
+/// The pinned argument lists of `entry` that a host running `os` needs. An entry with forms for several operating systems (`ls`:
+/// FreeBSD's `-D`, GNU's `--time-style`, illumos's `-E`) keeps only that OS's, in the order modified, changed, created; every
+/// other entry keeps all of its forms. An unknown OS gets FreeBSD's, as everywhere else.
+pub fn pinned_forms(entry: &Entry, os: HostOs) -> Vec<&'static [&'static str]> {
+    let Kind::Privileged { pinned, .. } = &entry.kind else { return Vec::new() };
+    if entry.name != "ls" {
+        return pinned.to_vec();
+    }
+    let (first, count) = match os {
+        HostOs::Linux => (3, 3),
+        HostOs::Illumos => (6, 2),
+        HostOs::FreeBsd | HostOs::Other => (0, 3),
+    };
+    pinned.iter().skip(first).take(count).copied().collect()
 }
 
 pub fn lookup(name: &str) -> Option<&'static Entry> {
@@ -326,6 +342,19 @@ mod tests {
             assert!(!select_for_os(os, &[], &[]).unwrap().contains(&Feature::Browse), "{os:?} default");
             assert!(select_for_os(os, &browse, &[]).unwrap().contains(&Feature::Browse), "{os:?} with browse");
         }
+    }
+
+    #[test]
+    fn the_ls_forms_follow_the_hosts_operating_system() {
+        use crate::zfs::host_health::HostOs;
+        let ls = lookup("ls").unwrap();
+        let forms = |os| pinned_forms(ls, os).iter().map(|f| f.join(" ")).collect::<Vec<_>>();
+        assert_eq!(forms(HostOs::FreeBsd), ["-lA -D %s -- *", "-lAc -D %s -- *", "-lAU -D %s -- *"]);
+        assert_eq!(forms(HostOs::Other), forms(HostOs::FreeBsd));
+        assert_eq!(forms(HostOs::Linux), ["-lA --time-style +%s -- *", "-lA --time-style +%s --time ctime -- *", "-lA --time-style +%s --time birth -- *"]);
+        assert_eq!(forms(HostOs::Illumos), ["-lAE -- *", "-lAEc -- *"]);
+        let smartctl = lookup("smartctl").unwrap();
+        assert_eq!(pinned_forms(smartctl, HostOs::Linux).len(), 2, "every other entry keeps all of its forms");
     }
 
     #[test]

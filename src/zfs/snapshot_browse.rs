@@ -2,7 +2,7 @@
 
 use crate::daemon::transfer::run_lines;
 use crate::error::{AppError, Result};
-use crate::exec::privilege::{lookup, Kind};
+use crate::exec::privilege::lookup;
 use crate::exec::CommandRunner;
 use crate::zfs::host_health::HostOs;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -181,21 +181,13 @@ pub fn times_for(os: HostOs) -> &'static [Times] {
 /// The arguments of one listing: a pinned `ls` form from the registry (so what is sent and what sudoers allows cannot drift),
 /// then `--` and the directory. `None` for a time the OS does not record.
 pub fn ls_args(os: HostOs, times: Times, dir: &str) -> Option<Vec<String>> {
-    let Kind::Privileged { pinned, .. } = &lookup("ls")?.kind else { return None };
-    let (first, count) = match os {
-        HostOs::Linux => (3, 3),
-        HostOs::Illumos => (6, 2),
-        HostOs::FreeBsd | HostOs::Other => (0, 3),
-    };
+    let forms = crate::exec::privilege::pinned_forms(lookup("ls")?, os);
     let offset = match times {
         Times::Modified => 0,
         Times::Changed => 1,
         Times::Created => 2,
     };
-    if offset >= count {
-        return None;
-    }
-    let form = pinned.get(first + offset)?;
+    let form = forms.get(offset)?;
     let (_star, words) = form.split_last()?;
     let mut args: Vec<String> = words.iter().map(|a| (*a).to_string()).collect();
     args.push(dir.to_string());
@@ -485,7 +477,7 @@ pub fn explain(host: &str, error_text: &str) -> String {
         return format!("browse is not enabled for this host: run zfsctl print-sudoers {host} --with browse, install the file as the host's sudoers entry and try again");
     }
     if lower.contains("no such file or directory") {
-        return "this snapshot cannot be browsed here: its .zfs/snapshot folder is not visible on the host (for example a dataset given to a zone); zfsctl does not clone to work around that".to_string();
+        return "this folder cannot be browsed here: it is not visible on the host (no .zfs/snapshot folder, or it was removed); zfsctl does not clone to work around that".to_string();
     }
     crate::display_text::sanitise_for_display(error_text)
 }
@@ -1164,6 +1156,12 @@ mod tests {
             let msg = explain("ub24", text);
             assert!(msg.contains("browse is not enabled") && msg.contains("print-sudoers ub24 --with browse"), "{msg}");
         }
+    }
+
+    #[test]
+    fn explain_does_not_blame_zones_for_a_missing_folder() {
+        let msg = explain("h", "ls: /m/.zfs/snapshot/s/sub: No such file or directory");
+        assert!(msg.contains("cannot be browsed here") && !msg.contains("zone"), "{msg}");
     }
 
     #[test]

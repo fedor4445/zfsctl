@@ -71,7 +71,7 @@ On a managed host the unprivileged account may run these programs as root throug
 | `rclone` | cloud mirror jobs (`--with rclone`) | any arguments |
 | `beadm` | boot environments on illumos hosts (default there; `--with beadm`) | any arguments |
 | `smartctl` | the daily disk health check (`--with smart`) | only `--scan -j` and `-j -H -A -i /dev/*` (the `*` also matches spaces, so an extra flag is not stopped; zfsctl sends only read-only flags) |
-| `ls` | looking inside snapshots (`--with browse`, off by default) | only eight `ls -l...` forms that all end in `-- *`; sudo matches the words as one string, so an extra option or path can be slipped in by merging words, and the path is not confined to `.zfs/snapshot`; `ls` has no option that writes or runs anything (the worst is a recursive listing), it lists names and metadata only, never contents, and the account already holds `zfs` |
+| `ls` | looking inside snapshots (`--with browse`, off by default) | only a few fixed `ls -l...` forms, three per OS (two on illumos), that all end in `-- *`; sudo matches the words as one string, so an extra option or path can be slipped in by merging words, and the path is not confined to `.zfs/snapshot`; `ls` has no option that writes or runs anything (the worst is a recursive listing), it lists names and metadata only, never contents, and the account already holds `zfs` |
 
 Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` (also `iostat -En` for the Disks of an illumos host), `lsblk` (the Disks of a Linux host), `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.
 

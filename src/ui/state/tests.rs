@@ -10231,6 +10231,8 @@ fn a_very_long_foreign_tag_is_truncated_in_the_status() {
 
 fn changes_app() -> App {
     let mut app = hold_app(0, None);
+    let host = app.hosts[0].clone();
+    app.host_probes.insert(host, HostProbeState { os: Some(crate::zfs::host_health::HostOs::FreeBsd), ..HostProbeState::default() });
     app.snapshots.push(Snapshot { dataset: "tank/data".to_string(), name: "s2".to_string(), used: 0, holds: 0, written: 0 });
     app.snapshots_table.select(Some(1));
     app
@@ -10522,6 +10524,7 @@ fn a_late_answer_for_another_request_is_dropped() {
 #[test]
 fn a_browse_view_does_not_survive_a_host_switch_and_its_read_is_cancelled() {
     let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.host_probes.insert("a".to_string(), HostProbeState { os: Some(crate::zfs::host_health::HostOs::FreeBsd), ..HostProbeState::default() });
     app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }];
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     app.snapshots_table.select(Some(0));
@@ -10558,9 +10561,24 @@ fn typing_in_the_filter_prompt_is_not_taken_for_commands() {
 }
 
 #[test]
-fn the_browser_is_closed_by_a_section_change_and_its_late_answer_is_ignored() {
-    let mut app = browsing_app();
+fn leaving_the_snapshots_section_hides_the_browser_and_an_answer_that_arrives_meanwhile_is_there_on_return() {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let request = app.browse_view.as_ref().unwrap().request;
     app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
-    app.handle_key(KeyCode::Down);
-    assert!(app.browse_view.is_none() || !app.browse_view_active());
+    assert!(!app.browse_view_active(), "the browser is not shown on another section");
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[("pics", EntryKind::Directory)])));
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    assert!(app.browse_view_active());
+    assert!(matches!(app.browse_view.as_ref().unwrap().phase, crate::ui::browse::Phase::Ready), "the answer was kept for when the user comes back");
+}
+
+#[test]
+fn f_before_the_host_has_been_probed_asks_to_wait_instead_of_guessing_the_operating_system() {
+    let mut app = changes_app();
+    app.host_probes.clear();
+    app.handle_key(KeyCode::Char('f'));
+    assert!(app.browse_view.is_none() && app.pending_browse.is_empty(), "nothing is sent to a host of unknown type");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("not been probed")), "{:?}", app.status_message);
 }

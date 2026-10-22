@@ -66,6 +66,8 @@ pub struct BrowseView {
     pub name: String,
     pub os: HostOs,
     pub utc_offset: i32,
+    /// Whether `utc_offset` was read from the host; when not, times are shown in UTC and the header says so.
+    pub offset_known: bool,
     pub cancel: Arc<AtomicBool>,
     pub mountpoint: Option<String>,
     pub zone: Option<String>,
@@ -87,14 +89,15 @@ pub struct BrowseView {
 const INPUT_MAX: usize = 80;
 
 impl BrowseView {
-    pub fn new(p: &PendingBrowse, utc_offset: i32) -> Self {
+    pub fn new(p: &PendingBrowse, utc_offset: Option<i32>) -> Self {
         Self {
             host: p.host,
             request: p.request,
             dataset: p.dataset.clone(),
             name: p.name.clone(),
             os: p.os,
-            utc_offset,
+            utc_offset: utc_offset.unwrap_or(0),
+            offset_known: utc_offset.is_some(),
             cancel: Arc::clone(&p.cancel),
             mountpoint: p.mountpoint.clone(),
             zone: p.zone.clone(),
@@ -301,6 +304,9 @@ impl BrowseView {
         if let Some(text) = self.filter_text() {
             lines.push(text);
         }
+        if !self.offset_known {
+            lines.push("times are in UTC (this host's time zone is not known yet)".to_string());
+        }
         if let Some(listing) = &self.listing {
             if listing.truncated {
                 lines.push("the folder is larger: only the first 20,000 entries (or what was read in 30 s) are listed".to_string());
@@ -431,7 +437,7 @@ mod tests {
     }
 
     fn ready(rows: Vec<BrowseRow>) -> BrowseView {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         view.apply("local", Ok(BrowseOutcome { listing: listing(rows), mountpoint: "/m".to_string(), zone: None }));
         view
     }
@@ -543,7 +549,7 @@ mod tests {
 
     #[test]
     fn the_list_notes_truncation_and_unreadable_entries() {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         let mut l = listing(sample());
         l.truncated = true;
         l.unreadable = 3;
@@ -569,7 +575,7 @@ mod tests {
 
     #[test]
     fn a_failed_read_shows_the_explained_text_and_a_huge_folder_draws_only_a_window() {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         view.apply("ub24", Err(crate::error::AppError::CommandFailed { cmd: "ls".to_string(), status: 1, stderr: "sudo: a password is required".to_string() }));
         let shown = draw_to_rows(&view, 120, 10).join("\n");
         assert!(shown.contains("print-sudoers ub24 --with browse"), "{shown}");
@@ -585,7 +591,7 @@ mod tests {
 
     #[test]
     fn the_header_names_the_zone_a_folder_was_read_through() {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         view.apply("omnios", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/rpool/zones/syncthing/root/omni30/syncthing".to_string(), zone: Some("syncthing".to_string()) }));
         let shown = draw_to_rows(&view, 110, 16).join("\n");
         assert!(shown.contains("(zone syncthing)"), "{shown}");
@@ -595,7 +601,7 @@ mod tests {
 
     #[test]
     fn the_zone_and_base_path_are_kept_for_the_folders_below_without_asking_again() {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         view.apply("omnios", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/rpool/zones/z/root/d".to_string(), zone: Some("z".to_string()) }));
         let next = view.enter_selected(2).unwrap().expect("pics is a folder");
         assert_eq!((next.mountpoint.as_deref(), next.zone.as_deref()), (Some("/rpool/zones/z/root/d"), Some("z")));
@@ -606,11 +612,21 @@ mod tests {
 
     #[test]
     fn the_header_says_when_times_could_not_be_read_in_time() {
-        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut view = BrowseView::new(&pending(&[]), Some(0));
         let mut l = listing(sample());
         l.times_incomplete = true;
         view.apply("local", Ok(BrowseOutcome { listing: l, mountpoint: "/m".to_string(), zone: None }));
         let shown = draw_to_rows(&view, 120, 16).join("\n");
         assert!(shown.contains("could not be read in time"), "{shown}");
+    }
+
+    #[test]
+    fn the_header_says_when_the_hosts_time_zone_is_not_known() {
+        let mut unknown = BrowseView::new(&pending(&[]), None);
+        unknown.apply("local", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/m".to_string(), zone: None }));
+        let shown = draw_to_rows(&unknown, 120, 16).join("\n");
+        assert!(shown.contains("times are in UTC"), "{shown}");
+        let known = draw_to_rows(&ready(sample()), 120, 16).join("\n");
+        assert!(!known.contains("times are in UTC"), "{known}");
     }
 }
