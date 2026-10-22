@@ -10714,6 +10714,7 @@ fn submitting_the_form_opens_a_confirm_that_shows_source_destination_and_command
     assert!(prompt.contains("From:  /tank/data/.zfs/snapshot/s2/a.txt"), "{prompt}");
     assert!(prompt.contains("To:    /tank/data/a.restored-s2.txt"), "{prompt}");
     assert!(prompt.contains("Command: cp -p -n -- /tank/data/.zfs/snapshot/s2/a.txt /tank/data/a.restored-s2.txt"), "{prompt}");
+    assert!(!prompt.contains("Note:"), "{prompt}");
     assert!(prompt.contains("Size: 5   Mode: drwxr-xr-x"), "{prompt}");
     assert!(prompt.contains("This creates one new file next to the original and never replaces anything."), "{prompt}");
     assert!(prompt.contains("Existing files are never overwritten; if the name is taken nothing is copied."), "{prompt}");
@@ -10758,7 +10759,8 @@ fn the_restore_prompt_shows_host_text_without_control_characters() {
     app.browse_view.as_mut().unwrap().mountpoint = Some("/tank/\u{1b}[31mdata".to_string());
     app.handle_key(KeyCode::Char('R'));
     app.handle_modal_key(KeyCode::Enter);
-    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })) && app.status_message.is_some());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })));
+    assert_eq!(app.status_message.as_deref(), Some("the dataset's mountpoint is not a plain path, so it cannot be browsed"));
 }
 
 #[test]
@@ -10792,30 +10794,46 @@ fn the_changes_view_has_no_r() {
 }
 
 #[test]
-fn after_a_restore_the_browser_rereads_the_same_folder_and_says_what_was_made() {
-    use crate::zfs::snapshot_browse::EntryKind;
+fn after_a_restore_the_status_names_the_new_file_and_no_browse_read_is_queued_or_disturbed() {
     let mut app = browsing_app();
     app.handle_key(KeyCode::Enter);
-    let request = app.browse_view.as_ref().unwrap().request;
-    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[("x.txt", EntryKind::File)])));
+    let (request, cancel) = (app.browse_view.as_ref().unwrap().request, std::sync::Arc::clone(&app.browse_view.as_ref().unwrap().cancel));
     app.pending_browse.clear();
-    app.tx.send(WorkerMsg::Restored(0, "Restored /tank/data/pics/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string())).unwrap();
+    app.tx.send(WorkerMsg::Restored(0, Ok("Restored /tank/data/pics/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()))).unwrap();
     app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
     app.drain_worker_messages();
-    assert_eq!(app.pending_browse.len(), 1, "one re-read");
-    assert_eq!(app.pending_browse[0].path, ["pics"]);
-    assert_eq!(app.pending_browse[0].mountpoint.as_deref(), Some("/tank/data"));
-    assert!(app.status_message.as_deref().is_some_and(|m| m.starts_with("Restored ")), "{:?}", app.status_message);
+    assert!(app.pending_browse.is_empty(), "the snapshot folder cannot show the live file, so nothing is re-read");
+    assert_eq!(app.browse_view.as_ref().unwrap().request, request);
+    assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst), "a read in flight is not cancelled");
+    assert_eq!(app.status_message.as_deref(), Some("Restored /tank/data/pics/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)"));
 }
 
 #[test]
-fn a_failed_restore_shows_the_error_and_does_not_reread() {
+fn a_failed_restore_shows_the_engines_sentence_without_the_error_prefix_and_no_restored_note() {
     let mut app = browsing_on_file();
     app.pending_browse.clear();
-    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Err(crate::error::AppError::Config("not copied".into())))).unwrap();
+    let sentence = "that name already exists in the folder: nothing was copied";
+    app.tx.send(WorkerMsg::Restored(0, Err(sentence.to_string()))).unwrap();
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Err(crate::error::AppError::Config(sentence.into())))).unwrap();
     app.drain_worker_messages();
     assert!(app.pending_browse.is_empty());
-    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("not copied")));
+    assert_eq!(app.status_message.as_deref(), Some(sentence));
+    assert!(app.restored_note.is_none());
+}
+
+#[test]
+fn a_restore_note_for_another_host_does_not_show_up_on_a_later_hold() {
+    let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.tx.send(WorkerMsg::Restored(0, Ok("Restored /x (1 bytes, m, owner o)".to_string()))).unwrap();
+    app.drain_worker_messages();
+    app.selected_host = 1;
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.restored_note.is_none(), "taken even though the host is not the one on screen");
+    app.tx.send(WorkerMsg::MutationDone(1, Section::Snapshots, Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.status_message.as_deref().is_none_or(|m| !m.contains("Restored")), "{:?}", app.status_message);
 }
 
 #[test]
@@ -10824,4 +10842,42 @@ fn a_finished_snapshot_mutation_without_a_browser_queues_no_read() {
     app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
     app.drain_worker_messages();
     assert!(app.pending_browse.is_empty());
+}
+
+fn prompt_for_name(name: &str) -> String {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    type_into_form(&mut app, name);
+    app.handle_modal_key(KeyCode::Enter);
+    confirm_prompt(&app)
+}
+
+#[test]
+fn the_restore_command_and_destination_are_shown_quoted_so_spaces_are_visible() {
+    let p = prompt_for_name(" my copy ");
+    assert!(p.contains("To:    '/tank/data/ my copy '\n"), "{p}");
+    assert!(p.contains("Command: cp -p -n -- /tank/data/.zfs/snapshot/s2/a.txt '/tank/data/ my copy '\n"), "{p}");
+    let p = prompt_for_name("x -rf passwd");
+    assert!(p.contains("To:    '/tank/data/x -rf passwd'\n"), "{p}");
+    assert!(p.contains(" '/tank/data/x -rf passwd'\n"), "{p}");
+    let p = prompt_for_name("it's");
+    assert!(p.contains(r"'/tank/data/it'\''s'"), "{p}");
+}
+
+#[test]
+fn a_name_with_a_real_slash_is_refused_so_it_never_reaches_the_prompt() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    type_into_form(&mut app, "x /etc/passwd");
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })));
+}
+
+#[test]
+fn a_name_with_a_lookalike_slash_or_odd_whitespace_gets_a_check_it_note() {
+    let note = "Note: this name contains unusual characters; check it letter by letter.";
+    for name in ["a\u{2215}b", "a\u{2044}b", "a\u{29F8}b", "a\u{FF0F}b", "a\u{2571}b", "a\u{00A0}b", "a\u{200B}b"] {
+        assert!(prompt_for_name(name).contains(note), "{name:?}");
+    }
+    assert!(!prompt_for_name("plain name.txt").contains("Note:"));
 }

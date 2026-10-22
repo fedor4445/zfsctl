@@ -220,12 +220,6 @@ impl BrowseView {
         self.zone.is_none() && self.restore_source().is_some()
     }
 
-    /// Reads the current folder again (after a restore, so the new file shows), keeping the row that was selected.
-    pub fn reread(&mut self, request: u64) -> PendingBrowse {
-        self.restore = Some(self.selected);
-        self.start_read(request)
-    }
-
     pub fn start_input(&mut self, kind: InputKind) {
         let text = if kind == InputKind::Name { self.filter.name.text().to_string() } else { String::new() };
         self.name_before = (kind == InputKind::Name).then(|| self.filter.name.clone());

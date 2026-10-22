@@ -68,9 +68,9 @@ impl App {
                     self.status_message = Some(line);
                     self.reload_check_files();
                 }
-                WorkerMsg::Restored(host, text) => {
+                WorkerMsg::Restored(host, outcome) => {
                     if host == self.selected_host {
-                        self.restored_note = Some(text);
+                        self.restored_note = Some(outcome);
                     }
                 }
                 WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, &mut refreshes_needed),
@@ -619,6 +619,8 @@ impl App {
         if section == Section::Alerts {
             self.alerts_test_busy = false;
         }
+        // Taken first, so a note for a host that is not on screen can never show up under a later call.
+        let restored = if section == Section::Snapshots { self.restored_note.take() } else { None };
         // The Alerts calls are local to the hub: their result matters whichever host is selected now.
         if host != self.selected_host && !matches!(section, Section::Alerts | Section::Settings) {
             return;
@@ -629,19 +631,15 @@ impl App {
                 self.bootenv_pin = None;
             }
         }
-        let restored = if section == Section::Snapshots { self.restored_note.take() } else { None };
-        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { restored.clone() };
+        let (restored_ok, restored_err) = match restored {
+            Some(Ok(text)) => (Some(text), None),
+            Some(Err(text)) => (None, Some(text)),
+            None => (None, None),
+        };
+        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { restored_ok };
         match result {
             Ok(()) => {
                 self.status_message = note;
-                if restored.is_some() {
-                    // A restore made a new file: the open browser reads its folder again so the file shows up.
-                    let request = self.browse_request + 1;
-                    if let Some(view) = self.browse_view.as_mut().filter(|v| v.host == host) {
-                        self.browse_request = request;
-                        self.pending_browse.push(view.reread(request));
-                    }
-                }
                 if section == Section::Settings {
                     self.apply_saved_settings();
                 }
@@ -664,7 +662,8 @@ impl App {
                 }
             }
             Err(e) => {
-                let text = e.to_string();
+                // A restore's refusal is a plain sentence: shown without the error type's prefix.
+                let text = restored_err.unwrap_or_else(|| e.to_string());
                 // A key that loaded but whose mount failed has changed what the list shows.
                 if section == Section::Datasets && text.contains("key IS loaded") {
                     refreshes_needed.push(section);

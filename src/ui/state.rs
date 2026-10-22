@@ -268,8 +268,8 @@ pub enum WorkerMsg {
     /// The target is what the sample was taken for; `MetricsView::apply` drops it if the panel has moved on.
     Metrics(usize, crate::zfs::metrics::MetricsTarget, Box<Result<crate::zfs::metrics::TargetSample>>),
     MutationDone(usize, Section, Result<()>),
-    /// What a finished restore verified, as the status line says it; sent just before its `MutationDone`.
-    Restored(usize, String),
+    /// What a finished restore verified (the status line) or the engine's refusal sentence, sent just before its `MutationDone`.
+    Restored(usize, std::result::Result<String, String>),
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
     HostProbe(String, String, Result<()>),
@@ -415,7 +415,7 @@ pub struct App {
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
     /// The text of the restore that just finished (see `WorkerMsg::Restored`), shown when its `MutationDone` arrives.
-    pub restored_note: Option<String>,
+    pub restored_note: Option<std::result::Result<String, String>>,
     pub alerts_preview_busy: bool,
     /// A test message is being sent (it can take up to 30 s per channel): `t` waits for it.
     pub alerts_test_busy: bool,
@@ -3184,6 +3184,7 @@ impl App {
         if let Some(note) = call.done_note() {
             self.done_note = Some(note);
         }
+        self.restored_note = None;
         if matches!(call, MutationCall::SendTestMessage { .. }) {
             self.alerts_test_busy = true;
             self.status_message = Some("Sending the test message…".to_string());
@@ -3196,10 +3197,17 @@ impl App {
             // A restore's success text carries what the engine verified, so it is sent ahead of the plain result.
             let result = match call.restore_outcome(runner.as_ref()) {
                 Some(Ok(done)) => {
-                    let _ = tx.send(WorkerMsg::Restored(host, crate::ui::modal::restored_note(&done)));
+                    let _ = tx.send(WorkerMsg::Restored(host, Ok(crate::ui::modal::restored_note(&done))));
                     Ok(())
                 }
-                Some(Err(e)) => Err(e),
+                Some(Err(e)) => {
+                    let sentence = match &e {
+                        crate::error::AppError::Config(m) => m.clone(),
+                        other => other.to_string(),
+                    };
+                    let _ = tx.send(WorkerMsg::Restored(host, Err(sentence)));
+                    Err(e)
+                }
                 None => call.run_on(runner.as_ref(), os),
             };
             let _ = tx.send(WorkerMsg::MutationDone(host, section, result));
@@ -3718,15 +3726,38 @@ pub(super) fn refusal_text(e: crate::error::AppError) -> String {
 /// The question the restore confirm asks: the source, the destination and the exact command that will run as root. Every
 /// piece of host text goes through `sanitise_for_display`.
 pub(super) fn restore_prompt(plan: &crate::zfs::snapshot_restore::RestorePlan) -> String {
-    let clean = crate::display_text::sanitise_for_display;
-    let command = plan.command.iter().map(|a| clean(a)).collect::<Vec<_>>().join(" ");
-    format!(
-        "Restore as a copy\nFrom:  {}\nTo:    {}\nCommand: cp {command}\nSize: {}   Mode: {}\nThis creates one new file next to the original and never replaces anything.\nExisting files are never overwritten; if the name is taken nothing is copied. (y/n)",
-        clean(&plan.source),
-        clean(&plan.destination),
+    // Cleaned first, then quoted the way the shell would need it: a space in a name (leading, trailing or in the middle)
+    // is then visible and cannot read as the start of another operand.
+    let shown = |text: &str| crate::exec::ssh::shell_quote(&visible(text));
+    let command = plan.command.iter().map(|a| shown(a.as_str())).collect::<Vec<_>>().join(" ");
+    let mut prompt = format!(
+        "Restore as a copy\nFrom:  {}\nTo:    {}\nCommand: cp {command}\nSize: {}   Mode: {}\nThis creates one new file next to the original and never replaces anything.\nExisting files are never overwritten; if the name is taken nothing is copied.",
+        shown(&plan.source),
+        shown(&plan.destination),
         plan.size,
-        clean(&plan.mode),
-    )
+        crate::display_text::sanitise_for_display(&plan.mode),
+    );
+    if looks_deceptive(&plan.dest_name) {
+        prompt.push_str("\nNote: this name contains unusual characters; check it letter by letter.");
+    }
+    prompt.push_str(" (y/n)");
+    prompt
+}
+
+/// `sanitise_for_display`'s replacement of control and direction characters, but without its collapsing and trimming of
+/// spaces: in a file name every space counts, and the quoted display exists to show them.
+fn visible(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}') { ' ' } else { c }).collect()
+}
+
+/// A non-ASCII character that can pass for a slash, a space or nothing at all in a name.
+fn looks_deceptive(name: &str) -> bool {
+    name.chars().any(|c| {
+        !c.is_ascii()
+            && (matches!(c, '\u{2044}' | '\u{2215}' | '\u{29F8}' | '\u{FF0F}' | '\u{2571}' | '\u{00AD}' | '\u{061C}' | '\u{FEFF}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}')
+                || c.is_whitespace()
+                || c.is_control())
+    })
 }
 
 fn hold_prompt(target: &str) -> String {
