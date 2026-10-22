@@ -140,6 +140,10 @@ fn too_large<T>(folder: &str) -> Result<T> {
     Err(AppError::Config(format!("the folder {} is too large to check", crate::display_text::sanitise_for_display(folder))))
 }
 
+fn unreadable<T>(folder: &str) -> Result<T> {
+    Err(AppError::Config(format!("some entries of {} could not be read, so it cannot be checked", crate::display_text::sanitise_for_display(folder))))
+}
+
 fn twice<T>(folder: &str, name: &str) -> Result<T> {
     Err(AppError::Config(format!(
         "two entries in {} have the name {} once escapes are decoded, or one of them cannot be decoded with certainty, so the restore is refused",
@@ -153,6 +157,9 @@ fn twice<T>(folder: &str, name: &str) -> Result<T> {
 /// `ls -b` prints a backslash as it is), is refused, so a decoy such as `\144ocs` cannot stand in for `docs`. A cut-off listing
 /// cannot show that a name is absent.
 fn find_one<'a>(listing: &'a Listing, folder: &str, name: &str) -> Result<Option<&'a ListEntry>> {
+    if listing.unreadable > 0 {
+        return unreadable(folder);
+    }
     let mut hits = listing.entries.iter().map(|r| &r.entry).filter(|e| e.name == name);
     match (hits.next(), hits.next()) {
         (None, _) if listing.truncated => too_large(folder),
@@ -166,6 +173,9 @@ fn find_one<'a>(listing: &'a Listing, folder: &str, name: &str) -> Result<Option
 fn exists_any(listing: &Listing, folder: &str, name: &str) -> Result<bool> {
     if listing.entries.iter().any(|r| r.entry.name == name) {
         return Ok(true);
+    }
+    if listing.unreadable > 0 {
+        return unreadable(folder);
     }
     if listing.truncated { too_large(folder) } else { Ok(false) }
 }
@@ -243,11 +253,14 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
     // 4. Copy. The checks above are the last look before cp; see the doc comment for the window that stays open.
     check_cancel(cancel)?;
     let args: Vec<&str> = plan.command.iter().map(String::as_str).collect();
-    let (failure, may_have_finished) = match runner.run("cp", &args) {
-        Ok(out) if out.status == 0 => (None, false),
-        Ok(out) => (Some(format!("{}\n{}", out.stderr, out.stdout)), false),
-        Err(AppError::CommandFailed { stderr, .. }) => (Some(stderr), false),
-        Err(e) => (Some(reason(&e)), true),
+    // A sudo refusal means cp never ran. A start failure (Spawn) means the same. Any other failure (a non-zero status, always 255
+    // when ssh dropped) may have left a file behind, so the destination is looked at before saying anything.
+    let failure = match runner.run("cp", &args) {
+        Ok(out) if out.status == 0 => None,
+        Ok(out) => Some(format!("{}\n{}", out.stderr, out.stdout)),
+        Err(AppError::CommandFailed { stderr, .. }) => Some(stderr),
+        Err(e @ AppError::Spawn { .. }) => return Err(AppError::Config(format!("the copy was not started: {}", reason(&e)))),
+        Err(e) => Some(reason(&e)),
     };
     if let Some(text) = failure {
         if sudo_refused(&text) {
@@ -255,8 +268,12 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
         }
         let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no message");
         let first = crate::display_text::sanitise_for_display(first);
-        let tail = if may_have_finished { "; it may or may not have finished: check the destination folder" } else { "" };
-        return Err(AppError::Config(format!("the copy failed: {first}{tail}")));
+        let looked = list(runner, host, src.os, &dest_folder, true, &AtomicBool::new(false)).and_then(|l| find_one(&l, &dest_folder, &plan.dest_name).map(|f| f.map(|e| (e.size, e.mode.clone()))));
+        return Err(AppError::Config(match looked {
+            Ok(None) => format!("the copy failed: {first}; nothing was found at the destination"),
+            Ok(Some((size, mode))) => format!("the copy reported a failure ({first}) but a file of that name exists at the destination ({size} bytes, {mode}): it may be incomplete, check it before you use it"),
+            Err(e) => format!("the copy failed ({first}) and the destination could not be checked: {}; check the destination folder", reason(&e)),
+        }));
     }
 
     // 5. Verify, whatever cp said. The copy is done, so a cancel no longer cuts this check short. A result that cannot be read is
@@ -419,6 +436,10 @@ mod tests {
         CopyTwice,
         /// cp exits 0 and the new name shows up only in a form that cannot be decoded with certainty.
         CopyAmbiguous,
+        /// cp writes the new name, then dies with status 255 (a dropped ssh).
+        FailPartial,
+        /// cp copies and exits 0, but the listing then holds a line that cannot be read.
+        CopyJunk,
     }
 
     /// One canned entry: the mode, the size and the name exactly as `ls` prints it.
@@ -444,8 +465,10 @@ mod tests {
         huge: Vec<(String, bool)>,
         /// The listing of this folder fails once cp has run.
         broken_after_cp: Option<String>,
-        /// cp itself cannot be run (a dropped ssh).
+        /// cp could not even be started.
         cp_errors: bool,
+        /// The exit status of `CpMode::Fail`.
+        fail_status: i32,
     }
 
     impl Fake {
@@ -457,7 +480,7 @@ mod tests {
             t.insert("/tank/data/.zfs/snapshot/daily-1/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
             t.insert("/tank/data".into(), vec![ent("drwxr-xr-x", 2, "docs")]);
             t.insert("/tank/data/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
-            Self { os, tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false }
+            Self { os, tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false, fail_status: 1 }
         }
         fn set(&self, dir: &str, lines: Vec<Ent>) {
             self.tables.lock().unwrap().insert(dir.into(), lines);
@@ -489,7 +512,7 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }
             if self.cp_errors {
-                return Err(AppError::Config("ssh: connection dropped".into()));
+                return Err(AppError::Spawn { cmd: "ssh".into(), source: std::io::Error::other("no such file") });
             }
             let dest = args[args.len() - 1];
             let (folder, name) = dest.rsplit_once('/').unwrap();
@@ -504,7 +527,15 @@ mod tests {
                 CpMode::CopyBigger => tables.get_mut(folder).unwrap().push(ent("-rw-r--r--", 99, name)),
                 CpMode::CopyOtherMode => tables.get_mut(folder).unwrap().push(ent("-rw-------", 1234, name)),
                 CpMode::Nothing => {}
-                CpMode::Fail => return Ok(CommandOutput { stdout: String::new(), stderr: self.stderr.clone(), status: 1 }),
+                CpMode::CopyJunk => {
+                    tables.get_mut(folder).unwrap().push(ent("-rw-r--r--", 1234, name));
+                    tables.get_mut(folder).unwrap().push(ent("xx", 1, "junk"));
+                }
+                CpMode::FailPartial => {
+                    tables.get_mut(folder).unwrap().push(ent("-rw-r--r--", 600, name));
+                    return Ok(CommandOutput { stdout: String::new(), stderr: self.stderr.clone(), status: 255 });
+                }
+                CpMode::Fail => return Ok(CommandOutput { stdout: String::new(), stderr: self.stderr.clone(), status: self.fail_status }),
             }
             Ok(CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
         }
@@ -633,15 +664,75 @@ mod tests {
     fn a_cp_error_that_only_mentions_the_sudo_words_is_not_a_sudo_refusal() {
         let mut fake = Fake::new(CpMode::Fail);
         fake.stderr = "cp: cannot stat 'not allowed to execute': No such file or directory".into();
-        assert_eq!(msg(go(&fake)), "the copy failed: cp: cannot stat 'not allowed to execute': No such file or directory");
+        assert_eq!(msg(go(&fake)), "the copy failed: cp: cannot stat 'not allowed to execute': No such file or directory; nothing was found at the destination");
     }
 
     #[test]
-    fn a_cp_that_could_not_be_run_may_or_may_not_have_finished() {
+fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
         let mut fake = Fake::new(CpMode::Copy);
         fake.cp_errors = true;
+        assert_eq!(msg(go(&fake)), "the copy was not started: failed to spawn command 'ssh': no such file");
+        assert_eq!(fake.directories().last().unwrap(), "<cp>");
+    }
+
+    const BROKEN: &str = "client_loop: send disconnect: Broken pipe";
+
+    #[test]
+    fn a_dropped_connection_with_nothing_at_the_destination_is_a_failed_copy() {
+        let mut fake = Fake::new(CpMode::Fail);
+        fake.fail_status = 255;
+        fake.stderr = BROKEN.into();
+        assert_eq!(msg(go(&fake)), format!("the copy failed: {BROKEN}; nothing was found at the destination"));
+        assert_eq!(fake.directories().last().unwrap(), "/tank/data/docs");
+    }
+
+    #[test]
+    fn a_dropped_connection_with_a_file_at_the_destination_warns_and_never_claims_success() {
+        let mut fake = Fake::new(CpMode::FailPartial);
+        fake.stderr = BROKEN.into();
+        assert_eq!(
+            msg(go(&fake)),
+            format!("the copy reported a failure ({BROKEN}) but a file of that name exists at the destination (600 bytes, -rw-r--r--): it may be incomplete, check it before you use it")
+        );
+    }
+
+    #[test]
+    fn a_failed_copy_whose_destination_cannot_be_checked_says_so() {
+        let mut fake = Fake::new(CpMode::Fail);
+        fake.fail_status = 255;
+        fake.stderr = BROKEN.into();
+        fake.broken_after_cp = Some("/tank/data/docs".into());
         let m = msg(go(&fake));
-        assert_eq!(m, "the copy failed: ssh: connection dropped; it may or may not have finished: check the destination folder");
+        assert!(m.starts_with(&format!("the copy failed ({BROKEN}) and the destination could not be checked: ")), "{m}");
+        assert!(m.ends_with("; check the destination folder"), "{m}");
+    }
+
+    #[test]
+    fn a_sudo_refusal_does_not_verify() {
+        let mut fake = Fake::new(CpMode::Fail);
+        fake.stderr = "sudo: a password is required".into();
+        assert!(msg(go(&fake)).starts_with("restore is not enabled"));
+        assert_eq!(fake.directories().last().unwrap(), "<cp>");
+    }
+
+    const UNREAD: &str = "some entries of {} could not be read, so it cannot be checked";
+
+    #[test]
+    fn a_listing_with_unreadable_lines_cannot_be_checked() {
+        let junk = || ent("xx", 1, "junk");
+        let snap = "/tank/data/.zfs/snapshot/daily-1/docs";
+        for (dir, rows) in [(snap, vec![ent("-rw-r--r--", 1234, "a.txt"), junk()]), ("/tank/data", vec![ent("drwxr-xr-x", 2, "docs"), junk()]), ("/tank/data", vec![junk()]), ("/tank/data/docs", vec![ent("-rw-r--r--", 1234, "a.txt"), junk()])] {
+            let fake = Fake::new(CpMode::Copy);
+            fake.set(dir, rows);
+            assert_eq!(msg(go(&fake)), UNREAD.replace("{}", dir), "{dir}");
+            assert!(fake.cps.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_verify_listing_with_unreadable_lines_is_reported_as_unchecked() {
+        let fake = Fake::new(CpMode::CopyJunk);
+        assert_eq!(msg(go(&fake)), format!("the copy ran (cp exited 0) but its result could not be checked: {}", UNREAD.replace("{}", "/tank/data/docs")));
     }
 
     #[test]
@@ -665,7 +756,7 @@ mod tests {
     }
 
     #[test]
-fn a_plan_that_does_not_match_the_pick_is_refused() {
+    fn a_plan_that_does_not_match_the_pick_is_refused() {
         let want = "the restore plan does not match the picked file: nothing was copied";
         let fake = Fake::new(CpMode::Copy);
         let src = pick();
@@ -717,7 +808,7 @@ fn a_plan_that_does_not_match_the_pick_is_refused() {
     fn a_decoy_that_decodes_to_the_same_chain_name_is_refused_and_cp_never_runs() {
         // (a) a symlink called docs and a folder whose raw name is \144ocs (which decodes to docs).
         let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
-        fake.set("/tank/data", vec![ent("lrwxrwxrwx", 9, "\\144ocs"), ent("lrwxrwxrwx", 9, "docs -> /etc"), ent("drwxr-xr-x", 2, "\\144ocs")]);
+        fake.set("/tank/data", vec![ent("drwxr-xr-x", 2, "\\144ocs"), ent("lrwxrwxrwx", 9, "docs -> /etc")]);
         assert_eq!(msg(go_on(&fake, &illumos_pick())), twice("/tank/data", "docs"));
         assert!(fake.cps.lock().unwrap().is_empty());
         let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
