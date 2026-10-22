@@ -3342,7 +3342,7 @@ impl App {
             let result = (|| -> Result<BrowseOutcome> {
                 let mountpoint = match pending.mountpoint.clone() {
                     Some(m) => m,
-                    None => crate::zfs::snapshot_browse::browse_mountpoint(runner.as_ref(), pending.os, &pending.dataset)?,
+                    None => crate::zfs::snapshot_browse::browse_mountpoint(runner.as_ref(), pending.os, &pending.dataset)?.path,
                 };
                 let steps: Vec<&str> = pending.path.iter().map(String::as_str).collect();
                 let dir = snapshot_dir(&mountpoint, &pending.name, &steps)?;

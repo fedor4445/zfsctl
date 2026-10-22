@@ -109,6 +109,9 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "readlink", features: &[Feature::Restic], kind: ANY },
     Entry { name: "smartctl", features: &[Feature::Smart], kind: SMARTCTL },
     Entry { name: "ls", features: &[Feature::Browse], kind: LS },
+    // illumos zones: which zone a dataset is given to, read without sudo (the browser reads such a dataset through the zone's root).
+    Entry { name: "zoneadm", features: &[Feature::Browse], kind: Kind::Unprivileged },
+    Entry { name: "zonecfg", features: &[Feature::Browse], kind: Kind::Unprivileged },
     Entry { name: "getent", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "uname", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "date", features: &[Feature::Core], kind: Kind::Unprivileged },

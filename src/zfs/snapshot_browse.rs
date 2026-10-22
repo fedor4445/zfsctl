@@ -64,10 +64,82 @@ pub fn snapshot_dir(mountpoint: &str, snapshot: &str, relative: &[&str]) -> Resu
     Ok(dir)
 }
 
+/// Where the folders of a dataset's snapshots can be read: a directory path that holds `.zfs/snapshot`, and the zone it was
+/// found through (a dataset given to a zone is read through that zone's root directory).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseBase {
+    pub path: String,
+    pub zone: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZoneRow {
+    name: String,
+    running: bool,
+    path: String,
+}
+
+/// A zone name as `zonecfg -z` takes it: 1 to 64 of letters, digits and `_ . -`, not starting with `-`.
+fn valid_zone_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 64 && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// `zoneadm list -cp` lines (`id:name:state:path:uuid:brand:ip-type:id`), without the global zone and without any zone whose
+/// name or path would not be safe to use (a path must be absolute with plain steps).
+fn parse_zoneadm_rows(stdout: &str) -> Vec<ZoneRow> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            // Exactly the eight fields `zoneadm -p` prints: a line that is part of something else (a path with a newline or a
+            // colon in it) is not trusted.
+            let [id, name, state, path, _uuid, _brand, _ip, _zid] = fields.as_slice() else { return None };
+            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+                return None;
+            }
+            let steps: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
+            (*name != "global" && valid_zone_name(name) && join_relative(&steps).is_some_and(|j| !j.is_empty())).then(|| ZoneRow { name: name.to_string(), running: *state == "running", path: path.to_string() })
+        })
+        .collect()
+}
+
+/// The running zones as `(name, zone path)`.
+#[cfg(test)]
+fn parse_zoneadm(stdout: &str) -> Vec<(String, String)> {
+    parse_zoneadm_rows(stdout).into_iter().filter(|z| z.running).map(|z| (z.name, z.path)).collect()
+}
+
+/// The zone that has `dataset` (or a dataset above it) given to it, as `(name, zone path)`. Asked with two commands that need no
+/// sudo: `zoneadm list -cp`, then `zonecfg -z NAME info dataset` for each zone. Several zones, none, or a stopped one is refused.
+pub fn zone_for_dataset(runner: &dyn CommandRunner, dataset: &str) -> Result<(String, String)> {
+    let listed = runner.run_unprivileged("zoneadm", &["list", "-cp"])?;
+    if !listed.success() {
+        return Err(AppError::CommandFailed { cmd: "zoneadm list -cp".to_string(), status: listed.status, stderr: listed.stderr });
+    }
+    let (mut running, mut stopped) = (Vec::new(), Vec::new());
+    for zone in parse_zoneadm_rows(&listed.stdout) {
+        let Ok(info) = runner.run_unprivileged("zonecfg", &["-z", &zone.name, "info", "dataset"]) else { continue };
+        if !info.success() {
+            continue;
+        }
+        let delegated = info.stdout.lines().filter_map(|l| l.trim().strip_prefix("name:")).map(str::trim).any(|d| dataset == d || dataset.strip_prefix(d).is_some_and(|rest| rest.starts_with('/')));
+        if delegated {
+            if zone.running { running.push(zone) } else { stopped.push(zone) }
+        }
+    }
+    match (running.as_slice(), stopped.as_slice()) {
+        ([one], _) => Ok((one.name.clone(), one.path.clone())),
+        ([], []) => Err(AppError::Config("no running zone is given this dataset, so its snapshots cannot be browsed from here".to_string())),
+        ([], [zone, ..]) => Err(AppError::Config(format!("the zone {} that holds this dataset is not running, so its snapshots cannot be browsed (start the zone first)", zone.name))),
+        (many, _) => Err(AppError::Config(format!("more than one zone ({}) is given this dataset, so zfsctl cannot tell which to read", many.iter().map(|z| z.name.as_str()).collect::<Vec<_>>().join(", ")))),
+    }
+}
+
 /// Where `dataset` can be browsed: its mountpoint, but only when ZFS says it is mounted there (an unmounted, `canmount=noauto`,
-/// key-not-loaded or `recv -u` dataset still reports a mountpoint, and another dataset may be mounted at that path), and, on
-/// illumos, not given to a zone (its path is the zone's, not the global zone's).
-pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) -> Result<String> {
+/// key-not-loaded or `recv -u` dataset still reports a mountpoint, and another dataset may be mounted at that path). On illumos
+/// a dataset given to a zone is read through that zone's root directory (`<zone path>/root<mountpoint>`), because the global zone
+/// has no `.zfs` folder for it.
+pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) -> Result<BrowseBase> {
     super::not_an_option(dataset)?;
     let props = if os == HostOs::Illumos { "mounted,mountpoint,zoned" } else { "mounted,mountpoint" };
     let out = super::run_checked(runner, "zfs", &["get", "-H", "-o", "property,value", props, dataset], &format!("zfs get {props} {dataset}"))?;
@@ -75,13 +147,17 @@ pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) 
     if value("mounted").as_deref() != Some("yes") {
         return Err(AppError::Config("this dataset is not mounted, so there is no snapshot folder to browse".to_string()));
     }
-    if value("zoned").as_deref() == Some("on") {
-        return Err(AppError::Config("this dataset is given to a zone, whose paths the host's own namespace does not show, so its snapshots cannot be browsed from here".to_string()));
+    let mountpoint = match value("mountpoint") {
+        Some(m) if m.starts_with('/') => m,
+        _ => return Err(AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string())),
+    };
+    if os == HostOs::Illumos && value("zoned").as_deref() == Some("on") {
+        let (zone, zone_path) = zone_for_dataset(runner, dataset)?;
+        let inside = mountpoint.trim_start_matches('/');
+        let path = if inside.is_empty() { format!("{zone_path}/root") } else { format!("{zone_path}/root/{inside}") };
+        return Ok(BrowseBase { path, zone: Some(zone) });
     }
-    match value("mountpoint") {
-        Some(m) if m.starts_with('/') => Ok(m),
-        _ => Err(AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string())),
-    }
+    Ok(BrowseBase { path: mountpoint, zone: None })
 }
 
 /// Which of a file's times a listing prints.
@@ -598,7 +674,7 @@ mod tests {
     #[test]
     fn browse_mountpoint_needs_the_dataset_to_be_mounted_at_a_path() {
         let ok = GetRunner::new("mounted\tyes\nmountpoint\t/m\n");
-        assert_eq!(browse_mountpoint(&ok, HostOs::FreeBsd, "tank/d").unwrap(), "/m");
+        assert_eq!(browse_mountpoint(&ok, HostOs::FreeBsd, "tank/d").unwrap(), BrowseBase { path: "/m".to_string(), zone: None });
         assert_eq!(ok.calls.lock().unwrap()[0], ["get", "-H", "-o", "property,value", "mounted,mountpoint", "tank/d"], "options first, no zoned on FreeBSD");
         for (out, why) in [
             ("mounted\tno\nmountpoint\t/m\n", "not mounted"),
@@ -612,20 +688,111 @@ mod tests {
         }
     }
 
+    /// Answers each command by its name and first arguments; every call is recorded as `cmd args...`.
+    struct ScriptedRunner {
+        answers: Vec<(&'static str, String)>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl ScriptedRunner {
+        fn new(answers: &[(&'static str, &str)]) -> Self {
+            Self { answers: answers.iter().map(|(k, v)| (*k, (*v).to_string())).collect(), calls: Mutex::new(vec![]) }
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandRunner for ScriptedRunner {
+        fn run(&self, cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
+            let line = format!("{cmd} {}", args.join(" "));
+            self.calls.lock().unwrap().push(line.clone());
+            let out = self.answers.iter().find(|(prefix, _)| line.starts_with(prefix)).map(|(_, out)| out.clone());
+            match out {
+                Some(stdout) => Ok(CommandOutput { stdout, stderr: String::new(), status: 0 }),
+                None => Ok(CommandOutput { stdout: String::new(), stderr: format!("no answer for {line}"), status: 1 }),
+            }
+        }
+        fn run_with_stdin(&self, _cmd: &str, _args: &[&str], _stdin: &str) -> crate::error::Result<CommandOutput> {
+            Err(AppError::Config("no stdin here".to_string()))
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn command(&self, _cmd: &str, _args: &[&str]) -> crate::error::Result<Command> {
+            Err(AppError::Config("no command here".to_string()))
+        }
+    }
+
+    const ZONEADM: &str = "0:global:running:/::ipkg:shared:0\n2:tailscale:running:/rpool/zones/tailscale:b272a919:lipkg:excl:6\n3:syncthing:running:/rpool/zones/syncthing:898ea576:lipkg:excl:9\n";
+
     #[test]
-    fn a_zoned_dataset_on_illumos_is_not_browsed_from_the_global_zone() {
-        let zoned = GetRunner::new("mounted\tyes\nmountpoint\t/omni30/syncthing\nzoned\ton\n");
-        let err = browse_mountpoint(&zoned, HostOs::Illumos, "omni30/syncthing").unwrap_err().to_string();
-        assert!(err.contains("given to a zone"), "{err}");
-        assert_eq!(zoned.calls.lock().unwrap()[0].last().map(String::as_str), Some("omni30/syncthing"));
-        assert!(zoned.calls.lock().unwrap()[0].contains(&"mounted,mountpoint,zoned".to_string()));
-        let plain = GetRunner::new("mounted\tyes\nmountpoint\t/tank/photos\nzoned\toff\n");
-        assert_eq!(browse_mountpoint(&plain, HostOs::Illumos, "tank/photos").unwrap(), "/tank/photos");
+    fn zoneadm_output_is_parsed_and_only_running_zones_are_candidates() {
+        let zones = parse_zoneadm(&format!("{ZONEADM}4:old:installed:/rpool/zones/old:u:lipkg:excl:-\ngarbage\n"));
+        assert_eq!(zones, [("tailscale".to_string(), "/rpool/zones/tailscale".to_string()), ("syncthing".to_string(), "/rpool/zones/syncthing".to_string())]);
+    }
+
+    #[test]
+    fn the_zone_that_delegates_the_dataset_is_found() {
+        let r = ScriptedRunner::new(&[("zoneadm list -cp", ZONEADM), ("zonecfg -z tailscale info dataset", "dataset:\n\tname: tank/syncthing\n"), ("zonecfg -z syncthing info dataset", "dataset:\n\tname: tank/other\ndataset:\n\tname: omni30/syncthing\n")]);
+        assert_eq!(zone_for_dataset(&r, "omni30/syncthing").unwrap(), ("syncthing".to_string(), "/rpool/zones/syncthing".to_string()));
+        assert_eq!(r.calls()[0], "zoneadm list -cp");
+        assert!(r.calls().contains(&"zonecfg -z syncthing info dataset".to_string()));
+    }
+
+    #[test]
+    fn a_dataset_below_a_delegated_one_is_found_but_a_lookalike_name_is_not() {
+        let answers = [("zoneadm list -cp", ZONEADM), ("zonecfg -z tailscale info dataset", ""), ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n")];
+        assert_eq!(zone_for_dataset(&ScriptedRunner::new(&answers), "omni30/syncthing/Camera").unwrap().0, "syncthing");
+        for lookalike in ["omni30/syncthing2", "omni30/sync", "omni30", "omni30/syncthing-x/y"] {
+            assert!(zone_for_dataset(&ScriptedRunner::new(&answers), lookalike).is_err(), "{lookalike}");
+        }
+    }
+
+    #[test]
+    fn two_zones_none_and_stopped_zones_are_refused_with_a_message() {
+        let both = [("zoneadm list -cp", ZONEADM), ("zonecfg -z tailscale info dataset", "dataset:\n\tname: omni30/syncthing\n"), ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n")];
+        let err = zone_for_dataset(&ScriptedRunner::new(&both), "omni30/syncthing").unwrap_err().to_string();
+        assert!(err.contains("more than one zone") && err.contains("tailscale") && err.contains("syncthing"), "{err}");
+        let none = [("zoneadm list -cp", ZONEADM), ("zonecfg -z tailscale info dataset", ""), ("zonecfg -z syncthing info dataset", "")];
+        let err = zone_for_dataset(&ScriptedRunner::new(&none), "omni30/syncthing").unwrap_err().to_string();
+        assert!(err.contains("no running zone"), "{err}");
+        let stopped = [("zoneadm list -cp", "0:global:running:/::ipkg:shared:0\n3:syncthing:installed:/rpool/zones/syncthing:u:lipkg:excl:-\n"), ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n")];
+        let err = zone_for_dataset(&ScriptedRunner::new(&stopped), "omni30/syncthing").unwrap_err().to_string();
+        assert!(err.contains("syncthing") && err.contains("not running"), "{err}");
+    }
+
+    #[test]
+    fn zone_names_and_paths_from_the_host_are_validated() {
+        for (name, path) in [("-x", "/rpool/zones/x"), ("a b", "/rpool/zones/x"), ("a;b", "/rpool/zones/x"), ("ok", "/x/../y"), ("ok", "relative/path"), ("ok", "/x\ny"), ("ok", "/")] {
+            let line = format!("3:{name}:running:{path}:u:lipkg:excl:9\n");
+            assert!(parse_zoneadm(&line).is_empty(), "{name:?} {path:?}");
+        }
+    }
+
+    #[test]
+    fn browse_mountpoint_for_a_zoned_dataset_returns_the_zone_root_path() {
+        let r = ScriptedRunner::new(&[
+            ("zfs get", "mounted\tyes\nmountpoint\t/omni30/syncthing\nzoned\ton\n"),
+            ("zoneadm list -cp", ZONEADM),
+            ("zonecfg -z tailscale info dataset", ""),
+            ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n"),
+        ]);
+        let base = browse_mountpoint(&r, HostOs::Illumos, "omni30/syncthing").unwrap();
+        assert_eq!(base, BrowseBase { path: "/rpool/zones/syncthing/root/omni30/syncthing".to_string(), zone: Some("syncthing".to_string()) });
+        assert_eq!(snapshot_dir(&base.path, "keep-1", &["Camera"]).unwrap(), "/rpool/zones/syncthing/root/omni30/syncthing/.zfs/snapshot/keep-1/Camera");
+        assert_eq!(r.calls()[0], "zfs get -H -o property,value mounted,mountpoint,zoned omni30/syncthing");
+    }
+
+    #[test]
+    fn a_zoned_dataset_on_a_non_illumos_host_is_still_refused() {
+        let r = ScriptedRunner::new(&[("zfs get", "mounted\tyes\nmountpoint\t/m\nzoned\ton\n")]);
+        assert_eq!(browse_mountpoint(&r, HostOs::Linux, "tank/d").unwrap().path, "/m", "only illumos asks for zoned; Linux hosts browse the mountpoint");
     }
 
     #[test]
     fn a_dataset_mounted_at_the_root_can_be_browsed() {
-        assert_eq!(browse_mountpoint(&GetRunner::new("mounted\tyes\nmountpoint\t/\n"), HostOs::FreeBsd, "zroot/ROOT/default").unwrap(), "/");
+        assert_eq!(browse_mountpoint(&GetRunner::new("mounted\tyes\nmountpoint\t/\n"), HostOs::FreeBsd, "zroot/ROOT/default").unwrap().path, "/");
         assert_eq!(snapshot_dir("/", "s", &["etc"]).unwrap(), "/.zfs/snapshot/s/etc");
         assert_eq!(snapshot_dir("/", "s", &[]).unwrap(), "/.zfs/snapshot/s");
     }
