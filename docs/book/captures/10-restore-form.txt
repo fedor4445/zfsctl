@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Browse — local · scratch/data@zt-rst-a──────────────────────────────────────────────┐
+│Dashboard             ││/zt-rst/albums/2025                                                                 │
+│Hosts                 ││Type     Size         Modified         Mode        Owner        Name                │
+│Pools                 ││file     2.9M         2024-06-01 12:00 -rw-r-----  root         photo.jpg           │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
+│Alerts                ││                                                                                    │
+│Settings             ┌Restore as a copy───────────────────────────────────────────────┐wheel                │
+│                     │A new file next to the original; nothing is replaced.           │                     │
+│                     │                                                                │─────────────────────┘
+│                     │> Restore as: photo.restored-zt-rst-a.jpg                       │─────────────────────┐
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘this one lit         │
+│                      ││Used      3.0M   Refer 103M   Written 3.0M        █                                 │
+│                      ││Reclaim   3.0M  (freed if destroyed)              █                                 │
+│                      ││Holds     0   Clones -                            █                                 │
+│                      ││Dataset   5 snaps, 3.2M = 3% of used              █                                 │
+│                      ││Oldest    46d 3h ago                              █                                 │
+│                      ││Newest    1m ago                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                              ▁▁▁▁█                                 │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Submit  Tab Next field  Shift+Tab Prev field  Esc Cancel

@@ -1,0 +1,30 @@
+┌zfsctl────────────────┐┌Browse — local · scratch/data@zt-rst-a──────────────────────────────────────────────┐
+│Dashboard             ││/zt-rst/albums/2025                                                                 │
+│Hosts                 ││Type     Size         Modified         Mode        Owner        Name                │
+│Pools                 ││file     2.9M         2024-06-01 12:00 -rw-r-----  root         photo.jpg           │
+│Datasets             ┌Confirm (y/n, then Enter)───────────────────────────────────────┐                     │
+│Snapshots            │Restore as a copy                                               │                     │
+│Disks                │From:                                                           │                     │
+│Shares               │/scratch/data/.zfs/snapshot/zt-rst-a/zt-rst/albums/2025/photo.jp│                     │
+│Boot Envs            │g                                                               │                     │
+│Jobs                 │To:                                                             │                     │
+│Cloud                │/scratch/data/zt-rst/albums/2025/photo.restored-zt-rst-a.jpg    │                     │
+│Alerts               │Command: cp -p -n --                                            │                     │
+│Settings             │/scratch/data/.zfs/snapshot/zt-rst-a/zt-rst/albums/2025/photo.jp│wheel                │
+│                     │g /scratch/data/zt-rst/albums/2025/photo.restored-zt-rst-a.jpg  │                     │
+│                     │Size: 3000000   Mode: -rw-r-----                                │─────────────────────┘
+│                     │This creates one new file next to the original and never        │─────────────────────┐
+│                     │replaces anything.                                              │                     │
+│                     │Existing files are never overwritten; if the name is taken      │this one lit         │
+│                     │nothing is copied. (y/n)                                        │                     │
+│                     │                                                                │                     │
+│                     │Press y for yes or n for no, then Enter.                        │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                              ▁▁▁▁█                                 │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+y Yes  n/Esc No
