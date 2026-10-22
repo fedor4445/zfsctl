@@ -541,9 +541,9 @@ pub fn read_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &B
 }
 
 /// Reads one folder of the live tree (the restore's checks): the same listing as [`read_folder`], for an absolute path of at
-/// most 4096 bytes with no control character and no empty, `.` or `..` step.
+/// most 4096 bytes with no control character or U+FFFD and no empty, `.` or `..` step.
 pub fn read_live_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
-    let plain = dir.starts_with('/') && dir.len() <= MAX_PATH && !dir.chars().any(char::is_control) && (dir == "/" || dir[1..].split('/').all(|s| !s.is_empty() && s != "." && s != ".."));
+    let plain = dir.starts_with('/') && dir.len() <= MAX_PATH && !dir.chars().any(|c| c.is_control() || c == '\u{fffd}') && (dir == "/" || dir[1..].split('/').all(|s| !s.is_empty() && s != "." && s != ".."));
     if !plain {
         return Err(AppError::Config("refusing to list a folder whose path is not a plain absolute path".to_string()));
     }
