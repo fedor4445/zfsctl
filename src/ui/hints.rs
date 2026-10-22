@@ -261,7 +261,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     if !view.rows.is_empty() {
                         v.push(h("↑↓", "Move", 1));
                     }
-                    if view.rows.get(view.selected).is_some_and(|r| r.entry.kind == crate::zfs::snapshot_browse::EntryKind::Directory && crate::zfs::snapshot_browse::valid_component(&r.entry.name)) {
+                    if view.rows.get(view.selected).is_some_and(|r| r.entry.kind == crate::zfs::snapshot_browse::EntryKind::Directory && !r.entry.ambiguous && crate::zfs::snapshot_browse::valid_component(&r.entry.name)) {
                         v.push(h("Enter", "Open", 1));
                     }
                     if !view.path.is_empty() {
@@ -1228,6 +1228,14 @@ mod tests {
         assert!(!keys(&odd).contains(&"Enter"), "{:?}", keys(&odd));
         let plain = browsing(&[("dir", Directory)], &[]);
         assert!(keys(&plain).contains(&"Enter"));
+    }
+
+    #[test]
+    fn open_is_not_offered_on_an_ambiguous_name() {
+        use crate::zfs::snapshot_browse::EntryKind::Directory;
+        let mut a = browsing(&[("back\\slash", Directory)], &[]);
+        a.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
+        assert!(!keys(&a).contains(&"Enter"), "{:?}", keys(&a));
     }
 
     #[test]

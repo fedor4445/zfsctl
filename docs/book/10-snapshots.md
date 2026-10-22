@@ -324,7 +324,7 @@ Folders are never hidden by a size or date filter, so you can still walk down to
 
 ### It only reads names and metadata
 
-The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never opens a symlink itself. One honest limit: file names are text that anyone who can write to the dataset controls. A name crafted with a newline can make a listing show a folder that is really a path through a symlink, so treat what the browser shows of a snapshot you do not trust as a read-only hint, not as proof.
+The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never opens a symlink itself. File names are text that anyone who can write to the dataset controls, so the listings are escaped: one line is always one entry, a name with a newline or an escape character cannot forge extra entries, and such a name (or one with a byte that is not UTF-8) is shown cleaned and never opened. On OmniOS, `ls` prints a backslash unescaped, so a name that contains one cannot be told from an escape sequence and is not opened either.
 
 On the hub itself it needs nothing extra. On another host the unprivileged account zfsctl logs in as is not allowed to read other people's folders, so listing a snapshot needs one more `sudo` entry, the **`browse`** feature, which is **off by default**. Print it, read it, and install it the way chapter 5 describes:
 

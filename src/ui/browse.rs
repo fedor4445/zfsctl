@@ -174,6 +174,11 @@ impl BrowseView {
         if row.entry.kind != EntryKind::Directory {
             return Ok(None);
         }
+        if row.entry.ambiguous {
+            let msg = "unusual name, not opened (a backslash in a name is ambiguous on this host)".to_string();
+            self.notice = Some(msg.clone());
+            return Err(msg);
+        }
         if !valid_component(&row.entry.name) {
             let msg = "unusual name, not opened (it has a control character or is too long)".to_string();
             self.notice = Some(msg.clone());
@@ -768,5 +773,15 @@ mod tests {
         let shown = draw_to_rows(&view, 120, 16).join("\n");
         assert!(shown.contains("showing 1 of 4") && shown.contains("name matches"), "{shown}");
         assert!(shown.contains("| separates") || shown.contains("* ?"), "the prompt explains alternatives and wildcards: {shown}");
+    }
+
+    #[test]
+    fn enter_on_an_ambiguous_name_is_refused() {
+        let mut row = entry("back\\slash", EntryKind::Directory, 3, 1_700_000_000);
+        row.entry.ambiguous = true;
+        let mut view = ready(vec![row]);
+        let err = view.enter_selected(2).unwrap_err();
+        assert!(err.contains("unusual name") && err.contains("backslash"), "{err}");
+        assert!(matches!(view.phase, Phase::Ready));
     }
 }

@@ -304,17 +304,6 @@ fn word(text: &str) -> Option<(&str, &str)> {
     Some((text.get(..end)?, text.get(end..)?))
 }
 
-/// Whether a line begins the way an `ls -l` entry does: a ten-character mode word (a type letter and nine permission characters,
-/// then perhaps `+`, `.` or `@`) followed by more text. A line that does not is taken for the continuation of a name with a
-/// newline in it.
-fn looks_like_entry_start(line: &str) -> bool {
-    let Some((mode, _)) = word(line) else { return false };
-    let mut chars = mode.chars();
-    let kind_ok = chars.next().is_some_and(|c| "-dlbcpsDP?".contains(c));
-    let perms: Vec<char> = chars.collect();
-    kind_ok && perms.len() >= 9 && perms.iter().take(9).all(|c| "rwxsStTlL-".contains(*c)) && perms.iter().skip(9).all(|c| "+.@".contains(*c)) && !line.trim_start().strip_prefix(mode).unwrap_or("").trim().is_empty()
-}
-
 /// Decodes the C-style escapes of `ls -b` and `ls -Q`: `\\ \" \a \b \f \n \r \t \v \e` and up to three octal digits (a byte).
 /// Bytes that do not form UTF-8 become U+FFFD, so such a name can be shown but is never sent back. An unknown escape and a
 /// trailing backslash are kept as they are.
@@ -522,19 +511,8 @@ fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, de
                 }
                 Some(entry) => once.entries.push(entry),
                 None if line.trim().is_empty() => {}
-                // A name with a newline in it prints on several lines; the later ones do not parse, so they are glued back
-                // onto the entry before them (its name then has a control character and is never opened).
-                None => {
-                    if looks_like_entry_start(line) {
-                        once.unreadable += 1;
-                    } else if let Some(prev) = once.entries.last_mut() {
-                        let text = prev.link_target.as_mut().unwrap_or(&mut prev.name);
-                        text.push('\n');
-                        text.push_str(line);
-                    } else {
-                        once.unreadable += 1;
-                    }
-                }
+                // A line that is not an entry (the escaped listing never splits a name over lines) is counted, never glued on.
+                None => once.unreadable += 1,
             }
         });
         finish.store(true, Ordering::SeqCst);
@@ -1320,15 +1298,25 @@ mod tests {
     }
 
     #[test]
-    fn a_name_with_a_newline_is_rebuilt_from_its_continuation_line_and_cannot_be_opened() {
-        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'drwxr-xr-x 2 u g 5 100 dir'; echo 'newline'; echo '-rw-r--r-- 1 u g 5 100 last'";
+    fn a_stray_line_is_counted_not_glued_onto_the_entry_before_it() {
+        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'newline'; echo '-rw-r--r-- 1 u g 5 100 last'";
         let r = LsRunner::new(&[script, script]);
-        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits { max_entries: 20_000, max_seconds: 30 }, &AtomicBool::new(false)).unwrap();
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
+        assert_eq!(names, ["first", "last"], "no entry is altered by the line next to it");
+        assert_eq!(l.unreadable, 1);
+    }
+
+    #[test]
+    fn a_name_with_a_newline_arrives_escaped_as_one_entry_that_cannot_be_opened() {
+        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'drwxr-xr-x 2 u g 5 100 dir\\nnewline'; echo '-rw-r--r-- 1 u g 5 100 last'";
+        let r = LsRunner::new(&[script, script]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
         let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
         assert_eq!(names, ["first", "dir\nnewline", "last"]);
         assert_eq!(l.unreadable, 0);
         assert!(!valid_component(&l.entries[1].entry.name), "so the folder is never opened under a wrong name");
-        assert_eq!(l.entries[1].changed, Some(100), "the later listings glue the same way, so the times still match");
+        assert_eq!(l.entries[1].changed, Some(100), "the later listings agree, so the times still match");
     }
 
     #[test]
@@ -1340,16 +1328,6 @@ mod tests {
         let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
         assert_eq!(names, ["first", "third"], "the real entry is not welded onto its neighbour's name");
         assert_eq!(l.unreadable, 1);
-    }
-
-    #[test]
-    fn only_a_line_that_cannot_begin_an_entry_is_a_continuation() {
-        for continuation in ["newline", "name", "x y z", "  indented", "drwx", "-rw-r--r", "total"] {
-            assert!(!looks_like_entry_start(continuation), "{continuation:?}");
-        }
-        for start in ["-rw-r--r-- 1 u g 5 100 f", "drwxr-xr-x+ 2 u g 5 100 d", "lrwxrwxrwx 1 u g 5 100 l -> x", "crw-rw---- 1 root disk 10, 234 100 c", "-rwsr-xr-t. 1 u g 5 100 s"] {
-            assert!(looks_like_entry_start(start), "{start:?}");
-        }
     }
 
     #[test]
