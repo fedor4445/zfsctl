@@ -324,6 +324,77 @@ pub fn detail(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &
     out
 }
 
+/// Which way a job's transfer moves data, as seen from the bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// To the remote.
+    Out,
+    /// From the remote.
+    In,
+}
+
+/// A mirror and a backup write to their remote. Nothing reads from one yet (`remote_name` names only writers), so `In`
+/// has no job today; the Traffic cell already draws it, for the day a restore or a pull job exists.
+pub fn direction(job: &Job) -> Direction {
+    match job.kind.as_str() {
+        jobs::KIND_MIRROR | jobs::KIND_BACKUP => Direction::Out,
+        _ => Direction::In,
+    }
+}
+
+/// The rates of a row's running transfers, in bytes a second: `None` when nothing runs that way, `Some(0)` when
+/// something does but has not reported a rate yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Traffic {
+    pub up: Option<u64>,
+    pub down: Option<u64>,
+}
+
+/// What a row's jobs are moving right now: a job counts while it has a started run that has not finished.
+pub fn traffic(row: &Row, view: &JobsView) -> Traffic {
+    let mut t = Traffic::default();
+    for job in jobs_of(row, view) {
+        if !view.is_running(&job.id) {
+            continue;
+        }
+        let rate = view.progress_of(&job.id).and_then(|p| p.rate).unwrap_or(0);
+        let slot = if direction(job) == Direction::Out { &mut t.up } else { &mut t.down };
+        *slot = Some(slot.unwrap_or(0) + rate);
+    }
+    t
+}
+
+/// How many cells the dotted track has.
+const TRACK: usize = 6;
+
+/// The Traffic cell: a dotted track, and while data moves an arrow walking along it (`▸` out to the right, `◂` in to the
+/// left, one cell a second, from `tick`), followed by the rate. Idle is the bare track.
+pub fn traffic_cell(t: &Traffic, tick: u64) -> String {
+    let step = usize::try_from(tick % 6).unwrap_or(0);
+    let mut track = vec!['┄'; TRACK];
+    if t.up.is_some() {
+        if let Some(c) = track.get_mut(step) {
+            *c = '▸';
+        }
+    }
+    if t.down.is_some() {
+        if let Some(c) = track.get_mut(TRACK - 1 - step) {
+            *c = '◂';
+        }
+    }
+    let mut cell: String = track.into_iter().collect();
+    let rate = |r: u64| format!("{}/s", human_bytes(r));
+    let both = t.up.is_some() && t.down.is_some();
+    let text = match (t.up.filter(|r| *r > 0), t.down.filter(|r| *r > 0)) {
+        (Some(u), Some(d)) => format!(" ↑{} ↓{}", rate(u), rate(d)),
+        (Some(r), None) => format!(" {}{}", if both { "↑" } else { "" }, rate(r)),
+        (None, Some(r)) => format!(" {}{}", if both { "↓" } else { "" }, rate(r)),
+        (None, None) => String::new(),
+    };
+    cell.push_str(&text);
+    cell
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +654,32 @@ mod tests {
         let row = rows(&[], &known()).remove(1);
         let lines = detail(&row, &JobsView::default(), &HashMap::new(), &Caps::new(), at("2026-10-17T05:00:00Z"));
         assert!(lines.iter().any(|(t, _)| t.contains("No job uses this remote") && t.contains("press C") || t.contains("Press C")), "{lines:?}");
+    }
+
+    #[test]
+    fn an_idle_row_shows_a_dotted_track_and_a_running_transfer_moves_an_arrow_along_it() {
+        assert_eq!(traffic_cell(&Traffic::default(), 0), "┄┄┄┄┄┄");
+        // out (to the bucket) walks right, one cell a second, and wraps
+        let up = Traffic { up: Some(12 * 1024 * 1024), down: None };
+        assert_eq!(traffic_cell(&up, 0), "▸┄┄┄┄┄ 12.0 MiB/s");
+        assert_eq!(traffic_cell(&up, 2), "┄┄▸┄┄┄ 12.0 MiB/s");
+        assert_eq!(traffic_cell(&up, 6), "▸┄┄┄┄┄ 12.0 MiB/s");
+        // in (from the bucket) walks left
+        let down = Traffic { up: None, down: Some(2 * 1024 * 1024) };
+        assert_eq!(traffic_cell(&down, 0), "┄┄┄┄┄◂ 2.0 MiB/s");
+        assert_eq!(traffic_cell(&down, 1), "┄┄┄┄◂┄ 2.0 MiB/s");
+        // a running transfer whose rate is not known yet shows the arrow and no number
+        assert_eq!(traffic_cell(&Traffic { up: Some(0), down: None }, 1), "┄▸┄┄┄┄");
+        // both ways: both arrows (they pass each other, never on the same cell) and both rates
+        let both = Traffic { up: Some(1024 * 1024), down: Some(1024 * 1024) };
+        assert_eq!(traffic_cell(&both, 0), "▸┄┄┄┄◂ ↑1.0 MiB/s ↓1.0 MiB/s");
+        assert_eq!(traffic_cell(&both, 2), "┄┄▸◂┄┄ ↑1.0 MiB/s ↓1.0 MiB/s");
+        assert_eq!(traffic_cell(&both, 3), "┄┄◂▸┄┄ ↑1.0 MiB/s ↓1.0 MiB/s");
+    }
+
+    #[test]
+    fn a_mirror_and_a_backup_send_data_to_the_remote() {
+        assert_eq!(direction(&mirror("m", "local", "b2:bkt/p")), Direction::Out);
+        assert_eq!(direction(&Job::test_backup("b", "tank/data", "hourly", "rclone:b2:bkt/r", "/pw")), Direction::Out);
     }
 }

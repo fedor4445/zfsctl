@@ -366,19 +366,20 @@ fn cloud_label(row: &cloud::Row) -> String {
 struct CloudWidths {
     remote: usize,
     last: usize,
+    traffic: usize,
 }
 
 const CLOUD_PROVIDER_W: usize = 16;
 const CLOUD_JOBS_W: usize = 7;
 const CLOUD_NEXT_W: usize = 15;
 
-/// The line's columns, two spaces apart: Provider, Remote, Jobs, Last run, Next run, In bucket.
-fn cloud_columns(w: &CloudWidths, provider: &str, remote: &str, jobs: &str, last: &str, next: &str, bucket: &str) -> String {
-    format!("{provider:<CLOUD_PROVIDER_W$}  {remote:<rw$}  {jobs:<CLOUD_JOBS_W$}  {last:<lw$}  {next:<CLOUD_NEXT_W$}  {bucket}", rw = w.remote, lw = w.last).trim_end().to_string()
+/// The line's columns, two spaces apart: Provider, Remote, Jobs, Last run, Next run, Traffic, In bucket.
+fn cloud_columns(w: &CloudWidths, provider: &str, remote: &str, jobs: &str, last: &str, next: &str, traffic: &str, bucket: &str) -> String {
+    format!("{provider:<CLOUD_PROVIDER_W$}  {remote:<rw$}  {jobs:<CLOUD_JOBS_W$}  {last:<lw$}  {next:<CLOUD_NEXT_W$}  {traffic:<tw$}  {bucket}", rw = w.remote, lw = w.last, tw = w.traffic).trim_end().to_string()
 }
 
 fn cloud_header(w: &CloudWidths) -> String {
-    cloud_columns(w, "Provider", "Remote", "Jobs", "Last run", "Next run", "In bucket")
+    cloud_columns(w, "Provider", "Remote", "Jobs", "Last run", "Next run", "Traffic", "In bucket")
 }
 
 /// What the "Last run" cell says for a row: the last result and its age, or `-` for a remote no job uses.
@@ -386,11 +387,16 @@ fn cloud_last(row: &cloud::Row, view: &JobsView, now: DateTime<Utc>) -> String {
     if row.job_ids.is_empty() { "-".to_string() } else { crate::ui::jobs::last_result_text(cloud::last_run(row, view), now) }
 }
 
+/// The Traffic cell for a row; the arrow moves one cell a second, from the clock.
+fn cloud_traffic(row: &cloud::Row, view: &JobsView, now: DateTime<Utc>) -> String {
+    if row.job_ids.is_empty() { "-".to_string() } else { cloud::traffic_cell(&cloud::traffic(row, view), now.timestamp().unsigned_abs()) }
+}
+
 fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidths) -> Line {
     let cells = cloud::cells(row, view, inputs.cloud_sizes, inputs.cloud_caps, inputs.now);
     let provider = cloud::provider_name(row.kind.as_deref());
     if row.job_ids.is_empty() {
-        return Line { level: Level::Unknown, text: cloud_columns(w, &provider, &cloud_label(row), "no jobs", "-", "-", "-") };
+        return Line { level: Level::Unknown, text: cloud_columns(w, &provider, &cloud_label(row), "no jobs", "-", "-", "-", "-") };
     }
     let level = if cloud::failed(row, view) {
         Level::Issue
@@ -403,7 +409,7 @@ fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidth
     };
     let jobs_text = format!("{} job{}", cells[3], if cells[3] == "1" { "" } else { "s" });
     let next = cloud::next_run_text(row, view, &inputs.now.with_timezone(&chrono::Local));
-    Line { level, text: cloud_columns(w, &provider, &cloud_label(row), &jobs_text, &cells[4], &next, &cells[5]) }
+    Line { level, text: cloud_columns(w, &provider, &cloud_label(row), &jobs_text, &cells[4], &next, &cloud_traffic(row, view, inputs.now), &cells[5]) }
 }
 
 fn alerts_line(alerts: &AlertsView, daemon_running: bool, now: DateTime<Utc>) -> Line {
@@ -503,6 +509,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     let widths = CloudWidths {
         remote: inputs.cloud_rows.iter().map(|r| cloud_label(r).chars().count()).max().unwrap_or(0).max("Remote".len()),
         last: inputs.cloud_rows.iter().map(|r| cloud_last(r, inputs.jobs, inputs.now).chars().count()).max().unwrap_or(0).max("Last run".len()),
+        traffic: inputs.cloud_rows.iter().map(|r| cloud_traffic(r, inputs.jobs, inputs.now).chars().count()).max().unwrap_or(0).max("Traffic".len()),
     };
     let cloud: Vec<Line> = inputs.cloud_rows.iter().map(|r| cloud_line(r, inputs.jobs, inputs, &widths)).collect();
     let cloud_header = if cloud.is_empty() { String::new() } else { cloud_header(&widths) };
@@ -955,6 +962,27 @@ mod tests {
         assert!(header.starts_with("Provider") && at("Remote") == 18 && at("Jobs") == 30 && at("Last run") > at("Jobs") && at("Next run") > at("Last run") && at("In bucket") > at("Next run"), "{header:?}");
         assert_eq!(&texts[0][18..28], "b2        ", "the remote starts under its header");
         assert!(texts.iter().all(|t| !t.contains("(b2)") && !t.contains("(sftp)")), "the raw type in parentheses is gone: {texts:?}");
+    }
+
+    #[test]
+    fn a_running_cloud_job_shows_its_rate_on_its_row_and_an_idle_one_shows_a_dotted_track() {
+        let jobs = vec![mirror("m1", "b2:zfsctl/photos"), mirror("m2", "t1:zfsctl/x")];
+        let mut known = crate::ui::cloud::Known::new();
+        known.insert("local".into(), vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into()), ("zfsctl-aws".into(), "s3".into())]);
+        let mut fx = Fixture::new(view(jobs.clone(), &[("m1", RunResult::Ok, "ok"), ("m2", RunResult::Ok, "ok")], beat(1)));
+        fx.cloud_rows = crate::ui::cloud::rows(&jobs, &known);
+        let idle = fx.build(vec![]);
+        assert!(idle.cloud_header.contains("Traffic") && idle.cloud_header.find("Traffic") > idle.cloud_header.find("Next run") && idle.cloud_header.find("Traffic") < idle.cloud_header.find("In bucket"), "{:?}", idle.cloud_header);
+        assert!(idle.cloud.iter().take(2).all(|l| l.text.contains("┄┄┄┄┄┄")), "{:?}", idle.cloud);
+        assert!(idle.cloud[2].text.contains("no jobs") && !idle.cloud[2].text.contains('┄'), "a remote nobody uses has no track: {}", idle.cloud[2].text);
+        // m1 is running at 3 MiB/s: its row (b2) has the arrow and the rate, the other row does not.
+        fx.view.runs.push(crate::daemon::history::Run { job_id: "m1".into(), run_id: "m1-live".into(), started_at: now(), scheduled_for: None, finished_at: None, result: None, message: String::new(), catch_up: false, summary: None });
+        fx.view.progress.push(crate::daemon::progress::Progress { job_id: "m1".into(), bytes: 1, total: None, started_at: now(), updated_at: now(), rate: Some(3 * 1024 * 1024) });
+        let busy = fx.build(vec![]);
+        assert!(busy.cloud[0].text.contains('▸') && busy.cloud[0].text.contains("3.0 MiB/s"), "{}", busy.cloud[0].text);
+        assert!(!busy.cloud[1].text.contains('▸') && !busy.cloud[1].text.contains("/s"), "{}", busy.cloud[1].text);
+        // the traffic column is as wide for the idle row as for the busy one, so In bucket lines up
+        assert_eq!(busy.cloud[0].text.chars().count(), busy.cloud[1].text.chars().count(), "{:?}", busy.cloud);
     }
 
     #[test]
