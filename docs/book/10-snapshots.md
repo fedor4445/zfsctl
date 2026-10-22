@@ -336,7 +336,8 @@ It adds `ls` with eight fixed argument lists that all end in `-- *`. Sudo matche
 
 - **Big folders.** At most 20,000 entries are listed, or whatever was read in 30 seconds, whichever comes first. The header says `the folder is larger` when that happens. `Esc` stops a read that is still running.
 - **Names that are not ordinary.** A name with a control character (a newline, an escape sequence) is shown cleaned and never opened, and a line zfsctl cannot read is counted (`N entries could not be read`), not guessed at.
-- **`this snapshot cannot be browsed here`.** Some datasets have no visible `.zfs/snapshot` folder, for example one given to a zone on OmniOS. zfsctl does not clone the snapshot to get around that, because cloning changes the pool. Use `c` to see what changed instead.
+- **A dataset given to a zone (OmniOS).** The host's own `.zfs` folder does not exist for such a dataset, but the zone's root directory holds it. zfsctl asks the host, without sudo, which running zone the dataset is given to (`zoneadm list -cp`, then `zonecfg -z NAME info dataset`), reads the snapshot through `<zone path>/root`, and the header says `(zone NAME)`. It refuses, and says why, when no zone has the dataset, when more than one does, or when the zone is not running. It never clones a snapshot to get around a missing folder, because cloning changes the pool.
+- **`this snapshot cannot be browsed here`.** Some other dataset has no visible `.zfs/snapshot` folder. Use `c` to see what changed instead.
 - **A dataset that is not mounted** (mountpoint `none` or `legacy`) has no snapshot folder to list.
 
 ## How scheduled snapshots are named

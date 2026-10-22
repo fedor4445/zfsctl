@@ -2317,6 +2317,7 @@ impl App {
                         name: snap.name.clone(),
                         path: Vec::new(),
                         mountpoint: None,
+                        zone: None,
                         os,
                         cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     };
@@ -3340,14 +3341,15 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<BrowseOutcome> {
-                let mountpoint = match pending.mountpoint.clone() {
-                    Some(m) => m,
-                    None => crate::zfs::snapshot_browse::browse_mountpoint(runner.as_ref(), pending.os, &pending.dataset)?.path,
+                // The first read finds where the snapshots can be read (and through which zone); the folders below reuse it.
+                let base = match pending.mountpoint.clone() {
+                    Some(path) => crate::zfs::snapshot_browse::BrowseBase { path, zone: pending.zone.clone() },
+                    None => crate::zfs::snapshot_browse::browse_mountpoint(runner.as_ref(), pending.os, &pending.dataset)?,
                 };
                 let steps: Vec<&str> = pending.path.iter().map(String::as_str).collect();
-                let dir = snapshot_dir(&mountpoint, &pending.name, &steps)?;
+                let dir = snapshot_dir(&base.path, &pending.name, &steps)?;
                 let listing = read_folder(runner.as_ref(), pending.os, &dir, &BrowseLimits::default(), &pending.cancel)?;
-                Ok(BrowseOutcome { listing, mountpoint })
+                Ok(BrowseOutcome { listing, mountpoint: base.path, zone: base.zone })
             })();
             let _ = tx.send(WorkerMsg::Browse(pending.host, pending.request, result));
         });
