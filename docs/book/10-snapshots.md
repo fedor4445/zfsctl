@@ -7,6 +7,7 @@
 - How to protect a snapshot with a hold.
 - How to see what changed between two snapshots, folder by folder.
 - How to look inside a snapshot, folder by folder, with each entry's type, size, dates, mode and owner.
+- How to get one file back from a snapshot as a copy, and why it never overwrites anything.
 - How scheduled snapshots are named, so you can recognise them.
 
 ## The list
@@ -324,7 +325,7 @@ Folders are never hidden by a size or date filter, so you can still walk down to
 
 ### It only reads names and metadata
 
-The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never opens a symlink itself. One honest limit: file names are text that anyone who can write to the dataset controls. A name crafted with a newline can make a listing show a folder that is really a path through a symlink, so treat what the browser shows of a snapshot you do not trust as a read-only hint, not as proof.
+The browser never opens a file, shows its contents, copies, moves or deletes anything. It lists names and the facts `ls -l` prints, nothing more, and it never opens a symlink itself. File names are text that anyone who can write to the dataset controls, so the listings are escaped: one line is always one entry, a name with a newline or an escape character cannot forge extra entries, and such a name (or one with a byte that is not UTF-8) is shown cleaned and never opened. On OmniOS, `ls` prints a backslash unescaped, so a name that contains one cannot be told from an escape sequence and is not opened either.
 
 On the hub itself it needs nothing extra. On another host the unprivileged account zfsctl logs in as is not allowed to read other people's folders, so listing a snapshot needs one more `sudo` entry, the **`browse`** feature, which is **off by default**. Print it, read it, and install it the way chapter 5 describes:
 
@@ -332,7 +333,7 @@ On the hub itself it needs nothing extra. On another host the unprivileged accou
 zfsctl print-sudoers HOST --with browse
 ```
 
-It adds `ls` with fixed argument lists (three for FreeBSD or Linux, two for illumos, chosen by the host's own OS) that all end in `-- *`. Sudo matches the words as one string and its `*` also matches spaces and `/`, so an extra option or path can be slipped in by merging words, and the path cannot be confined to `.zfs/snapshot`. `ls` has no option that writes or runs anything (the worst is a recursive listing). That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run.
+It adds `ls` with fixed argument lists (three for FreeBSD or Linux, two for illumos, chosen by the host's own OS) that all end in `-- *`. Sudo matches the words as one string and its `*` also matches spaces and `/`, so an extra option or path can be slipped in by merging words, and the path cannot be confined to `.zfs/snapshot`. `ls` has no option that writes or runs anything (the worst is a recursive listing). That is a limit, and it is stated in the printed file. The account already holds `zfs` and `zpool`, which can read every dataset anyway; the entry adds a read of names and metadata, not a new kind of power. Without it, `f` says `browse is not enabled for this host` and names the command to run. A host set up before the escaped listings needs the browse entry installed again: run `zfsctl print-sudoers HOST --with browse` and install the new file.
 
 ### Limits and odd cases
 
@@ -341,6 +342,99 @@ It adds `ls` with fixed argument lists (three for FreeBSD or Linux, two for illu
 - **A dataset given to a zone (OmniOS).** The host's own `.zfs` folder does not exist for such a dataset, but the zone's root directory holds it. zfsctl asks the host, without sudo, which running zone the dataset is given to (`zoneadm list -cp`, then `zonecfg -z NAME info dataset`), reads the snapshot through `<zone path>/root`, and the header says `(zone NAME)`. It refuses, and says why, when no zone has the dataset, when more than one does, or when the zone is not running. It never clones a snapshot to get around a missing folder, because cloning changes the pool. One more honest limit: everything below `<zone path>/root` is controlled by the zone's own root user, folders, symlinks and the dataset's mountpoint included, so a hostile zone could make that path lead somewhere else on the host. What the browser shows of a zoned dataset is therefore a read-only hint you should trust only as far as you trust the zone.
 - **`this folder cannot be browsed here`.** The host shows no `.zfs/snapshot` folder there, or it was removed. Use `c` to see what changed instead.
 - **A dataset that is not mounted** (mountpoint `none` or `legacy`) has no snapshot folder to list.
+
+## Getting a file back
+
+You found the file in the browser and want it back. Select it and press `R`. zfsctl does **not** put it back where it was, and it never replaces anything: it makes a **copy** next to the original, under a new name, and the confirm shows exactly what will run.
+
+```screen
+┌zfsctl────────────────┐┌Browse — local · scratch/data@zt-rst-a──────────────────────────────────────────────┐
+│Dashboard             ││/zt-rst/albums/2025                                                                 │
+│Hosts                 ││Type     Size         Modified         Mode        Owner        Name                │
+│Pools                 ││file     2.9M         2024-06-01 12:00 -rw-r-----  root         photo.jpg           │
+│Datasets              ││                                                                                    │
+│Snapshots             ││                                                                                    │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │
+│Cloud                 ││                                                                                    │
+│Alerts                ││                                                                                    │
+│Settings             ┌Restore as a copy───────────────────────────────────────────────┐wheel                │
+│                     │A new file next to the original; nothing is replaced.           │                     │
+│                     │                                                                │─────────────────────┘
+│                     │> Restore as: photo.restored-zt-rst-a.jpg                       │─────────────────────┐
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘this one lit         │
+│                      ││Used      3.0M   Refer 103M   Written 3.0M        █                                 │
+│                      ││Reclaim   3.0M  (freed if destroyed)              █                                 │
+│                      ││Holds     0   Clones -                            █                                 │
+│                      ││Dataset   5 snaps, 3.2M = 3% of used              █                                 │
+│                      ││Oldest    46d 3h ago                              █                                 │
+│                      ││Newest    1m ago                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                              ▁▁▁▁█                                 │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+Enter Submit  Tab Next field  Shift+Tab Prev field  Esc Cancel
+```
+
+The form is one line, **Restore as**. It starts with the file's name, `.restored-` and the snapshot's name before the extension (`photo.jpg` becomes `photo.restored-daily-1.jpg`; spaces in the snapshot's name become `_`). Change it if you like. Pressing `Enter` does not copy anything yet: it opens the confirm.
+
+```screen
+┌zfsctl────────────────┐┌Browse — local · scratch/data@zt-rst-a──────────────────────────────────────────────┐
+│Dashboard             ││/zt-rst/albums/2025                                                                 │
+│Hosts                 ││Type     Size         Modified         Mode        Owner        Name                │
+│Pools                 ││file     2.9M         2024-06-01 12:00 -rw-r-----  root         photo.jpg           │
+│Datasets             ┌Confirm (y/n, then Enter)───────────────────────────────────────┐                     │
+│Snapshots            │Restore as a copy                                               │                     │
+│Disks                │From:                                                           │                     │
+│Shares               │/scratch/data/.zfs/snapshot/zt-rst-a/zt-rst/albums/2025/photo.jp│                     │
+│Boot Envs            │g                                                               │                     │
+│Jobs                 │To:                                                             │                     │
+│Cloud                │/scratch/data/zt-rst/albums/2025/photo.restored-zt-rst-a.jpg    │                     │
+│Alerts               │Command: cp -p -n --                                            │                     │
+│Settings             │/scratch/data/.zfs/snapshot/zt-rst-a/zt-rst/albums/2025/photo.jp│wheel                │
+│                     │g /scratch/data/zt-rst/albums/2025/photo.restored-zt-rst-a.jpg  │                     │
+│                     │Size: 3000000   Mode: -rw-r-----                                │─────────────────────┘
+│                     │This creates one new file next to the original and never        │─────────────────────┐
+│                     │replaces anything.                                              │                     │
+│                     │Existing files are never overwritten; if the name is taken      │this one lit         │
+│                     │nothing is copied. (y/n)                                        │                     │
+│                     │                                                                │                     │
+│                     │Press y for yes or n for no, then Enter.                        │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     │                                                                │                     │
+│                     └────────────────────────────────────────────────────────────────┘                     │
+│                      ││                                                  █                                 │
+│                      ││                                                  █                                 │
+│                      ││                                              ▁▁▁▁█                                 │
+└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+y Yes  n/Esc No
+```
+
+The confirm shows where the file comes from, where it will go and the exact command (`cp -p -n`), with every name quoted so spaces and odd characters cannot hide where one path ends. `-p` keeps the original's owner, permissions and times (on FreeBSD, where the copy runs as root, it also keeps file flags and ACLs); `-n` means *never overwrite*. Press `y`, then `Enter`, to copy; `n` or `Esc` then `Enter` cancels. It takes two keys on purpose, so a stray key or a held-down `Enter` cannot copy anything.
+
+### What zfsctl checks, and what it refuses
+
+Before the copy, one folder at a time:
+
+- the file is still in the snapshot's listing, as a **regular file** of the size you saw (folders, symlinks, devices and other special files are not restored);
+- every folder on the way to the destination is a **real folder**, not a symlink, so a root `cp` cannot be steered somewhere else by a link someone put there;
+- the new name is **not already taken** in the destination folder;
+- no name involved holds a control character, a byte that is not text, or (on OmniOS) a backslash: such names are shown but never used.
+
+After the copy it lists the destination again and checks that the new file is there, is a regular file, and has the **size and permissions** it should (it does not compare the contents; the snapshot is read-only, so the source cannot change under it). The result line names the new file: `Restored /tank/photos/2025/photo.restored-daily-1.jpg (3000000 bytes, -rw-r-----, owner root)`. If anything does not match, it says so plainly and does not try again, delete or repair anything.
+
+### Honest limits
+
+- **It needs the `restore` sudoers entry on other hosts.** The hub itself, which runs as root, needs nothing. On any other host run `zfsctl print-sudoers HOST --with restore` and install the file as chapter 5 describes. The entry allows a root `cp -p -n` (with `-T` on Linux) of any path the host can read to any new path: sudo cannot confine the paths, and the account that zfsctl logs in as already holds `zfs` and `zpool`, which are as powerful as root. The entry is **off by default** and printed with that warning.
+- **A short race remains.** The folder checks and the check that the new name is free run right before the copy, but a local user who can write to the destination folder could, in that tiny gap, swap a folder for a symlink, or plant a directory or a symlink at the new name itself, and the root `cp` would then put the file somewhere else on the host (a copy into a directory works on every OS; on Linux `-T` stops the directory case; FreeBSD also writes through a dangling symlink). Restore only into folders you control when the dataset is shared with people you do not trust.
+- **The copy lands in the live dataset.** If that folder is synced (to your phone, to another machine), the copy will sync too.
+- **A dataset given to a zone is refused.** `restore from a dataset given to a zone must be done inside the zone`: such a dataset can be browsed from the host but not restored from it, because the host would have to write through the zone's own folders, which the zone controls.
+- **A name the filesystem treats as an existing one** (for instance `PHOTO.jpg` when you restore `photo.jpg` on a dataset that ignores case) is refused up front: any entry whose name differs from the new name only by case counts as taken, whatever it is (a file, a folder or a link), and so is a non-ASCII name on a dataset that normalizes names. Should a copy still end up missing, zfsctl reports `not copied`, never success, and you should check the destination folder yourself.
 
 ## How scheduled snapshots are named
 
