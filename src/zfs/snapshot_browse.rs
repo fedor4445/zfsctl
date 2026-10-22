@@ -280,6 +280,17 @@ fn word(text: &str) -> Option<(&str, &str)> {
     Some((text.get(..end)?, text.get(end..)?))
 }
 
+/// Whether a line begins the way an `ls -l` entry does: a ten-character mode word (a type letter and nine permission characters,
+/// then perhaps `+`, `.` or `@`) followed by more text. A line that does not is taken for the continuation of a name with a
+/// newline in it.
+fn looks_like_entry_start(line: &str) -> bool {
+    let Some((mode, _)) = word(line) else { return false };
+    let mut chars = mode.chars();
+    let kind_ok = chars.next().is_some_and(|c| "-dlbcpsDP?".contains(c));
+    let perms: Vec<char> = chars.collect();
+    kind_ok && perms.len() >= 9 && perms.iter().take(9).all(|c| "rwxsStTlL-".contains(*c)) && perms.iter().skip(9).all(|c| "+.@".contains(*c)) && !line.trim_start().strip_prefix(mode).unwrap_or("").trim().is_empty()
+}
+
 /// Parses one `ls -lA` line as printed by [`ls_args`]. `None` for the `total` line and anything that is not an entry.
 pub fn parse_ls_line(os: HostOs, line: &str) -> Option<ListEntry> {
     let (mode, rest) = word(line)?;
@@ -351,6 +362,8 @@ pub struct Listing {
     pub truncated: bool,
     pub unreadable: usize,
     pub has_created: bool,
+    /// The changed- or created-time listing ran out of time, so some of those times are unknown.
+    pub times_incomplete: bool,
 }
 
 struct Once {
@@ -399,7 +412,9 @@ fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, de
                 // A name with a newline in it prints on several lines; the later ones do not parse, so they are glued back
                 // onto the entry before them (its name then has a control character and is never opened).
                 None => {
-                    if let Some(prev) = once.entries.last_mut() {
+                    if looks_like_entry_start(line) {
+                        once.unreadable += 1;
+                    } else if let Some(prev) = once.entries.last_mut() {
                         let text = prev.link_target.as_mut().unwrap_or(&mut prev.name);
                         text.push('\n');
                         text.push_str(line);
@@ -441,9 +456,11 @@ pub fn read_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &B
     }
     let unreadable = first.unreadable + usize::from(first.failure.is_some());
     let mut rows: Vec<Row> = first.entries.into_iter().map(|entry| Row { entry, changed: None, created: None }).collect();
+    let mut times_incomplete = false;
     for times in times_for(os).iter().copied().filter(|t| *t != Times::Modified) {
         let Some(args) = ls_args(os, times, dir) else { continue };
         let other = list_once(runner, &args, limits.max_entries, deadline, os, cancel)?;
+        times_incomplete |= other.truncated;
         if other.failure.is_some() {
             continue;
         }
@@ -457,7 +474,7 @@ pub fn read_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &B
             }
         }
     }
-    Ok(Listing { entries: rows, truncated: first.truncated, unreadable, has_created: times_for(os).contains(&Times::Created) })
+    Ok(Listing { entries: rows, truncated: first.truncated, unreadable, has_created: times_for(os).contains(&Times::Created), times_incomplete })
 }
 
 /// What to tell the user about a failed listing on `host`: the sudoers entry that is missing, a snapshot folder that is not
@@ -1061,6 +1078,20 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_or_created_listing_cut_short_by_the_time_limit_is_reported() {
+        let r = LsRunner::new(&[&files(&["a", "b"], 100), &format!("{} sleep 30", files(&["a"], 200))]);
+        let limits = BrowseLimits { max_seconds: 2, ..BrowseLimits::default() };
+        let started = Instant::now();
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &limits, &AtomicBool::new(false)).unwrap();
+        assert!(l.times_incomplete, "the listing of times was cut off");
+        assert!(!l.truncated, "the folder itself was read completely");
+        assert_eq!(l.entries.len(), 2);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let complete = read_folder(&LsRunner::new(&[&files(&["a"], 1)]), HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        assert!(!complete.times_incomplete);
+    }
+
+    #[test]
     fn a_mismatched_second_listing_leaves_changed_empty_not_wrong() {
         let r = LsRunner::new(&[&files(&["a", "b"], 100), &files(&["a", "zzz"], 200), "exit 3"]);
         let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
@@ -1085,6 +1116,27 @@ mod tests {
         assert_eq!(l.unreadable, 0);
         assert!(!valid_component(&l.entries[1].entry.name), "so the folder is never opened under a wrong name");
         assert_eq!(l.entries[1].changed, Some(100), "the later listings glue the same way, so the times still match");
+    }
+
+    #[test]
+    fn a_line_that_looks_like_an_entry_but_does_not_parse_is_counted_not_glued_onto_the_entry_before_it() {
+        // An owner name with a space (a Windows domain account) breaks the column split, but it is a real entry.
+        let script = "echo '-rw-r--r-- 1 u g 5 100 first'; echo '-rw-r--r-- 1 DOMAIN\\\\my user g 5 100 second'; echo '-rw-r--r-- 1 u g 5 100 third'";
+        let r = LsRunner::new(&[script]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
+        assert_eq!(names, ["first", "third"], "the real entry is not welded onto its neighbour's name");
+        assert_eq!(l.unreadable, 1);
+    }
+
+    #[test]
+    fn only_a_line_that_cannot_begin_an_entry_is_a_continuation() {
+        for continuation in ["newline", "name", "x y z", "  indented", "drwx", "-rw-r--r", "total"] {
+            assert!(!looks_like_entry_start(continuation), "{continuation:?}");
+        }
+        for start in ["-rw-r--r-- 1 u g 5 100 f", "drwxr-xr-x+ 2 u g 5 100 d", "lrwxrwxrwx 1 u g 5 100 l -> x", "crw-rw---- 1 root disk 10, 234 100 c", "-rwsr-xr-t. 1 u g 5 100 s"] {
+            assert!(looks_like_entry_start(start), "{start:?}");
+        }
     }
 
     #[test]

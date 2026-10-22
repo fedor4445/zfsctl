@@ -305,6 +305,9 @@ impl BrowseView {
             if listing.truncated {
                 lines.push("the folder is larger: only the first 20,000 entries (or what was read in 30 s) are listed".to_string());
             }
+            if listing.times_incomplete {
+                lines.push("some times (changed, created) could not be read in time and show -".to_string());
+            }
             if listing.unreadable > 0 {
                 lines.push(format!("{} entries could not be read (unusual names or output)", group_digits(listing.unreadable as u64)));
             }
@@ -424,7 +427,7 @@ mod tests {
     }
 
     fn listing(rows: Vec<BrowseRow>) -> Listing {
-        Listing { entries: rows, truncated: false, unreadable: 0, has_created: true }
+        Listing { entries: rows, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }
     }
 
     fn ready(rows: Vec<BrowseRow>) -> BrowseView {
@@ -599,5 +602,15 @@ mod tests {
         view.apply("omnios", Ok(BrowseOutcome { listing: listing(sample()), mountpoint: "/rpool/zones/z/root/d".to_string(), zone: Some("z".to_string()) }));
         let up = view.go_up(3).expect("up");
         assert_eq!(up.zone.as_deref(), Some("z"));
+    }
+
+    #[test]
+    fn the_header_says_when_times_could_not_be_read_in_time() {
+        let mut view = BrowseView::new(&pending(&[]), 0);
+        let mut l = listing(sample());
+        l.times_incomplete = true;
+        view.apply("local", Ok(BrowseOutcome { listing: l, mountpoint: "/m".to_string(), zone: None }));
+        let shown = draw_to_rows(&view, 120, 16).join("\n");
+        assert!(shown.contains("could not be read in time"), "{shown}");
     }
 }
