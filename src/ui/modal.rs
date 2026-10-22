@@ -724,6 +724,10 @@ mod tests {
 
     impl CommandRunner for RestoreHost {
         fn run(&self, cmd: &str, args: &[&str]) -> Result<crate::exec::CommandOutput> {
+            if cmd == "zfs" {
+                assert_eq!(args, ["get", "-H", "-o", "value", "normalization", "tank/data"]);
+                return Ok(crate::exec::CommandOutput { stdout: "none\n".to_string(), stderr: String::new(), status: 0 });
+            }
             assert_eq!(cmd, "cp");
             self.cps.lock().unwrap().push(args.iter().map(ToString::to_string).collect());
             let dest = args[args.len() - 1].rsplit('/').next().unwrap().to_string();

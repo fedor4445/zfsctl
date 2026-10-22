@@ -135,7 +135,7 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
         text.push_str("# ls: sudo matches the words as one string, so these forms cannot stop an extra path or an option slipped in by merging words\n# (sudo's * also matches spaces and /). ls has no option that writes or runs anything (the worst is a recursive listing), zfsctl only\n# reads .zfs/snapshot folders with them, and this account already holds zfs and zpool, which are as powerful as root.\n");
     }
     if resolved.iter().any(|r| r.entry.name == "cp") {
-        text.push_str("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths\n# (sudo's * also matches spaces and /). The form is the same on every OS: -p -n -- SOURCE DESTINATION, where -n never overwrites an existing file.\n");
+        text.push_str("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths\n# (sudo's * also matches spaces and /). The form is -p -n -- SOURCE DESTINATION (-p -n -T -- SOURCE DESTINATION on Linux, where -T makes an existing directory at the destination an error instead of a copy into it), where -n never overwrites an existing file.\n");
     }
     let path = install_path(os);
     let _ = write!(text, "# Install as {path} (owner root, mode 0440) after checking it:\n#   visudo -c -f {path}\n");
@@ -810,7 +810,8 @@ mod tests {
         const CP_PATHS: &[(&str, &str)] = &[("cp", "/bin/cp")];
         for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos] {
             let text = print_sudoers(&host_with(CP_PATHS), "h", "u@h", os, &[Feature::Restore], "d").unwrap();
-            assert!(text.contains("/bin/cp -p -n -- * *"), "{os:?}: {text}");
+            let form = if os == HostOs::Linux { "/bin/cp -p -n -T -- * *" } else { "/bin/cp -p -n -- * *" };
+            assert!(text.contains(form), "{os:?}: {text}");
             assert_eq!(text.matches("/bin/cp ").count(), 1, "{os:?}: {text}");
             assert!(text.contains("# cp is as powerful as root: grant it only to hosts you trust zfsctl with."), "{os:?}: {text}");
             assert!(text.contains("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths"), "{text}");

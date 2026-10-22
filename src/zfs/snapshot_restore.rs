@@ -83,6 +83,9 @@ pub fn plan_restore(src: &RestoreSource, dest_name: &str) -> Result<RestorePlan>
     if !valid_component(&src.entry.name) || !valid_component(dest_name) || !src.folder.iter().all(|s| valid_component(s)) {
         return refuse(bad_name);
     }
+    if src.os == HostOs::Illumos && dest_name.contains('\\') {
+        return refuse("a backslash in a name cannot be told apart from an escape sequence on this host, so choose another name");
+    }
     if dest_name == src.entry.name {
         return refuse("choose a different name: the restore never replaces the original");
     }
@@ -169,15 +172,19 @@ fn find_one<'a>(listing: &'a Listing, folder: &str, name: &str) -> Result<Option
     }
 }
 
-/// Whether anything at all (ambiguous or not) decodes to `name`; a cut-off listing cannot show that it is absent.
-fn exists_any(listing: &Listing, folder: &str, name: &str) -> Result<bool> {
-    if listing.entries.iter().any(|r| r.entry.name == name) {
-        return Ok(true);
+/// The first entry that is, or may be, the same name as `name`: an exact decoded match or one that differs only by case (a dataset
+/// with casesensitivity=insensitive|mixed resolves them to one name, so a planted `EVIL.X` would take the copy). Ambiguous
+/// entries count. Conservative on case-sensitive datasets: a harmless extra refusal. A listing that is cut off or has lines that
+/// could not be read cannot show that a name is absent.
+fn colliding(listing: &Listing, folder: &str, name: &str) -> Result<Option<String>> {
+    let lower = name.to_lowercase();
+    if let Some(hit) = listing.entries.iter().map(|r| &r.entry.name).find(|n| n.as_str() == name || n.to_lowercase() == lower) {
+        return Ok(Some(hit.clone()));
     }
     if listing.unreadable > 0 {
         return unreadable(folder);
     }
-    if listing.truncated { too_large(folder) } else { Ok(false) }
+    if listing.truncated { too_large(folder) } else { Ok(None) }
 }
 
 const NOT_ENABLED: &str = "restore is not enabled for this host: run zfsctl print-sudoers HOST --with restore, install the file as the host's sudoers entry and try again";
@@ -197,6 +204,25 @@ fn reason(e: &AppError) -> String {
     }
 }
 
+/// Fails closed on a dataset that normalizes names: a destination name with non-ASCII characters could then collide with an
+/// existing entry that looks different byte for byte, which the absence check cannot see.
+fn check_normalization(runner: &dyn CommandRunner, src: &RestoreSource, dest_name: &str) -> Result<()> {
+    crate::zfs::not_an_option(&src.dataset)?;
+    let unreadable = || AppError::Config("could not read the dataset's name normalization, so the restore is refused".to_string());
+    let out = runner.run("zfs", &["get", "-H", "-o", "value", "normalization", &src.dataset]).map_err(|_| unreadable())?;
+    let value = out.stdout.trim();
+    if out.status != 0 || value.is_empty() {
+        return Err(unreadable());
+    }
+    if value != "none" && !dest_name.is_ascii() {
+        return Err(AppError::Config(format!(
+            "this dataset normalizes names (normalization={}), so a name with non-ASCII characters cannot be checked safely: choose an ASCII name",
+            crate::display_text::sanitise_for_display(value)
+        )));
+    }
+    Ok(())
+}
+
 /// Checks, copies and verifies one restore. Nothing is retried, deleted or repaired: a failed check stops before `cp`, a failed
 /// verify is reported as it is. `cp` exits 0 when a no-clobber copy skips, so the destination is checked absent before and
 /// present, regular, of the planned size and mode after; the exit status alone is never trusted.
@@ -205,6 +231,10 @@ fn reason(e: &AppError) -> String {
 /// - The folders are checked right before `cp` runs, not while it runs. A local user who can write in one of them could swap it
 ///   for a symlink in that window; the window is short but it is not closed.
 /// - The dataset's mountpoint (it comes from the zfs property) and every path above it are trusted and not checked.
+/// - The same gap exists at the destination name: someone who can write to the destination folder can, between the absence check
+///   and the copy, plant a directory or a symlink AT the new name, and the root `cp` then lands elsewhere on the host (copying
+///   into a directory works on every OS; on Linux `-T` stops the directory case; FreeBSD also writes through a dangling
+///   symlink). Restore only into folders you control when the dataset is shared with people you do not trust.
 /// - An entry that appears at the destination between the absence check and the verify would be seen by the verify as if it
 ///   were the copy (the size and mode check is what limits that).
 pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, src: &RestoreSource, cancel: &AtomicBool) -> Result<Restored> {
@@ -212,6 +242,8 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
     if plan_restore(src, &plan.dest_name)? != *plan {
         return refuse("the restore plan does not match the picked file: nothing was copied");
     }
+    check_cancel(cancel)?;
+    check_normalization(runner, src, &plan.dest_name)?;
     let base = if src.mountpoint == "/" { "" } else { src.mountpoint.as_str() };
     let mut chain: Vec<String> = vec![if base.is_empty() { "/".to_string() } else { base.to_string() }];
     for s in &src.folder {
@@ -246,8 +278,10 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
     // 3. The new name is not in the destination folder (anything that decodes to it counts as there).
     check_cancel(cancel)?;
     let listing = list(runner, host, src.os, &dest_folder, true, cancel)?;
-    if exists_any(&listing, &dest_folder, &plan.dest_name)? {
-        return refuse("that name already exists in the folder: nothing was copied");
+    match colliding(&listing, &dest_folder, &plan.dest_name)? {
+        Some(hit) if hit == plan.dest_name => return refuse("that name already exists in the folder: nothing was copied"),
+        Some(hit) => return Err(AppError::Config(format!("an entry whose name differs only by case already exists: {}", crate::display_text::sanitise_for_display(&hit)))),
+        None => {}
     }
 
     // 4. Copy. The checks above are the last look before cp; see the doc comment for the window that stays open.
@@ -377,7 +411,8 @@ mod tests {
         for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos] {
             let s = source("/tank/data", &["docs", "2024"], "photo.jpg", os);
             let plan = plan_restore(&s, "photo.restored-daily-1.jpg").unwrap();
-            let want: Vec<String> = ["-p", "-n", "--", "/tank/data/.zfs/snapshot/daily-1/docs/2024/photo.jpg", "/tank/data/docs/2024/photo.restored-daily-1.jpg"].iter().map(ToString::to_string).collect();
+            let head: &[&str] = if os == HostOs::Linux { &["-p", "-n", "-T", "--"] } else { &["-p", "-n", "--"] };
+            let want: Vec<String> = head.iter().copied().chain(["/tank/data/.zfs/snapshot/daily-1/docs/2024/photo.jpg", "/tank/data/docs/2024/photo.restored-daily-1.jpg"]).map(ToString::to_string).collect();
             assert_eq!(plan.command, want, "{os:?}");
             let forms = pinned_forms(lookup("cp").unwrap(), os);
             assert_eq!(forms.len(), 1);
@@ -469,6 +504,8 @@ mod tests {
         cp_errors: bool,
         /// The exit status of `CpMode::Fail`.
         fail_status: i32,
+        /// What `zfs get normalization` answers (`None`: the command fails).
+        normalization: Option<String>,
     }
 
     impl Fake {
@@ -480,7 +517,7 @@ mod tests {
             t.insert("/tank/data/.zfs/snapshot/daily-1/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
             t.insert("/tank/data".into(), vec![ent("drwxr-xr-x", 2, "docs")]);
             t.insert("/tank/data/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
-            Self { os, tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false, fail_status: 1 }
+            Self { os, tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false, fail_status: 1, normalization: Some("none".into()) }
         }
         fn set(&self, dir: &str, lines: Vec<Ent>) {
             self.tables.lock().unwrap().insert(dir.into(), lines);
@@ -505,6 +542,14 @@ mod tests {
 
     impl CommandRunner for Fake {
         fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            if cmd == "zfs" {
+                self.listed.lock().unwrap().push("<zfs get>".into());
+                assert_eq!(args, ["get", "-H", "-o", "value", "normalization", "tank/data"]);
+                return Ok(match &self.normalization {
+                    Some(v) => CommandOutput { stdout: format!("{v}\n"), stderr: String::new(), status: 0 },
+                    None => CommandOutput { stdout: String::new(), stderr: "cannot open".into(), status: 1 },
+                });
+            }
             assert_eq!(cmd, "cp");
             self.cps.lock().unwrap().push(args.iter().map(ToString::to_string).collect());
             self.listed.lock().unwrap().push("<cp>".into());
@@ -591,7 +636,7 @@ mod tests {
         let fake = Fake::new(CpMode::Copy);
         let done = go(&fake).unwrap();
         assert_eq!(done, Restored { destination: "/tank/data/docs/a.restored-daily-1.txt".into(), size: 1234, mode: "-rw-r--r--".into(), owner: "alice".into() });
-        assert_eq!(fake.directories(), vec!["/tank/data/.zfs/snapshot/daily-1/docs", "/tank/data", "/tank/data/docs", "<cp>", "/tank/data/docs"]);
+        assert_eq!(fake.directories(), vec!["<zfs get>", "/tank/data/.zfs/snapshot/daily-1/docs", "/tank/data", "/tank/data/docs", "<cp>", "/tank/data/docs"]);
         let cps = fake.cps.lock().unwrap();
         assert_eq!(cps.len(), 1);
         assert_eq!(cps[0], ["-p", "-n", "--", "/tank/data/.zfs/snapshot/daily-1/docs/a.txt", "/tank/data/docs/a.restored-daily-1.txt"]);
@@ -628,10 +673,9 @@ mod tests {
     }
 
     #[test]
-    fn a_case_only_difference_the_filesystem_treats_as_the_same_name_is_reported_as_not_copied() {
+fn a_case_only_difference_the_filesystem_treats_as_the_same_name_is_reported_as_not_copied() {
         // cp exits 0, but the listing after the copy does not show the new name.
         let fake = Fake::new(CpMode::Nothing);
-        fake.set("/tank/data/docs", vec![ent("-rw-r--r--", 1234, "a.txt"), ent("-rw-r--r--", 5, "A.RESTORED-daily-1.txt")]);
         assert!(msg(go(&fake)).starts_with("not copied:"));
     }
 
@@ -891,7 +935,7 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
         let src = source("/", &["docs"], "a.txt", HostOs::FreeBsd);
         let done = run_restore(&fake, "hub", &plan_for(&src), &src, &AtomicBool::new(false)).unwrap();
         assert_eq!(done.destination, "/docs/a.restored-daily-1.txt");
-        assert_eq!(fake.directories(), vec!["/.zfs/snapshot/daily-1/docs", "/", "/docs", "<cp>", "/docs"]);
+        assert_eq!(fake.directories(), vec!["<zfs get>", "/.zfs/snapshot/daily-1/docs", "/", "/docs", "<cp>", "/docs"]);
         assert_eq!(fake.cps.lock().unwrap()[0], ["-p", "-n", "--", "/.zfs/snapshot/daily-1/docs/a.txt", "/docs/a.restored-daily-1.txt"]);
     }
 
@@ -914,5 +958,82 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
         let src = pick();
         assert_eq!(msg(run_restore(&fake, "hub", &plan_for(&src), &src, &flag)), "cancelled");
         assert!(fake.cps.lock().unwrap().is_empty());
+    }
+
+    const CASE: &str = "an entry whose name differs only by case already exists: ";
+
+    #[test]
+    fn an_entry_that_differs_only_by_case_blocks_the_restore_whatever_it_is() {
+        for (what, row) in [
+            ("file", ent("-rw-r--r--", 5, "A.RESTORED-DAILY-1.TXT")),
+            ("directory", ent("drwxr-xr-x", 2, "A.RESTORED-DAILY-1.TXT")),
+            ("symlink", ent("lrwxrwxrwx", 9, "A.RESTORED-DAILY-1.TXT -> /etc")),
+            ("dangling symlink", ent("lrwxrwxrwx", 9, "A.RESTORED-DAILY-1.TXT -> /nonexistent/x")),
+        ] {
+            let fake = Fake::new(CpMode::Copy);
+            fake.set("/tank/data/docs", vec![ent("-rw-r--r--", 1234, "a.txt"), row]);
+            assert_eq!(msg(go(&fake)), format!("{CASE}A.RESTORED-DAILY-1.TXT"), "{what}");
+            assert!(fake.cps.lock().unwrap().is_empty(), "{what}");
+        }
+    }
+
+    #[test]
+    fn an_ambiguous_entry_that_differs_by_case_blocks_the_restore() {
+        let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
+        fake.set("/tank/data/docs", vec![ent("-rw-r--r--", 1234, "a.txt"), ent("drwxr-xr-x", 2, "A.RESTORED-DAILY-1.\\164xt")]);
+        assert_eq!(msg(go_on(&fake, &illumos_pick())), format!("{CASE}A.RESTORED-DAILY-1.txt"));
+        assert!(fake.cps.lock().unwrap().is_empty());
+    }
+
+    fn cafe_pick() -> (RestoreSource, RestorePlan) {
+        let src = pick();
+        let plan = plan_restore(&src, "caf\u{e9}.txt").unwrap();
+        (src, plan)
+    }
+
+    #[test]
+    fn a_normalizing_dataset_refuses_a_non_ascii_name_and_cp_never_runs() {
+        let (src, plan) = cafe_pick();
+        let mut fake = Fake::new(CpMode::Copy);
+        fake.normalization = Some("formD".into());
+        let m = msg(run_restore(&fake, "hub", &plan, &src, &AtomicBool::new(false)));
+        assert_eq!(m, "this dataset normalizes names (normalization=formD), so a name with non-ASCII characters cannot be checked safely: choose an ASCII name");
+        assert!(fake.cps.lock().unwrap().is_empty());
+        assert_eq!(fake.directories(), vec!["<zfs get>"]);
+        // An ASCII name is fine on such a dataset; a non-ASCII one is fine when nothing is normalized.
+        let mut ok = Fake::new(CpMode::Copy);
+        ok.normalization = Some("formD".into());
+        assert!(go(&ok).is_ok());
+        let fake = Fake::new(CpMode::Copy);
+        assert!(run_restore(&fake, "hub", &plan, &src, &AtomicBool::new(false)).is_ok());
+    }
+
+    #[test]
+    fn an_unreadable_normalization_property_refuses_the_restore() {
+        for value in [None, Some(String::new()), Some("  ".to_string())] {
+            let mut fake = Fake::new(CpMode::Copy);
+            fake.normalization = value;
+            assert_eq!(msg(go(&fake)), "could not read the dataset's name normalization, so the restore is refused");
+            assert!(fake.cps.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_backslash_in_the_new_name_is_refused_on_illumos_only() {
+        let msg_want = "a backslash in a name cannot be told apart from an escape sequence on this host, so choose another name";
+        assert_eq!(msg(plan_restore(&source("/tank/data", &[], "a.txt", HostOs::Illumos), "b\\n.txt")), msg_want);
+        for os in [HostOs::FreeBsd, HostOs::Linux] {
+            assert!(plan_restore(&source("/tank/data", &[], "a.txt", os), "b\\n.txt").is_ok(), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn the_linux_plan_uses_t_and_the_others_do_not() {
+        let linux = plan_restore(&source("/tank/data", &[], "a.txt", HostOs::Linux), "b.txt").unwrap();
+        assert_eq!(linux.command[..4], ["-p", "-n", "-T", "--"]);
+        for os in [HostOs::FreeBsd, HostOs::Illumos, HostOs::Other] {
+            let plan = plan_restore(&source("/tank/data", &[], "a.txt", os), "b.txt").unwrap();
+            assert_eq!(plan.command[..3], ["-p", "-n", "--"], "{os:?}");
+        }
     }
 }

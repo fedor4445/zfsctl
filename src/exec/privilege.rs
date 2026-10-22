@@ -43,8 +43,8 @@ impl Feature {
         }
     }
 
-    /// Whether the feature's tools exist (and its jobs run) on a host running `os`. Only `core` (`zpool`, `zfs`) and `smart`
-    /// (`smartctl`) do on Linux and illumos so far.
+    /// Whether the feature's tools exist (and its jobs run) on a host running `os`. On Linux only `core` (`zpool`, `zfs`), `smart`
+    /// (`smartctl`), `browse` (`ls`) and `restore` (`cp`) do; illumos adds `beadm`.
     pub fn works_on(self, os: HostOs) -> bool {
         match os {
             HostOs::Linux => matches!(self, Feature::Core | Feature::Smart | Feature::Browse | Feature::Restore),
@@ -93,10 +93,12 @@ const BROWSE_FORMS: &[&[&str]] = &[
     &["-lAbEc", "--", "*"],
 ];
 const LS: Kind = Kind::Privileged { pinned: BROWSE_FORMS, probe: "" };
-/// The one form of `cp` that `restore` allows, the same on every OS: `-p` keeps times and modes, `-n` never overwrites an existing file
-/// (FreeBSD, GNU and illumos all have it; GNU's `--update=none` would need an `=`, which sudoers makes us escape), then `--`, the source
-/// and the destination. sudo matches the words as one string, so it cannot confine the paths.
-const RESTORE_FORMS: &[&[&str]] = &[&["-p", "-n", "--", "*", "*"]];
+/// The forms of `cp` that `restore` allows, one per OS family (see `pinned_forms`): `-p` keeps times and modes (and, on FreeBSD as
+/// root, file flags and ACLs), `-n` never overwrites an existing file (FreeBSD, GNU and illumos all have it; GNU's `--update=none`
+/// would need an `=`, which sudoers makes us escape), then `--`, the source and the destination. The Linux form is first and adds
+/// GNU's `-T` (the destination is a file, never a directory to copy into); FreeBSD and illumos `cp` have no `-T`. sudo matches the
+/// words as one string, so it cannot confine the paths.
+const RESTORE_FORMS: &[&[&str]] = &[&["-p", "-n", "-T", "--", "*", "*"], &["-p", "-n", "--", "*", "*"]];
 const CP: Kind = Kind::Privileged { pinned: RESTORE_FORMS, probe: "" };
 const SMB_CONF: Kind = Kind::Privileged { pinned: &[&[crate::zfs::smb::CONF_PATH]], probe: "/etc/master.passwd" };
 
@@ -154,6 +156,9 @@ pub(crate) fn privileged_names() -> Vec<&'static str> {
 /// other entry keeps all of its forms. An unknown OS gets FreeBSD's, as everywhere else.
 pub fn pinned_forms(entry: &Entry, os: HostOs) -> Vec<&'static [&'static str]> {
     let Kind::Privileged { pinned, .. } = &entry.kind else { return Vec::new() };
+    if entry.name == "cp" {
+        return pinned.get(usize::from(os != HostOs::Linux)).copied().into_iter().collect();
+    }
     if entry.name != "ls" {
         return pinned.to_vec();
     }
@@ -218,7 +223,7 @@ pub fn select_for_os(os: HostOs, with: &[String], without: &[String]) -> Result<
     Ok(Feature::ALL.into_iter().filter(|f| f.works_on(os) && (default(f) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
-/// The features a run covers: all but `restic`, `rclone`, `smart`, `browse` and `beadm` (illumos's), plus `with`, minus `without`.
+/// The features a run covers: all but `restic`, `rclone`, `smart`, `browse`, `restore` and `beadm` (illumos's), plus `with`, minus `without`.
 pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     let parse = |name: &String| {
         Feature::parse(name).ok_or_else(|| {
@@ -420,8 +425,10 @@ mod tests {
         for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other] {
             let forms = pinned_forms(cp, os);
             assert_eq!(forms.len(), 1, "{os:?}");
-            assert_eq!(forms[0].join(" "), "-p -n -- * *", "{os:?}: the same form on every OS");
+            let want = if os == HostOs::Linux { "-p -n -T -- * *" } else { "-p -n -- * *" };
+            assert_eq!(forms[0].join(" "), want, "{os:?}: GNU -T only on Linux");
         }
+        assert_eq!(pinned.len(), 2);
         for form in *pinned {
             for banned in ["-f", "-i", "-r", "-R", "-a", "-l", "-s", "-u"] {
                 assert!(!form.contains(&banned), "{form:?} contains {banned}");
@@ -560,7 +567,7 @@ mod tests {
 
     #[test]
     fn the_readme_gap_check_notices_a_missing_command_and_a_missing_pin() {
-        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm` `ls` ls -lAb -D %s -- * ls -lAbc -D %s -- * ls -lAbU -D %s -- * ls -lAQ --time-style +%s -- * ls -lAQ --time-style +%s --time ctime -- * ls -lAQ --time-style +%s --time birth -- * ls -lAbE -- * ls -lAbEc -- * `cp` cp -p -n -- * *";
+        let full = "`zpool` /sbin/zfs `getfacl` `setfacl` `geom` `bectl` `service` `smbpasswd` /usr/local/bin/smbstatus -S /bin/cat /usr/local/etc/smb4.conf /usr/bin/tee /usr/local/etc/smb4.conf `restic` `readlink` `rclone` `smartctl` smartctl --scan -j smartctl -j -H -A -i /dev/* `beadm` `ls` ls -lAb -D %s -- * ls -lAbc -D %s -- * ls -lAbU -D %s -- * ls -lAQ --time-style +%s -- * ls -lAQ --time-style +%s --time ctime -- * ls -lAQ --time-style +%s --time birth -- * ls -lAbE -- * ls -lAbEc -- * `cp` cp -p -n -T -- * * cp -p -n -- * *";
         assert_eq!(readme_gaps(full), Vec::<String>::new());
         assert_eq!(readme_gaps(&full.replace("`geom`", "")), ["geom is not named"]);
         assert_eq!(readme_gaps(&full.replace("tee /usr/local/etc/smb4.conf", "tee")), ["the pinned form 'tee /usr/local/etc/smb4.conf' is missing"]);
