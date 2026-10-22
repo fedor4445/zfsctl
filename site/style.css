@@ -1,0 +1,33 @@
+/* zfsctl.com: a terminal, on purpose. No scripts, no fonts to download, no trackers. */
+:root {
+  --bg: #04282a; --panel: #063335; --fg: #cfe0dc; --dim: #7fa09b; --rule: #1f5a5a;
+  --accent: #3b9eff; --green: #4cc38a; --yellow: #e3b341; --red: #ff6b6b;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0; padding: 1.5rem 1rem 4rem; color: var(--fg); background: var(--bg);
+  font: 15px/1.5 ui-monospace, "DejaVu Sans Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+main { max-width: 112ch; margin: 0 auto; }
+p, ul, h1, h2 { max-width: 84ch; }
+a { color: var(--accent); text-decoration: none; } a:hover, a:focus { text-decoration: underline; }
+h1, h2 { font-weight: 700; margin: 2rem 0 .5rem; line-height: 1.2; }
+h1 { font-size: 1.6rem; margin-top: 0; } h2 { font-size: 1rem; color: var(--dim); }
+h2::before { content: "── "; } h2::after { content: " " attr(data-rule); }
+p, ul { margin: .5rem 0; } ul { padding-left: 1.2rem; list-style: none; } li::before { content: "› "; color: var(--accent); margin-left: -1.2rem; display: inline-block; width: 1.2rem; }
+.bar { border: 1px solid var(--rule); background: var(--panel); padding: .3rem .8rem; color: var(--dim); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.bar b { color: var(--fg); }
+nav { margin: .8rem 0 1.5rem; } nav a { margin-right: 1.4rem; display: inline-block; }
+.prompt::before { content: "$ "; color: var(--green); }
+.cursor::after { content: "█"; color: var(--green); animation: blink 1.1s steps(1) infinite; margin-left: .15em; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cursor::after { animation: none; } }
+pre { background: #031e20; max-width: 100%; border: 1px solid var(--rule); padding: .7rem .9rem; overflow-x: auto; line-height: 1.3; margin: .6rem 0; font: inherit; font-size: 11px; color: #d7e8e4; }
+pre.cmd { font-size: 14px; } pre.cmd .c { color: var(--dim); }
+code { color: var(--yellow); }
+.ok { color: var(--green); } .warn { color: var(--yellow); } .dim { color: var(--dim); }
+footer { margin-top: 3rem; border-top: 1px solid var(--rule); padding-top: .8rem; color: var(--dim); font-size: 13px; }
+::selection { background: var(--accent); color: #fff; }
+@media (max-width: 40rem) { body { font-size: 14px; } pre { font-size: 11px; } }
+@media print { html, body { background: #fff; color: #000; } pre { background: #fff; color: #000; } a { color: #000; } }
