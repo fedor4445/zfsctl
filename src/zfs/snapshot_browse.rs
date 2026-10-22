@@ -282,6 +282,9 @@ pub struct ListEntry {
     /// Seconds since 1970 (UTC) of the time this listing printed.
     pub time: Option<i64>,
     pub link_target: Option<String>,
+    /// The name (or link target) could not be decoded with certainty: illumos prints a backslash unescaped, so a name that holds
+    /// one may be an escape sequence or literal text. Such a name is shown but never opened or restored.
+    pub ambiguous: bool,
 }
 
 impl ListEntry {
@@ -310,6 +313,98 @@ fn looks_like_entry_start(line: &str) -> bool {
     let kind_ok = chars.next().is_some_and(|c| "-dlbcpsDP?".contains(c));
     let perms: Vec<char> = chars.collect();
     kind_ok && perms.len() >= 9 && perms.iter().take(9).all(|c| "rwxsStTlL-".contains(*c)) && perms.iter().skip(9).all(|c| "+.@".contains(*c)) && !line.trim_start().strip_prefix(mode).unwrap_or("").trim().is_empty()
+}
+
+/// Decodes the C-style escapes of `ls -b` and `ls -Q`: `\\ \" \a \b \f \n \r \t \v \e` and up to three octal digits (a byte).
+/// Bytes that do not form UTF-8 become U+FFFD, so such a name can be shown but is never sent back. An unknown escape and a
+/// trailing backslash are kept as they are.
+fn decode_escapes(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        if b != b'\\' {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        let Some(&next) = bytes.get(i + 1) else {
+            out.push(b);
+            i += 1;
+            continue;
+        };
+        let simple = match next {
+            b'\\' => Some(b'\\'),
+            b'"' => Some(b'"'),
+            b'a' => Some(7),
+            b'b' => Some(8),
+            b'f' => Some(12),
+            b'n' => Some(b'\n'),
+            b'r' => Some(b'\r'),
+            b't' => Some(b'\t'),
+            b'v' => Some(11),
+            b'e' => Some(27),
+            _ => None,
+        };
+        if let Some(s) = simple {
+            out.push(s);
+            i += 2;
+        } else if next.is_ascii_digit() && next < b'8' {
+            let digits: Vec<u8> = bytes.get(i + 1..).unwrap_or_default().iter().take(3).take_while(|d| (b'0'..=b'7').contains(*d)).copied().collect();
+            let value = digits.iter().fold(0u32, |acc, d| acc * 8 + u32::from(d - b'0'));
+            if let Ok(byte) = u8::try_from(value) {
+                out.push(byte);
+                i += 1 + digits.len();
+            } else {
+                out.push(b);
+                i += 1;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The text between the opening double quote at the start of `text` and its closing quote (an escaped quote does not close it),
+/// and what follows the closing quote.
+fn split_quoted(text: &str) -> Option<(&str, &str)> {
+    let inner = text.strip_prefix('"')?;
+    let mut escaped = false;
+    for (i, c) in inner.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return Some((inner.get(..i)?, inner.get(i + 1..)?)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Name, symlink target and whether they are ambiguous, from the name part of an escaped `ls -l` line.
+fn split_name(os: HostOs, kind: EntryKind, text: &str) -> Option<(String, Option<String>, bool)> {
+    let is_link = kind == EntryKind::Symlink;
+    if os == HostOs::Linux {
+        // GNU `ls -Q`: "name", and for a symlink "name" -> "target".
+        let (name, rest) = split_quoted(text)?;
+        if !is_link {
+            return rest.is_empty().then(|| (decode_escapes(name), None, false));
+        }
+        let target = rest.strip_prefix(" -> ")?;
+        let (target, tail) = split_quoted(target)?;
+        return tail.is_empty().then(|| (decode_escapes(name), Some(decode_escapes(target)), false));
+    }
+    // `ls -b`: the name as it is, with escapes. A symlink target follows ` -> `; a link whose name or target holds that arrow too
+    // cannot be split with certainty.
+    let ambiguous_text = |s: &str| os == HostOs::Illumos && s.contains('\\');
+    if !is_link {
+        return Some((decode_escapes(text), None, ambiguous_text(text)));
+    }
+    let arrows = text.matches(" -> ").count();
+    let (name, target) = text.split_once(" -> ")?;
+    Some((decode_escapes(name), Some(decode_escapes(target)), arrows > 1 || ambiguous_text(name) || ambiguous_text(target)))
 }
 
 /// Parses one `ls -lA` line as printed by [`ls_args`]. `None` for the `total` line and anything that is not an entry.
@@ -347,11 +442,8 @@ pub fn parse_ls_line(os: HostOs, line: &str) -> Option<ListEntry> {
     if text.is_empty() {
         return None;
     }
-    let (name, link_target) = match text.split_once(" -> ") {
-        Some((name, target)) if kind == EntryKind::Symlink => (name.to_string(), Some(target.to_string())),
-        _ => (text.to_string(), None),
-    };
-    Some(ListEntry { name, kind, mode: mode.to_string(), owner: owner.to_string(), group: group.to_string(), size, time: Some(time), link_target })
+    let (name, link_target, ambiguous) = split_name(os, kind, text)?;
+    Some(ListEntry { name, kind, mode: mode.to_string(), owner: owner.to_string(), group: group.to_string(), size, time: Some(time), link_target, ambiguous })
 }
 
 /// Where a folder read stops: the most entries kept and the most seconds all of its listings may take together.
@@ -974,12 +1066,71 @@ mod tests {
         assert_eq!((dev.kind, dev.size), (EntryKind::Character, 0));
     }
 
+    const FREEBSD_ESC: &str = include_str!("snapshot_browse_fixtures/freebsd_escaped.txt");
+    const LINUX_ESC: &str = include_str!("snapshot_browse_fixtures/linux_escaped.txt");
+    const ILLUMOS_ESC: &str = include_str!("snapshot_browse_fixtures/illumos_escaped.txt");
+
+    fn names_of(os: HostOs, text: &str) -> Vec<(String, bool)> {
+        parse_all(os, text).into_iter().map(|e| (e.name, e.ambiguous)).collect()
+    }
+
+    #[test]
+    fn escaped_names_decode_on_every_os() {
+        let n = |s: &str, amb: bool| (s.to_string(), amb);
+        // FreeBSD and GNU escape the backslash itself, so nothing is ambiguous there.
+        let clear = vec![n("arrow -> name", false), n("back\\slash", false), n("caf\u{fffd}", false), n("lnk", false), n("nl\nx", false), n("quo\"te", false), n("sp ace", false), n("tab\ttab", false)];
+        assert_eq!(names_of(HostOs::FreeBsd, FREEBSD_ESC), clear);
+        assert_eq!(names_of(HostOs::Linux, LINUX_ESC), clear);
+        // illumos prints a backslash single, so every name that holds one (a real backslash or an octal escape) is ambiguous.
+        let illumos = vec![n("arrow -> name", false), n("back\\slash", true), n("caf\u{fffd}", true), n("lnk", false), n("nl\nx", true), n("quo\"te", false), n("sp ace", false), n("tab\ttab", true)];
+        assert_eq!(names_of(HostOs::Illumos, ILLUMOS_ESC), illumos);
+    }
+
+    #[test]
+    fn a_symlink_with_a_spaced_target_decodes_on_every_os() {
+        for (os, text) in [(HostOs::FreeBsd, FREEBSD_ESC), (HostOs::Linux, LINUX_ESC), (HostOs::Illumos, ILLUMOS_ESC)] {
+            let link = parse_all(os, text).into_iter().find(|e| e.name == "lnk").unwrap();
+            assert_eq!((link.kind, link.link_target.as_deref()), (EntryKind::Symlink, Some("target with space")), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn a_forged_entry_inside_a_name_stays_one_entry_and_cannot_be_opened() {
+        // The hostile name is: first line "evil", then a line that looks like another entry.
+        let forged = [
+            (HostOs::FreeBsd, "-rw-r--r--  1 u g 1 100 evil\\n-rw-r--r-- 1 u g 5 100 fake"),
+            (HostOs::Linux, "-rw-r--r-- 1 u g 1 100 \"evil\\n-rw-r--r-- 1 u g 5 100 fake\""),
+            (HostOs::Illumos, "-rw-r--r--   1 u g 1 2026-10-21 17:07:21.3 -0400 evil\\012-rw-r--r-- 1 u g 5 100 fake"),
+        ];
+        for (os, line) in forged {
+            let all = parse_all(os, line);
+            assert_eq!(all.len(), 1, "{os:?}: {all:?}");
+            assert!(!valid_component(&all[0].name), "{os:?}: {:?}", all[0].name);
+        }
+    }
+
+    #[test]
+    fn gnu_quoting_handles_arrows_and_quotes_inside_names() {
+        let e = parse_ls_line(HostOs::Linux, "lrwxrwxrwx 1 u g 3 100 \"a -> b\" -> \"c\\\"d\"").unwrap();
+        assert_eq!((e.name.as_str(), e.link_target.as_deref()), ("a -> b", Some("c\"d")));
+        assert!(parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 3 100 unquoted-name").is_none(), "a GNU name that is not quoted is not trusted");
+        assert!(parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 3 100 \"unterminated").is_none());
+    }
+
+    #[test]
+    fn octal_escapes_are_bytes_and_bad_escapes_are_kept_as_text() {
+        assert_eq!(decode_escapes("a\\101b\\60"), "aAb0");
+        assert_eq!(decode_escapes("\\\\x\\q\\"), "\\x\\q\\", "unknown escapes and a trailing backslash are kept");
+        assert_eq!(decode_escapes("\\777"), "\\777", "an octal value above 255 is not a byte");
+        assert_eq!(decode_escapes("\\303\\251"), "é", "two octal bytes that form UTF-8 decode to the character");
+    }
+
     #[test]
     fn a_name_with_spaces_and_an_arrow_in_it() {
         let e = parse_ls_line(HostOs::FreeBsd, "-rw-r--r--  1 u g 5 1700000000 a -> b -> c").unwrap();
         assert_eq!((e.kind, e.name.as_str(), e.link_target), (EntryKind::File, "a -> b -> c", None), "only a symlink is split at the arrow");
-        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000  two  spaces.txt").unwrap();
-        assert_eq!(e.name, " two  spaces.txt", "exactly one separating space is dropped");
+        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000 \" two  spaces.txt\"").unwrap();
+        assert_eq!(e.name, " two  spaces.txt", "spaces inside the quotes belong to the name");
         let e = parse_ls_line(HostOs::FreeBsd, "lrwxr-xr-x  1 u g 3 1700000000 x y -> /etc/z w").unwrap();
         assert_eq!((e.name.as_str(), e.link_target.as_deref()), ("x y", Some("/etc/z w")));
     }
@@ -995,13 +1146,13 @@ mod tests {
 
     #[test]
     fn a_hostile_name_is_kept_as_text() {
-        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000 \x1b[2Jevil\u{7}").unwrap();
+        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000 \"\x1b[2Jevil\u{7}\"").unwrap();
         assert_eq!(e.name, "\x1b[2Jevil\u{7}");
     }
 
     #[test]
     fn folder_entries_is_size_minus_two() {
-        let mk = |kind, size| ListEntry { name: "x".into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time: None, link_target: None };
+        let mk = |kind, size| ListEntry { name: "x".into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time: None, link_target: None, ambiguous: false };
         assert_eq!(mk(EntryKind::Directory, 5).folder_entries(), Some(3));
         assert_eq!(mk(EntryKind::Directory, 2).folder_entries(), Some(0));
         assert_eq!(mk(EntryKind::Directory, 0).folder_entries(), Some(0));
@@ -1242,7 +1393,7 @@ mod tests {
     }
 
     fn row(name: &str, kind: EntryKind, size: u64, time: Option<i64>) -> Row {
-        Row { entry: ListEntry { name: name.into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time, link_target: None }, changed: None, created: None }
+        Row { entry: ListEntry { name: name.into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time, link_target: None, ambiguous: false }, changed: None, created: None }
     }
 
     #[test]

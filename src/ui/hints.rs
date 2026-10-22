@@ -1181,7 +1181,7 @@ mod tests {
         let mut view = BrowseView::new(&pending, Some(0));
         let entries = rows
             .iter()
-            .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "o".to_string(), group: "g".to_string(), size: 5, time: Some(1), link_target: None }, changed: None, created: None })
+            .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "o".to_string(), group: "g".to_string(), size: 5, time: Some(1), link_target: None, ambiguous: false }, changed: None, created: None })
             .collect();
         view.apply("h", Ok(BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/m".to_string(), zone: None }));
         let mut a = snapshots();

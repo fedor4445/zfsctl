@@ -1,0 +1,8 @@
+-rw-rw-r-- 1 ub ub  1 1792631241 "arrow -> name"
+-rw-rw-r-- 1 ub ub  1 1792631241 "back\\slash"
+-rw-rw-r-- 1 ub ub  1 1792631241 "caf\351"
+lrwxrwxrwx 1 ub ub 17 1792631241 "lnk" -> "target with space"
+-rw-rw-r-- 1 ub ub  1 1792631241 "nl\nx"
+-rw-rw-r-- 1 ub ub  1 1792631241 "quo\"te"
+-rw-rw-r-- 1 ub ub  1 1792631241 "sp ace"
+-rw-rw-r-- 1 ub ub  1 1792631241 "tab\ttab"

@@ -470,7 +470,7 @@ mod tests {
     }
 
     fn entry(name: &str, kind: EntryKind, size: u64, time: i64) -> BrowseRow {
-        let entry = ListEntry { name: name.to_string(), kind, mode: "-rw-r--r--".to_string(), owner: "root".to_string(), group: "wheel".to_string(), size, time: Some(time), link_target: None };
+        let entry = ListEntry { name: name.to_string(), kind, mode: "-rw-r--r--".to_string(), owner: "root".to_string(), group: "wheel".to_string(), size, time: Some(time), link_target: None, ambiguous: false };
         BrowseRow { entry, changed: Some(time + 10), created: Some(time - 10) }
     }
 
