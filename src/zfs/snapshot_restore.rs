@@ -3,8 +3,10 @@
 
 use crate::error::{AppError, Result};
 use crate::exec::privilege::{lookup, pinned_forms};
+use crate::exec::CommandRunner;
 use crate::zfs::host_health::HostOs;
-use crate::zfs::snapshot_browse::{snapshot_dir, valid_component, EntryKind, ListEntry};
+use crate::zfs::snapshot_browse::{explain, read_folder, read_live_folder, snapshot_dir, valid_component, BrowseLimits, EntryKind, Listing, ListEntry};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_PATH: usize = 4096;
 const MAX_COMPONENT: usize = 255;
@@ -109,6 +111,129 @@ pub fn plan_restore(src: &RestoreSource, dest_name: &str) -> Result<RestorePlan>
     command.push(source.clone());
     command.push(destination.clone());
     Ok(RestorePlan { source, destination, dest_folder, dest_name: dest_name.to_string(), command, size: src.entry.size, mode: src.entry.mode.clone() })
+}
+
+/// What the verified copy looks like.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restored {
+    pub destination: String,
+    pub size: u64,
+    pub mode: String,
+    pub owner: String,
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<()> {
+    if cancel.load(Ordering::SeqCst) { refuse("cancelled") } else { Ok(()) }
+}
+
+/// Lists a folder for a check; a host failure becomes the same plain sentence the browser shows.
+fn list(runner: &dyn CommandRunner, host: &str, os: HostOs, dir: &str, live: bool, cancel: &AtomicBool) -> Result<Listing> {
+    let limits = BrowseLimits::default();
+    let read = if live { read_live_folder(runner, os, dir, &limits, cancel) } else { read_folder(runner, os, dir, &limits, cancel) };
+    read.map_err(|e| match e {
+        AppError::CommandFailed { stderr, .. } => AppError::Config(explain(host, &stderr)),
+        other => other,
+    })
+}
+
+/// The entry called `name`, or the reason there is none: a cut-off listing cannot show absence.
+fn find<'a>(listing: &'a Listing, name: &str) -> std::result::Result<Option<&'a ListEntry>, AppError> {
+    let hit = listing.entries.iter().map(|r| &r.entry).find(|e| e.name == name);
+    if hit.is_none() && listing.truncated {
+        return Err(AppError::Config("the folder is too large to check".to_string()));
+    }
+    Ok(hit)
+}
+
+const NOT_ENABLED: &str = "restore is not enabled for this host: run zfsctl print-sudoers HOST --with restore, install the file as the host's sudoers entry and try again";
+
+/// Checks, copies and verifies one restore. Nothing is retried, deleted or repaired: a failed check stops before `cp`, a failed
+/// verify is reported as it is. `cp` exits 0 when a no-clobber copy skips, so the destination is checked absent before and
+/// present, regular, of the planned size and mode after; the exit status alone is never trusted.
+pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, src: &RestoreSource, cancel: &AtomicBool) -> Result<Restored> {
+    // The plan must be the one these picks produce; the chain is derived from the picks, not from the plan's text.
+    let base = if src.mountpoint == "/" { "" } else { src.mountpoint.as_str() };
+    let mut chain: Vec<String> = vec![if base.is_empty() { "/".to_string() } else { base.to_string() }];
+    for s in &src.folder {
+        let prev = chain.last().map_or("/", String::as_str);
+        let next = if prev == "/" { format!("/{s}") } else { format!("{prev}/{s}") };
+        chain.push(next);
+    }
+    let dest_folder = chain.last().cloned().unwrap_or_else(|| "/".to_string());
+    let steps: Vec<&str> = src.folder.iter().map(String::as_str).collect();
+    let mut with_file = steps.clone();
+    with_file.push(&src.entry.name);
+    let source_file = snapshot_dir(&src.mountpoint, &src.snapshot, &with_file)?;
+    let source_folder = snapshot_dir(&src.mountpoint, &src.snapshot, &steps)?;
+    let destination = if dest_folder == "/" { format!("/{}", plan.dest_name) } else { format!("{dest_folder}/{}", plan.dest_name) };
+    let command_ok = matches!(plan.command.as_slice(), [.., from, to] if *from == source_file && *to == destination);
+    if plan.dest_folder != dest_folder || plan.source != source_file || plan.destination != destination || !command_ok || !valid_component(&plan.dest_name) {
+        return refuse("the restore plan does not match the picked file: nothing was copied");
+    }
+
+    // 1. The source is still a regular file of the planned size in the snapshot.
+    check_cancel(cancel)?;
+    let listing = list(runner, host, src.os, &source_folder, false, cancel)?;
+    match find(&listing, &src.entry.name).map_err(|_| AppError::Config("the snapshot folder is too large to check, so the file was not found in it".to_string()))? {
+        None => return refuse("the file is no longer in the snapshot listing"),
+        Some(e) if e.kind != EntryKind::File || e.ambiguous || e.size != plan.size => return refuse("the file in the snapshot is not a regular file of the expected size"),
+        Some(_) => {}
+    }
+
+    // 2. Every folder on the way is a real folder (not a symlink), listed from its parent.
+    for (pair, step) in chain.windows(2).zip(&src.folder) {
+        check_cancel(cancel)?;
+        let [parent, child] = pair else { continue };
+        let listing = list(runner, host, src.os, parent, true, cancel)?;
+        let gone = || AppError::Config(format!("a folder on the way to the destination is a symlink or is gone: {}", crate::display_text::sanitise_for_display(child)));
+        match find(&listing, step)? {
+            Some(e) if e.kind == EntryKind::Directory => {}
+            _ => return Err(gone()),
+        }
+    }
+
+    // 3. The new name is not in the destination folder.
+    check_cancel(cancel)?;
+    let listing = list(runner, host, src.os, &dest_folder, true, cancel)?;
+    if find(&listing, &plan.dest_name)?.is_some() {
+        return refuse("that name already exists in the folder: nothing was copied");
+    }
+
+    // 4. Copy.
+    check_cancel(cancel)?;
+    let args: Vec<&str> = plan.command.iter().map(String::as_str).collect();
+    let failure = match runner.run("cp", &args) {
+        Ok(out) if out.status == 0 => None,
+        Ok(out) => Some(format!("{}\n{}", out.stderr, out.stdout)),
+        Err(AppError::CommandFailed { stderr, .. }) => Some(stderr),
+        Err(e) => Some(e.to_string()),
+    };
+    if let Some(text) = failure {
+        let lower = text.to_lowercase();
+        if ["a password is required", "not allowed to execute", "no tty present"].iter().any(|p| lower.contains(p)) {
+            return refuse(&NOT_ENABLED.replace("HOST", host));
+        }
+        let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no message");
+        return Err(AppError::Config(format!("the copy failed: {}", crate::display_text::sanitise_for_display(first))));
+    }
+
+    // 5. Verify, whatever cp said. The copy is done, so a cancel no longer cuts this check short.
+    let listing = list(runner, host, src.os, &dest_folder, true, &AtomicBool::new(false))?;
+    let Some(found) = find(&listing, &plan.dest_name).ok().flatten() else {
+        return refuse("not copied: the file is not in the destination after the copy (a name the filesystem treats as an existing one, a full disk, or a refused copy)");
+    };
+    if found.kind != EntryKind::File {
+        return refuse("copied, but what is at the destination is not a regular file");
+    }
+    if found.size != plan.size {
+        return Err(AppError::Config(format!("copied, but the size differs: expected {} bytes, found {}", plan.size, found.size)));
+    }
+    let want_mode: String = plan.mode.chars().take(10).collect();
+    let got_mode: String = found.mode.chars().take(10).collect();
+    if got_mode != want_mode {
+        return refuse("copied, but the mode differs");
+    }
+    Ok(Restored { destination: plan.destination.clone(), size: found.size, mode: found.mode.clone(), owner: found.owner.clone() })
 }
 
 #[cfg(test)]
@@ -232,5 +357,223 @@ mod tests {
         let mut s = source("/tank/data", &[], "a", HostOs::Linux);
         s.folder = deep;
         assert!(plan_restore(&s, "b").is_err());
+    }
+
+    use crate::exec::CommandOutput;
+    use std::collections::HashMap;
+    use std::process::Command;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum CpMode {
+        Copy,
+        Nothing,
+        Fail,
+        CopyBigger,
+        CopyOtherMode,
+    }
+
+    struct Fake {
+        tables: Mutex<HashMap<String, Vec<String>>>,
+        listed: Mutex<Vec<String>>,
+        cps: Mutex<Vec<Vec<String>>>,
+        mode: CpMode,
+        stderr: String,
+        cancel_at_cp: Option<&'static AtomicBool>,
+    }
+
+    fn line(mode: &str, size: u64, name: &str) -> String {
+        format!("{mode}  1 alice alice {size} 1700000000 {name}")
+    }
+
+    impl Fake {
+        fn new(mode: CpMode) -> Self {
+            let mut t: HashMap<String, Vec<String>> = HashMap::new();
+            t.insert("/tank/data/.zfs/snapshot/daily-1/docs".into(), vec![line("-rw-r--r--", 1234, "a.txt")]);
+            t.insert("/tank/data".into(), vec![line("drwxr-xr-x", 2, "docs")]);
+            t.insert("/tank/data/docs".into(), vec![line("-rw-r--r--", 1234, "a.txt")]);
+            Self { tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None }
+        }
+        fn set(&self, dir: &str, lines: Vec<String>) {
+            self.tables.lock().unwrap().insert(dir.into(), lines);
+        }
+        fn directories(&self) -> Vec<String> {
+            let mut out: Vec<String> = vec![];
+            for d in self.listed.lock().unwrap().iter() {
+                if out.last() != Some(d) {
+                    out.push(d.clone());
+                }
+            }
+            out
+        }
+    }
+
+    impl CommandRunner for Fake {
+        fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            assert_eq!(cmd, "cp");
+            self.cps.lock().unwrap().push(args.iter().map(ToString::to_string).collect());
+            self.listed.lock().unwrap().push("<cp>".into());
+            if let Some(flag) = self.cancel_at_cp {
+                flag.store(true, Ordering::SeqCst);
+            }
+            let dest = args[args.len() - 1];
+            let (folder, name) = dest.rsplit_once('/').unwrap();
+            match self.mode {
+                CpMode::Copy => self.tables.lock().unwrap().get_mut(folder).unwrap().push(line("-rw-r--r--", 1234, name)),
+                CpMode::CopyBigger => self.tables.lock().unwrap().get_mut(folder).unwrap().push(line("-rw-r--r--", 99, name)),
+                CpMode::CopyOtherMode => self.tables.lock().unwrap().get_mut(folder).unwrap().push(line("-rw-------", 1234, name)),
+                CpMode::Nothing => {}
+                CpMode::Fail => return Ok(CommandOutput { stdout: String::new(), stderr: self.stderr.clone(), status: 1 }),
+            }
+            Ok(CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, _c: &str, _a: &[&str], _s: &str) -> Result<CommandOutput> {
+            Err(AppError::Config("no stdin".into()))
+        }
+        fn run_unprivileged(&self, _c: &str, _a: &[&str]) -> Result<CommandOutput> {
+            Err(AppError::Config("no unprivileged".into()))
+        }
+        fn command(&self, cmd: &str, args: &[&str]) -> Result<Command> {
+            assert_eq!(cmd, "ls");
+            let dir = args[args.len() - 1].to_string();
+            self.listed.lock().unwrap().push(dir.clone());
+            let body = match self.tables.lock().unwrap().get(&dir) {
+                Some(lines) => format!("total 1\n{}\n", lines.join("\n")),
+                None => "total 0\n".to_string(),
+            };
+            let mut c = Command::new("sh");
+            c.arg("-c").arg("printf \"%s\" \"$0\"").arg(body);
+            Ok(c)
+        }
+    }
+
+    fn pick() -> RestoreSource {
+        source("/tank/data", &["docs"], "a.txt", HostOs::FreeBsd)
+    }
+
+    fn plan_for(src: &RestoreSource) -> RestorePlan {
+        plan_restore(src, "a.restored-daily-1.txt").unwrap()
+    }
+
+    fn go(fake: &Fake) -> Result<Restored> {
+        let src = pick();
+        run_restore(fake, "hub", &plan_for(&src), &src, &AtomicBool::new(false))
+    }
+
+    #[test]
+    fn a_restore_runs_the_checks_then_cp_then_verifies() {
+        let fake = Fake::new(CpMode::Copy);
+        let done = go(&fake).unwrap();
+        assert_eq!(done, Restored { destination: "/tank/data/docs/a.restored-daily-1.txt".into(), size: 1234, mode: "-rw-r--r--".into(), owner: "alice".into() });
+        assert_eq!(fake.directories(), vec!["/tank/data/.zfs/snapshot/daily-1/docs", "/tank/data", "/tank/data/docs", "<cp>", "/tank/data/docs"]);
+        let cps = fake.cps.lock().unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0], ["-p", "-n", "--", "/tank/data/.zfs/snapshot/daily-1/docs/a.txt", "/tank/data/docs/a.restored-daily-1.txt"]);
+    }
+
+    #[test]
+    fn a_symlink_in_the_destination_chain_is_refused_and_cp_never_runs() {
+        for bad in [line("lrwxr-xr-x", 9, "docs -> /etc"), line("-rw-r--r--", 9, "docs")] {
+            let fake = Fake::new(CpMode::Copy);
+            fake.set("/tank/data", vec![bad]);
+            let m = msg(go(&fake));
+            assert!(m.starts_with("a folder on the way to the destination is a symlink or is gone: "), "{m}");
+            assert!(fake.cps.lock().unwrap().is_empty());
+        }
+        let fake = Fake::new(CpMode::Copy);
+        fake.set("/tank/data", vec![]);
+        assert!(msg(go(&fake)).contains("is a symlink or is gone"));
+        assert!(fake.cps.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_existing_destination_is_refused_and_cp_never_runs() {
+        let fake = Fake::new(CpMode::Copy);
+        fake.set("/tank/data/docs", vec![line("-rw-r--r--", 1234, "a.txt"), line("-rw-r--r--", 5, "a.restored-daily-1.txt")]);
+        assert_eq!(msg(go(&fake)), "that name already exists in the folder: nothing was copied");
+        assert!(fake.cps.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_silent_skip_is_reported_as_not_copied() {
+        let fake = Fake::new(CpMode::Nothing);
+        assert!(msg(go(&fake)).starts_with("not copied: the file is not in the destination after the copy"));
+        assert_eq!(fake.cps.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_case_only_difference_the_filesystem_treats_as_the_same_name_is_reported_as_not_copied() {
+        // cp exits 0, but the listing after the copy does not show the new name.
+        let fake = Fake::new(CpMode::Nothing);
+        fake.set("/tank/data/docs", vec![line("-rw-r--r--", 1234, "a.txt"), line("-rw-r--r--", 5, "A.RESTORED-daily-1.txt")]);
+        assert!(msg(go(&fake)).starts_with("not copied:"));
+    }
+
+    #[test]
+    fn a_size_mismatch_is_reported() {
+        let fake = Fake::new(CpMode::CopyBigger);
+        assert_eq!(msg(go(&fake)), "copied, but the size differs: expected 1234 bytes, found 99");
+    }
+
+    #[test]
+    fn a_mode_mismatch_is_reported() {
+        let fake = Fake::new(CpMode::CopyOtherMode);
+        assert_eq!(msg(go(&fake)), "copied, but the mode differs");
+    }
+
+    #[test]
+    fn sudo_refusal_names_the_restore_feature() {
+        for text in ["sudo: a password is required", "Sorry, user fb is not allowed to execute '/bin/cp' as root", "sudo: no tty present and no askpass program specified"] {
+            let mut fake = Fake::new(CpMode::Fail);
+            fake.stderr = text.into();
+            assert_eq!(msg(go(&fake)), "restore is not enabled for this host: run zfsctl print-sudoers hub --with restore, install the file as the host's sudoers entry and try again");
+        }
+        let mut fake = Fake::new(CpMode::Fail);
+        fake.stderr = "cp: /x: No space left on device\nsecond".into();
+        let m = msg(go(&fake));
+        assert!(m.contains("No space left on device") && !m.contains("second"), "{m}");
+    }
+
+    #[test]
+    fn a_missing_source_is_reported() {
+        let fake = Fake::new(CpMode::Copy);
+        fake.set("/tank/data/.zfs/snapshot/daily-1/docs", vec![]);
+        assert_eq!(msg(go(&fake)), "the file is no longer in the snapshot listing");
+        let fake = Fake::new(CpMode::Copy);
+        fake.set("/tank/data/.zfs/snapshot/daily-1/docs", vec![line("-rw-r--r--", 7, "a.txt")]);
+        assert_eq!(msg(go(&fake)), "the file in the snapshot is not a regular file of the expected size");
+        assert!(fake.cps.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancel_before_the_copy_stops_before_cp() {
+        let fake = Fake::new(CpMode::Copy);
+        let src = pick();
+        assert_eq!(msg(run_restore(&fake, "hub", &plan_for(&src), &src, &AtomicBool::new(true))), "cancelled");
+        assert!(fake.cps.lock().unwrap().is_empty());
+        assert!(fake.listed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_plan_that_does_not_match_the_pick_is_refused() {
+        let fake = Fake::new(CpMode::Copy);
+        let src = pick();
+        let mut plan = plan_for(&src);
+        plan.dest_folder = "/etc".into();
+        assert!(run_restore(&fake, "hub", &plan, &src, &AtomicBool::new(false)).is_err());
+        let mut plan = plan_for(&src);
+        plan.command[4] = "/etc/passwd".into();
+        assert!(run_restore(&fake, "hub", &plan, &src, &AtomicBool::new(false)).is_err());
+        assert!(fake.cps.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_live_listing_refuses_odd_paths() {
+        let fake = Fake::new(CpMode::Copy);
+        let c = AtomicBool::new(false);
+        for d in ["tank", "/a//b", "/a/./b", "/a/../b", "/a/b/", "/a\nb", ""] {
+            assert!(read_live_folder(&fake, HostOs::FreeBsd, d, &BrowseLimits::default(), &c).is_err(), "{d:?}");
+        }
+        assert!(read_live_folder(&fake, HostOs::FreeBsd, "/", &BrowseLimits::default(), &c).is_ok());
     }
 }

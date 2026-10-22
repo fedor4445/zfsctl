@@ -537,6 +537,20 @@ pub fn read_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &B
     if !dir.starts_with('/') || !dir.contains("/.zfs/snapshot/") || dir.len() > MAX_PATH || dir.chars().any(char::is_control) {
         return Err(AppError::Config("refusing to list a folder that is not inside a snapshot".to_string()));
     }
+    read_listing(runner, os, dir, limits, cancel)
+}
+
+/// Reads one folder of the live tree (the restore's checks): the same listing as [`read_folder`], for an absolute path of at
+/// most 4096 bytes with no control character and no empty, `.` or `..` step.
+pub fn read_live_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
+    let plain = dir.starts_with('/') && dir.len() <= MAX_PATH && !dir.chars().any(char::is_control) && (dir == "/" || dir[1..].split('/').all(|s| !s.is_empty() && s != "." && s != ".."));
+    if !plain {
+        return Err(AppError::Config("refusing to list a folder whose path is not a plain absolute path".to_string()));
+    }
+    read_listing(runner, os, dir, limits, cancel)
+}
+
+fn read_listing(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
     let deadline = Instant::now() + Duration::from_secs(limits.max_seconds);
     let first_args = ls_args(os, Times::Modified, dir).ok_or_else(|| AppError::Config("no ls form for this host".to_string()))?;
     let first = list_once(runner, &first_args, limits.max_entries, deadline, os, cancel)?;
