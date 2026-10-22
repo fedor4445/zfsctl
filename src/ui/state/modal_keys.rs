@@ -195,6 +195,7 @@ impl App {
             FormKind::NotifySettings => self.submit_notify_form(form),
             FormKind::Setting { .. } => self.submit_setting_form(form),
             FormKind::AddHost => self.submit_add_host_form(form),
+            FormKind::RestoreFile { .. } => self.submit_restore_form(form),
             FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::ReplicateJob { .. } => self.submit_job_form(form),
             FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } => match build_bootenv_action(&form.kind, &form.fields) {
                 Ok(action) => {
@@ -448,6 +449,24 @@ impl App {
         let Some(prompt) = irreversible_prompt(&self.hosts, &action) else { return Some(action) };
         let modal = form.into_modal();
         self.confirm_restore = Some((prompt.clone(), modal));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+        None
+    }
+
+    /// The restore form: the engine plans the copy from the picked file and the typed name (kept exactly as typed, spaces
+    /// included; only the line end is dropped). A refusal is shown as it is and the form stays open; a plan opens the confirm
+    /// that shows the exact command, and declining it hands the form back.
+    fn submit_restore_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let FormKind::RestoreFile { host, source } = form.kind.clone() else { return None };
+        let name = field_value(&form.fields, 0).trim_end_matches('\n').to_string();
+        let plan = match crate::zfs::snapshot_restore::plan_restore(&source, &name) {
+            Ok(plan) => plan,
+            Err(e) => return self.reject(form, super::refusal_text(e)),
+        };
+        let prompt = super::restore_prompt(&plan);
+        let host_name = self.hosts.get(host).cloned().unwrap_or_default();
+        let action = PendingAction { host, section: super::Section::Snapshots, call: MutationCall::RestoreFile { plan: Box::new(plan), source, host: host_name } };
+        self.confirm_restore = Some((prompt.clone(), form.into_modal()));
         self.modal = Some(Modal::Confirm { choice: None, prompt, action });
         None
     }

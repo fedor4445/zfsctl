@@ -1003,7 +1003,7 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
         //
         // `handle_modal_key` routes `ShareSmb` through `build_smb_action`
         // instead: it needs the current share list for the duplicate-name check.
-        FormKind::NotifySettings | FormKind::Setting { .. } | FormKind::AddHost | FormKind::ShareSmb { .. } | FormKind::LoadKey { .. } | FormKind::ChangeKey { .. } | FormKind::CreateEncrypted { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
+        FormKind::NotifySettings | FormKind::Setting { .. } | FormKind::AddHost | FormKind::RestoreFile { .. } | FormKind::ShareSmb { .. } | FormKind::LoadKey { .. } | FormKind::ChangeKey { .. } | FormKind::CreateEncrypted { .. } | FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::ReplicateJob { .. } => None,
     }
 }
 

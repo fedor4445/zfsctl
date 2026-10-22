@@ -28,7 +28,6 @@ pub mod snapshot_detail;
 pub mod snapshot_browse;
 pub mod snapshot_changes;
 pub mod snapshot_diff;
-#[allow(dead_code)] // used by the restore flow (Tasks 6 and 7)
 pub mod snapshot_restore;
 
 use crate::error::{AppError, Result};

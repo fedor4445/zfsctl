@@ -271,6 +271,9 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     v.push(h("m", "Modified", 3));
                     v.push(h("s", "Size", 3));
                     v.push(h("t", "Type", 3));
+                    if view.can_restore() {
+                        v.push(h("R", "Restore", 2));
+                    }
                     if !view.filter.is_empty() {
                         v.push(h("x", "Clear", 2));
                     }
@@ -1222,6 +1225,25 @@ mod tests {
     }
 
     #[test]
+    fn restore_is_offered_only_on_a_regular_file_that_can_be_restored() {
+        use crate::zfs::snapshot_browse::EntryKind::{Directory, File, Symlink};
+        assert!(keys(&browsing(&[("a", File)], &[])).contains(&"R"));
+        assert!(!keys(&browsing(&[("d", Directory)], &[])).contains(&"R"));
+        assert!(!keys(&browsing(&[("l", Symlink)], &[])).contains(&"R"));
+        let mut odd = browsing(&[("a\nb", File)], &[]);
+        assert!(!keys(&odd).contains(&"R"), "a name that cannot be sent");
+        odd.browse_view.as_mut().unwrap().rows[0].entry.name = "a".to_string();
+        odd.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
+        assert!(!keys(&odd).contains(&"R"));
+        let mut zoned = browsing(&[("a", File)], &[]);
+        zoned.browse_view.as_mut().unwrap().zone = Some("z".to_string());
+        assert!(!keys(&zoned).contains(&"R"), "refused inside a zone, so not offered");
+        let mut typing = browsing(&[("a", File)], &[]);
+        typing.browse_view.as_mut().unwrap().start_input(crate::ui::browse::InputKind::Name);
+        assert!(!keys(&typing).contains(&"R"));
+    }
+
+    #[test]
     fn open_is_not_offered_on_a_folder_whose_name_will_be_refused() {
         use crate::zfs::snapshot_browse::EntryKind::Directory;
         let odd = browsing(&[("dir\nnewline", Directory)], &[]);
@@ -1251,12 +1273,28 @@ mod tests {
             other => KeyCode::Char(other.chars().next().unwrap()),
         };
         let fp = |a: &App| a.browse_view.as_ref().map(|v| (v.selected, v.path.clone(), v.rows.len(), v.input.is_some(), v.filter.clone(), matches!(v.phase, crate::ui::browse::Phase::Reading)));
+        let modal_open = |a: &App| a.modal.is_some();
         let scenarios: Vec<Scenario> = vec![
             ("top", Box::new(|| browsing(&[("pics", Directory), ("a", File), ("b", File)], &[]))),
             ("inside", Box::new(|| browsing(&[("pics", Directory), ("a", File)], &["x"]))),
             ("file selected", Box::new(|| {
                 let mut a = browsing(&[("pics", Directory), ("a", File)], &[]);
                 a.browse_view.as_mut().unwrap().selected = 1;
+                a
+            })),
+            ("symlink selected, not a file", Box::new(|| {
+                let mut a = browsing(&[("l", crate::zfs::snapshot_browse::EntryKind::Symlink)], &[]);
+                a.browse_view.as_mut().unwrap().selected = 0;
+                a
+            })),
+            ("ambiguous file selected", Box::new(|| {
+                let mut a = browsing(&[("a\\b", File)], &[]);
+                a.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
+                a
+            })),
+            ("zoned file selected", Box::new(|| {
+                let mut a = browsing(&[("a", File)], &[]);
+                a.browse_view.as_mut().unwrap().zone = Some("z1".to_string());
                 a
             })),
         ];
@@ -1266,9 +1304,9 @@ mod tests {
                 let mut a = make();
                 let before = fp(&a);
                 a.handle_key(code(key));
-                assert!(*key == "↑↓" && name.contains("file") || fp(&a) != before || a.browse_view.is_none(), "scenario '{name}' advertises {key} but it changes nothing");
+                assert!(*key == "↑↓" && name.contains("file") || fp(&a) != before || a.browse_view.is_none() || modal_open(&a), "scenario '{name}' advertises {key} but it changes nothing");
             }
-            for key in ["Enter", "←", "x", "f", "d", "b", "H", "c", "C"] {
+            for key in ["Enter", "←", "x", "f", "d", "b", "H", "c", "C", "R"] {
                 if advertised.contains(&key) {
                     continue;
                 }
@@ -1277,6 +1315,7 @@ mod tests {
                 a.handle_key(code(key));
                 assert_eq!(fp(&a), before, "scenario '{name}' does not advertise {key} yet it changes state");
                 assert!(a.modal.is_none(), "{key} opened a confirm behind the browser");
+                assert!(a.status_message.is_none() || key == "R" && name.contains("zoned"), "{key} said something in '{name}'");
             }
         }
     }

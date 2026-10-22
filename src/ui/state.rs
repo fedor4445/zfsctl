@@ -268,6 +268,8 @@ pub enum WorkerMsg {
     /// The target is what the sample was taken for; `MetricsView::apply` drops it if the panel has moved on.
     Metrics(usize, crate::zfs::metrics::MetricsTarget, Box<Result<crate::zfs::metrics::TargetSample>>),
     MutationDone(usize, Section, Result<()>),
+    /// What a finished restore verified, as the status line says it; sent just before its `MutationDone`.
+    Restored(usize, String),
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
     HostProbe(String, String, Result<()>),
@@ -412,6 +414,8 @@ pub struct App {
     last_alerts_refresh: Option<Instant>,
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
+    /// The text of the restore that just finished (see `WorkerMsg::Restored`), shown when its `MutationDone` arrives.
+    pub restored_note: Option<String>,
     pub alerts_preview_busy: bool,
     /// A test message is being sent (it can take up to 30 s per channel): `t` waits for it.
     pub alerts_test_busy: bool,
@@ -638,6 +642,7 @@ impl App {
             auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
             done_note: None,
+            restored_note: None,
             alerts_preview_busy: false,
             alerts_test_busy: false,
             alerts_preview_ready: None,
@@ -3188,7 +3193,15 @@ impl App {
         }
         let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            let result = call.run_on(runner.as_ref(), os);
+            // A restore's success text carries what the engine verified, so it is sent ahead of the plain result.
+            let result = match call.restore_outcome(runner.as_ref()) {
+                Some(Ok(done)) => {
+                    let _ = tx.send(WorkerMsg::Restored(host, crate::ui::modal::restored_note(&done)));
+                    Ok(())
+                }
+                Some(Err(e)) => Err(e),
+                None => call.run_on(runner.as_ref(), os),
+            };
             let _ = tx.send(WorkerMsg::MutationDone(host, section, result));
         });
     }
@@ -3284,7 +3297,7 @@ impl App {
                     self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Snapshots, call } });
                 }
             }
-            KeyCode::Char('c' | 'C' | 'd' | 'b' | 'f') => {}
+            KeyCode::Char('c' | 'C' | 'd' | 'b' | 'f' | 'R') => {}
             _ => return false,
         }
         true
@@ -3329,6 +3342,25 @@ impl App {
             KeyCode::Char('s') => view.start_input(InputKind::Size),
             KeyCode::Char('t') => view.cycle_kind(),
             KeyCode::Char('x') => view.clear_filters(),
+            KeyCode::Char('R') => {
+                if let Some(source) = view.restore_source() {
+                    let host = view.host;
+                    if source.zone.is_some() {
+                        // A zoned dataset: the engine's own sentence, nothing opens.
+                        let why = crate::zfs::snapshot_restore::plan_restore(&source, "restore").err().map_or_else(|| "restore from a dataset given to a zone must be done inside the zone".to_string(), refusal_text);
+                        self.set_error(why);
+                    } else {
+                        let value = crate::zfs::snapshot_restore::default_destination_name(&source.entry.name, &source.snapshot);
+                        self.modal = Some(Modal::Form {
+                            title: "Restore as a copy".to_string(),
+                            fields: vec![FormField { label: "Restore as".to_string(), value }],
+                            focused: 0,
+                            description: Some("A new file next to the original; nothing is replaced.".to_string()),
+                            kind: FormKind::RestoreFile { host, source: Box::new(source) },
+                        });
+                    }
+                }
+            }
             KeyCode::Char('c' | 'C' | 'd' | 'b' | 'H' | 'f') => {}
             _ => return false,
         }
@@ -3675,6 +3707,28 @@ fn about_text() -> String {
 }
 
 /// The question the hold confirm asks, from the `H` key in the list and from the changes view.
+/// The engine's refusal as the plain sentence it is (without the error type's prefix).
+pub(super) fn refusal_text(e: crate::error::AppError) -> String {
+    match e {
+        crate::error::AppError::Config(sentence) => sentence,
+        other => other.to_string(),
+    }
+}
+
+/// The question the restore confirm asks: the source, the destination and the exact command that will run as root. Every
+/// piece of host text goes through `sanitise_for_display`.
+pub(super) fn restore_prompt(plan: &crate::zfs::snapshot_restore::RestorePlan) -> String {
+    let clean = crate::display_text::sanitise_for_display;
+    let command = plan.command.iter().map(|a| clean(a)).collect::<Vec<_>>().join(" ");
+    format!(
+        "Restore as a copy\nFrom:  {}\nTo:    {}\nCommand: cp {command}\nSize: {}   Mode: {}\nThis creates one new file next to the original and never replaces anything.\nExisting files are never overwritten; if the name is taken nothing is copied. (y/n)",
+        clean(&plan.source),
+        clean(&plan.destination),
+        plan.size,
+        clean(&plan.mode),
+    )
+}
+
 fn hold_prompt(target: &str) -> String {
     format!("Protect {target} with a hold?\nIt cannot be destroyed, and retention, backups and replication will not prune it, until the hold is released. (y/n)")
 }
@@ -3764,6 +3818,7 @@ Snapshots
   c                show what changed since the previous snapshot, by folder (read-only; Enter opens a folder, / filters its entries by name as you type (a|b for either, * ? wildcards), [ ] sets the depth, H holds the older snapshot, Esc closes)
   C                show what has changed since this snapshot, compared with the live dataset
   f                look inside the selected snapshot: its folders with type, size, dates, mode and owner (read-only, metadata only; needs the `browse` sudoers feature on other hosts). Enter opens a folder, ← goes up, / filters by name as you type (a|b for either, * ? wildcards), m s t by modified date, size and type, x clears, Esc closes
+  R                in the snapshot browser, on a regular file: copy it back next to the original under a new name (asks for the name, then shows the exact command; y then Enter runs it; never replaces a file; needs the `restore` sudoers feature on other hosts)
 
 Disks
   Space            toggle-select a disk

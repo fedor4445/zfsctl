@@ -3,6 +3,7 @@ use crate::error::Result;
 use crate::ui::changes::group_digits;
 use crate::ui::theme::Theme;
 use crate::zfs::host_health::HostOs;
+use crate::zfs::snapshot_restore::RestoreSource;
 use crate::zfs::snapshot_browse::{explain, parse_date_range, parse_size_range, sort_rows, valid_component, EntryKind, Filter, KindFilter, Listing, Row as BrowseRow};
 use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -198,6 +199,31 @@ impl BrowseView {
         self.path.pop();
         self.restore = self.back.pop();
         Some(self.start_read(request))
+    }
+
+    /// The selected file as a restore source: the view is Ready, the row is a regular file whose name can be sent to the host
+    /// (not ambiguous, no control character), and the dataset's mountpoint is known. A zoned dataset is still returned (the
+    /// restore engine refuses it with its own sentence); `can_restore` is the stricter question the hints ask.
+    pub fn restore_source(&self) -> Option<RestoreSource> {
+        if !matches!(self.phase, Phase::Ready) || self.input.is_some() {
+            return None;
+        }
+        let row = self.rows.get(self.selected)?;
+        if row.entry.kind != EntryKind::File || row.entry.ambiguous || !valid_component(&row.entry.name) {
+            return None;
+        }
+        Some(RestoreSource { dataset: self.dataset.clone(), snapshot: self.name.clone(), mountpoint: self.mountpoint.clone()?, folder: self.path.clone(), entry: row.entry.clone(), zone: self.zone.clone(), os: self.os })
+    }
+
+    /// Whether `R` would open the restore form.
+    pub fn can_restore(&self) -> bool {
+        self.zone.is_none() && self.restore_source().is_some()
+    }
+
+    /// Reads the current folder again (after a restore, so the new file shows), keeping the row that was selected.
+    pub fn reread(&mut self, request: u64) -> PendingBrowse {
+        self.restore = Some(self.selected);
+        self.start_read(request)
     }
 
     pub fn start_input(&mut self, kind: InputKind) {

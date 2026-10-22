@@ -68,6 +68,11 @@ impl App {
                     self.status_message = Some(line);
                     self.reload_check_files();
                 }
+                WorkerMsg::Restored(host, text) => {
+                    if host == self.selected_host {
+                        self.restored_note = Some(text);
+                    }
+                }
                 WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, &mut refreshes_needed),
             }
         }
@@ -624,10 +629,19 @@ impl App {
                 self.bootenv_pin = None;
             }
         }
-        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { None };
+        let restored = if section == Section::Snapshots { self.restored_note.take() } else { None };
+        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { restored.clone() };
         match result {
             Ok(()) => {
                 self.status_message = note;
+                if restored.is_some() {
+                    // A restore made a new file: the open browser reads its folder again so the file shows up.
+                    let request = self.browse_request + 1;
+                    if let Some(view) = self.browse_view.as_mut().filter(|v| v.host == host) {
+                        self.browse_request = request;
+                        self.pending_browse.push(view.reread(request));
+                    }
+                }
                 if section == Section::Settings {
                     self.apply_saved_settings();
                 }
