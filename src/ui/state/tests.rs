@@ -10881,3 +10881,18 @@ fn a_name_with_a_lookalike_slash_or_odd_whitespace_gets_a_check_it_note() {
     }
     assert!(!prompt_for_name("plain name.txt").contains("Note:"));
 }
+
+#[test]
+fn a_successful_restore_does_not_refresh_the_snapshot_list_so_its_message_is_not_wiped() {
+    // Found on the hub: the refresh that follows a mutation is a manual one and clears the status line, so the
+    // "Restored ..." message vanished at once. A restore changes no snapshot, so nothing needs refreshing.
+    let mut app = browsing_app();
+    app.tx.send(WorkerMsg::Restored(0, Ok("Restored /tank/data/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()))).unwrap();
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    let refreshes = app.drain_worker_messages();
+    assert!(!refreshes.contains(&Section::Snapshots), "{refreshes:?}");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.starts_with("Restored ")));
+    // Any other Snapshots mutation (a hold, say) still refreshes the list.
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    assert!(app.drain_worker_messages().contains(&Section::Snapshots));
+}

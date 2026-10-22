@@ -636,6 +636,9 @@ impl App {
             Some(Err(text)) => (None, Some(text)),
             None => (None, None),
         };
+        // A restore creates one live file and changes no snapshot: the list needs no refresh, and a manual refresh would
+        // clear the "Restored ..." message the moment it returned.
+        let restored_a_file = restored_ok.is_some();
         let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { restored_ok };
         match result {
             Ok(()) => {
@@ -643,7 +646,9 @@ impl App {
                 if section == Section::Settings {
                     self.apply_saved_settings();
                 }
-                refreshes_needed.push(section);
+                if !restored_a_file {
+                    refreshes_needed.push(section);
+                }
                 if section == Section::Vdevs {
                     // A disk going offline/online/being replaced
                     // changes the parent pool's health too —
