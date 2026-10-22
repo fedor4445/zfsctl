@@ -123,7 +123,7 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
     let host: String = host.chars().map(|c| if c.is_control() { '?' } else { c }).collect();
     let mut text = format!("# zfsctl sudoers entry for host {host}, generated {generated}\n");
     let _ = writeln!(text, "# features: {}", features.iter().map(|f| f.name()).collect::<Vec<_>>().join(", "));
-    let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "beadm" | "restic")).collect();
+    let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "beadm" | "restic" | "rclone" | "cp")).collect();
     if !powerful.is_empty() {
         let (verb, pronoun) = if powerful.len() == 1 { ("is", "it") } else { ("are", "them") };
         let _ = writeln!(text, "# {} {verb} as powerful as root: grant {pronoun} only to hosts you trust zfsctl with.", powerful.join(", "));
@@ -812,10 +812,11 @@ mod tests {
             let text = print_sudoers(&host_with(CP_PATHS), "h", "u@h", os, &[Feature::Restore], "d").unwrap();
             assert!(text.contains("/bin/cp -p -n -- * *"), "{os:?}: {text}");
             assert_eq!(text.matches("/bin/cp ").count(), 1, "{os:?}: {text}");
+            assert!(text.contains("# cp is as powerful as root: grant it only to hosts you trust zfsctl with."), "{os:?}: {text}");
             assert!(text.contains("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths"), "{text}");
         }
         let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
-        assert!(!without.contains("/bin/cp") && !without.contains("# cp"), "{without}");
+        assert!(!without.contains("/bin/cp") && !without.contains("# cp") && !without.contains("cp is as powerful"), "{without}");
     }
 
     #[test]
