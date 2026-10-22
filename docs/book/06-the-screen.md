@@ -171,7 +171,7 @@ The last section of the sidebar edits the parts of `config.toml` that no other s
 | `Esc` | go back one step: close a message, leave a pane, cancel a form |
 | `r` | refresh what you are looking at |
 | `?` | the Help screen |
-| `A` | About |
+| `A` | About: the zfsctl wordmark, the version and what the tool is for (include the version when you report a bug) |
 | `!` | open a shell on the selected host |
 | `q` | quit |
 

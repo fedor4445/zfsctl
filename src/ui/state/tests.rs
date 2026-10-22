@@ -571,6 +571,8 @@ fn handle_key_capital_a_opens_about_info_modal() {
             assert_eq!(title, "About");
             assert!(body.contains("zfsctl"));
             assert!(body.contains("Claude"));
+            assert!(body.contains("FreeBSD, Linux and illumos"), "{body}");
+            assert!(crate::ui::logo::wordmark().iter().all(|line| body.contains(line.as_str())), "the wordmark is on the About screen: {body}");
         }
         other => panic!("expected Info modal, got {other:?}"),
     }

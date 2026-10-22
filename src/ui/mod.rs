@@ -7,6 +7,7 @@ pub mod dashboard_view;
 pub mod hints;
 pub mod jobs;
 pub mod layout;
+pub mod logo;
 pub mod metrics;
 pub mod modal;
 pub mod picker;

@@ -3709,7 +3709,8 @@ fn clamp_table_selection(state: &mut TableState, len: usize) {
 
 fn about_text() -> String {
     format!(
-        "zfsctl v{}\n\nA terminal UI for managing ZFS storage on FreeBSD.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
+        "{}\n\nzfsctl v{}\n\nA terminal UI for managing ZFS storage: a FreeBSD hub that manages FreeBSD, Linux and illumos hosts over ssh.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
+        crate::ui::logo::wordmark().join("\n"),
         env!("CARGO_PKG_VERSION")
     )
 }
