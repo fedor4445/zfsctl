@@ -17,6 +17,15 @@ pub struct Host {
 
 pub struct HostInventory {
     pub hosts: Vec<Host>,
+    /// Where shared ssh connections keep their sockets (`[ssh] multiplex`), or `None` for one connection per command.
+    pub(crate) mux_dir: Option<std::path::PathBuf>,
+}
+
+fn ssh_runner(target: &str, mux_dir: Option<&std::path::PathBuf>) -> SshRunner {
+    match mux_dir {
+        Some(dir) => SshRunner::with_mux(target, dir),
+        None => SshRunner::new(target),
+    }
 }
 
 impl HostInventory {
@@ -29,9 +38,10 @@ impl HostInventory {
             ssh_target: None,
             tag: None,
         }];
+        let mux_dir = config.ssh.mux_dir();
         for host_cfg in &config.hosts {
             let runner: Arc<dyn CommandRunner> = match &host_cfg.ssh_target {
-                Some(target) => Arc::new(SshRunner::new(target.clone())),
+                Some(target) => Arc::new(ssh_runner(target, mux_dir.as_ref())),
                 None => Arc::new(LocalRunner),
             };
             hosts.push(Host {
@@ -41,7 +51,7 @@ impl HostInventory {
                 tag: host_cfg.tag.as_deref().and_then(crate::config::clean_tag),
             });
         }
-        HostInventory { hosts }
+        HostInventory { hosts, mux_dir }
     }
 
     pub fn get(&self, name: &str) -> Option<&Host> {
@@ -58,7 +68,7 @@ impl HostInventory {
     pub fn apply_new_host(&mut self, config_path: &Path, name: String, target: String, tag: Option<String>) -> Result<()> {
         self.hosts.push(Host {
             name: name.clone(),
-            runner: Arc::new(SshRunner::new(target.clone())),
+            runner: Arc::new(ssh_runner(&target, self.mux_dir.as_ref())),
             ssh_target: Some(target.clone()),
             tag: tag.clone(),
         });

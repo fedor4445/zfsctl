@@ -9,7 +9,7 @@ This chapter is checked against the program's own list of settings by the book's
 
 ## config.toml
 
-The file is `/usr/local/etc/zfsctl/config.toml`. It has up to six parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[daemon]`, `[notify]`, `[cloud]` and `[dashboard]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is; the Settings screen does the same for `theme` and `auto_refresh_secs` in `[ui]`, for `[dashboard]` and for `[cloud.caps]`.
+The file is `/usr/local/etc/zfsctl/config.toml`. It has up to seven parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[ssh]`, `[daemon]`, `[notify]`, `[cloud]` and `[dashboard]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is; the Settings screen does the same for `theme` and `auto_refresh_secs` in `[ui]`, for `[dashboard]` and for `[cloud.caps]`.
 
 ### `[[hosts]]`: one table per remote host
 
@@ -25,6 +25,12 @@ The file is `/usr/local/etc/zfsctl/config.toml`. It has up to six parts: any num
 |---|---|---|---|
 | `theme` | text | `ansi` | `ansi`, `mono`, `solarized-dark` or `solarized-light`; `mono` is also chosen when `NO_COLOR` is set |
 | `auto_refresh_secs` | number | `10` | seconds between background refreshes of the list you are looking at; `0` turns them off |
+
+### `[ssh]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `multiplex` | `true` or `false` | `false` | `true` makes the short commands to one host share a single ssh connection, kept open for a minute after the last one, instead of opening a new connection for each. A command then takes about 55 ms instead of about 220 ms, and the host's `sshd` logs one login instead of dozens. At most 8 commands share a connection at once. Backups, cloud mirrors and replication always use a connection of their own, so a dropped shared connection cannot interrupt them. The sockets live in `/var/db/zfsctl/ssh`, readable by root only; if that directory cannot be made, zfsctl quietly goes back to one connection per command. Read when zfsctl or the daemon starts: restart the daemon after changing it |
 
 ### `[daemon]`
 
