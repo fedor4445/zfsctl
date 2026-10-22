@@ -58,6 +58,11 @@ pub fn is_wordmark_line(line: &str) -> bool {
     line.chars().any(|c| matches!(c, '█' | '▀' | '▄')) && line.chars().all(|c| matches!(c, '█' | '▀' | '▄' | ' '))
 }
 
+/// Whether the About pop-up centres `line`: the wordmark and the `zfsctl vX.Y` title under it.
+pub fn is_centred_line(line: &str) -> bool {
+    is_wordmark_line(line) || line.starts_with("zfsctl v")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
