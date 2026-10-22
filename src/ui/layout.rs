@@ -1498,7 +1498,10 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
             let lines: Vec<Line> = body
                 .lines()
                 .filter(|l| fits || !crate::ui::logo::is_wordmark_line(l))
-                .map(|l| if crate::ui::logo::is_wordmark_line(l) { Line::styled(l.to_string(), theme.warn) } else { Line::raw(l.to_string()) })
+                .map(|l| {
+                    let line = if crate::ui::logo::is_wordmark_line(l) { Line::styled(l.to_string(), theme.warn) } else { Line::raw(l.to_string()) };
+                    if crate::ui::logo::is_centred_line(l) { line.centered() } else { line }
+                })
                 .collect();
             let p = Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
@@ -3132,6 +3135,30 @@ mod tests {
         let narrow = render(&mut app, 60, 40);
         assert!(narrow.iter().all(|r| !r.contains('▀') && !r.contains('█')), "{narrow:?}");
         assert!(narrow.iter().any(|r| r.contains("zfsctl v")), "{narrow:?}");
+    }
+
+    #[test]
+    fn the_about_wordmark_and_version_are_centred_in_the_pop_up() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(crossterm::event::KeyCode::Char('A'));
+        let rows: Vec<Vec<char>> = render(&mut app, 120, 40).iter().map(|r| r.chars().collect()).collect();
+        let find = |needle: &str| -> (usize, usize) {
+            let n: Vec<char> = needle.chars().collect();
+            rows.iter().enumerate().find_map(|(y, r)| r.windows(n.len()).position(|w| w == n.as_slice()).map(|x| (y, x))).unwrap_or_else(|| panic!("{needle} not on screen"))
+        };
+        let (top, left) = find("┌About");
+        let right = left + rows[top][left..].iter().position(|c| *c == '┐').expect("the pop-up's corner");
+        let gaps = |y: usize, x: usize, width: usize| ((x - (left + 1)) as i64, ((right - 1) - (x + width - 1)) as i64);
+        let last_line = crate::ui::logo::wordmark().pop().unwrap();
+        let (y, x) = find(&last_line);
+        let (l, r) = gaps(y, x, crate::ui::logo::WIDTH);
+        assert!((l - r).abs() <= 1 && l > 0, "the wordmark has {l} columns on its left and {r} on its right");
+        let version = format!("zfsctl v{}", env!("CARGO_PKG_VERSION"));
+        let (y, x) = find(&version);
+        let (l, r) = gaps(y, x, version.chars().count());
+        assert!((l - r).abs() <= 1 && l > 0, "the version line has {l} on its left and {r} on its right");
+        let (_, x) = find("A terminal UI for managing ZFS");
+        assert_eq!(x, left + 1, "the description stays flush left");
     }
 
     #[test]
