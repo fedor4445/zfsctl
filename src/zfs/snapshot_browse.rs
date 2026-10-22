@@ -84,29 +84,41 @@ fn valid_zone_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
-/// `zoneadm list -cp` lines (`id:name:state:path:uuid:brand:ip-type:id`), without the global zone and without any zone whose
-/// name or path would not be safe to use (a path must be absolute with plain steps).
-fn parse_zoneadm_rows(stdout: &str) -> Vec<ZoneRow> {
-    stdout
+/// `zoneadm list -cp` lines (`id:name:state:path:uuid:brand:ip-type:id`), without the global zone, and how many other lines were
+/// skipped because their name or path would not be safe to use (a path must be absolute with plain steps) or the line was not in
+/// the eight-field format.
+fn parse_zoneadm_rows(stdout: &str) -> (Vec<ZoneRow>, usize) {
+    let mut skipped = 0;
+    let rows = stdout
         .lines()
+        .filter(|l| !l.trim().is_empty())
         .filter_map(|line| {
             let fields: Vec<&str> = line.split(':').collect();
             // Exactly the eight fields `zoneadm -p` prints: a line that is part of something else (a path with a newline or a
             // colon in it) is not trusted.
-            let [id, name, state, path, _uuid, _brand, _ip, _zid] = fields.as_slice() else { return None };
-            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+            let [id, name, state, path, _uuid, _brand, _ip, _zid] = fields.as_slice() else {
+                skipped += 1;
+                return None;
+            };
+            if *name == "global" {
                 return None;
             }
-            let steps: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
-            (*name != "global" && valid_zone_name(name) && join_relative(&steps).is_some_and(|j| !j.is_empty())).then(|| ZoneRow { name: name.to_string(), running: *state == "running", path: path.to_string() })
+            let steps: Vec<&str> = path.strip_prefix('/').map(|p| p.split('/').collect()).unwrap_or_default();
+            let ok = !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit() || b == b'-') && valid_zone_name(name) && join_relative(&steps).is_some_and(|j| !j.is_empty());
+            if !ok {
+                skipped += 1;
+                return None;
+            }
+            Some(ZoneRow { name: (*name).to_string(), running: *state == "running", path: (*path).to_string() })
         })
-        .collect()
+        .collect();
+    (rows, skipped)
 }
 
 /// The running zones as `(name, zone path)`.
 #[cfg(test)]
 fn parse_zoneadm(stdout: &str) -> Vec<(String, String)> {
-    parse_zoneadm_rows(stdout).into_iter().filter(|z| z.running).map(|z| (z.name, z.path)).collect()
+    parse_zoneadm_rows(stdout).0.into_iter().filter(|z| z.running).map(|z| (z.name, z.path)).collect()
 }
 
 /// The zone that has `dataset` (or a dataset above it) given to it, as `(name, zone path)`. Asked with two commands that need no
@@ -116,16 +128,32 @@ pub fn zone_for_dataset(runner: &dyn CommandRunner, dataset: &str) -> Result<(St
     if !listed.success() {
         return Err(AppError::CommandFailed { cmd: "zoneadm list -cp".to_string(), status: listed.status, stderr: listed.stderr });
     }
-    let (mut running, mut stopped) = (Vec::new(), Vec::new());
-    for zone in parse_zoneadm_rows(&listed.stdout) {
-        let Ok(info) = runner.run_unprivileged("zonecfg", &["-z", &zone.name, "info", "dataset"]) else { continue };
-        if !info.success() {
-            continue;
-        }
+    let (mut running, mut stopped, mut unchecked) = (Vec::new(), Vec::new(), Vec::new());
+    let (zones, skipped) = parse_zoneadm_rows(&listed.stdout);
+    for zone in zones {
+        let info = match runner.run_unprivileged("zonecfg", &["-z", &zone.name, "info", "dataset"]) {
+            Ok(info) if info.success() => info,
+            _ => {
+                unchecked.push(zone.name);
+                continue;
+            }
+        };
         let delegated = info.stdout.lines().filter_map(|l| l.trim().strip_prefix("name:")).map(str::trim).any(|d| dataset == d || dataset.strip_prefix(d).is_some_and(|rest| rest.starts_with('/')));
         if delegated {
             if zone.running { running.push(zone) } else { stopped.push(zone) }
         }
+    }
+    // A zone that could not be asked (or a line that could not be used) might be the one that holds the dataset: refuse rather
+    // than pick another zone or say "no zone".
+    if !unchecked.is_empty() || skipped > 0 {
+        let mut parts = Vec::new();
+        if !unchecked.is_empty() {
+            parts.push(format!("zonecfg failed for {}", unchecked.join(", ")));
+        }
+        if skipped > 0 {
+            parts.push(format!("skipped {skipped} zone line(s) it could not use"));
+        }
+        return Err(AppError::Config(format!("could not check every zone ({}), so zfsctl cannot be sure which zone holds this dataset", parts.join("; "))));
     }
     match (running.as_slice(), stopped.as_slice()) {
         ([one], _) => Ok((one.name.clone(), one.path.clone())),
@@ -143,14 +171,15 @@ pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) 
     super::not_an_option(dataset)?;
     let props = if os == HostOs::Illumos { "mounted,mountpoint,zoned" } else { "mounted,mountpoint" };
     let out = super::run_checked(runner, "zfs", &["get", "-H", "-o", "property,value", props, dataset], &format!("zfs get {props} {dataset}"))?;
-    let value = |name: &str| out.stdout.lines().filter_map(|l| l.split_once('\t')).find(|(k, _)| *k == name).map(|(_, v)| v.trim().to_string());
+    let raw = |name: &str| out.stdout.lines().filter_map(|l| l.split_once('\t')).find(|(k, _)| *k == name).map(|(_, v)| v.to_string());
+    let value = |name: &str| raw(name).map(|v| v.trim().to_string());
     // A dataset given to a zone is looked up first: a halted zone has its datasets unmounted, and "the zone is not running" is the
     // useful message, not "not mounted".
     let zone = if os == HostOs::Illumos && value("zoned").as_deref() == Some("on") { Some(zone_for_dataset(runner, dataset)?) } else { None };
     if value("mounted").as_deref() != Some("yes") {
         return Err(AppError::Config("this dataset is not mounted, so there is no snapshot folder to browse".to_string()));
     }
-    let mountpoint = match value("mountpoint") {
+    let mountpoint = match raw("mountpoint") {
         Some(m) if m.starts_with('/') => m,
         _ => return Err(AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string())),
     };
@@ -495,7 +524,7 @@ pub enum KindFilter {
 /// size or date, so the user can still walk down to what they are looking for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
-    pub name: String,
+    pub name: crate::zfs::name_filter::NameFilter,
     pub modified_from: Option<i64>,
     pub modified_to: Option<i64>,
     pub size_min: Option<u64>,
@@ -505,7 +534,7 @@ pub struct Filter {
 
 impl Filter {
     pub fn is_empty(&self) -> bool {
-        *self == Filter::default()
+        self.name.is_empty() && self.modified_from.is_none() && self.modified_to.is_none() && self.size_min.is_none() && self.size_max.is_none() && self.kind == KindFilter::All
     }
 
     pub fn matches(&self, row: &Row) -> bool {
@@ -516,7 +545,7 @@ impl Filter {
             KindFilter::Folders => e.kind == EntryKind::Directory,
             KindFilter::Links => e.kind == EntryKind::Symlink,
         };
-        if !kind_ok || (!self.name.is_empty() && !e.name.to_lowercase().contains(&self.name.to_lowercase())) {
+        if !kind_ok || !self.name.matches(&e.name) {
             return false;
         }
         if e.kind == EntryKind::Directory {
@@ -706,11 +735,16 @@ mod tests {
     struct ScriptedRunner {
         answers: Vec<(&'static str, String)>,
         calls: Mutex<Vec<String>>,
+        /// The calls made through `run_unprivileged` (no sudo), by command name.
+        unprivileged: Mutex<Vec<String>>,
     }
 
     impl ScriptedRunner {
         fn new(answers: &[(&'static str, &str)]) -> Self {
-            Self { answers: answers.iter().map(|(k, v)| (*k, (*v).to_string())).collect(), calls: Mutex::new(vec![]) }
+            Self { answers: answers.iter().map(|(k, v)| (*k, (*v).to_string())).collect(), calls: Mutex::new(vec![]), unprivileged: Mutex::new(vec![]) }
+        }
+        fn unprivileged_commands(&self) -> Vec<String> {
+            self.unprivileged.lock().unwrap().clone()
         }
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
@@ -731,6 +765,7 @@ mod tests {
             Err(AppError::Config("no stdin here".to_string()))
         }
         fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<CommandOutput> {
+            self.unprivileged.lock().unwrap().push(cmd.to_string());
             self.run(cmd, args)
         }
         fn command(&self, _cmd: &str, _args: &[&str]) -> crate::error::Result<Command> {
@@ -814,6 +849,41 @@ mod tests {
         let r = ScriptedRunner::new(&[("zfs get", "mounted\tyes\nmountpoint\t/tank/photos\nzoned\toff\n")]);
         assert_eq!(browse_mountpoint(&r, HostOs::Illumos, "tank/photos").unwrap(), BrowseBase { path: "/tank/photos".to_string(), zone: None });
         assert_eq!(r.calls().len(), 1, "only the zfs get ran: {:?}", r.calls());
+    }
+
+    #[test]
+    fn the_zone_commands_run_without_sudo_and_zfs_get_does_not_pretend_to() {
+        let r = ScriptedRunner::new(&[
+            ("zfs get", "mounted\tyes\nmountpoint\t/omni30/syncthing\nzoned\ton\n"),
+            ("zoneadm list -cp", ZONEADM),
+            ("zonecfg -z tailscale info dataset", ""),
+            ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n"),
+        ]);
+        browse_mountpoint(&r, HostOs::Illumos, "omni30/syncthing").unwrap();
+        assert_eq!(r.unprivileged_commands(), ["zoneadm", "zonecfg", "zonecfg"], "all three zone calls went through run_unprivileged");
+        assert!(!r.unprivileged_commands().contains(&"zfs".to_string()));
+    }
+
+    #[test]
+    fn a_zone_that_cannot_be_checked_makes_the_lookup_refuse_instead_of_guessing() {
+        // tailscale's zonecfg fails (no answer); syncthing lists the dataset. The real owner could be the one that failed.
+        let r = ScriptedRunner::new(&[("zoneadm list -cp", ZONEADM), ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n")]);
+        let err = zone_for_dataset(&r, "omni30/syncthing").unwrap_err().to_string();
+        assert!(err.contains("could not check") && err.contains("tailscale"), "{err}");
+    }
+
+    #[test]
+    fn a_zone_row_that_fails_validation_makes_the_lookup_refuse_too() {
+        let list = format!("{ZONEADM}4:bad zone:running:/rpool/zones/bad:u:lipkg:excl:9\n");
+        let r = ScriptedRunner::new(&[("zoneadm list -cp", &list), ("zonecfg -z tailscale info dataset", ""), ("zonecfg -z syncthing info dataset", "dataset:\n\tname: omni30/syncthing\n")]);
+        let err = zone_for_dataset(&r, "omni30/syncthing").unwrap_err().to_string();
+        assert!(err.contains("could not check") && err.contains("skipped"), "{err}");
+    }
+
+    #[test]
+    fn the_mountpoint_keeps_its_exact_text_including_spaces_at_the_end() {
+        let r = ScriptedRunner::new(&[("zfs get", "mounted\tyes\nmountpoint\t/data/my dir \n")]);
+        assert_eq!(browse_mountpoint(&r, HostOs::FreeBsd, "tank/d").unwrap().path, "/data/my dir ");
     }
 
     #[test]
@@ -1208,9 +1278,9 @@ mod tests {
         let d = row("pics", EntryKind::Directory, 7, Some(100));
         let l = row("link", EntryKind::Symlink, 4, Some(100));
         assert!(Filter::default().matches(&f) && Filter::default().is_empty());
-        let name = Filter { name: "photo".into(), ..Filter::default() };
+        let name = Filter { name: crate::zfs::name_filter::NameFilter::new("photo"), ..Filter::default() };
         assert!(name.matches(&f) && !name.matches(&d) && !name.is_empty());
-        let special = Filter { name: "%*\\".into(), ..Filter::default() };
+        let special = Filter { name: crate::zfs::name_filter::NameFilter::new("%*\\"), ..Filter::default() };
         assert!(!special.matches(&f), "wildcards are plain characters");
         let size = Filter { size_min: Some(1000), ..Filter::default() };
         assert!(size.matches(&f) && !size.matches(&l) && size.matches(&d), "a size filter never hides a folder");
@@ -1220,7 +1290,7 @@ mod tests {
         assert!(!date.matches(&unknown), "an unknown time does not satisfy a date range");
         let links = Filter { kind: KindFilter::Links, ..Filter::default() };
         assert!(links.matches(&l) && !links.matches(&f) && !links.matches(&d));
-        let folders = Filter { kind: KindFilter::Folders, name: "PIC".into(), ..Filter::default() };
+        let folders = Filter { kind: KindFilter::Folders, name: crate::zfs::name_filter::NameFilter::new("PIC"), ..Filter::default() };
         assert!(folders.matches(&d) && !folders.matches(&f));
         let files = Filter { kind: KindFilter::Files, ..Filter::default() };
         assert!(files.matches(&f) && !files.matches(&d) && !files.matches(&l));

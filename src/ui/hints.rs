@@ -255,7 +255,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
         (Section::Snapshots, _) if app.browse_view_active() => {
             if let Some(view) = app.browse_view.as_ref() {
                 if view.input.is_some() {
-                    v.push(h("Enter", "Apply", 1));
+                    v.push(h("Enter", "Keep", 1));
                     v.push(h("Esc", "Cancel", 1));
                 } else if matches!(view.phase, crate::ui::browse::Phase::Ready) {
                     if !view.rows.is_empty() {
@@ -285,10 +285,20 @@ fn context_hints(app: &App) -> Vec<Hint> {
         }
         (Section::Snapshots, _) if app.changes_view_active() => {
             let ready = app.changes_view.as_ref().is_some_and(|view| matches!(view.phase, crate::ui::changes::Phase::Ready { .. }));
-            if ready {
+            let typing = app.changes_view.as_ref().is_some_and(|view| view.name_input.is_some());
+            let in_folder = app.changes_view.as_ref().is_some_and(|view| view.open_group.is_some());
+            if ready && typing {
+                v.push(h("Enter", "Keep", 1));
+                v.push(h("Esc", "Cancel", 1));
+            } else if ready {
                 v.push(h("↑↓", "Move", 1));
-                v.push(h("Enter", "Open", 2));
+                if !in_folder {
+                    v.push(h("Enter", "Open", 2));
+                }
                 v.push(h("[ ]", "Depth", 2));
+                if in_folder {
+                    v.push(h("/", "Filter", 2));
+                }
                 v.push(h("H", "Hold older", 2));
                 v.push(h("Esc", "Back", 1));
             } else {
@@ -840,7 +850,7 @@ mod tests {
         focus: PaneFocus,
         tab: DatasetDetailTab,
         drilled: Option<String>,
-        changes_view: Option<(bool, usize, usize)>,
+        changes_view: Option<(bool, usize, usize, String, bool)>,
         browse_view: Option<(bool, usize, usize, bool)>,
         host: usize,
         host_filter: (String, bool),
@@ -861,7 +871,7 @@ mod tests {
             focus: a.pane_focus,
             tab: a.dataset_detail_tab,
             drilled: a.drilled_pool.clone(),
-            changes_view: a.changes_view.as_ref().map(|v| (matches!(v.phase, crate::ui::changes::Phase::Ready { .. }), v.depth, v.selected)),
+            changes_view: a.changes_view.as_ref().map(|v| (matches!(v.phase, crate::ui::changes::Phase::Ready { .. }), v.depth, v.selected, v.name_filter.text().to_string(), v.name_input.is_some())),
             browse_view: a.browse_view.as_ref().map(|v| (matches!(v.phase, crate::ui::browse::Phase::Ready), v.path.len(), v.selected, v.input.is_some())),
             host: a.selected_host,
             host_filter: (a.host_filter.clone(), a.host_filter_editing),
@@ -1261,6 +1271,26 @@ mod tests {
                 assert!(a.modal.is_none(), "{key} opened a confirm behind the browser");
             }
         }
+    }
+
+    #[test]
+    fn the_changes_view_offers_a_filter_only_inside_a_folder_and_while_typing_only_enter_and_esc() {
+        use crate::ui::changes::{Against, ChangesOutcome, ChangesView, PendingChanges};
+        use crate::zfs::snapshot_changes::{ChangeSummary, Limits};
+        use crate::zfs::snapshot_diff::{Change, DiffEntry, FileKind};
+        let pending = PendingChanges { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), against: Against::Previous, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        let mut summary = ChangeSummary::new(&Limits::default(), Some("/ds".to_string()));
+        summary.add(DiffEntry { changed_at: 1_788_654_605, change: Change::Added, kind: FileKind::File, path: "/ds/a/f.jpg".to_string(), renamed_to: None });
+        let mut view = ChangesView::new(&pending);
+        view.apply(Ok(ChangesOutcome::Done { older: "tank/a@o".to_string(), newer: "tank/a@s".to_string(), summary }));
+        let mut a = snapshots();
+        a.changes_view = Some(view);
+        assert!(!keys(&a).contains(&"/"), "no filter at the folder list: {:?}", keys(&a));
+        a.changes_view.as_mut().unwrap().open_selected();
+        assert!(keys(&a).contains(&"/"), "{:?}", keys(&a));
+        a.changes_view.as_mut().unwrap().start_filter();
+        let own: Vec<&str> = keys(&a).into_iter().filter(|k| !["Tab", "!", "A", "?", "q"].contains(k)).collect();
+        assert_eq!(own, ["Enter", "Esc"]);
     }
 
     #[test]

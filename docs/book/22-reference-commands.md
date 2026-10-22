@@ -73,7 +73,7 @@ On a managed host the unprivileged account may run these programs as root throug
 | `smartctl` | the daily disk health check (`--with smart`) | only `--scan -j` and `-j -H -A -i /dev/*` (the `*` also matches spaces, so an extra flag is not stopped; zfsctl sends only read-only flags) |
 | `ls` | looking inside snapshots (`--with browse`, off by default) | only a few fixed `ls -l...` forms, three per OS (two on illumos), that all end in `-- *`; sudo matches the words as one string, so an extra option or path can be slipped in by merging words, and the path is not confined to `.zfs/snapshot`; `ls` has no option that writes or runs anything (the worst is a recursive listing), it lists names and metadata only, never contents, and the account already holds `zfs` |
 
-Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` (also `iostat -En` for the Disks of an illumos host), `lsblk` (the Disks of a Linux host), `showmount` and `stat` (the backup form's check reads the password file's mode and owner) only read.
+Other programs zfsctl runs on a host need no sudo: `getent`, `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` (also `iostat -En` for the Disks of an illumos host), `lsblk` (the Disks of a Linux host), `showmount`, `stat` (the backup form's check reads the password file's mode and owner), and `zoneadm` and `zonecfg` (an illumos host's zones, to find which one holds a dataset the snapshot browser opens) only read.
 
 > **Safety:** `zfs`, `zpool`, `bectl`, `restic` and `rclone` are powerful: whoever holds the account's ssh key effectively has root on that host. That is the price of managing it remotely; keep the key safe and the account locked to key logins.
 

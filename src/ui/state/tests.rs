@@ -10582,3 +10582,29 @@ fn f_before_the_host_has_been_probed_asks_to_wait_instead_of_guessing_the_operat
     assert!(app.browse_view.is_none() && app.pending_browse.is_empty(), "nothing is sent to a host of unknown type");
     assert!(app.status_message.as_deref().is_some_and(|m| m.contains("not been probed")), "{:?}", app.status_message);
 }
+
+#[test]
+fn slash_inside_a_changes_folder_starts_a_filter_and_letters_typed_are_text() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Enter);
+    assert!(app.changes_view.as_ref().unwrap().open_group.is_some());
+    app.handle_key(KeyCode::Char('/'));
+    assert!(app.changes_view.as_ref().unwrap().name_input.is_some());
+    for c in "qd?f1".chars() {
+        app.handle_key(KeyCode::Char(c));
+    }
+    assert!(!app.should_quit && app.modal.is_none(), "letters typed into the filter are text");
+    let view = app.changes_view.as_ref().unwrap();
+    assert_eq!(view.name_input.as_deref(), Some("qd?f1"));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.as_ref().unwrap().name_input.is_none(), "Esc closes the prompt, not the view");
+    assert!(app.changes_view.as_ref().unwrap().open_group.is_some());
+}
+
+#[test]
+fn slash_at_the_folder_list_of_the_changes_view_does_nothing() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('/'));
+    assert!(app.changes_view.as_ref().unwrap().name_input.is_none());
+    assert!(app.host_filter.is_empty() && !app.host_filter_editing, "and it is not taken for the Hosts filter");
+}
