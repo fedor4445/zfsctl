@@ -98,6 +98,7 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `c` | show what changed since the previous snapshot, by folder (read-only): `Enter` opens a folder, `/` inside a folder filters its entries by name as you type (`a|b` for either, `*` `?` wildcards), `[` and `]` set how deep the folders go, `H` holds the older snapshot, `Esc` goes back and closes |
 | `C` | the same, but compared with the live dataset: what has changed since this snapshot |
 | `f` | look inside the selected snapshot (read-only, names and metadata only; other hosts need the `browse` sudoers feature): `Enter` opens a folder, `←` goes up, `/` filters by name as you type (`a|b` for either, `*` `?` wildcards), `m` `s` `t` by modified date, size and type, `x` clears the filters, `Esc` closes |
+| `R` | in the snapshot browser, on a regular file: copy it back next to the original under a new name (asks for the name, then shows the exact command; `y` then `Enter` runs it; it never replaces a file; other hosts need the `restore` sudoers feature) |
 
 ## Disks
 

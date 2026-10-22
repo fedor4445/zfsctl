@@ -1,7 +1,7 @@
 total 1064
--rw-r--r-- 1 root root       3444 1688578959 adduser.conf
-drwxr-xr-x 2 root root       4096 1783206239 alternatives
-lrwxrwxrwx 1 root root         36 1783381233 localtime -> /usr/share/zoneinfo/America/New_York
-lrwxrwxrwx 1 root root         19 1770683162 mtab -> ../proc/self/mounts
-crw-r--r--  1 root root     10, 235 1791711741 autofs
-crw-rw----  1 root disk     10, 234 1791711741 btrfs-control
+-rw-r--r-- 1 root root       3444 1688578959 "adduser.conf"
+drwxr-xr-x 2 root root       4096 1783206239 "alternatives"
+lrwxrwxrwx 1 root root         36 1783381233 "localtime" -> "/usr/share/zoneinfo/America/New_York"
+lrwxrwxrwx 1 root root         19 1770683162 "mtab" -> "../proc/self/mounts"
+crw-r--r--  1 root root     10, 235 1791711741 "autofs"
+crw-rw----  1 root disk     10, 234 1791711741 "btrfs-control"

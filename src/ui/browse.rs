@@ -3,6 +3,7 @@ use crate::error::Result;
 use crate::ui::changes::group_digits;
 use crate::ui::theme::Theme;
 use crate::zfs::host_health::HostOs;
+use crate::zfs::snapshot_restore::RestoreSource;
 use crate::zfs::snapshot_browse::{explain, parse_date_range, parse_size_range, sort_rows, valid_component, EntryKind, Filter, KindFilter, Listing, Row as BrowseRow};
 use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -174,6 +175,11 @@ impl BrowseView {
         if row.entry.kind != EntryKind::Directory {
             return Ok(None);
         }
+        if row.entry.ambiguous {
+            let msg = "unusual name, not opened (a backslash in a name is ambiguous on this host)".to_string();
+            self.notice = Some(msg.clone());
+            return Err(msg);
+        }
         if !valid_component(&row.entry.name) {
             let msg = "unusual name, not opened (it has a control character or is too long)".to_string();
             self.notice = Some(msg.clone());
@@ -193,6 +199,25 @@ impl BrowseView {
         self.path.pop();
         self.restore = self.back.pop();
         Some(self.start_read(request))
+    }
+
+    /// The selected file as a restore source: the view is Ready, the row is a regular file whose name can be sent to the host
+    /// (not ambiguous, no control character), and the dataset's mountpoint is known. A zoned dataset is still returned (the
+    /// restore engine refuses it with its own sentence); `can_restore` is the stricter question the hints ask.
+    pub fn restore_source(&self) -> Option<RestoreSource> {
+        if !matches!(self.phase, Phase::Ready) || self.input.is_some() {
+            return None;
+        }
+        let row = self.rows.get(self.selected)?;
+        if row.entry.kind != EntryKind::File || row.entry.ambiguous || !valid_component(&row.entry.name) {
+            return None;
+        }
+        Some(RestoreSource { dataset: self.dataset.clone(), snapshot: self.name.clone(), mountpoint: self.mountpoint.clone()?, folder: self.path.clone(), entry: row.entry.clone(), zone: self.zone.clone(), os: self.os })
+    }
+
+    /// Whether `R` would open the restore form.
+    pub fn can_restore(&self) -> bool {
+        self.zone.is_none() && self.restore_source().is_some()
     }
 
     pub fn start_input(&mut self, kind: InputKind) {
@@ -470,7 +495,7 @@ mod tests {
     }
 
     fn entry(name: &str, kind: EntryKind, size: u64, time: i64) -> BrowseRow {
-        let entry = ListEntry { name: name.to_string(), kind, mode: "-rw-r--r--".to_string(), owner: "root".to_string(), group: "wheel".to_string(), size, time: Some(time), link_target: None };
+        let entry = ListEntry { name: name.to_string(), kind, mode: "-rw-r--r--".to_string(), owner: "root".to_string(), group: "wheel".to_string(), size, time: Some(time), link_target: None, ambiguous: false };
         BrowseRow { entry, changed: Some(time + 10), created: Some(time - 10) }
     }
 
@@ -768,5 +793,15 @@ mod tests {
         let shown = draw_to_rows(&view, 120, 16).join("\n");
         assert!(shown.contains("showing 1 of 4") && shown.contains("name matches"), "{shown}");
         assert!(shown.contains("| separates") || shown.contains("* ?"), "the prompt explains alternatives and wildcards: {shown}");
+    }
+
+    #[test]
+    fn enter_on_an_ambiguous_name_is_refused() {
+        let mut row = entry("back\\slash", EntryKind::Directory, 3, 1_700_000_000);
+        row.entry.ambiguous = true;
+        let mut view = ready(vec![row]);
+        let err = view.enter_selected(2).unwrap_err();
+        assert!(err.contains("unusual name") && err.contains("backslash"), "{err}");
+        assert!(matches!(view.phase, Phase::Ready));
     }
 }

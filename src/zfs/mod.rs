@@ -28,6 +28,7 @@ pub mod snapshot_detail;
 pub mod snapshot_browse;
 pub mod snapshot_changes;
 pub mod snapshot_diff;
+pub mod snapshot_restore;
 
 use crate::error::{AppError, Result};
 use crate::exec::{CommandOutput, CommandRunner};

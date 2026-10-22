@@ -68,6 +68,11 @@ impl App {
                     self.status_message = Some(line);
                     self.reload_check_files();
                 }
+                WorkerMsg::Restored(host, outcome) => {
+                    if host == self.selected_host {
+                        self.restored_note = Some(outcome);
+                    }
+                }
                 WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, &mut refreshes_needed),
             }
         }
@@ -614,6 +619,8 @@ impl App {
         if section == Section::Alerts {
             self.alerts_test_busy = false;
         }
+        // Taken first, so a note for a host that is not on screen can never show up under a later call.
+        let restored = if section == Section::Snapshots { self.restored_note.take() } else { None };
         // The Alerts calls are local to the hub: their result matters whichever host is selected now.
         if host != self.selected_host && !matches!(section, Section::Alerts | Section::Settings) {
             return;
@@ -624,14 +631,24 @@ impl App {
                 self.bootenv_pin = None;
             }
         }
-        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { None };
+        let (restored_ok, restored_err) = match restored {
+            Some(Ok(text)) => (Some(text), None),
+            Some(Err(text)) => (None, Some(text)),
+            None => (None, None),
+        };
+        // A restore creates one live file and changes no snapshot: the list needs no refresh, and a manual refresh would
+        // clear the "Restored ..." message the moment it returned.
+        let restored_a_file = restored_ok.is_some();
+        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { restored_ok };
         match result {
             Ok(()) => {
                 self.status_message = note;
                 if section == Section::Settings {
                     self.apply_saved_settings();
                 }
-                refreshes_needed.push(section);
+                if !restored_a_file {
+                    refreshes_needed.push(section);
+                }
                 if section == Section::Vdevs {
                     // A disk going offline/online/being replaced
                     // changes the parent pool's health too —
@@ -650,7 +667,8 @@ impl App {
                 }
             }
             Err(e) => {
-                let text = e.to_string();
+                // A restore's refusal is a plain sentence: shown without the error type's prefix.
+                let text = restored_err.unwrap_or_else(|| e.to_string());
                 // A key that loaded but whose mount failed has changed what the list shows.
                 if section == Section::Datasets && text.contains("key IS loaded") {
                     refreshes_needed.push(section);

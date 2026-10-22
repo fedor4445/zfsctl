@@ -282,6 +282,9 @@ pub struct ListEntry {
     /// Seconds since 1970 (UTC) of the time this listing printed.
     pub time: Option<i64>,
     pub link_target: Option<String>,
+    /// The name (or link target) could not be decoded with certainty: illumos prints a backslash unescaped, so a name that holds
+    /// one may be an escape sequence or literal text. Such a name is shown but never opened or restored.
+    pub ambiguous: bool,
 }
 
 impl ListEntry {
@@ -301,15 +304,96 @@ fn word(text: &str) -> Option<(&str, &str)> {
     Some((text.get(..end)?, text.get(end..)?))
 }
 
-/// Whether a line begins the way an `ls -l` entry does: a ten-character mode word (a type letter and nine permission characters,
-/// then perhaps `+`, `.` or `@`) followed by more text. A line that does not is taken for the continuation of a name with a
-/// newline in it.
-fn looks_like_entry_start(line: &str) -> bool {
-    let Some((mode, _)) = word(line) else { return false };
-    let mut chars = mode.chars();
-    let kind_ok = chars.next().is_some_and(|c| "-dlbcpsDP?".contains(c));
-    let perms: Vec<char> = chars.collect();
-    kind_ok && perms.len() >= 9 && perms.iter().take(9).all(|c| "rwxsStTlL-".contains(*c)) && perms.iter().skip(9).all(|c| "+.@".contains(*c)) && !line.trim_start().strip_prefix(mode).unwrap_or("").trim().is_empty()
+/// Decodes the C-style escapes of `ls -b` and `ls -Q`: `\\ \" \a \b \f \n \r \t \v \e` and up to three octal digits (a byte).
+/// Bytes that do not form UTF-8 become U+FFFD, so such a name can be shown but is never sent back. An unknown escape and a
+/// trailing backslash are kept as they are.
+fn decode_escapes(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        if b != b'\\' {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        let Some(&next) = bytes.get(i + 1) else {
+            out.push(b);
+            i += 1;
+            continue;
+        };
+        let simple = match next {
+            b'\\' => Some(b'\\'),
+            b'"' => Some(b'"'),
+            b'a' => Some(7),
+            b'b' => Some(8),
+            b'f' => Some(12),
+            b'n' => Some(b'\n'),
+            b'r' => Some(b'\r'),
+            b't' => Some(b'\t'),
+            b'v' => Some(11),
+            b'e' => Some(27),
+            _ => None,
+        };
+        if let Some(s) = simple {
+            out.push(s);
+            i += 2;
+        } else if next.is_ascii_digit() && next < b'8' {
+            let digits: Vec<u8> = bytes.get(i + 1..).unwrap_or_default().iter().take(3).take_while(|d| (b'0'..=b'7').contains(*d)).copied().collect();
+            let value = digits.iter().fold(0u32, |acc, d| acc * 8 + u32::from(d - b'0'));
+            if let Ok(byte) = u8::try_from(value) {
+                out.push(byte);
+                i += 1 + digits.len();
+            } else {
+                out.push(b);
+                i += 1;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The text between the opening double quote at the start of `text` and its closing quote (an escaped quote does not close it),
+/// and what follows the closing quote.
+fn split_quoted(text: &str) -> Option<(&str, &str)> {
+    let inner = text.strip_prefix('"')?;
+    let mut escaped = false;
+    for (i, c) in inner.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return Some((inner.get(..i)?, inner.get(i + 1..)?)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Name, symlink target and whether they are ambiguous, from the name part of an escaped `ls -l` line.
+fn split_name(os: HostOs, kind: EntryKind, text: &str) -> Option<(String, Option<String>, bool)> {
+    let is_link = kind == EntryKind::Symlink;
+    if os == HostOs::Linux {
+        // GNU `ls -Q`: "name", and for a symlink "name" -> "target".
+        let (name, rest) = split_quoted(text)?;
+        if !is_link {
+            return rest.is_empty().then(|| (decode_escapes(name), None, false));
+        }
+        let target = rest.strip_prefix(" -> ")?;
+        let (target, tail) = split_quoted(target)?;
+        return tail.is_empty().then(|| (decode_escapes(name), Some(decode_escapes(target)), false));
+    }
+    // `ls -b`: the name as it is, with escapes. A symlink target follows ` -> `; a link whose name or target holds that arrow too
+    // cannot be split with certainty.
+    let ambiguous_text = |s: &str| os == HostOs::Illumos && s.contains('\\');
+    if !is_link {
+        return Some((decode_escapes(text), None, ambiguous_text(text)));
+    }
+    let arrows = text.matches(" -> ").count();
+    let (name, target) = text.split_once(" -> ")?;
+    Some((decode_escapes(name), Some(decode_escapes(target)), arrows > 1 || ambiguous_text(name) || ambiguous_text(target)))
 }
 
 /// Parses one `ls -lA` line as printed by [`ls_args`]. `None` for the `total` line and anything that is not an entry.
@@ -347,11 +431,8 @@ pub fn parse_ls_line(os: HostOs, line: &str) -> Option<ListEntry> {
     if text.is_empty() {
         return None;
     }
-    let (name, link_target) = match text.split_once(" -> ") {
-        Some((name, target)) if kind == EntryKind::Symlink => (name.to_string(), Some(target.to_string())),
-        _ => (text.to_string(), None),
-    };
-    Some(ListEntry { name, kind, mode: mode.to_string(), owner: owner.to_string(), group: group.to_string(), size, time: Some(time), link_target })
+    let (name, link_target, ambiguous) = split_name(os, kind, text)?;
+    Some(ListEntry { name, kind, mode: mode.to_string(), owner: owner.to_string(), group: group.to_string(), size, time: Some(time), link_target, ambiguous })
 }
 
 /// Where a folder read stops: the most entries kept and the most seconds all of its listings may take together.
@@ -430,19 +511,8 @@ fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, de
                 }
                 Some(entry) => once.entries.push(entry),
                 None if line.trim().is_empty() => {}
-                // A name with a newline in it prints on several lines; the later ones do not parse, so they are glued back
-                // onto the entry before them (its name then has a control character and is never opened).
-                None => {
-                    if looks_like_entry_start(line) {
-                        once.unreadable += 1;
-                    } else if let Some(prev) = once.entries.last_mut() {
-                        let text = prev.link_target.as_mut().unwrap_or(&mut prev.name);
-                        text.push('\n');
-                        text.push_str(line);
-                    } else {
-                        once.unreadable += 1;
-                    }
-                }
+                // A line that is not an entry (the escaped listing never splits a name over lines) is counted, never glued on.
+                None => once.unreadable += 1,
             }
         });
         finish.store(true, Ordering::SeqCst);
@@ -467,6 +537,20 @@ pub fn read_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &B
     if !dir.starts_with('/') || !dir.contains("/.zfs/snapshot/") || dir.len() > MAX_PATH || dir.chars().any(char::is_control) {
         return Err(AppError::Config("refusing to list a folder that is not inside a snapshot".to_string()));
     }
+    read_listing(runner, os, dir, limits, cancel)
+}
+
+/// Reads one folder of the live tree (the restore's checks): the same listing as [`read_folder`], for an absolute path of at
+/// most 4096 bytes with no control character or U+FFFD and no empty, `.` or `..` step.
+pub fn read_live_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
+    let plain = dir.starts_with('/') && dir.len() <= MAX_PATH && !dir.chars().any(|c| c.is_control() || c == '\u{fffd}') && (dir == "/" || dir[1..].split('/').all(|s| !s.is_empty() && s != "." && s != ".."));
+    if !plain {
+        return Err(AppError::Config("refusing to list a folder whose path is not a plain absolute path".to_string()));
+    }
+    read_listing(runner, os, dir, limits, cancel)
+}
+
+fn read_listing(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
     let deadline = Instant::now() + Duration::from_secs(limits.max_seconds);
     let first_args = ls_args(os, Times::Modified, dir).ok_or_else(|| AppError::Config("no ls form for this host".to_string()))?;
     let first = list_once(runner, &first_args, limits.max_entries, deadline, os, cancel)?;
@@ -925,9 +1009,9 @@ mod tests {
             }
         }
         assert_eq!(used, 11);
-        assert_eq!(ls_args(HostOs::Illumos, Times::Changed, dir).unwrap(), ["-lAEc", "--", dir]);
-        assert_eq!(ls_args(HostOs::Linux, Times::Created, dir).unwrap(), ["-lA", "--time-style", "+%s", "--time", "birth", "--", dir]);
-        assert_eq!(ls_args(HostOs::Other, Times::Modified, dir).unwrap(), ["-lA", "-D", "%s", "--", dir]);
+        assert_eq!(ls_args(HostOs::Illumos, Times::Changed, dir).unwrap(), ["-lAbEc", "--", dir]);
+        assert_eq!(ls_args(HostOs::Linux, Times::Created, dir).unwrap(), ["-lAQ", "--time-style", "+%s", "--time", "birth", "--", dir]);
+        assert_eq!(ls_args(HostOs::Other, Times::Modified, dir).unwrap(), ["-lAb", "-D", "%s", "--", dir]);
         assert_eq!(times_for(HostOs::Illumos), [Times::Modified, Times::Changed]);
         assert_eq!(times_for(HostOs::Linux), [Times::Modified, Times::Changed, Times::Created]);
     }
@@ -974,12 +1058,71 @@ mod tests {
         assert_eq!((dev.kind, dev.size), (EntryKind::Character, 0));
     }
 
+    const FREEBSD_ESC: &str = include_str!("snapshot_browse_fixtures/freebsd_escaped.txt");
+    const LINUX_ESC: &str = include_str!("snapshot_browse_fixtures/linux_escaped.txt");
+    const ILLUMOS_ESC: &str = include_str!("snapshot_browse_fixtures/illumos_escaped.txt");
+
+    fn names_of(os: HostOs, text: &str) -> Vec<(String, bool)> {
+        parse_all(os, text).into_iter().map(|e| (e.name, e.ambiguous)).collect()
+    }
+
+    #[test]
+    fn escaped_names_decode_on_every_os() {
+        let n = |s: &str, amb: bool| (s.to_string(), amb);
+        // FreeBSD and GNU escape the backslash itself, so nothing is ambiguous there.
+        let clear = vec![n("arrow -> name", false), n("back\\slash", false), n("caf\u{fffd}", false), n("lnk", false), n("nl\nx", false), n("quo\"te", false), n("sp ace", false), n("tab\ttab", false)];
+        assert_eq!(names_of(HostOs::FreeBsd, FREEBSD_ESC), clear);
+        assert_eq!(names_of(HostOs::Linux, LINUX_ESC), clear);
+        // illumos prints a backslash single, so every name that holds one (a real backslash or an octal escape) is ambiguous.
+        let illumos = vec![n("arrow -> name", false), n("back\\slash", true), n("caf\u{fffd}", true), n("lnk", false), n("nl\nx", true), n("quo\"te", false), n("sp ace", false), n("tab\ttab", true)];
+        assert_eq!(names_of(HostOs::Illumos, ILLUMOS_ESC), illumos);
+    }
+
+    #[test]
+    fn a_symlink_with_a_spaced_target_decodes_on_every_os() {
+        for (os, text) in [(HostOs::FreeBsd, FREEBSD_ESC), (HostOs::Linux, LINUX_ESC), (HostOs::Illumos, ILLUMOS_ESC)] {
+            let link = parse_all(os, text).into_iter().find(|e| e.name == "lnk").unwrap();
+            assert_eq!((link.kind, link.link_target.as_deref()), (EntryKind::Symlink, Some("target with space")), "{os:?}");
+        }
+    }
+
+    #[test]
+    fn a_forged_entry_inside_a_name_stays_one_entry_and_cannot_be_opened() {
+        // The hostile name is: first line "evil", then a line that looks like another entry.
+        let forged = [
+            (HostOs::FreeBsd, "-rw-r--r--  1 u g 1 100 evil\\n-rw-r--r-- 1 u g 5 100 fake"),
+            (HostOs::Linux, "-rw-r--r-- 1 u g 1 100 \"evil\\n-rw-r--r-- 1 u g 5 100 fake\""),
+            (HostOs::Illumos, "-rw-r--r--   1 u g 1 2026-10-21 17:07:21.3 -0400 evil\\012-rw-r--r-- 1 u g 5 100 fake"),
+        ];
+        for (os, line) in forged {
+            let all = parse_all(os, line);
+            assert_eq!(all.len(), 1, "{os:?}: {all:?}");
+            assert!(!valid_component(&all[0].name), "{os:?}: {:?}", all[0].name);
+        }
+    }
+
+    #[test]
+    fn gnu_quoting_handles_arrows_and_quotes_inside_names() {
+        let e = parse_ls_line(HostOs::Linux, "lrwxrwxrwx 1 u g 3 100 \"a -> b\" -> \"c\\\"d\"").unwrap();
+        assert_eq!((e.name.as_str(), e.link_target.as_deref()), ("a -> b", Some("c\"d")));
+        assert!(parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 3 100 unquoted-name").is_none(), "a GNU name that is not quoted is not trusted");
+        assert!(parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 3 100 \"unterminated").is_none());
+    }
+
+    #[test]
+    fn octal_escapes_are_bytes_and_bad_escapes_are_kept_as_text() {
+        assert_eq!(decode_escapes("a\\101b\\60"), "aAb0");
+        assert_eq!(decode_escapes("\\\\x\\q\\"), "\\x\\q\\", "unknown escapes and a trailing backslash are kept");
+        assert_eq!(decode_escapes("\\777"), "\\777", "an octal value above 255 is not a byte");
+        assert_eq!(decode_escapes("\\303\\251"), "é", "two octal bytes that form UTF-8 decode to the character");
+    }
+
     #[test]
     fn a_name_with_spaces_and_an_arrow_in_it() {
         let e = parse_ls_line(HostOs::FreeBsd, "-rw-r--r--  1 u g 5 1700000000 a -> b -> c").unwrap();
         assert_eq!((e.kind, e.name.as_str(), e.link_target), (EntryKind::File, "a -> b -> c", None), "only a symlink is split at the arrow");
-        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000  two  spaces.txt").unwrap();
-        assert_eq!(e.name, " two  spaces.txt", "exactly one separating space is dropped");
+        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000 \" two  spaces.txt\"").unwrap();
+        assert_eq!(e.name, " two  spaces.txt", "spaces inside the quotes belong to the name");
         let e = parse_ls_line(HostOs::FreeBsd, "lrwxr-xr-x  1 u g 3 1700000000 x y -> /etc/z w").unwrap();
         assert_eq!((e.name.as_str(), e.link_target.as_deref()), ("x y", Some("/etc/z w")));
     }
@@ -995,13 +1138,13 @@ mod tests {
 
     #[test]
     fn a_hostile_name_is_kept_as_text() {
-        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000 \x1b[2Jevil\u{7}").unwrap();
+        let e = parse_ls_line(HostOs::Linux, "-rw-r--r-- 1 u g 5 1700000000 \"\x1b[2Jevil\u{7}\"").unwrap();
         assert_eq!(e.name, "\x1b[2Jevil\u{7}");
     }
 
     #[test]
     fn folder_entries_is_size_minus_two() {
-        let mk = |kind, size| ListEntry { name: "x".into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time: None, link_target: None };
+        let mk = |kind, size| ListEntry { name: "x".into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time: None, link_target: None, ambiguous: false };
         assert_eq!(mk(EntryKind::Directory, 5).folder_entries(), Some(3));
         assert_eq!(mk(EntryKind::Directory, 2).folder_entries(), Some(0));
         assert_eq!(mk(EntryKind::Directory, 0).folder_entries(), Some(0));
@@ -1072,9 +1215,9 @@ mod tests {
         assert_eq!(times, [("a", Some(100), Some(200), Some(300)), ("b", Some(100), Some(200), Some(300))]);
         assert!(l.has_created && !l.truncated && l.unreadable == 0);
         let spawned = r.spawned();
-        assert_eq!(spawned[0], ["-lA", "-D", "%s", "--", DIR]);
-        assert_eq!(spawned[1], ["-lAc", "-D", "%s", "--", DIR]);
-        assert_eq!(spawned[2], ["-lAU", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[0], ["-lAb", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[1], ["-lAbc", "-D", "%s", "--", DIR]);
+        assert_eq!(spawned[2], ["-lAbU", "-D", "%s", "--", DIR]);
     }
 
     #[test]
@@ -1085,7 +1228,7 @@ mod tests {
         assert!(!l.has_created);
         assert_eq!((l.entries[0].created, l.entries[0].changed), (None, Some(1_792_488_330)));
         assert_eq!(r.spawned().len(), 2);
-        assert_eq!(r.spawned()[1], ["-lAEc", "--", DIR]);
+        assert_eq!(r.spawned()[1], ["-lAbEc", "--", DIR]);
     }
 
     #[test]
@@ -1169,15 +1312,25 @@ mod tests {
     }
 
     #[test]
-    fn a_name_with_a_newline_is_rebuilt_from_its_continuation_line_and_cannot_be_opened() {
-        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'drwxr-xr-x 2 u g 5 100 dir'; echo 'newline'; echo '-rw-r--r-- 1 u g 5 100 last'";
+    fn a_stray_line_is_counted_not_glued_onto_the_entry_before_it() {
+        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'newline'; echo '-rw-r--r-- 1 u g 5 100 last'";
         let r = LsRunner::new(&[script, script]);
-        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits { max_entries: 20_000, max_seconds: 30 }, &AtomicBool::new(false)).unwrap();
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
+        let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
+        assert_eq!(names, ["first", "last"], "no entry is altered by the line next to it");
+        assert_eq!(l.unreadable, 1);
+    }
+
+    #[test]
+    fn a_name_with_a_newline_arrives_escaped_as_one_entry_that_cannot_be_opened() {
+        let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'drwxr-xr-x 2 u g 5 100 dir\\nnewline'; echo '-rw-r--r-- 1 u g 5 100 last'";
+        let r = LsRunner::new(&[script, script]);
+        let l = read_folder(&r, HostOs::FreeBsd, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
         let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
         assert_eq!(names, ["first", "dir\nnewline", "last"]);
         assert_eq!(l.unreadable, 0);
         assert!(!valid_component(&l.entries[1].entry.name), "so the folder is never opened under a wrong name");
-        assert_eq!(l.entries[1].changed, Some(100), "the later listings glue the same way, so the times still match");
+        assert_eq!(l.entries[1].changed, Some(100), "the later listings agree, so the times still match");
     }
 
     #[test]
@@ -1189,16 +1342,6 @@ mod tests {
         let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();
         assert_eq!(names, ["first", "third"], "the real entry is not welded onto its neighbour's name");
         assert_eq!(l.unreadable, 1);
-    }
-
-    #[test]
-    fn only_a_line_that_cannot_begin_an_entry_is_a_continuation() {
-        for continuation in ["newline", "name", "x y z", "  indented", "drwx", "-rw-r--r", "total"] {
-            assert!(!looks_like_entry_start(continuation), "{continuation:?}");
-        }
-        for start in ["-rw-r--r-- 1 u g 5 100 f", "drwxr-xr-x+ 2 u g 5 100 d", "lrwxrwxrwx 1 u g 5 100 l -> x", "crw-rw---- 1 root disk 10, 234 100 c", "-rwsr-xr-t. 1 u g 5 100 s"] {
-            assert!(looks_like_entry_start(start), "{start:?}");
-        }
     }
 
     #[test]
@@ -1242,7 +1385,7 @@ mod tests {
     }
 
     fn row(name: &str, kind: EntryKind, size: u64, time: Option<i64>) -> Row {
-        Row { entry: ListEntry { name: name.into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time, link_target: None }, changed: None, created: None }
+        Row { entry: ListEntry { name: name.into(), kind, mode: String::new(), owner: String::new(), group: String::new(), size, time, link_target: None, ambiguous: false }, changed: None, created: None }
     }
 
     #[test]

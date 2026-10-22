@@ -15,6 +15,7 @@
 - **No decrypted sends.** A replication of an encrypted dataset needs the explicit Raw option (it then stays encrypted, and locked, on the destination), and a cloud mirror of one is always refused; both are refused when they run (and already when you save it, if that host's Datasets list has been loaded), instead of sending the data in the clear; a restic backup of a locked dataset fails with a clear message.
 - **Narrow privileges.** The programs allowed on a remote host are named in its sudoers entry; `zfsctl check-host` warns about `TOO BROAD`.
 - **Browsing only reads names.** The snapshot browser (`f`) lists names and metadata. It never opens a file, never opens a symlink itself, and needs a separate, off-by-default sudoers entry on other hosts; chapter 10 describes its limits.
+- **A restore never overwrites.** Getting a file back from a snapshot (`R`) makes a new copy under a new name, after a two-key confirm that shows the exact command. It refuses a name that is taken, a folder on the way that is a symlink, and anything but a regular file, and it checks the result; chapter 10 lists its limits.
 - **No secrets stored.** Jobs hold the path of a password file, not the password; the repository string may not contain credentials.
 - **Your own files stay yours.** `config.toml` saves change only their own section; the Samba block is the only part of `smb4.conf` zfsctl touches.
 - **No reboots.** zfsctl never reboots a host.

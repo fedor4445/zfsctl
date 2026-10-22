@@ -1,0 +1,8 @@
+-rw-r--r--  1 fb wheel  1 1792631240 arrow -> name
+-rw-r--r--  1 fb wheel  1 1792631240 back\\slash
+-rw-r--r--  1 fb wheel  1 1792631240 caf\351
+lrwxr-xr-x  1 fb wheel 17 1792631240 lnk -> target with space
+-rw-r--r--  1 fb wheel  1 1792631240 nl\nx
+-rw-r--r--  1 fb wheel  1 1792631240 quo\"te
+-rw-r--r--  1 fb wheel  1 1792631240 sp ace
+-rw-r--r--  1 fb wheel  1 1792631240 tab\ttab
