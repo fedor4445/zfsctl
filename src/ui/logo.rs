@@ -53,52 +53,21 @@ pub fn wordmark() -> Vec<String> {
     }).collect()
 }
 
-/// The sidebar's compact mark: `zfsctl` and its underscore cursor in a 3-wide, 4-dot-tall grid, two lines of `COMPACT_WIDTH` columns.
-pub const COMPACT_WIDTH: usize = 22;
-
-/// Dots of the compact letters, top to bottom (`f` and `t` are two columns wide, `l` one).
-const COMPACT_GLYPHS: [&[&str]; 6] = [
-    &["111", "001", "010", "111"],
-    &["01", "11", "10", "10"],
-    &["011", "110", "001", "110"],
-    &["011", "100", "100", "011"],
-    &["01", "11", "01", "01"],
-    &["1", "1", "1", "1"],
-];
-
-/// The cursor: two dots on the bottom row, after a blank column.
-const COMPACT_CURSOR: usize = 2;
+/// The sidebar's compact mark: the same drawing as the wordmark above, with its x-height and its underscore cursor, in braille
+/// (two dots across, four down in each character), so it is half as wide and a third of the height: 21 columns, two lines.
+pub const COMPACT_WIDTH: usize = 21;
 
 pub fn compact() -> Vec<String> {
-    const SMALL_ROWS: usize = 4;
-    let mut grid = vec![vec![false; COMPACT_WIDTH]; SMALL_ROWS];
-    let mut x = 0;
-    for glyph in COMPACT_GLYPHS {
-        let width = glyph.first().map_or(0, |l| l.len());
-        for (r, line) in glyph.iter().enumerate() {
-            for (c, dot) in line.bytes().enumerate() {
-                if let Some(cell) = grid.get_mut(r).and_then(|row| row.get_mut(x + c)) {
-                    *cell = dot == b'1';
-                }
-            }
-        }
-        x += width + 1;
-    }
-    if let Some(row) = grid.get_mut(SMALL_ROWS - 1) {
-        row.iter_mut().skip(x).take(COMPACT_CURSOR).for_each(|cell| *cell = true);
-    }
-    (0..SMALL_ROWS)
-        .step_by(2)
-        .map(|top| {
+    let grid = dots();
+    let on = |r: usize, c: usize| grid.get(r).and_then(|row| row.get(c)).copied().unwrap_or(false);
+    // Braille dots 1-8: the left column top to bottom is bits 0, 1, 2 and 6, the right one 3, 4, 5 and 7.
+    const BIT: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+    (0..2)
+        .map(|line| {
             (0..COMPACT_WIDTH)
-                .map(|c| {
-                    let at = |r: usize| grid.get(r).and_then(|row| row.get(c)).copied().unwrap_or(false);
-                    match (at(top), at(top + 1)) {
-                        (true, true) => '█',
-                        (true, false) => '▀',
-                        (false, true) => '▄',
-                        (false, false) => ' ',
-                    }
+                .map(|cell| {
+                    let bits: u32 = BIT.iter().enumerate().flat_map(|(dr, pair)| pair.iter().enumerate().map(move |(dc, bit)| (dr, dc, *bit))).filter(|(dr, dc, _)| on(line * 4 + dr, cell * 2 + dc)).map(|(_, _, bit)| bit).sum();
+                    char::from_u32(0x2800 + bits).unwrap_or(' ')
                 })
                 .collect()
         })
@@ -142,16 +111,17 @@ mod tests {
     }
 
     #[test]
-    fn the_compact_mark_is_two_lines_that_fit_the_sidebar_with_its_cursor() {
+    fn the_compact_mark_is_the_wordmark_in_braille_two_lines_of_21_columns() {
         let lines = compact();
         assert_eq!(lines.len(), 2);
-        assert!(lines.iter().all(|l| l.chars().count() == COMPACT_WIDTH && is_wordmark_line(l)), "{lines:?}");
-        assert!(lines[0].starts_with("▀▀█"), "the z: a bar on top, its diagonal starting under the right end: {lines:?}");
-        let at = |line: &String, i: usize| line.chars().nth(i);
-        // the l is a one-column bar, four dots tall, and the cursor is two dots on the bottom row after a blank column
-        assert_eq!((at(&lines[0], 18), at(&lines[1], 18)), (Some('█'), Some('█')), "{lines:?}");
-        assert_eq!((at(&lines[1], 19), at(&lines[1], 20), at(&lines[1], 21)), (Some(' '), Some('▄'), Some('▄')), "{lines:?}");
-        assert!(lines[0].chars().skip(19).all(|c| c == ' '), "nothing of the cursor above the bottom row: {lines:?}");
+        assert!(lines.iter().all(|l| l.chars().count() == COMPACT_WIDTH && l.chars().all(|c| ('\u{2800}'..='\u{28ff}').contains(&c))), "{lines:?}");
+        // the underscore cursor is the bottom dot row of the last three cells: two full pairs and a single dot
+        assert_eq!(lines[1].chars().skip(18).collect::<String>(), "⠤⠤⠄", "{lines:?}");
+        // the letters keep the wordmark's x-height: the first line (dot rows 0-3) has the f, t and l ascenders over empty z, s, c
+        let first: Vec<char> = lines[0].chars().collect();
+        assert_eq!((first[0], first[1], first[2]), ('⠤', '⢤', '⠄'), "the z starts at dot row 2 {lines:?}");
+        // every one of the six letters and the cursor is there: each of the 21 cells of the second line outside the blank gaps has a dot
+        assert!(lines[1].chars().filter(|c| *c != '\u{2800}').count() >= 15, "{lines:?}");
     }
 
     #[test]
