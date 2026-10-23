@@ -53,27 +53,6 @@ pub fn wordmark() -> Vec<String> {
     }).collect()
 }
 
-/// The sidebar's compact mark: the same drawing as the wordmark above, with its x-height and its underscore cursor, in braille
-/// (two dots across, four down in each character), so it is half as wide and a third of the height: 21 columns, two lines.
-pub const COMPACT_WIDTH: usize = 21;
-
-pub fn compact() -> Vec<String> {
-    let grid = dots();
-    let on = |r: usize, c: usize| grid.get(r).and_then(|row| row.get(c)).copied().unwrap_or(false);
-    // Braille dots 1-8: the left column top to bottom is bits 0, 1, 2 and 6, the right one 3, 4, 5 and 7.
-    const BIT: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
-    (0..2)
-        .map(|line| {
-            (0..COMPACT_WIDTH)
-                .map(|cell| {
-                    let bits: u32 = BIT.iter().enumerate().flat_map(|(dr, pair)| pair.iter().enumerate().map(move |(dc, bit)| (dr, dc, *bit))).filter(|(dr, dc, _)| on(line * 4 + dr, cell * 2 + dc)).map(|(_, _, bit)| bit).sum();
-                    char::from_u32(0x2800 + bits).unwrap_or(' ')
-                })
-                .collect()
-        })
-        .collect()
-}
-
 /// Whether `line` is a row of the drawing (blocks and spaces, at least one block), so the pop-up can colour it.
 pub fn is_wordmark_line(line: &str) -> bool {
     line.chars().any(|c| matches!(c, '█' | '▀' | '▄')) && line.chars().all(|c| matches!(c, '█' | '▀' | '▄' | ' '))
@@ -108,20 +87,6 @@ mod tests {
         let first: Vec<char> = lines[0].chars().collect();
         assert!(first.iter().take(6).all(|c| *c == ' ') && first.iter().skip(12).take(6).all(|c| *c == ' '), "{first:?}");
         assert!(first.iter().skip(6).take(6).any(|c| *c != ' '), "the f has an ascender");
-    }
-
-    #[test]
-    fn the_compact_mark_is_the_wordmark_in_braille_two_lines_of_21_columns() {
-        let lines = compact();
-        assert_eq!(lines.len(), 2);
-        assert!(lines.iter().all(|l| l.chars().count() == COMPACT_WIDTH && l.chars().all(|c| ('\u{2800}'..='\u{28ff}').contains(&c))), "{lines:?}");
-        // the underscore cursor is the bottom dot row of the last three cells: two full pairs and a single dot
-        assert_eq!(lines[1].chars().skip(18).collect::<String>(), "⠤⠤⠄", "{lines:?}");
-        // the letters keep the wordmark's x-height: the first line (dot rows 0-3) has the f, t and l ascenders over empty z, s, c
-        let first: Vec<char> = lines[0].chars().collect();
-        assert_eq!((first[0], first[1], first[2]), ('⠤', '⢤', '⠄'), "the z starts at dot row 2 {lines:?}");
-        // every one of the six letters and the cursor is there: each of the 21 cells of the second line outside the blank gaps has a dot
-        assert!(lines[1].chars().filter(|c| *c != '\u{2800}').count() >= 15, "{lines:?}");
     }
 
     #[test]
