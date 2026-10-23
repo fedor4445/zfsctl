@@ -1121,7 +1121,10 @@ impl App {
                 };
                 let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], chrono::Utc::now(), deadline);
                 let _ = storage.join();
-                done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe(&host, checks))
+                // Read after the storage pass has joined, so the roles are this check's.
+                let storage_file = crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE));
+                let role_of = |h: &str, dev: &str| crate::daemon::storage_check::role_of(&storage_file, h, dev, None);
+                done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe_with(&host, checks, &role_of))
             }))
             .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
             let _ = tx.send(WorkerMsg::HostChecked(line));

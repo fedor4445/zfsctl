@@ -170,6 +170,13 @@ pub fn pinned_forms(entry: &Entry, os: HostOs) -> Vec<&'static [&'static str]> {
     pinned.iter().skip(first).take(count).copied().collect()
 }
 
+/// Whole `cp` argument lists that `restore` must never be able to run: they overwrite (`-f`) or copy a tree (`-R`). `check-host`
+/// asks sudo about each one; an answer of yes means the entry is broader than the pinned form. They are whole lists, not extra
+/// arguments after the pinned form, because that form ends in wildcards and would swallow anything appended to it.
+pub fn cp_refused_forms() -> Vec<Vec<&'static str>> {
+    vec![vec!["-p", "-f", "--", "/zfsctl-probe-a", "/zfsctl-probe-b"], vec!["-f", "-R", "--", "/zfsctl-probe-a", "/zfsctl-probe-b"]]
+}
+
 pub fn lookup(name: &str) -> Option<&'static Entry> {
     ENTRIES.iter().find(|e| e.name == name)
 }
