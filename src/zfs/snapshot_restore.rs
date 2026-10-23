@@ -223,6 +223,32 @@ fn check_normalization(runner: &dyn CommandRunner, src: &RestoreSource, dest_nam
     Ok(())
 }
 
+/// Refuses a destination folder that a child dataset is mounted over: the file would land in that dataset, not in the one the
+/// snapshot belongs to (it was created after the snapshot, or the folder moved into it). Fails closed when the children cannot be read.
+fn check_not_in_child_dataset(runner: &dyn CommandRunner, src: &RestoreSource, dest_folder: &str) -> Result<()> {
+    let unreadable = || AppError::Config("could not read the dataset's child datasets, so the restore is refused".to_string());
+    let out = runner.run("zfs", &["list", "-H", "-r", "-t", "filesystem", "-o", "name,mounted,mountpoint", &src.dataset]).map_err(|_| unreadable())?;
+    if out.status != 0 {
+        return Err(unreadable());
+    }
+    for line in out.stdout.lines().filter(|l| !l.is_empty()) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [name, mounted, mountpoint] = fields[..] else { return Err(unreadable()) };
+        if name == src.dataset || mounted != "yes" {
+            continue;
+        }
+        let under = |m: &str| m != "/" && m.starts_with('/') && (dest_folder == m || dest_folder.starts_with(&format!("{m}/")));
+        if under(mountpoint) {
+            return Err(AppError::Config(format!(
+                "the destination folder is now inside the child dataset {}, so the copy would not land in {}: restore from that dataset's own snapshot instead",
+                crate::display_text::sanitise_for_display(name),
+                crate::display_text::sanitise_for_display(&src.dataset)
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Checks, copies and verifies one restore. Nothing is retried, deleted or repaired: a failed check stops before `cp`, a failed
 /// verify is reported as it is. `cp` exits 0 when a no-clobber copy skips, so the destination is checked absent before and
 /// present, regular, of the planned size and mode after; the exit status alone is never trusted.
@@ -254,6 +280,7 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
     let dest_folder = chain.last().cloned().unwrap_or_else(|| "/".to_string());
     let steps: Vec<&str> = src.folder.iter().map(String::as_str).collect();
     let source_folder = snapshot_dir(&src.mountpoint, &src.snapshot, &steps)?;
+    check_not_in_child_dataset(runner, src, &dest_folder)?;
 
     // 1. The source is still a regular file of the planned size in the snapshot.
     check_cancel(cancel)?;
@@ -506,6 +533,8 @@ mod tests {
         fail_status: i32,
         /// What `zfs get normalization` answers (`None`: the command fails).
         normalization: Option<String>,
+    /// What `zfs list -r` answers for the dataset's children, as (name, mounted, mountpoint); `None`: the command fails.
+        children: Option<Vec<(String, String, String)>>,
     }
 
     impl Fake {
@@ -517,7 +546,7 @@ mod tests {
             t.insert("/tank/data/.zfs/snapshot/daily-1/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
             t.insert("/tank/data".into(), vec![ent("drwxr-xr-x", 2, "docs")]);
             t.insert("/tank/data/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
-            Self { os, tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false, fail_status: 1, normalization: Some("none".into()) }
+            Self { os, tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false, fail_status: 1, normalization: Some("none".into()), children: Some(vec![]) }
         }
         fn set(&self, dir: &str, lines: Vec<Ent>) {
             self.tables.lock().unwrap().insert(dir.into(), lines);
@@ -542,6 +571,17 @@ mod tests {
 
     impl CommandRunner for Fake {
         fn run(&self, cmd: &str, args: &[&str]) -> Result<CommandOutput> {
+            if cmd == "zfs" && args.first() == Some(&"list") {
+                assert_eq!(args, ["list", "-H", "-r", "-t", "filesystem", "-o", "name,mounted,mountpoint", "tank/data"]);
+                return Ok(match &self.children {
+                    Some(rows) => {
+                        let mut stdout = "tank/data\tyes\t/tank/data\n".to_string();
+                        stdout.extend(rows.iter().map(|(n, m, p)| format!("{n}\t{m}\t{p}\n")));
+                        CommandOutput { stdout, stderr: String::new(), status: 0 }
+                    }
+                    None => CommandOutput { stdout: String::new(), stderr: "cannot open".into(), status: 1 },
+                });
+            }
             if cmd == "zfs" {
                 self.listed.lock().unwrap().push("<zfs get>".into());
                 assert_eq!(args, ["get", "-H", "-o", "value", "normalization", "tank/data"]);
@@ -1006,6 +1046,33 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
         assert!(go(&ok).is_ok());
         let fake = Fake::new(CpMode::Copy);
         assert!(run_restore(&fake, "hub", &plan, &src, &AtomicBool::new(false)).is_ok());
+    }
+
+    #[test]
+    fn a_destination_folder_inside_a_child_dataset_refuses_the_restore() {
+        for (mountpoint, mounted) in [("/tank/data/docs", "yes"), ("/tank/data", "yes")] {
+            let mut fake = Fake::new(CpMode::Copy);
+            fake.children = Some(vec![("tank/data/docs".into(), mounted.into(), mountpoint.into())]);
+            assert_eq!(msg(go(&fake)), "the destination folder is now inside the child dataset tank/data/docs, so the copy would not land in tank/data: restore from that dataset's own snapshot instead", "{mountpoint}");
+            assert!(fake.cps.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_child_dataset_elsewhere_or_unmounted_does_not_stop_a_restore() {
+        for (mountpoint, mounted) in [("/tank/data/docs2", "yes"), ("/tank/data/other", "yes"), ("/tank/data/docs", "no"), ("none", "no"), ("/", "yes")] {
+            let mut fake = Fake::new(CpMode::Copy);
+            fake.children = Some(vec![("tank/data/x".into(), mounted.into(), mountpoint.into())]);
+            assert!(go(&fake).is_ok(), "{mountpoint} {mounted}");
+        }
+    }
+
+    #[test]
+    fn unreadable_child_datasets_refuse_the_restore() {
+        let mut fake = Fake::new(CpMode::Copy);
+        fake.children = None;
+        assert_eq!(msg(go(&fake)), "could not read the dataset's child datasets, so the restore is refused");
+        assert!(fake.cps.lock().unwrap().is_empty());
     }
 
     #[test]

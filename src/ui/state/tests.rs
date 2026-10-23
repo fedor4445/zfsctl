@@ -10801,8 +10801,7 @@ fn after_a_restore_the_status_names_the_new_file_and_no_browse_read_is_queued_or
     app.handle_key(KeyCode::Enter);
     let (request, cancel) = (app.browse_view.as_ref().unwrap().request, std::sync::Arc::clone(&app.browse_view.as_ref().unwrap().cancel));
     app.pending_browse.clear();
-    app.tx.send(WorkerMsg::Restored(0, Ok("Restored /tank/data/pics/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()))).unwrap();
-    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /tank/data/pics/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()), Ok(()))).unwrap();
     app.drain_worker_messages();
     assert!(app.pending_browse.is_empty(), "the snapshot folder cannot show the live file, so nothing is re-read");
     assert_eq!(app.browse_view.as_ref().unwrap().request, request);
@@ -10815,24 +10814,20 @@ fn a_failed_restore_shows_the_engines_sentence_without_the_error_prefix_and_no_r
     let mut app = browsing_on_file();
     app.pending_browse.clear();
     let sentence = "that name already exists in the folder: nothing was copied";
-    app.tx.send(WorkerMsg::Restored(0, Err(sentence.to_string()))).unwrap();
-    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Err(crate::error::AppError::Config(sentence.into())))).unwrap();
+    app.tx.send(WorkerMsg::RestoreDone(0, Err(sentence.to_string()), Err(crate::error::AppError::Config(sentence.into())))).unwrap();
     app.drain_worker_messages();
     assert!(app.pending_browse.is_empty());
     assert_eq!(app.status_message.as_deref(), Some(sentence));
-    assert!(app.restored_note.is_none());
 }
 
 #[test]
 fn a_restore_note_for_another_host_does_not_show_up_on_a_later_hold() {
     let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-    app.tx.send(WorkerMsg::Restored(0, Ok("Restored /x (1 bytes, m, owner o)".to_string()))).unwrap();
-    app.drain_worker_messages();
     app.selected_host = 1;
-    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /x (1 bytes, m, owner o)".to_string()), Ok(()))).unwrap();
     app.drain_worker_messages();
-    assert!(app.restored_note.is_none(), "taken even though the host is not the one on screen");
+    assert!(app.status_message.as_deref().is_none_or(|m| !m.contains("Restored")), "a restore on another host says nothing here");
     app.tx.send(WorkerMsg::MutationDone(1, Section::Snapshots, Ok(()))).unwrap();
     app.drain_worker_messages();
     assert!(app.status_message.as_deref().is_none_or(|m| !m.contains("Restored")), "{:?}", app.status_message);
@@ -10885,12 +10880,38 @@ fn a_name_with_a_lookalike_slash_or_odd_whitespace_gets_a_check_it_note() {
 }
 
 #[test]
+fn a_restore_note_belongs_to_its_own_result_and_never_to_a_hold_that_finishes_first() {
+    let mut app = browsing_app();
+    // The hold finishes while the restore is still running: it must not show or take the restore's note.
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    assert!(app.drain_worker_messages().contains(&Section::Snapshots));
+    assert!(app.status_message.as_deref().is_none_or(|m| !m.contains("Restored")), "{:?}", app.status_message);
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /tank/data/x (5 bytes, m, owner o)".to_string()), Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.status_message.as_deref(), Some("Restored /tank/data/x (5 bytes, m, owner o)"));
+}
+
+#[test]
+fn a_direction_mark_in_the_source_name_gets_the_check_it_note_too() {
+    let plan = |source: &str| crate::zfs::snapshot_restore::RestorePlan {
+        source: source.into(),
+        destination: "/tank/data/copy.txt".into(),
+        dest_folder: "/tank/data".into(),
+        dest_name: "copy.txt".into(),
+        command: vec!["-p".into(), "-n".into(), "--".into(), source.into(), "/tank/data/copy.txt".into()],
+        size: 5,
+        mode: "-rw-r--r--".into(),
+    };
+    assert!(!restore_prompt(&plan("/tank/data/.zfs/snapshot/s2/gpfdp.txt")).contains("Note:"));
+    assert!(restore_prompt(&plan("/tank/data/.zfs/snapshot/s2/gp\u{202E}fdp.txt")).contains("Note: this name contains unusual characters"));
+}
+
+#[test]
 fn a_successful_restore_does_not_refresh_the_snapshot_list_so_its_message_is_not_wiped() {
     // Found on the hub: the refresh that follows a mutation is a manual one and clears the status line, so the
     // "Restored ..." message vanished at once. A restore changes no snapshot, so nothing needs refreshing.
     let mut app = browsing_app();
-    app.tx.send(WorkerMsg::Restored(0, Ok("Restored /tank/data/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()))).unwrap();
-    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /tank/data/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()), Ok(()))).unwrap();
     let refreshes = app.drain_worker_messages();
     assert!(!refreshes.contains(&Section::Snapshots), "{refreshes:?}");
     assert!(app.status_message.as_deref().is_some_and(|m| m.starts_with("Restored ")));

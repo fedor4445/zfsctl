@@ -68,12 +68,8 @@ impl App {
                     self.status_message = Some(line);
                     self.reload_check_files();
                 }
-                WorkerMsg::Restored(host, outcome) => {
-                    if host == self.selected_host {
-                        self.restored_note = Some(outcome);
-                    }
-                }
-                WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, &mut refreshes_needed),
+                WorkerMsg::RestoreDone(host, outcome, result) => self.on_mutation_done(host, Section::Snapshots, result, Some(outcome), &mut refreshes_needed),
+                WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, None, &mut refreshes_needed),
             }
         }
         refreshes_needed
@@ -615,12 +611,10 @@ impl App {
         }
     }
 
-    fn on_mutation_done(&mut self, host: usize, section: Section, result: Result<()>, refreshes_needed: &mut Vec<Section>) {
+    fn on_mutation_done(&mut self, host: usize, section: Section, result: Result<()>, restored: Option<std::result::Result<String, String>>, refreshes_needed: &mut Vec<Section>) {
         if section == Section::Alerts {
             self.alerts_test_busy = false;
         }
-        // Taken first, so a note for a host that is not on screen can never show up under a later call.
-        let restored = if section == Section::Snapshots { self.restored_note.take() } else { None };
         // The Alerts calls are local to the hub: their result matters whichever host is selected now.
         if host != self.selected_host && !matches!(section, Section::Alerts | Section::Settings) {
             return;
