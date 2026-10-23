@@ -182,18 +182,21 @@ fn cut_list(mut lines: Vec<String>) -> Vec<String> {
 /// The daily report. `bad_since` says when an open alert began; `since` starts the events window.
 #[allow(clippy::too_many_arguments)]
 /// The daily report's lines for disks with a problem, from the daemon's `smart.json`: `fbsd16: da1 reallocated sectors 8 (checked ... UTC)`.
-pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile) -> Vec<String> {
-    crate::daemon::smart_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.disks, utc(p.checked_at))).collect()
+pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile, storage: &crate::daemon::storage_check::StorageFile) -> Vec<String> {
+    // The report does not know a host's OS, so a device name is matched by either OS's partition rule.
+    let role_of = |host: &str, dev: &str| crate::daemon::storage_check::role_of(storage, host, dev, None);
+    crate::daemon::smart_check::problems_with(file, &role_of).iter().map(|p| format!("{}: {} (checked {})", p.host, p.disks, utc(p.checked_at))).collect()
 }
 
 /// All the lines the daily report adds for the daemon's checks: disks first, then shares.
 pub fn check_lines(state_dir: &std::path::Path) -> Vec<String> {
-    let mut lines = disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")));
+    let storage = crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE));
+    let mut lines = disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")), &storage);
     lines.extend(share_lines(&crate::daemon::shares_check::SharesFile::load(&state_dir.join("shares.json"))));
     // The report has no config of its own: the thresholds are the user's, read from the fixed config path (defaults when absent).
     let thresholds = crate::config::Config::load(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH)).map(|c| c.dashboard.resolve()).unwrap_or_default();
     let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
-    lines.extend(storage_lines(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), thresholds.quota, thresholds.dedup_ratio, &jobs));
+    lines.extend(storage_lines(&storage, thresholds.quota, thresholds.dedup_ratio, &jobs));
     lines
 }
 
@@ -384,12 +387,29 @@ mod tests {
     fn the_daily_report_lists_the_disk_problems_under_needs_attention() {
         let mut file = crate::daemon::smart_check::SmartFile::default();
         file.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "reallocated sectors 8".into() }] }], error: None });
-        let lines = disk_lines(&file);
+        let lines = disk_lines(&file, &crate::daemon::storage_check::StorageFile::default());
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: da1 reallocated sectors 8 (checked "), "{}", lines[0]);
         let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
         assert!(m.body.contains("  fbsd16: da1 reallocated sectors 8") && !m.body.contains("Nothing needs attention"), "{}", m.body);
-        assert!(disk_lines(&crate::daemon::smart_check::SmartFile::default()).is_empty());
+        assert!(disk_lines(&crate::daemon::smart_check::SmartFile::default(), &crate::daemon::storage_check::StorageFile::default()).is_empty());
+    }
+
+    #[test]
+    fn the_daily_report_says_what_a_wearing_disk_is_for_when_the_storage_check_knows_on_any_os() {
+        use crate::daemon::storage_check::{Integrity, StorageFile, StorageResult};
+        use crate::zfs::pool_classes::{DeviceRole, PoolClasses};
+        let disk = |dev: &str| crate::smart::Disk { dev: dev.into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "SSD wear 87%".into() }] };
+        let mut smart = crate::daemon::smart_check::SmartFile::default();
+        smart.hosts.insert("ub24".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("nvme0n1"), disk("sdb")], error: None });
+        smart.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("ada4")], error: None });
+        let result = |device: &str, role: &str| StorageResult { checked_at: t(0), datasets: vec![], pools: vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: role.into(), device: device.into() }, DeviceRole { role: "cache".into(), device: "sdb1".into() }], ..PoolClasses::default() }], zfs_version: None, locked: vec![], integrity: Integrity::default(), integrity_stale: false, error: None };
+        let mut storage = StorageFile::default();
+        storage.hosts.insert("ub24".into(), result("nvme0n1p1", "log"));
+        storage.hosts.insert("fbsd16".into(), result("ada4p1", "cache"));
+        let lines = disk_lines(&smart, &storage);
+        assert!(lines.iter().any(|l| l.starts_with("fbsd16: ada4 (cache of tank) SSD wear 87%")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("ub24: nvme0n1 (log of tank) SSD wear 87%; sdb (cache of tank) SSD wear 87%")), "Linux partition names (nvme0n1p1, sdb1) are matched too: {lines:?}");
     }
 
     #[test]
