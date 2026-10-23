@@ -127,6 +127,8 @@ enum Col {
     Pools,
     Space,
     Memory,
+    Arc,
+    L2arc,
     Cpu,
     Load,
     Scrub,
@@ -140,6 +142,8 @@ impl Col {
             Col::Pools => "Pools",
             Col::Space => "Capacity",
             Col::Memory => "Memory",
+            Col::Arc => "ARC",
+            Col::L2arc => "L2ARC",
             Col::Cpu => "CPU",
             Col::Load => "Load",
             Col::Scrub => "Scrub",
@@ -153,6 +157,8 @@ impl Col {
             Col::Pools => &row.pools,
             Col::Space => &row.space,
             Col::Memory => &row.memory,
+            Col::Arc => &row.arc,
+            Col::L2arc => &row.l2arc,
             Col::Cpu => &row.cpu,
             Col::Load => &row.load,
             Col::Scrub => &row.scrub,
@@ -165,8 +171,9 @@ impl Col {
     }
 }
 
-/// Columns, in display order, and the order they are given up as the screen narrows: first the OS name, then the gauges, then these.
-const COLUMNS: [Col; 8] = [Col::Os, Col::Pools, Col::Space, Col::Memory, Col::Cpu, Col::Load, Col::Scrub, Col::Errors];
+/// Columns, in display order, and the order they are given up as the screen narrows: first the OS name, then the cache columns (which
+/// are not drawn at all while no host has anything to show in them), then the gauges, then these.
+const COLUMNS: [Col; 10] = [Col::Os, Col::Pools, Col::Space, Col::Memory, Col::Arc, Col::L2arc, Col::Cpu, Col::Load, Col::Scrub, Col::Errors];
 const DROP_ORDER: [Col; 5] = [Col::Load, Col::Cpu, Col::Scrub, Col::Errors, Col::Pools];
 
 struct Plan {
@@ -192,8 +199,10 @@ impl Plan {
 /// name columns shrink.
 fn plan(hosts: &[HostRow], width: usize) -> Plan {
     let longest = |f: fn(&HostRow) -> usize| hosts.iter().map(f).max().unwrap_or(0);
+    // A column of dashes says nothing: the cache columns are drawn only while some host has a reading for them.
+    let has = |col: Col| hosts.iter().any(|h| !matches!(col.cell(h).text.as_str(), "-" | "?"));
     let mut plan = Plan {
-        columns: COLUMNS.to_vec(),
+        columns: COLUMNS.iter().copied().filter(|c| !matches!(c, Col::Arc | Col::L2arc) || has(*c)).collect(),
         gauges: true,
         name_w: longest(|h| h.name.chars().count()).clamp(4, 14),
         state_w: (longest(|h| h.state.text.chars().count()) + 2).clamp(10, 30),
@@ -201,6 +210,10 @@ fn plan(hosts: &[HostRow], width: usize) -> Plan {
     while plan.total(hosts) > width {
         if plan.columns.contains(&Col::Os) {
             plan.columns.retain(|c| *c != Col::Os);
+        } else if plan.columns.contains(&Col::L2arc) {
+            plan.columns.retain(|c| *c != Col::L2arc);
+        } else if plan.columns.contains(&Col::Arc) {
+            plan.columns.retain(|c| *c != Col::Arc);
         } else if plan.gauges {
             plan.gauges = false;
         } else if let Some(col) = DROP_ORDER.iter().find(|c| plan.columns.contains(c)) {
@@ -349,7 +362,7 @@ mod tests {
     }
 
     fn reading(busy: u64, idle: u64) -> Resources {
-        Resources { cores: 4, physical: 20 << 30, free: 10 << 30, inactive: 0, arc: 0, load: Some([0.05, 0.1, 0.1]), cpu_ticks: Some(crate::zfs::host::CpuTimes { user: busy, nice: 0, sys: 0, intr: 0, idle }), swap: None }
+        Resources { cores: 4, physical: 20 << 30, free: 10 << 30, inactive: 0, arc: 0, load: Some([0.05, 0.1, 0.1]), cpu_ticks: Some(crate::zfs::host::CpuTimes { user: busy, nice: 0, sys: 0, intr: 0, idle }), swap: None, cache: None }
     }
 
     fn pool(capacity: u8) -> PoolProbe {
@@ -387,6 +400,29 @@ mod tests {
         // the width at which the OS column is the only thing short: everything else is still there without it
         let narrow = text(100);
         assert!(!narrow.contains("FreeBSD 16.0") && narrow.contains("Capacity") && narrow.contains("Memory") && narrow.contains("Errors"), "{narrow}");
+    }
+
+    #[test]
+    fn the_arc_columns_appear_only_where_a_host_has_the_counters_and_go_right_after_the_os_name_when_the_screen_narrows() {
+        use crate::zfs::host_resources::CacheStats;
+        let mut app = mixed_app();
+        let text = |app: &App, width| screen_lines(&app.dashboard(), None, width, 40, "Sat", &app.theme).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let plain = text(&app, 200);
+        assert!(!plain.contains("ARC"), "no host reads the counters: no column of dashes\n{plain}");
+        let cache = CacheStats { hits: 9990, misses: 10, l2_size: 2 << 30, l2_hits: 300, l2_misses: 100 };
+        app.host_probes.get_mut("local").unwrap().resources = vec![Resources { cache: Some(cache), ..reading(0, 1000) }, Resources { cache: Some(cache), ..reading(10, 1100) }];
+        let wide = text(&app, 200);
+        assert!(wide.contains("ARC") && wide.contains("99.9%") && wide.contains("L2ARC") && wide.contains("2.0G 75.0%"), "{wide}");
+        // the host without counters shows a dash in the new column, not a hole
+        assert!(wide.lines().any(|l| l.contains("fbsd16 ") && l.contains(" - ")), "{wide}");
+        // no host has a cache device: the L2ARC column is not drawn, the ARC one is
+        app.host_probes.get_mut("local").unwrap().resources = vec![Resources { cache: Some(CacheStats { l2_size: 0, ..cache }), ..reading(10, 1100) }];
+        let no_l2 = text(&app, 200);
+        assert!(no_l2.contains("ARC") && !no_l2.contains("L2ARC"), "{no_l2}");
+        app.host_probes.get_mut("local").unwrap().resources = vec![Resources { cache: Some(cache), ..reading(0, 1000) }, Resources { cache: Some(cache), ..reading(10, 1100) }];
+        // narrower: the OS name goes first, then the cache columns, before the gauges and every other column
+        let narrow = text(&app, 105);
+        assert!(!narrow.contains("ARC") && narrow.contains("Capacity") && narrow.contains("Memory") && narrow.contains("Errors") && narrow.contains("Load"), "{narrow}");
     }
 
     #[test]

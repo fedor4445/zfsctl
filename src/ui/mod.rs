@@ -10,6 +10,7 @@ pub mod layout;
 pub mod logo;
 pub mod metrics;
 pub mod modal;
+pub mod overdue;
 pub mod picker;
 pub mod settings;
 pub mod shell;

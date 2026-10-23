@@ -82,6 +82,9 @@ pub struct HostRow {
     pub load: Cell,
     pub scrub: Cell,
     pub errors: Cell,
+    /// The ARC hit rate since boot, and the L2ARC's size and hit rate: plain text, never judged.
+    pub arc: Cell,
+    pub l2arc: Cell,
     /// The OS name, plain text (`-` until read); never judged.
     pub os: Cell,
     /// What `assess()` itself says when it is not fine (unreachable, `tank DEGRADED`, `job failed`...).
@@ -239,12 +242,29 @@ pub fn host_row(input: &HostInput, t: &Thresholds, now: DateTime<Utc>) -> HostRo
         Some((newest, _)) if reached => (memory_cell(newest, t), cpu_cell(input.resources, t), load_cell(input.resources)),
         _ => (Cell::unknown(), Cell::unknown(), Cell::unknown()),
     };
+    let (arc, l2arc) = match input.resources {
+        Some((newest, _)) if reached => cache_cells(newest),
+        _ => (Cell::unknown(), Cell::unknown()),
+    };
     let worst = [&space, &memory, &cpu, &scrub, &errors].into_iter().filter(|c| c.level >= Level::Watch).max_by_key(|c| c.level);
     let state = match worst {
         Some(cell) if cell.level > base_level => Cell::new(cell.note.clone().unwrap_or_else(|| cell.text.clone()), cell.level),
         _ => Cell::new(input.assessment.reason.clone(), base_level),
     };
-    HostRow { name: input.name.to_string(), state, os: input.os_name.map_or_else(Cell::none, |n| Cell::new(n, Level::Fine)), pools, space, memory, cpu, load, scrub, errors, base }
+    HostRow { name: input.name.to_string(), state, os: input.os_name.map_or_else(Cell::none, |n| Cell::new(n, Level::Fine)), pools, space, memory, cpu, load, scrub, errors, arc, l2arc, base }
+}
+
+/// The ARC hit rate and the L2ARC's size and hit rate, since boot as the Hosts panel shows them; `-` where the host has no cache counters,
+/// no cache device, or nothing has been read yet.
+fn cache_cells(r: &Resources) -> (Cell, Cell) {
+    let percent = |p: Option<f64>| p.map_or_else(|| "-".to_string(), |p| format!("{p:.1}%"));
+    match r.cache {
+        None => (Cell::none(), Cell::none()),
+        Some(c) => {
+            let l2 = if c.l2_size == 0 { "-".to_string() } else { format!("{} {}", crate::zfs::disk::human_size(c.l2_size), percent(c.l2_hit_percent())) };
+            (Cell::new(percent(c.arc_hit_percent()), Level::Fine), Cell::new(l2, Level::Fine))
+        }
+    }
 }
 
 /// The lines a host adds to Needs attention: every cell that is not fine, plus what `assess()` itself says, unless a cell
@@ -447,7 +467,14 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     use crate::smart::Severity;
     let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
     let mut items = Vec::new();
-    for found in crate::daemon::smart_check::problems(inputs.smart).into_iter().filter(|p| reached(&p.host)) {
+    let role_of = |host: &str, dev: &str| {
+        let os = inputs.hosts.iter().find(|h| h.name == host).and_then(|h| match h.probe {
+            Some(HostProbe::Reached { os, .. }) => *os,
+            _ => None,
+        });
+        crate::daemon::storage_check::role_of(inputs.storage, host, dev, os)
+    };
+    for found in crate::daemon::smart_check::problems_with(inputs.smart, &role_of).into_iter().filter(|p| reached(&p.host)) {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.disks, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Disks, target: Some(found.host) });
@@ -541,6 +568,11 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         let what = if why.is_empty() { format!("failed {age}") } else { format!("failed {age}: {why}") };
         attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs, target: Some(job.id.clone()) });
     }
+    if daemon.level == Level::Fine {
+        for late in crate::ui::overdue::overdue(inputs.jobs, now) {
+            attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
+        }
+    }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
             Some(Fill::Full) => Level::Issue,
@@ -619,6 +651,7 @@ mod tests {
             load: Some([0.05, 0.1, 0.1]),
             cpu_ticks: Some(crate::zfs::host::CpuTimes { user: busy, nice: 0, sys: 0, intr: 0, idle }),
             swap: None,
+            cache: None,
         }
     }
 
@@ -986,6 +1019,43 @@ mod tests {
     }
 
     #[test]
+    fn a_job_that_stopped_succeeding_is_a_line_in_needs_attention_that_goes_to_the_job() {
+        let snap = Job::test_snapshot("snap-a", "tank/data", "hourly", 24);
+        let mut fx = Fixture::new(view(vec![snap], &[("snap-a", RunResult::Ok, "ok")], beat(1)));
+        // `view` puts the finished runs two hours before now: an hourly job is not late yet
+        assert!(fx.build(vec![]).attention.iter().all(|i| i.subject != "snap-a"), "{:?}", fx.build(vec![]).attention);
+        for run in &mut fx.view.runs {
+            run.finished_at = Some(now() - Duration::hours(6));
+        }
+        let item = fx.build(vec![]).attention.into_iter().find(|i| i.subject == "snap-a").expect("a late job is listed");
+        assert_eq!((item.level, item.goto, item.target.as_deref()), (Level::Issue, Section::Jobs, Some("snap-a")));
+        assert_eq!(item.what, "snapshot tank/data: last ok 6h ago (Hourly)");
+        // with the daemon down the job is not blamed: the daemon's own line says why nothing runs
+        let down = Fixture::new(JobsView { heartbeat: None, ..fx.view.clone() }).build(vec![]);
+        assert!(down.attention.iter().all(|i| i.subject != "snap-a"), "{:?}", down.attention);
+        assert!(down.attention.iter().any(|i| i.subject == "daemon"));
+    }
+
+    #[test]
+    fn the_arc_and_l2arc_cells_show_hit_rates_since_boot_and_a_dash_where_there_is_nothing() {
+        use crate::zfs::host_resources::CacheStats;
+        let probe = reached(vec![]);
+        let with = |cache: Option<CacheStats>| Resources { cache, ..reading(10, 0, 0, 100) };
+        let busy = with(Some(CacheStats { hits: 9990, misses: 10, l2_size: 2 * GIB, l2_hits: 300, l2_misses: 100 }));
+        let r = default_row(&probe, Some(&busy));
+        assert_eq!((r.arc.text.as_str(), r.l2arc.text.as_str()), ("99.9%", "2.0G 75.0%"));
+        assert_eq!((r.arc.level, r.l2arc.level), (Level::Fine, Level::Fine), "these are never judged");
+        let no_cache_device = default_row(&probe, Some(&with(Some(CacheStats { hits: 1, misses: 1, ..CacheStats::default() }))));
+        assert_eq!((no_cache_device.arc.text.as_str(), no_cache_device.l2arc.text.as_str()), ("50.0%", "-"));
+        let cold = default_row(&probe, Some(&with(Some(CacheStats { l2_size: GIB, ..CacheStats::default() }))));
+        assert_eq!((cold.arc.text.as_str(), cold.l2arc.text.as_str()), ("-", "1.0G -"), "a cache nothing has read from yet has no rate");
+        let no_zfs = default_row(&probe, Some(&with(None)));
+        assert_eq!((no_zfs.arc.text.as_str(), no_zfs.l2arc.text.as_str()), ("-", "-"));
+        let unknown = default_row(&HostProbe::Disconnected, None);
+        assert_eq!((unknown.arc.text.as_str(), unknown.l2arc.text.as_str()), ("?", "?"));
+    }
+
+    #[test]
     fn the_next_run_cell_is_the_soonest_enabled_job_and_a_dash_when_none() {
         let jobs = vec![mirror("m1", "b2:zfsctl/photos")];
         let mut known = crate::ui::cloud::Known::new();
@@ -1068,6 +1138,19 @@ mod tests {
         let items = disk_items(&fx, &["h"]);
         assert_eq!((items.len(), items[0].level), (1, Level::Watch), "several disks share one yellow line");
         assert!(items[0].what.contains("ada0 reallocated sectors 8; ada4 SSD wear 87%"), "{}", items[0].what);
+    }
+
+    #[test]
+    fn a_wearing_disk_says_what_it_is_for_when_the_storage_check_knows() {
+        use crate::smart::Severity::Watch;
+        use crate::zfs::pool_classes::{DeviceRole, PoolClasses};
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.smart = smart_file(&[("h", 3, &[("ada4", Watch, "SSD wear 87%"), ("ada0", Watch, "pending sectors 8")])]);
+        let pools = vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: "cache".into(), device: "ada4p1".into() }, DeviceRole { role: "log".into(), device: "gpt/slog0".into() }], ..PoolClasses::default() }];
+        let result = crate::daemon::storage_check::StorageResult { checked_at: now(), datasets: vec![], pools, zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+        fx.storage.hosts.insert("h".into(), result);
+        let items = disk_items(&fx, &["h"]);
+        assert!(items[0].what.contains("ada4 (cache of tank) SSD wear 87%; ada0 pending sectors 8"), "the partition ada4p1 is the disk ada4, and a disk with no known role keeps its bare name: {}", items[0].what);
     }
 
     #[test]
@@ -1171,7 +1254,7 @@ mod tests {
     fn a_pool_with_a_lone_special_disk_is_a_red_line_that_goes_to_pools() {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         let mut entry = storage_entry(2, "tank/x", 10);
-        entry.pools = vec![crate::zfs::pool_classes::PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: false, cache_bad: false }];
+        entry.pools = vec![crate::zfs::pool_classes::PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: false, cache_bad: false, roles: vec![] }];
         fx.storage.hosts.insert("h".into(), entry);
         let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
         let probe = reached(vec![]);
