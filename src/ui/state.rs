@@ -268,8 +268,9 @@ pub enum WorkerMsg {
     /// The target is what the sample was taken for; `MetricsView::apply` drops it if the panel has moved on.
     Metrics(usize, crate::zfs::metrics::MetricsTarget, Box<Result<crate::zfs::metrics::TargetSample>>),
     MutationDone(usize, Section, Result<()>),
-    /// What a finished restore verified (the status line) or the engine's refusal sentence, sent just before its `MutationDone`.
-    Restored(usize, std::result::Result<String, String>),
+    /// A finished restore: what it verified (the status line) or the engine's refusal sentence, together with the plain result.
+    /// One message, so a note can never be read for another call's `MutationDone`.
+    RestoreDone(usize, std::result::Result<String, String>, Result<()>),
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
     HostProbe(String, String, Result<()>),
@@ -414,8 +415,6 @@ pub struct App {
     last_alerts_refresh: Option<Instant>,
     /// What to show once the mutation just dispatched succeeds (see `MutationCall::done_note`).
     pub done_note: Option<String>,
-    /// The text of the restore that just finished (see `WorkerMsg::Restored`), shown when its `MutationDone` arrives.
-    pub restored_note: Option<std::result::Result<String, String>>,
     pub alerts_preview_busy: bool,
     /// A test message is being sent (it can take up to 30 s per channel): `t` waits for it.
     pub alerts_test_busy: bool,
@@ -642,7 +641,6 @@ impl App {
             auto_refresh_interval: crate::config::UiConfig::default().auto_refresh_interval(),
             last_alerts_refresh: None,
             done_note: None,
-            restored_note: None,
             alerts_preview_busy: false,
             alerts_test_busy: false,
             alerts_preview_ready: None,
@@ -3187,7 +3185,6 @@ impl App {
         if let Some(note) = call.done_note() {
             self.done_note = Some(note);
         }
-        self.restored_note = None;
         if matches!(call, MutationCall::SendTestMessage { .. }) {
             self.alerts_test_busy = true;
             self.status_message = Some("Sending the test message…".to_string());
@@ -3197,23 +3194,19 @@ impl App {
         }
         let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            // A restore's success text carries what the engine verified, so it is sent ahead of the plain result.
-            let result = match call.restore_outcome(runner.as_ref()) {
-                Some(Ok(done)) => {
-                    let _ = tx.send(WorkerMsg::Restored(host, Ok(crate::ui::modal::restored_note(&done))));
-                    Ok(())
-                }
+            // A restore's success text carries what the engine verified, so it travels with the plain result.
+            let message = match call.restore_outcome(runner.as_ref()) {
+                Some(Ok(done)) => WorkerMsg::RestoreDone(host, Ok(crate::ui::modal::restored_note(&done)), Ok(())),
                 Some(Err(e)) => {
                     let sentence = match &e {
                         crate::error::AppError::Config(m) => m.clone(),
                         other => other.to_string(),
                     };
-                    let _ = tx.send(WorkerMsg::Restored(host, Err(sentence)));
-                    Err(e)
+                    WorkerMsg::RestoreDone(host, Err(sentence), Err(e))
                 }
-                None => call.run_on(runner.as_ref(), os),
+                None => WorkerMsg::MutationDone(host, section, call.run_on(runner.as_ref(), os)),
             };
-            let _ = tx.send(WorkerMsg::MutationDone(host, section, result));
+            let _ = tx.send(message);
         });
     }
 
@@ -3741,7 +3734,8 @@ pub(super) fn restore_prompt(plan: &crate::zfs::snapshot_restore::RestorePlan) -
         plan.size,
         crate::display_text::sanitise_for_display(&plan.mode),
     );
-    if looks_deceptive(&plan.dest_name) {
+    // The names the prompt shows with direction marks blanked out come from the host as well: the source's folders and name count too.
+    if looks_deceptive(&plan.dest_name) || looks_deceptive(&plan.source) || looks_deceptive(&plan.destination) {
         prompt.push_str("\nNote: this name contains unusual characters; check it letter by letter.");
     }
     prompt.push_str(" (y/n)");
