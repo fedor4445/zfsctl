@@ -171,8 +171,8 @@ impl Col {
     }
 }
 
-/// Columns, in display order, and the order they are given up as the screen narrows: first the cache columns (and they are not
-/// drawn at all while no host has anything to show in them), then the OS name, then the gauges, then these.
+/// Columns, in display order, and the order they are given up as the screen narrows: first the OS name, then the cache columns (which
+/// are not drawn at all while no host has anything to show in them), then the gauges, then these.
 const COLUMNS: [Col; 10] = [Col::Os, Col::Pools, Col::Space, Col::Memory, Col::Arc, Col::L2arc, Col::Cpu, Col::Load, Col::Scrub, Col::Errors];
 const DROP_ORDER: [Col; 5] = [Col::Load, Col::Cpu, Col::Scrub, Col::Errors, Col::Pools];
 
@@ -208,12 +208,12 @@ fn plan(hosts: &[HostRow], width: usize) -> Plan {
         state_w: (longest(|h| h.state.text.chars().count()) + 2).clamp(10, 30),
     };
     while plan.total(hosts) > width {
-        if plan.columns.contains(&Col::L2arc) {
+        if plan.columns.contains(&Col::Os) {
+            plan.columns.retain(|c| *c != Col::Os);
+        } else if plan.columns.contains(&Col::L2arc) {
             plan.columns.retain(|c| *c != Col::L2arc);
         } else if plan.columns.contains(&Col::Arc) {
             plan.columns.retain(|c| *c != Col::Arc);
-        } else if plan.columns.contains(&Col::Os) {
-            plan.columns.retain(|c| *c != Col::Os);
         } else if plan.gauges {
             plan.gauges = false;
         } else if let Some(col) = DROP_ORDER.iter().find(|c| plan.columns.contains(c)) {
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn the_arc_columns_appear_only_where_a_host_has_the_counters_and_go_first_when_the_screen_narrows() {
+    fn the_arc_columns_appear_only_where_a_host_has_the_counters_and_go_right_after_the_os_name_when_the_screen_narrows() {
         use crate::zfs::host_resources::CacheStats;
         let mut app = mixed_app();
         let text = |app: &App, width| screen_lines(&app.dashboard(), None, width, 40, "Sat", &app.theme).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
@@ -420,7 +420,7 @@ mod tests {
         let no_l2 = text(&app, 200);
         assert!(no_l2.contains("ARC") && !no_l2.contains("L2ARC"), "{no_l2}");
         app.host_probes.get_mut("local").unwrap().resources = vec![Resources { cache: Some(cache), ..reading(0, 1000) }, Resources { cache: Some(cache), ..reading(10, 1100) }];
-        // narrower: the cache columns are given up before the OS, the gauges and every other column
+        // narrower: the OS name goes first, then the cache columns, before the gauges and every other column
         let narrow = text(&app, 105);
         assert!(!narrow.contains("ARC") && narrow.contains("Capacity") && narrow.contains("Memory") && narrow.contains("Errors") && narrow.contains("Load"), "{narrow}");
     }
