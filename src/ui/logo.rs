@@ -53,21 +53,24 @@ pub fn wordmark() -> Vec<String> {
     }).collect()
 }
 
-/// The sidebar's compact mark: the same six letters in a 3x5 grid, three lines of `COMPACT_WIDTH` columns, no cursor.
-pub const COMPACT_WIDTH: usize = 21;
+/// The sidebar's compact mark: `zfsctl` and its underscore cursor in a 3-wide, 4-dot-tall grid, two lines of `COMPACT_WIDTH` columns.
+pub const COMPACT_WIDTH: usize = 22;
 
-/// Dots of the compact letters, top to bottom (`l` is one column wide).
+/// Dots of the compact letters, top to bottom (`f` and `t` are two columns wide, `l` one).
 const COMPACT_GLYPHS: [&[&str]; 6] = [
-    &["111", "001", "010", "100", "111"],
-    &["011", "100", "111", "100", "100"],
-    &["011", "100", "010", "001", "110"],
-    &["011", "100", "100", "100", "011"],
-    &["010", "111", "010", "010", "011"],
-    &["1", "1", "1", "1", "1"],
+    &["111", "001", "010", "111"],
+    &["01", "11", "10", "10"],
+    &["011", "110", "001", "110"],
+    &["011", "100", "100", "011"],
+    &["01", "11", "01", "01"],
+    &["1", "1", "1", "1"],
 ];
 
+/// The cursor: two dots on the bottom row, after a blank column.
+const COMPACT_CURSOR: usize = 2;
+
 pub fn compact() -> Vec<String> {
-    const SMALL_ROWS: usize = 5;
+    const SMALL_ROWS: usize = 4;
     let mut grid = vec![vec![false; COMPACT_WIDTH]; SMALL_ROWS];
     let mut x = 0;
     for glyph in COMPACT_GLYPHS {
@@ -80,6 +83,9 @@ pub fn compact() -> Vec<String> {
             }
         }
         x += width + 1;
+    }
+    if let Some(row) = grid.get_mut(SMALL_ROWS - 1) {
+        row.iter_mut().skip(x).take(COMPACT_CURSOR).for_each(|cell| *cell = true);
     }
     (0..SMALL_ROWS)
         .step_by(2)
@@ -136,14 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn the_compact_mark_is_three_lines_that_fit_the_sidebar() {
+    fn the_compact_mark_is_two_lines_that_fit_the_sidebar_with_its_cursor() {
         let lines = compact();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 2);
         assert!(lines.iter().all(|l| l.chars().count() == COMPACT_WIDTH && is_wordmark_line(l)), "{lines:?}");
-        // the z's top bar; the l is a one-column bar at the far right, five dots tall
         assert!(lines[0].starts_with("▀▀█"), "the z: a bar on top, its diagonal starting under the right end: {lines:?}");
-        let last = |l: &String| l.chars().last();
-        assert_eq!((last(&lines[0]), last(&lines[1]), last(&lines[2])), (Some('█'), Some('█'), Some('▀')), "{lines:?}");
+        let at = |line: &String, i: usize| line.chars().nth(i);
+        // the l is a one-column bar, four dots tall, and the cursor is two dots on the bottom row after a blank column
+        assert_eq!((at(&lines[0], 18), at(&lines[1], 18)), (Some('█'), Some('█')), "{lines:?}");
+        assert_eq!((at(&lines[1], 19), at(&lines[1], 20), at(&lines[1], 21)), (Some(' '), Some('▄'), Some('▄')), "{lines:?}");
+        assert!(lines[0].chars().skip(19).all(|c| c == ' '), "nothing of the cursor above the bottom row: {lines:?}");
     }
 
     #[test]
