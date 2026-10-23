@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(r.pools[0].unprotected, ["special"]);
         let quiet = FakeRunner::new("").route("zfs", "list", "").route("zpool", "status", &status_with("\t  mirror-1    ONLINE       0     0     0\n\t    da1       ONLINE       0     0     0\n\t    da2       ONLINE       0     0     0\n", ""));
         let Outcome::Checked(r) = check_host(&quiet, at(NOW)) else { panic!() };
-        assert!(r.pools.iter().all(|p| p.is_quiet()), "a protected special mirror says nothing is wrong (its disks' roles are kept)");
+        assert!(r.pools.iter().all(PoolClasses::is_quiet), "a protected special mirror says nothing is wrong (its disks' roles are kept)");
         let plain = FakeRunner::new("").route("zfs", "list", "").route("zpool", "status", "  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME   STATE     READ WRITE CKSUM\n\ttank   ONLINE       0     0     0\n\t  da0  ONLINE       0     0     0\n");
         let Outcome::Checked(r) = check_host(&plain, at(NOW)) else { panic!() };
         assert!(r.pools.is_empty(), "a pool with only data disks is not stored");

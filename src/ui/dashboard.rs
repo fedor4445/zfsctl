@@ -82,6 +82,9 @@ pub struct HostRow {
     pub load: Cell,
     pub scrub: Cell,
     pub errors: Cell,
+    /// The ARC hit rate since boot, and the L2ARC's size and hit rate: plain text, never judged.
+    pub arc: Cell,
+    pub l2arc: Cell,
     /// The OS name, plain text (`-` until read); never judged.
     pub os: Cell,
     /// What `assess()` itself says when it is not fine (unreachable, `tank DEGRADED`, `job failed`...).
@@ -239,12 +242,29 @@ pub fn host_row(input: &HostInput, t: &Thresholds, now: DateTime<Utc>) -> HostRo
         Some((newest, _)) if reached => (memory_cell(newest, t), cpu_cell(input.resources, t), load_cell(input.resources)),
         _ => (Cell::unknown(), Cell::unknown(), Cell::unknown()),
     };
+    let (arc, l2arc) = match input.resources {
+        Some((newest, _)) if reached => cache_cells(newest),
+        _ => (Cell::unknown(), Cell::unknown()),
+    };
     let worst = [&space, &memory, &cpu, &scrub, &errors].into_iter().filter(|c| c.level >= Level::Watch).max_by_key(|c| c.level);
     let state = match worst {
         Some(cell) if cell.level > base_level => Cell::new(cell.note.clone().unwrap_or_else(|| cell.text.clone()), cell.level),
         _ => Cell::new(input.assessment.reason.clone(), base_level),
     };
-    HostRow { name: input.name.to_string(), state, os: input.os_name.map_or_else(Cell::none, |n| Cell::new(n, Level::Fine)), pools, space, memory, cpu, load, scrub, errors, base }
+    HostRow { name: input.name.to_string(), state, os: input.os_name.map_or_else(Cell::none, |n| Cell::new(n, Level::Fine)), pools, space, memory, cpu, load, scrub, errors, arc, l2arc, base }
+}
+
+/// The ARC hit rate and the L2ARC's size and hit rate, since boot as the Hosts panel shows them; `-` where the host has no cache counters,
+/// no cache device, or nothing has been read yet.
+fn cache_cells(r: &Resources) -> (Cell, Cell) {
+    let percent = |p: Option<f64>| p.map_or_else(|| "-".to_string(), |p| format!("{p:.1}%"));
+    match r.cache {
+        None => (Cell::none(), Cell::none()),
+        Some(c) => {
+            let l2 = if c.l2_size == 0 { "-".to_string() } else { format!("{} {}", crate::zfs::disk::human_size(c.l2_size), percent(c.l2_hit_percent())) };
+            (Cell::new(percent(c.arc_hit_percent()), Level::Fine), Cell::new(l2, Level::Fine))
+        }
+    }
 }
 
 /// The lines a host adds to Needs attention: every cell that is not fine, plus what `assess()` itself says, unless a cell
@@ -631,6 +651,7 @@ mod tests {
             load: Some([0.05, 0.1, 0.1]),
             cpu_ticks: Some(crate::zfs::host::CpuTimes { user: busy, nice: 0, sys: 0, intr: 0, idle }),
             swap: None,
+            cache: None,
         }
     }
 
@@ -1013,6 +1034,25 @@ mod tests {
         let down = Fixture::new(JobsView { heartbeat: None, ..fx.view.clone() }).build(vec![]);
         assert!(down.attention.iter().all(|i| i.subject != "snap-a"), "{:?}", down.attention);
         assert!(down.attention.iter().any(|i| i.subject == "daemon"));
+    }
+
+    #[test]
+    fn the_arc_and_l2arc_cells_show_hit_rates_since_boot_and_a_dash_where_there_is_nothing() {
+        use crate::zfs::host_resources::CacheStats;
+        let probe = reached(vec![]);
+        let with = |cache: Option<CacheStats>| Resources { cache, ..reading(10, 0, 0, 100) };
+        let busy = with(Some(CacheStats { hits: 9990, misses: 10, l2_size: 2 * GIB, l2_hits: 300, l2_misses: 100 }));
+        let r = default_row(&probe, Some(&busy));
+        assert_eq!((r.arc.text.as_str(), r.l2arc.text.as_str()), ("99.9%", "2.0G 75.0%"));
+        assert_eq!((r.arc.level, r.l2arc.level), (Level::Fine, Level::Fine), "these are never judged");
+        let no_cache_device = default_row(&probe, Some(&with(Some(CacheStats { hits: 1, misses: 1, ..CacheStats::default() }))));
+        assert_eq!((no_cache_device.arc.text.as_str(), no_cache_device.l2arc.text.as_str()), ("50.0%", "-"));
+        let cold = default_row(&probe, Some(&with(Some(CacheStats { l2_size: GIB, ..CacheStats::default() }))));
+        assert_eq!((cold.arc.text.as_str(), cold.l2arc.text.as_str()), ("-", "1.0G -"), "a cache nothing has read from yet has no rate");
+        let no_zfs = default_row(&probe, Some(&with(None)));
+        assert_eq!((no_zfs.arc.text.as_str(), no_zfs.l2arc.text.as_str()), ("-", "-"));
+        let unknown = default_row(&HostProbe::Disconnected, None);
+        assert_eq!((unknown.arc.text.as_str(), unknown.l2arc.text.as_str()), ("?", "?"));
     }
 
     #[test]

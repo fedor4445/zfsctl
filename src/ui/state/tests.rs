@@ -8243,7 +8243,7 @@ fn the_plan_caps_are_read_from_config_toml_each_time_the_remotes_are_asked() {
 // ---- host resources (Dashboard) ----
 
 fn reading(free_gib: u64) -> crate::zfs::host_resources::Resources {
-    crate::zfs::host_resources::Resources { cores: 4, physical: 20 << 30, free: free_gib << 30, inactive: 0, arc: 0, load: None, cpu_ticks: None, swap: None }
+    crate::zfs::host_resources::Resources { cores: 4, physical: 20 << 30, free: free_gib << 30, inactive: 0, arc: 0, load: None, cpu_ticks: None, swap: None, cache: None }
 }
 
 #[test]
@@ -8289,7 +8289,7 @@ fn a_probe_that_did_not_reach_the_host_clears_its_readings_so_stale_numbers_do_n
 #[test]
 fn a_probe_reads_the_resources_and_asks_for_the_utc_offset_only_until_it_is_known() {
     const STATUS: &str = "  pool: scratch\n state: ONLINE\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tscratch  ONLINE  0  0  0\n";
-    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n";
+    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n9990\n10\n0\n0\n0\n";
     let runner = std::sync::Arc::new(
         FakeRunner::new("").route("zpool", "list", "scratch\t100\t10\t90\t1\tONLINE\n").route("zpool", "status", STATUS).route("sysctl", "-n", SYSCTL).route("date", "+%z", "+0200\n"),
     );

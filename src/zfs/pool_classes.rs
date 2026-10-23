@@ -69,7 +69,7 @@ fn classes_of(name: String, block: &str) -> PoolClasses {
             continue;
         }
         let down = |h: &PoolHealth, bad: &[PoolHealth]| bad.contains(h);
-        let is_leaf = !lines.get(i + 1).is_some_and(|next| next.depth > line.depth);
+        let is_leaf = lines.get(i + 1).is_none_or(|next| next.depth <= line.depth);
         if class != "data" && is_leaf {
             out.roles.push(DeviceRole { role: class.to_string(), device: line.name.clone() });
         }
