@@ -59,23 +59,23 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Thu 22 Oct 20:13                                                                                                  ● all quiet
-│▀▀█ ▄▀▀ ▄▀▀ ▄▀▀ ▄█▄ █ │
-│▄▀  █▀▀  ▀▄ █    █  █ │ NEEDS ATTENTION ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│▀▀▀ ▀   ▀▀   ▀▀  ▀▀ ▀ │   ● nothing needs attention
+┌zfsctl────────────────┐ Dashboard  ·  Thu 22 Oct 20:43                                                                                                  ● all quiet
+│Dashboard             │
+│Hosts                 │ NEEDS ATTENTION ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Pools                 │   ● nothing needs attention
+│Datasets              │
+│Snapshots             │ HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Disks                 │  Host      State       Pools  Capacity             Memory             ARC     CPU              Load  Scrub     Errors
+│Shares                │  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 17%     100.0%  ?                3.45  14 d ago  0
+│Boot Envs             │  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.18  4 d ago   0
+│Jobs                  │  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.55  4 d ago   0
+│Cloud                 │  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.68  4 d ago   0
+│Alerts                │  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.00  4 d ago   0
+│Settings              │  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     84.0%   ?                0.02  5 d ago   0
 │                      │
-│Dashboard             │ HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Hosts                 │  Host      State       Pools  Capacity             Memory             ARC     CPU              Load  Scrub     Errors
-│Pools                 │  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 17%     100.0%  ?                2.11  14 d ago  0
-│Datasets              │  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.12  4 d ago   0
-│Snapshots             │  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.53  4 d ago   0
-│Disks                 │  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.57  4 d ago   0
-│Shares                │  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.00  4 d ago   0
-│Boot Envs             │  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     84.0%   ?                0.04  5 d ago   0
-│Jobs                  │
-│Cloud                 │ DAEMON AND JOBS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Alerts                │   ● daemon  running (pid 34586), heartbeat 0s ago
-│Settings              │   ● jobs    scrub 2/2 ok
+│                      │ DAEMON AND JOBS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ● daemon  running (pid 42975), heartbeat 0s ago
+│                      │   ● jobs    scrub 2/2 ok
 │                      │
 │                      │ CLOUD ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
