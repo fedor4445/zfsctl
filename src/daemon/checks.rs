@@ -268,13 +268,18 @@ pub fn collect(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: Date
 
 /// The status line after a check of one host: what each half found, in words.
 pub fn describe(host: &str, checks: &HostChecks) -> String {
+    describe_with(host, checks, &|_, _| None)
+}
+
+/// `describe`, with each failing disk's role from `role_of(host, dev)` (`cache of tank`) in brackets after its name.
+pub fn describe_with(host: &str, checks: &HostChecks, role_of: &dyn Fn(&str, &str) -> Option<String>) -> String {
     use shares_check::Outcome as Shares;
     use smart_check::Outcome as Disks;
     let disks = match &checks.disks {
         Disks::Checked(result) => {
             let mut file = SmartFile::default();
             file.hosts.insert(host.to_string(), result.clone());
-            smart_check::problems(&file).first().map_or_else(|| "disks fine".to_string(), |p| format!("disks: {}", p.disks))
+            smart_check::problems_with(&file, role_of).first().map_or_else(|| "disks fine".to_string(), |p| format!("disks: {}", p.disks))
         }
         Disks::Silent => String::new(),
         Disks::Failed(why) if why.starts_with("no answer") => "disks: no answer in time".to_string(),
@@ -499,6 +504,21 @@ mod tests {
             .map(|t| t.join().unwrap())
             .sum();
         assert_eq!(wins, 1, "exactly one of eight simultaneous claims");
+    }
+
+    #[test]
+    fn the_status_line_names_a_failing_disks_role_when_it_is_known() {
+        let runner = FakeRunner::new("")
+            .route("smartctl", "--scan", SCAN)
+            .route("smartctl", "-j", FAILING)
+            .route("service", "nfsd", "nfsd is running as pid 1.\n")
+            .route("service", "samba_server", "smbd is running as pid 2.\n")
+            .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\n")
+            .route("cat", crate::zfs::smb::CONF_PATH, "[global]\n");
+        let checks = check_one_host(&runner, at(NOW), None, None);
+        let role = |host: &str, dev: &str| (host == "fbsd16" && dev == "ada0").then(|| "cache of tank".to_string());
+        assert_eq!(describe_with("fbsd16", &checks, &role), "fbsd16: disks: ada0 (cache of tank) SMART health FAILED; nvme0 SMART health FAILED, shares fine");
+        assert_eq!(describe("fbsd16", &checks), describe_with("fbsd16", &checks, &|_, _| None));
     }
 
     #[test]

@@ -273,6 +273,7 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, os: HostOs, features: 
         // place, and one appended (a wildcard such as `smb4.conf*` refuses the first and allows the second).
         let pinned = privilege::pinned_forms(r.entry, os);
         let forms: Vec<(&[&str], Vec<Vec<&str>>)> = match &r.entry.kind {
+            Kind::Privileged { .. } if r.entry.name == "cp" => pinned.iter().map(|args| (*args, privilege::cp_refused_forms())).collect(),
             Kind::Privileged { probe, .. } if !pinned.is_empty() && probe.is_empty() => pinned.iter().map(|args| (*args, Vec::new())).collect(),
             Kind::Privileged { probe, .. } if !pinned.is_empty() => pinned.iter().map(|args| (*args, vec![vec![*probe], args.iter().copied().chain([*probe]).collect()])).collect(),
             _ => vec![(&[][..], Vec::new())],
@@ -818,6 +819,18 @@ mod tests {
         }
         let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
         assert!(!without.contains("/bin/cp") && !without.contains("# cp") && !without.contains("cp is as powerful"), "{without}");
+    }
+
+    #[test]
+    fn check_host_flags_a_cp_entry_that_allows_overwriting() {
+        const CP_PATHS: &[(&str, &str)] = &[("cp", "/bin/cp")];
+        const EXACT_CP: &[&str] = &["/bin/cp -p -n -- * *"];
+        const BROAD_CP: &[&str] = &["/bin/cp -p -n -- * *", "/bin/cp -p -f -- /zfsctl-probe-a /zfsctl-probe-b"];
+        let ok = check_host(&sudo_host(EXACT_CP, CP_PATHS), "h", HostOs::FreeBsd, &[Feature::Restore]).unwrap();
+        assert_eq!(statuses(&ok), [("cp", Status::Ok)], "{}", ok.render());
+        let broad = check_host(&sudo_host(BROAD_CP, CP_PATHS), "h", HostOs::FreeBsd, &[Feature::Restore]).unwrap();
+        assert_eq!(statuses(&broad), [("cp", Status::TooBroad)], "{}", broad.render());
+        assert_eq!(broad.exit_code(), 1);
     }
 
     #[test]
