@@ -284,9 +284,14 @@ pub fn annotate_membership(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine
     annotate_with(disks, pool, vdevs, &disk_matches_vdev);
 }
 
-/// Whether the pool device `vdev_name` is the disk `disk_name`, by the name rule of the host's OS.
+/// Whether the pool device `vdev_name` is the disk `disk_name`, by the name rule of the host's OS; with the OS not known (the daily
+/// report has none) either rule may match, as the two do not overlap on real names.
 pub(crate) fn disk_matches_vdev_for(os: Option<HostOs>, disk_name: &str, vdev_name: &str) -> bool {
-    if os == Some(HostOs::Linux) { linux_disk_matches_vdev(disk_name, vdev_name) } else { disk_matches_vdev(disk_name, vdev_name) }
+    match os {
+        Some(HostOs::Linux) => linux_disk_matches_vdev(disk_name, vdev_name),
+        Some(_) => disk_matches_vdev(disk_name, vdev_name),
+        None => disk_matches_vdev(disk_name, vdev_name) || linux_disk_matches_vdev(disk_name, vdev_name),
+    }
 }
 
 /// `annotate_membership` with the name rule of the host's OS: Linux names partitions `sdb1` and `nvme0n1p1`, FreeBSD and
