@@ -15,6 +15,16 @@ pub struct PoolClasses {
     /// A cache device is FAULTED, UNAVAIL or REMOVED.
     #[serde(default)]
     pub cache_bad: bool,
+    /// The disks that are not plain data (special, dedup, log, cache, spare), so a disk's own problem can say what it is for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<DeviceRole>,
+}
+
+/// A leaf disk of a non-data class, as `zpool status` names it (`da5`, `ada4p1`, `sdb1`, `gpt/slog0`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceRole {
+    pub role: String,
+    pub device: String,
 }
 
 impl PoolClasses {
@@ -59,6 +69,10 @@ fn classes_of(name: String, block: &str) -> PoolClasses {
             continue;
         }
         let down = |h: &PoolHealth, bad: &[PoolHealth]| bad.contains(h);
+        let is_leaf = !lines.get(i + 1).is_some_and(|next| next.depth > line.depth);
+        if class != "data" && is_leaf {
+            out.roles.push(DeviceRole { role: class.to_string(), device: line.name.clone() });
+        }
         match class {
             "special" | "dedup" if line.depth == 1 => {
                 let has_children = lines.get(i + 1).is_some_and(|next| next.depth > line.depth);
@@ -94,6 +108,15 @@ mod tests {
         let fragile = &parse_classes(TWO_POOLS)[1];
         assert_eq!(fragile.unprotected, ["dedup", "special"]);
         assert!(fragile.cache_bad && !fragile.log_bad);
+    }
+
+    #[test]
+    fn the_leaf_disks_of_every_non_data_class_are_listed_with_their_role() {
+        let pools = parse_classes(TWO_POOLS);
+        let roles = |pool: usize| pools[pool].roles.iter().map(|r| (r.role.as_str(), r.device.as_str())).collect::<Vec<_>>();
+        assert_eq!(roles(0), [("special", "da3"), ("special", "da4"), ("log", "da5"), ("cache", "da6")], "data disks and group names are not listed");
+        assert_eq!(roles(1), [("dedup", "da8"), ("special", "da9"), ("cache", "da10")]);
+        assert!(parse_classes("  pool: t\n state: ONLINE\nconfig:\n\n\tNAME   STATE     READ WRITE CKSUM\n\tt      ONLINE       0     0     0\n\t  da0  ONLINE       0     0     0\n")[0].roles.is_empty());
     }
 
     #[test]

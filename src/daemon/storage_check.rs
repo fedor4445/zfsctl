@@ -272,7 +272,7 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
                 .run("zpool", &["status"])
                 .ok()
                 .filter(crate::exec::CommandOutput::success)
-                .map(|o| parse_classes(&o.stdout).into_iter().filter(|p| !p.is_quiet()).collect())
+                .map(|o| parse_classes(&o.stdout).into_iter().filter(|p| !p.is_quiet() || !p.roles.is_empty()).collect())
                 .unwrap_or_default();
             // Each of these may fail on its own (sudo, an old zfs): the rest is still worth having.
             // An answer that is an error (an old zfs, a refusal) is empty; a connection that dropped (Err or ssh's 255) is not an
@@ -408,6 +408,14 @@ pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16, now: DateTime
             (!texts.is_empty()).then(|| StorageProblem { host: host.clone(), severity: Severity::Watch, text: texts.join("; "), checked_at: result.checked_at })
         })
         .collect()
+}
+
+/// What the disk `dev` of `host` is for, from the last storage check: `cache of tank`, `log of tank`. `None` for a data disk, a
+/// host the check has not answered for, and a device whose name cannot be tied to the disk (labels and ids are not guessed).
+pub fn role_of(file: &StorageFile, host: &str, dev: &str, os: Option<crate::zfs::host_health::HostOs>) -> Option<String> {
+    file.hosts.get(host)?.pools.iter().find_map(|pool| {
+        pool.roles.iter().find(|r| crate::zfs::disk::disk_matches_vdev_for(os, dev, &r.device)).map(|r| format!("{} of {}", r.role, pool.name))
+    })
 }
 
 /// What one host adds to Needs attention for its pools' device classes: a special or dedup vdev that is a lone disk is an issue
@@ -676,21 +684,36 @@ mod tests {
         assert_eq!(r.pools[0].unprotected, ["special"]);
         let quiet = FakeRunner::new("").route("zfs", "list", "").route("zpool", "status", &status_with("\t  mirror-1    ONLINE       0     0     0\n\t    da1       ONLINE       0     0     0\n\t    da2       ONLINE       0     0     0\n", ""));
         let Outcome::Checked(r) = check_host(&quiet, at(NOW)) else { panic!() };
-        assert!(r.pools.is_empty(), "quiet pools are not stored");
+        assert!(r.pools.iter().all(|p| p.is_quiet()), "a protected special mirror says nothing is wrong (its disks' roles are kept)");
+        let plain = FakeRunner::new("").route("zfs", "list", "").route("zpool", "status", "  pool: tank\n state: ONLINE\nconfig:\n\n\tNAME   STATE     READ WRITE CKSUM\n\ttank   ONLINE       0     0     0\n\t  da0  ONLINE       0     0     0\n");
+        let Outcome::Checked(r) = check_host(&plain, at(NOW)) else { panic!() };
+        assert!(r.pools.is_empty(), "a pool with only data disks is not stored");
         let broken = FakeRunner::new("").route("zfs", "list", "a\t9\t9\t10\t0\tfilesystem\n").route_failure("zpool", "status", "cannot open", 1);
         let Outcome::Checked(r) = check_host(&broken, at(NOW)) else { panic!() };
         assert!(r.pools.is_empty() && r.datasets.len() == 1, "the quota lines survive a zpool status that fails");
     }
 
     #[test]
+    fn a_healthy_pool_with_a_cache_disk_is_stored_for_its_roles_but_adds_no_problem() {
+        let with_cache = status_with("\t  mirror-1    ONLINE       0     0     0\n\t    da1       ONLINE       0     0     0\n\t    da2       ONLINE       0     0     0\n", "\tcache\n\t  da6         ONLINE       0     0     0\n");
+        let runner = FakeRunner::new("").route("zfs", "list", "").route("zpool", "status", &with_cache);
+        let Outcome::Checked(r) = check_host(&runner, at(NOW)) else { panic!() };
+        assert_eq!(r.pools.len(), 1, "kept: it knows which disk is the cache");
+        assert_eq!(r.pools[0].roles.iter().map(|d| (d.role.as_str(), d.device.as_str())).collect::<Vec<_>>(), [("special", "da1"), ("special", "da2"), ("cache", "da6")]);
+        let mut file = StorageFile::default();
+        file.hosts.insert("hub".into(), r);
+        assert!(pool_problems(&file).is_empty(), "a healthy cache disk is not a problem");
+    }
+
+    #[test]
     fn a_lone_special_disk_is_an_issue_and_a_faulted_log_is_a_watch_one_line_per_host() {
         let mut file = file_with("hub", vec![]);
-        file.hosts.get_mut("hub").unwrap().pools = vec![PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: true, cache_bad: false }, PoolClasses { name: "t2".into(), unprotected: vec![], log_bad: false, cache_bad: true }];
+        file.hosts.get_mut("hub").unwrap().pools = vec![PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: true, cache_bad: false, roles: vec![] }, PoolClasses { name: "t2".into(), unprotected: vec![], log_bad: false, cache_bad: true, roles: vec![] }];
         let p = pool_problems(&file);
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].severity, Severity::Issue);
         assert_eq!(p[0].text, "tank special vdev has no redundancy; tank log device faulted; t2 cache device faulted");
-        file.hosts.get_mut("hub").unwrap().pools = vec![PoolClasses { name: "t2".into(), unprotected: vec![], log_bad: true, cache_bad: false }];
+        file.hosts.get_mut("hub").unwrap().pools = vec![PoolClasses { name: "t2".into(), unprotected: vec![], log_bad: true, cache_bad: false, roles: vec![] }];
         assert_eq!(pool_problems(&file)[0].severity, Severity::Watch);
         file.hosts.get_mut("hub").unwrap().pools.clear();
         assert!(pool_problems(&file).is_empty());

@@ -447,7 +447,14 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     use crate::smart::Severity;
     let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
     let mut items = Vec::new();
-    for found in crate::daemon::smart_check::problems(inputs.smart).into_iter().filter(|p| reached(&p.host)) {
+    let role_of = |host: &str, dev: &str| {
+        let os = inputs.hosts.iter().find(|h| h.name == host).and_then(|h| match h.probe {
+            Some(HostProbe::Reached { os, .. }) => *os,
+            _ => None,
+        });
+        crate::daemon::storage_check::role_of(inputs.storage, host, dev, os)
+    };
+    for found in crate::daemon::smart_check::problems_with(inputs.smart, &role_of).into_iter().filter(|p| reached(&p.host)) {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.disks, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Disks, target: Some(found.host) });
@@ -1094,6 +1101,19 @@ mod tests {
     }
 
     #[test]
+    fn a_wearing_disk_says_what_it_is_for_when_the_storage_check_knows() {
+        use crate::smart::Severity::Watch;
+        use crate::zfs::pool_classes::{DeviceRole, PoolClasses};
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.smart = smart_file(&[("h", 3, &[("ada4", Watch, "SSD wear 87%"), ("ada0", Watch, "pending sectors 8")])]);
+        let pools = vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: "cache".into(), device: "ada4p1".into() }, DeviceRole { role: "log".into(), device: "gpt/slog0".into() }], ..PoolClasses::default() }];
+        let result = crate::daemon::storage_check::StorageResult { checked_at: now(), datasets: vec![], pools, zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+        fx.storage.hosts.insert("h".into(), result);
+        let items = disk_items(&fx, &["h"]);
+        assert!(items[0].what.contains("ada4 (cache of tank) SSD wear 87%; ada0 pending sectors 8"), "the partition ada4p1 is the disk ada4, and a disk with no known role keeps its bare name: {}", items[0].what);
+    }
+
+    #[test]
     fn the_last_good_result_stays_after_a_failed_check_with_its_real_age() {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         fx.smart = smart_file(&[("h", 30, &[("ada0", crate::smart::Severity::Watch, "pending sectors 2")])]);
@@ -1194,7 +1214,7 @@ mod tests {
     fn a_pool_with_a_lone_special_disk_is_a_red_line_that_goes_to_pools() {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         let mut entry = storage_entry(2, "tank/x", 10);
-        entry.pools = vec![crate::zfs::pool_classes::PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: false, cache_bad: false }];
+        entry.pools = vec![crate::zfs::pool_classes::PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: false, cache_bad: false, roles: vec![] }];
         fx.storage.hosts.insert("h".into(), entry);
         let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
         let probe = reached(vec![]);

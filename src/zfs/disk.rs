@@ -284,6 +284,11 @@ pub fn annotate_membership(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine
     annotate_with(disks, pool, vdevs, &disk_matches_vdev);
 }
 
+/// Whether the pool device `vdev_name` is the disk `disk_name`, by the name rule of the host's OS.
+pub(crate) fn disk_matches_vdev_for(os: Option<HostOs>, disk_name: &str, vdev_name: &str) -> bool {
+    if os == Some(HostOs::Linux) { linux_disk_matches_vdev(disk_name, vdev_name) } else { disk_matches_vdev(disk_name, vdev_name) }
+}
+
 /// `annotate_membership` with the name rule of the host's OS: Linux names partitions `sdb1` and `nvme0n1p1`, FreeBSD and
 /// illumos use the rule above (`ada0p4`, `da0s1a`, `c1t0d0s0`).
 fn annotate_membership_for(os: Option<HostOs>, disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine]) {
@@ -296,8 +301,22 @@ fn annotate_membership_for(os: Option<HostOs>, disks: &mut [DiskInfo], pool: &st
 
 fn annotate_with(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine], matches: &dyn Fn(&str, &str) -> bool) {
     let mut current_group: Option<String> = None;
+    // The first depth-0 line is the pool; a later one (`logs`, `cache`, `special`...) opens a class, which a disk in it carries.
+    let mut class: Option<&str> = None;
+    let mut seen_pool = false;
     for vdev in vdevs {
         if vdev.depth == 0 {
+            if seen_pool {
+                class = match vdev.name.as_str() {
+                    "logs" => Some("log"),
+                    "cache" => Some("cache"),
+                    "spares" => Some("spare"),
+                    "special" => Some("special"),
+                    "dedup" => Some("dedup"),
+                    _ => None,
+                };
+            }
+            seen_pool = true;
             continue;
         }
         if vdev.depth == 1 {
@@ -306,10 +325,16 @@ fn annotate_with(disks: &mut [DiskInfo], pool: &str, vdevs: &[VdevLine], matches
         if !is_leaf_disk(&vdev.name) {
             continue;
         }
-        let vdev_name = if vdev.depth == 1 {
+        let group = if vdev.depth == 1 {
             vdev.name.clone()
         } else {
             current_group.clone().unwrap_or_else(|| vdev.name.clone())
+        };
+        // A lone log, cache or spare disk is named by its class alone (`cache`); a group keeps its name (`special mirror-1`).
+        let vdev_name = match class {
+            Some(class @ ("log" | "cache" | "spare")) if vdev.depth == 1 => class.to_string(),
+            Some(class) => format!("{class} {group}"),
+            None => group,
         };
         if let Some(disk) = disks.iter_mut().find(|d| matches(&d.name, &vdev.name)) {
             disk.membership = DiskMembership::InPool { pool: pool.to_string(), vdev: vdev_name };
@@ -589,6 +614,32 @@ Providers:
         let runner = FakeRunner::failing("geom: no such class", 1);
         let result = list_disks(&runner, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_disk_in_a_log_cache_special_or_spare_class_says_so_in_its_membership() {
+        let mut disks: Vec<DiskInfo> = ["da0", "da1", "da2", "da3", "da4", "da5", "da6"].iter().map(|n| DiskInfo { name: (*n).to_string(), ..Default::default() }).collect();
+        let line = |depth: usize, name: &str| VdevLine { depth, name: name.to_string(), health: PoolHealth::Online };
+        let vdevs = vec![
+            line(0, "tank"),
+            line(1, "da0"),
+            line(0, "special"),
+            line(1, "mirror-1"),
+            line(2, "da1"),
+            line(2, "da2"),
+            line(0, "logs"),
+            line(1, "da3"),
+            line(0, "cache"),
+            line(1, "da4"),
+            line(0, "spares"),
+            line(1, "da5"),
+        ];
+        annotate_membership(&mut disks, "tank", &vdevs);
+        let vdev = |i: usize| match &disks[i].membership {
+            DiskMembership::InPool { vdev, .. } => vdev.clone(),
+            DiskMembership::Available => "available".to_string(),
+        };
+        assert_eq!([vdev(0), vdev(1), vdev(2), vdev(3), vdev(4), vdev(5), vdev(6)], ["da0", "special mirror-1", "special mirror-1", "log", "cache", "spare", "available"]);
     }
 
     #[test]
