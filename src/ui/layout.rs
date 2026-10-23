@@ -3180,8 +3180,8 @@ mod tests {
         let logo = crate::ui::logo::compact();
         let at = |needle: &str, rows: &[String]| rows.iter().position(|r| r.contains(needle));
         let first = at(&logo[0], &rows).expect("the logo is in the sidebar");
-        assert_eq!(rows.iter().skip(first).take(3).map(|r| r.chars().skip(1).take(crate::ui::logo::COMPACT_WIDTH).collect::<String>()).collect::<Vec<_>>(), logo);
-        assert!(at("Dashboard", &rows).unwrap() > first + 2, "the sections start under the logo: {rows:?}");
+        assert_eq!(rows.iter().skip(first).take(logo.len()).map(|r| r.chars().skip(1).take(crate::ui::logo::COMPACT_WIDTH).collect::<String>()).collect::<Vec<_>>(), logo);
+        assert!(at("Dashboard", &rows).unwrap() > first + logo.len() - 1, "the sections start under the logo: {rows:?}");
         assert!(rows.iter().take(first).all(|r| !r.contains("Dashboard")));
         assert_eq!(fg_of(&mut app, &logo[0], 120, 40), Some(ratatui::style::Color::Yellow), "the warn colour, as on the About screen");
         // too short for the logo and all twelve sections: the sections win
