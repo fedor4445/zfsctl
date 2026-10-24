@@ -4,7 +4,7 @@ Status: draft for approval (2026-10-23). Nothing is built.
 
 ## Intent
 
-The operator's top fear is losing data. zfsctl already says when a disk is failing, a pool is full or a job is overdue,
+zfsctl's mission is to protect data. It already says when a disk is failing, a pool is full or a job is overdue,
 but it never says "this dataset has no safety net". A dataset can sit for months with no snapshots, or with snapshots
 only on the pool that holds it, and nothing complains until the pool is gone.
 
