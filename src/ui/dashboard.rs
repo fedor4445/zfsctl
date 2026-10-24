@@ -590,11 +590,12 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         let what = if why.is_empty() { format!("failed {age}") } else { format!("failed {age}: {why}") };
         attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs, target: Some(job.id.clone()) });
     }
+    let mut protection = Vec::new();
     if daemon.level == Level::Fine {
         for late in crate::ui::overdue::overdue(inputs.jobs, now) {
             attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
         }
-        attention.extend(protection_items(inputs));
+        protection = protection_items(inputs);
     }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
@@ -611,6 +612,19 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         attention.push(Item { level: Level::Watch, subject: "config.toml".to_string(), what: crate::config::protection_problem_line(problem), goto: Section::Settings, target: None });
     }
     attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
+    // Within each level the protection lines come after the other items, so dozens of them never push a degraded pool or a
+    // failed job out of sight; among themselves they keep the judging's order (data first, then host and dataset).
+    protection.sort_by(|a, b| b.level.cmp(&a.level));
+    let mut rest = protection.into_iter().peekable();
+    let mut merged = Vec::with_capacity(attention.len() + rest.len());
+    for item in attention {
+        while rest.peek().is_some_and(|p| p.level > item.level) {
+            merged.extend(rest.next());
+        }
+        merged.push(item);
+    }
+    merged.extend(rest);
+    let attention = merged;
 
     let checking = inputs.hosts.iter().any(|h| h.assessment.level == HealthLevel::Probing);
     let verdict = {
@@ -1589,6 +1603,21 @@ mod tests {
         let no_daemon = Fixture::new(JobsView::default()).build(vec![]);
         assert_eq!(no_daemon.verdict.level, Level::Issue, "nothing has ever run the daemon: that is the one problem");
         assert!(empty.hosts.is_empty() && empty.cloud.is_empty());
+    }
+
+    #[test]
+    fn protection_lines_come_after_the_other_items_of_their_level() {
+        let mut fx = Fixture::new(view(vec![scrub_job("zz-scrub")], &[("zz-scrub", RunResult::Failed, "boom")], beat(1)));
+        let names: Vec<String> = (0..30).map(|i| format!("aa/d{i:02}")).chain(["zroot/var".to_string()]).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        with_datasets(&mut fx, &[("local", &refs)]);
+        let degraded = reached(vec![PoolProbe { health: PoolHealth::Degraded, ..pool("tank", 10, 0, Some(when(1))) }]);
+        let (r, before) = (reading(10, 0, 0, 1000), reading(10, 0, 0, 1000));
+        let d = fx.build(vec![fine_host("local", &degraded, &r, &before)]);
+        let order: Vec<(Level, &str)> = d.attention.iter().map(|i| (i.level, i.subject.as_str())).collect();
+        assert_eq!(order[..3], [(Level::Issue, "local"), (Level::Issue, "zz-scrub"), (Level::Issue, "aa/d00")], "the pool and the failed job first: {order:?}");
+        assert_eq!(order[2..32].iter().map(|(_, s)| *s).collect::<Vec<_>>(), refs[..30], "then the protection lines, in their own order");
+        assert_eq!(order[32..], [(Level::Watch, "zroot/var")], "Issue before Watch still: {order:?}");
     }
 
     #[test]
