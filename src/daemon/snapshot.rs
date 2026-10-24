@@ -11,6 +11,10 @@ use crate::zfs::snapshot::{create_snapshot_with, destroy_snapshot_with, list_sna
 use chrono::{DateTime, Utc};
 use std::fmt::Write;
 
+/// What a successful run of a recursive job adds after the snapshot's name. The protection check reads it as the proof that the
+/// descendants were snapshotted too: a job that was only made recursive has no such run yet.
+pub const RECURSIVE_MARK: &str = " (recursive)";
+
 /// `<prefix>-<UTC YYYYMMDDTHHMMSSZ>`: no colons, sorts chronologically as a string, and does not
 /// depend on the hub's local time zone.
 pub fn snapshot_name(prefix: &str, at: DateTime<Utc>) -> String {
@@ -87,10 +91,11 @@ pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, schedu
     if held > 0 {
         let _ = write!(kept, "; kept {held} (held); {held_reason}");
     }
+    let tree = if job.recursive { RECURSIVE_MARK } else { "" };
     if failures.is_empty() {
-        finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("created {name}; pruned {pruned}{kept}"), slot)
+        finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("created {name}{tree}; pruned {pruned}{kept}"), slot)
     } else {
-        finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("created {name}; pruned {pruned}{kept}; could not destroy {}", failures.join("; ")), slot)
+        finish(ctx, job, run_id, EventKind::Finished, RunResult::Failed, format!("created {name}{tree}; pruned {pruned}{kept}; could not destroy {}", failures.join("; ")), slot)
     }
 }
 
@@ -187,6 +192,17 @@ mod tests {
     }
 
     const NEW: &str = "hourly-20261006T193000Z";
+
+    #[test]
+    fn a_recursive_run_says_so_in_its_message_and_a_plain_one_does_not() {
+        let zfs = Zfs::new(&[&format!("tank/data@{NEW}")]);
+        let mut job = Job::test_snapshot("s", "tank/data", "hourly", 2);
+        let (plain, _) = run(&zfs, &job);
+        assert!(!plain.message.contains(RECURSIVE_MARK), "{}", plain.message);
+        job.recursive = true;
+        let (tree, _) = run(&zfs, &job);
+        assert!(tree.message.starts_with(&format!("created {NEW}{RECURSIVE_MARK}; pruned")), "{}", tree.message);
+    }
 
     #[test]
     fn names_are_the_prefix_and_a_utc_timestamp() {
