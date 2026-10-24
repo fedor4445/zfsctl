@@ -7,6 +7,7 @@ use crate::daemon::storage_check::StorageFile;
 use crate::daemon::history::{Run, RunResult};
 use crate::jobs::{self, Job};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 /// How a job stands: the same overdue rule the Dashboard uses, with the tolerance (in schedule gaps) chosen by the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,15 +197,65 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
         .enumerate()
         .map(|(i, (job, kind, place))| CopyJob { job, kind: *kind, place: made.iter().take(i).position(|(_, _, p)| p == place).unwrap_or(i), standing: standing(job) })
         .collect();
-    // A replica (where a current replication to a host writes) is protected by its source.
-    let replicas: Vec<(&str, &str)> = copy_jobs
+    // The current replications to another host, each as source node -> destination node, with the copy job that makes it.
+    // They chain datasets into one body of data: what is copied from the original, or from one of its replicas, is a copy of it.
+    let links: Vec<(Node, Node, usize)> = copy_jobs
         .iter()
-        .filter(|c| c.standing.is_none() && c.job.kind == jobs::KIND_REPLICATE && c.job.dest_host.as_deref() != Some(jobs::DEST_FILE))
-        .filter_map(|c| Some((c.job.dest_host.as_deref()?, c.job.dest_dataset.as_deref()?)))
+        .enumerate()
+        .filter(|(_, c)| c.standing.is_none() && c.job.kind == jobs::KIND_REPLICATE && c.job.dest_host.as_deref() != Some(jobs::DEST_FILE))
+        .filter_map(|(i, c)| Some(((c.job.host.clone(), c.job.dataset.clone()?), (c.job.dest_host.clone()?, c.job.dest_dataset.clone()?), i)))
         .collect();
+    let parent_of = |n: &Node| links.iter().find(|l| l.1 == *n).map(|l| l.0.clone());
+    // The original a replica comes from, following the chain up; `None` when the chain runs in a circle.
+    let root_of = |n: &Node| {
+        let (mut cur, mut seen) = (n.clone(), vec![n.clone()]);
+        while let Some(p) = parent_of(&cur) {
+            if seen.contains(&p) {
+                return None;
+            }
+            seen.push(p.clone());
+            cur = p;
+        }
+        Some(cur)
+    };
+    // Every replica below `root`, through however many hops.
+    let members_of = |root: &Node| {
+        let (mut out, mut queue): (Vec<Node>, Vec<Node>) = (Vec::new(), vec![root.clone()]);
+        while let Some(cur) = queue.pop() {
+            let next: Vec<Node> = links.iter().filter(|l| l.0 == cur && l.1 != *root).map(|l| l.1.clone()).filter(|n| !out.contains(n)).collect();
+            for n in next {
+                if !out.contains(&n) {
+                    out.push(n.clone());
+                    queue.push(n);
+                }
+            }
+        }
+        out
+    };
+    // The copies of one body of data: its replicas, plus every other current copy job of any of its datasets. A place that
+    // two of them write to counts once. Cached by the original, since every replica asks the same question.
+    let mut bodies: HashMap<Node, (u8, u8, Gap)> = HashMap::new();
+    let mut body_copies = |root: &Node, members: &[Node]| -> (u8, u8, Gap) {
+        *bodies.entry(root.clone()).or_insert_with(|| {
+            let (mut counted, mut online_have, mut worst) = (Vec::<usize>::new(), 0usize, Gap::Missing);
+            for copy in copy_jobs.iter().enumerate().filter(|(i, _)| !links.iter().any(|l| l.2 == *i)).map(|(_, c)| c) {
+                if !std::iter::once(root).chain(members).any(|n| covers(copy.job, &n.0, &n.1)) {
+                    continue;
+                }
+                match copy.standing {
+                    None if !counted.contains(&copy.place) => {
+                        counted.push(copy.place);
+                        online_have += usize::from(copy.kind == CopyKind::Online);
+                    }
+                    None => {}
+                    Some(gap) => worst = worse(worst, gap),
+                }
+            }
+            (small(members.len() + counted.len()), small(online_have), worst)
+        })
+    };
 
     let mut out = Vec::new();
-    let mut counted: Vec<usize> = Vec::with_capacity(copy_jobs.len());
     for (host, result) in &file.hosts {
         if now - result.checked_at > STALE_AFTER {
             continue;
@@ -215,13 +266,22 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
             if seen.created.and_then(|c| DateTime::from_timestamp(c, 0)).is_some_and(|created| created <= now && now - created < GRACE) {
                 continue;
             }
-            if replicas.iter().any(|&(h, d)| h == host.as_str() && d == dataset) {
-                continue;
-            }
+            let node: Node = (host.clone(), dataset.to_string());
             let tier = tier_of(dataset, seen.volume);
+            // A replica of a current replication has the snapshots it was sent; a dataset in a circle of replications has no
+            // original to lean on and is judged alone, its outgoing replications being its copies.
+            let root = root_of(&node);
+            let fed = root.is_some() && parent_of(&node).is_some();
+            let (root, members) = if let Some(r) = root {
+                let members = members_of(&r);
+                (r, members)
+            } else {
+                let members = links.iter().filter(|l| l.0 == node && l.1 != node).map(|l| l.1.clone()).collect();
+                (node, members)
+            };
 
-            let mut snapshots = Some(Gap::Missing);
-            for (job, gap, recursive_run) in snap_jobs.iter().filter(|(job, _, _)| covers(job, host, dataset)) {
+            let mut snapshots = if fed { None } else { Some(Gap::Missing) };
+            for (job, gap, recursive_run) in snap_jobs.iter().filter(|(job, _, _)| !fed && covers(job, host, dataset)) {
                 // A child is covered through its parent's recursion only if the job's newest success was a recursive one.
                 let gap = match gap {
                     None if job.dataset.as_deref() != Some(dataset) && !recursive_run => Some(Gap::NotRecursiveYet),
@@ -234,23 +294,12 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
                 snapshots = snapshots.map(|w| worse(w, gap));
             }
 
-            counted.clear();
-            let (mut online_have, mut worst) = (0usize, Gap::Missing);
-            for copy in copy_jobs.iter().filter(|c| covers(c.job, host, dataset)) {
-                match copy.standing {
-                    None if !counted.contains(&copy.place) => {
-                        counted.push(copy.place);
-                        online_have += usize::from(copy.kind == CopyKind::Online);
-                    }
-                    None => {}
-                    Some(gap) => worst = worse(worst, gap),
-                }
-            }
-            let (need, online_need) = match tier {
+            let root_is_volume = file.hosts.get(&root.0).and_then(|h| h.seen.iter().find(|s| s.name == root.1)).is_some_and(|s| s.volume);
+            let (need, online_need) = match tier_of(&root.1, root_is_volume) {
                 Tier::Data => (settings.copies, settings.online),
                 Tier::Os => (1, 0),
             };
-            let (have, online_have) = (small(counted.len()), small(online_have));
+            let (have, online_have, worst) = body_copies(&root, &members);
             let copies = (have < need || online_have < online_need).then_some(CopyGap { have, need, online_have, online_need, worst: if have == 0 { worst } else { Gap::Missing } });
 
             if snapshots.is_some() || copies.is_some() {
@@ -270,6 +319,9 @@ fn ran_recursively(job: &Job, runs: &[Run]) -> bool {
         .max_by_key(|r| r.finished_at.unwrap_or(r.started_at))
         .is_some_and(|r| r.message.contains(crate::daemon::snapshot::RECURSIVE_MARK))
 }
+
+/// A dataset on a host: `(host, dataset)`.
+type Node = (String, String);
 
 /// A copy job as the judging sees it: `place` is the index of the first copy job that writes to the same place.
 struct CopyJob<'a> {
@@ -523,12 +575,92 @@ mod tests {
         assert_eq!(judged(&runs, &two)[0].copies.map(|c| c.worst), Some(Gap::Stopped { last_ok: at }));
     }
 
+    fn places(found: &[Unprotected]) -> Vec<String> {
+        found.iter().map(|u| format!("{}:{}", u.host, u.dataset)).collect()
+    }
+
+    fn mirror_on(host: &str, id: &str, dataset: &str, remote: &str) -> Job {
+        Job { host: host.into(), ..Job::test_mirror(id, dataset, "m", remote) }
+    }
+
+    #[test]
+    fn without_a_cloud_copy_the_source_and_its_replica_both_warn_when_the_level_asks_for_one() {
+        let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy"])]);
+        let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy")];
+        let found = judge(&file, &jobs, &ok_runs(&jobs), &level(2, 1), now());
+        assert_eq!(places(&found), ["fbsd16:tank/copy", "local:tank/data"]);
+        let gap = Some(CopyGap { have: 1, need: 2, online_have: 0, online_need: 1, worst: Gap::Missing });
+        assert!(found.iter().all(|u| u.copies == gap && u.snapshots.is_none()), "the same verdict for the data on both machines: {found:?}");
+        assert_eq!(words(&found), ["fbsd16: tank/copy: 1 of 2 copies on other machines; no online copy", "local: tank/data: 1 of 2 copies on other machines; no online copy"]);
+    }
+
+    #[test]
+    fn a_cloud_copy_made_from_the_replica_counts_for_the_source_and_one_made_from_the_source_for_the_replica() {
+        let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy"])]);
+        for cloud in [mirror_on("fbsd16", "m", "tank/copy", "b2:bkt/photos"), mirror_on("local", "m", "tank/data", "b2:bkt/photos")] {
+            let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy"), cloud];
+            assert!(judge(&file, &jobs, &ok_runs(&jobs), &level(2, 1), now()).is_empty(), "the cloud has the data, whichever machine sent it");
+        }
+    }
+
+    #[test]
+    fn the_cloud_copy_has_to_be_current_to_count() {
+        let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy"])]);
+        let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy"), mirror_on("fbsd16", "m", "tank/copy", "b2:bkt/photos")];
+        let mut runs = ok_runs(&jobs);
+        runs.retain(|r| r.job_id != "m");
+        runs.push(run("m", Duration::days(3), Some(RunResult::Ok)));
+        let found = judge(&file, &jobs, &runs, &level(2, 1), now());
+        assert_eq!(places(&found), ["fbsd16:tank/copy", "local:tank/data"], "a stopped cloud job is no copy");
+    }
+
+    #[test]
+    fn one_cloud_place_counts_once_however_many_datasets_of_the_chain_write_to_it() {
+        let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy"])]);
+        let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy"), mirror_on("local", "m1", "tank/data", "b2:bkt/photos"), mirror_on("fbsd16", "m2", "tank/copy", "b2:bkt/photos")];
+        let found = judge(&file, &jobs, &ok_runs(&jobs), &level(3, 1), now());
+        assert_eq!(found.len(), 2, "the replica and one cloud place are two copies, not three");
+        assert!(found.iter().all(|u| u.copies.is_some_and(|c| c.have == 2 && c.online_have == 1)), "{found:?}");
+    }
+
+    #[test]
+    fn a_chain_of_replicas_is_one_body_of_data() {
+        let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy"]), ("cold", &["tank/arch"])]);
+        let jobs = vec![snap("s", "tank/data"), repl("r1", "tank/data", "fbsd16", "tank/copy"), Job { host: "fbsd16".into(), ..repl("r2", "tank/copy", "cold", "tank/arch") }];
+        let runs = ok_runs(&jobs);
+        assert!(judge(&file, &jobs, &runs, &level(2, 0), now()).is_empty(), "two replicas are two copies");
+        assert_eq!(places(&judge(&file, &jobs, &runs, &level(3, 0), now())), ["cold:tank/arch", "fbsd16:tank/copy", "local:tank/data"]);
+    }
+
+    #[test]
+    fn a_replication_that_is_not_current_breaks_the_chain_and_the_replica_stands_alone() {
+        let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy"])]);
+        let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy")];
+        let runs = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("r", Duration::days(3), Some(RunResult::Ok))];
+        let found = judge(&file, &jobs, &runs, &level(1, 0), now());
+        assert_eq!(places(&found), ["fbsd16:tank/copy", "local:tank/data"]);
+        let by = |p: &str| found.iter().find(|u| format!("{}:{}", u.host, u.dataset) == p).unwrap();
+        assert_eq!(by("fbsd16:tank/copy").snapshots, Some(Gap::Missing), "the replica is no longer fed, so nothing snapshots it");
+        assert!(matches!(by("local:tank/data").copies, Some(CopyGap { have: 0, worst: Gap::Stopped { .. }, .. })));
+    }
+
+    #[test]
+    fn replications_in_a_circle_have_no_original_so_each_is_judged_on_its_own() {
+        let file = storage(&[("local", &["tank/a"]), ("fbsd16", &["tank/b"])]);
+        let jobs = vec![repl("r1", "tank/a", "fbsd16", "tank/b"), Job { host: "fbsd16".into(), ..repl("r2", "tank/b", "local", "tank/a") }];
+        let found = judge(&file, &jobs, &ok_runs(&jobs), &level(1, 0), now());
+        assert_eq!(places(&found), ["fbsd16:tank/b", "local:tank/a"], "neither is exempt: each needs its own snapshots");
+        assert!(found.iter().all(|u| u.snapshots == Some(Gap::Missing) && u.copies.is_none()), "its outgoing replication is its copy: {found:?}");
+    }
+
     #[test]
     fn a_replica_is_protected_by_its_current_source_job() {
         let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy", "tank/other"])]);
         let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy")];
         let found = judge(&file, &jobs, &ok_runs(&jobs), &level(3, 1), now());
-        assert_eq!(found.iter().map(|u| (u.host.as_str(), u.dataset.as_str())).collect::<Vec<_>>(), [("fbsd16", "tank/other"), ("local", "tank/data")], "the replica is protected on both sides");
+        assert_eq!(found.iter().map(|u| (u.host.as_str(), u.dataset.as_str())).collect::<Vec<_>>(), [("fbsd16", "tank/copy"), ("fbsd16", "tank/other"), ("local", "tank/data")], "one copy is short of three for the data, wherever it is held");
+        let found = judge(&file, &jobs, &ok_runs(&jobs), &level(1, 0), now());
+        assert_eq!(found.iter().map(|u| u.dataset.as_str()).collect::<Vec<_>>(), ["tank/other"], "at Basic the source and its replica are both protected");
         let stopped = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("r", Duration::days(3), Some(RunResult::Ok))];
         let found = judge(&file, &jobs, &stopped, &level(1, 0), now());
         assert!(found.iter().any(|u| u.host == "fbsd16" && u.dataset == "tank/copy"), "a stopped source job protects nothing");
