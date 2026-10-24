@@ -128,6 +128,9 @@ pub enum Gap {
     Missing,
     /// A job gives it but has not succeeded yet (never ran, or nothing dates it).
     NotYet,
+    /// A recursive snapshot job covers it only through its parent and has not run since it became recursive: nothing shows
+    /// the dataset was snapshotted.
+    NotRecursiveYet,
     /// The job stopped succeeding in time; its last success.
     Stopped { last_ok: DateTime<Utc> },
     /// The job's latest run failed.
@@ -185,7 +188,7 @@ pub fn fix_for(gap: &Unprotected, jobs: &[Job]) -> Fix {
 pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Vec<Unprotected> {
     // Worked out once per call: each enabled snapshot job and each enabled copy job, with where it stands.
     let standing = |job: &Job| gap_of(&job_state(job, runs, settings.tolerance, now), now);
-    let snap_jobs: Vec<(&Job, Option<Gap>)> = jobs.iter().filter(|j| gives_snapshots(j)).map(|j| (j, standing(j))).collect();
+    let snap_jobs: Vec<(&Job, Option<Gap>, bool)> = jobs.iter().filter(|j| gives_snapshots(j)).map(|j| (j, standing(j), ran_recursively(j, runs))).collect();
     let made: Vec<(&Job, CopyKind, String)> = jobs.iter().filter_map(|j| copy_of(j).map(|(kind, place)| (j, kind, place))).collect();
     // Two jobs that write to the same place are one copy: each copy job carries the index of the first one writing there.
     let copy_jobs: Vec<CopyJob> = made
@@ -218,12 +221,17 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
             let tier = tier_of(dataset, seen.volume);
 
             let mut snapshots = Some(Gap::Missing);
-            for (_, gap) in snap_jobs.iter().filter(|(job, _)| covers(job, host, dataset)) {
+            for (job, gap, recursive_run) in snap_jobs.iter().filter(|(job, _, _)| covers(job, host, dataset)) {
+                // A child is covered through its parent's recursion only if the job's newest success was a recursive one.
+                let gap = match gap {
+                    None if job.dataset.as_deref() != Some(dataset) && !recursive_run => Some(Gap::NotRecursiveYet),
+                    other => *other,
+                };
                 let Some(gap) = gap else {
                     snapshots = None;
                     break;
                 };
-                snapshots = snapshots.map(|w| worse(w, *gap));
+                snapshots = snapshots.map(|w| worse(w, gap));
             }
 
             counted.clear();
@@ -254,6 +262,15 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
     out
 }
 
+/// Whether the newest success of the job was a recursive run (its message carries the mark): the only evidence that its
+/// descendants were snapshotted.
+fn ran_recursively(job: &Job, runs: &[Run]) -> bool {
+    runs.iter()
+        .filter(|r| r.job_id == job.id && r.result == Some(RunResult::Ok))
+        .max_by_key(|r| r.finished_at.unwrap_or(r.started_at))
+        .is_some_and(|r| r.message.contains(crate::daemon::snapshot::RECURSIVE_MARK))
+}
+
 /// A copy job as the judging sees it: `place` is the index of the first copy job that writes to the same place.
 struct CopyJob<'a> {
     job: &'a Job,
@@ -278,7 +295,7 @@ fn gap_of(state: &JobState, now: DateTime<Utc>) -> Option<Gap> {
 fn worse(a: Gap, b: Gap) -> Gap {
     let rank = |g: Gap| match g {
         Gap::Missing => 0,
-        Gap::NotYet => 1,
+        Gap::NotYet | Gap::NotRecursiveYet => 1,
         Gap::Stopped { .. } => 2,
         Gap::Failing => 3,
     };
@@ -301,6 +318,7 @@ impl Unprotected {
         match self.snapshots {
             Some(Gap::Missing) => parts.push("no snapshot job".into()),
             Some(Gap::NotYet) => parts.push("snapshot job has not run yet".into()),
+            Some(Gap::NotRecursiveYet) => parts.push("snapshot job has not run recursively yet".into()),
             Some(Gap::Stopped { last_ok }) => parts.push(format!("snapshots stopped {}", age(last_ok))),
             Some(Gap::Failing) => parts.push("snapshot job failing".into()),
             None => {}
@@ -309,7 +327,7 @@ impl Unprotected {
             if c.have == 0 && c.need >= 1 {
                 parts.push(match c.worst {
                     Gap::Missing => "no copy job".into(),
-                    Gap::NotYet => "copy job has not run yet".into(),
+                    Gap::NotYet | Gap::NotRecursiveYet => "copy job has not run yet".into(),
                     Gap::Stopped { last_ok } => format!("copy on another machine stopped {}", age(last_ok)),
                     Gap::Failing => "copy job failing".into(),
                 });
@@ -578,7 +596,9 @@ mod tests {
         let mut jobs = vec![snap("s", "tank/data"), bk("b", "tank/data", "sftp:nas:/r")];
         jobs[0].recursive = true;
         jobs[1].recursive = true;
-        let found = judge(&file, &jobs, &ok_runs(&jobs), &level(1, 0), now());
+        let mut runs = ok_runs(&jobs);
+        runs[0].message = format!("created auto-20261006T193000Z{}; pruned 0", crate::daemon::snapshot::RECURSIVE_MARK);
+        let found = judge(&file, &jobs, &runs, &level(1, 0), now());
         assert_eq!(words(&found), ["local: tank/data/child: no copy job"]);
     }
 
@@ -757,6 +777,42 @@ mod tests {
         let some = Some(CopyGap { have: 1, need: 3, online_have: 0, online_need: 1, worst: Gap::Missing });
         let copies = vec![Job::test_replicate("r", "tank/data", "auto", "nas", "tank/copy")];
         assert_eq!(fix_for(&gap(None, some), &copies), Fix::ChooseCopy, "one copy is current: another is needed, not a repair");
+    }
+
+    #[test]
+    fn a_recursive_job_covers_the_children_only_once_it_has_run_recursively() {
+        let file = storage(&[("local", &["tank", "tank/kids", "tank/kids/deep"])]);
+        let mut tree = snap("s", "tank");
+        tree.recursive = true;
+        let jobs = vec![tree];
+        let ran = |message: &str| vec![Run { message: message.into(), ..run("s", Duration::minutes(10), Some(RunResult::Ok)) }];
+        let judged = |runs: &[Run]| judge(&file, &jobs, runs, &level(1, 0), now()).into_iter().filter(|u| u.snapshots.is_some()).map(|u| (u.dataset, u.snapshots)).collect::<Vec<_>>();
+        let before = judged(&ran("created auto-20261024T180000Z; pruned 0"));
+        let rows: Vec<(&str, Option<Gap>)> = before.iter().map(|(d, g)| (d.as_str(), *g)).collect();
+        assert_eq!(rows, [("tank/kids", Some(Gap::NotRecursiveYet)), ("tank/kids/deep", Some(Gap::NotRecursiveYet))], "tank itself is covered by the run; its children are not proven");
+        let after = judged(&ran(&format!("created auto-20261024T190000Z{}; pruned 0", crate::daemon::snapshot::RECURSIVE_MARK)));
+        assert!(after.is_empty(), "{after:?}");
+        // The newest success decides: a plain run after a recursive one takes the proof away.
+        let mut both = ran(&format!("created a{}; pruned 0", crate::daemon::snapshot::RECURSIVE_MARK));
+        both.push(Run { message: "created b; pruned 0".into(), ..run("s", Duration::minutes(5), Some(RunResult::Ok)) });
+        assert_eq!(judged(&both).len(), 2);
+        // A job of the child's own never needs the proof.
+        let mut own = jobs.clone();
+        own.push(snap("kid", "tank/kids/deep"));
+        let runs = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("kid", Duration::minutes(10), Some(RunResult::Ok))];
+        let names: Vec<String> = judge(&file, &own, &runs, &level(1, 0), now()).into_iter().filter(|u| u.snapshots.is_some()).map(|u| u.dataset).collect();
+        assert_eq!(names, ["tank/kids"], "tank/kids is unproven; tank/kids/deep has a job of its own");
+    }
+
+    #[test]
+    fn the_recursive_wait_is_worded_and_sent_to_the_job() {
+        let age = |_: DateTime<Utc>| String::new();
+        let item = Unprotected { host: "h".into(), dataset: "tank/kids".into(), tier: Tier::Data, snapshots: Some(Gap::NotRecursiveYet), copies: None };
+        assert_eq!(item.describe(&age), "snapshot job has not run recursively yet");
+        let mut tree = snap("s", "tank");
+        tree.recursive = true;
+        let item = Unprotected { host: "local".into(), dataset: "tank/kids".into(), ..item };
+        assert_eq!(fix_for(&item, &[tree]), Fix::GoToJob("s".into()));
     }
 
     #[test]
