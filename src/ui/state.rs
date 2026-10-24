@@ -404,6 +404,8 @@ pub struct App {
     pub dashboard_protection_problem: Option<String>,
     /// The selected line of the Dashboard's Needs attention list.
     pub dashboard_table: TableState,
+    /// `e` on the Dashboard: every host is listed under its group, not only the ones that need a look.
+    pub dashboard_expanded: bool,
     pub pending_cloud: Vec<PendingCloud>,
     /// The changes view of the Snapshots section (`c` / `C`), its latest request number, and the reads waiting for a runner.
     pub changes_view: Option<crate::ui::changes::ChangesView>,
@@ -642,6 +644,7 @@ impl App {
             dashboard_protection: crate::config::ProtectionSettings::default(),
             dashboard_protection_problem: None,
             dashboard_table: TableState::default(),
+            dashboard_expanded: false,
             pending_cloud: Vec::new(),
             changes_view: None,
             changes_request: 0,
@@ -1249,9 +1252,10 @@ Jobs
   d                delete the job (y/n; its past runs stay in the history)
 
 Dashboard
-  Up / Down        select a line of Needs attention
-  Enter            go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job
-                   (the Dashboard itself changes nothing)
+  Up / Down        select a line of Needs attention, then (with tags) a group row
+  Enter            go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job;
+                   on a group row, open the Hosts list narrowed to that tag (the Dashboard itself changes nothing)
+  e                with tags: list every host under its group, or only the ones that need a look
   r                reload the jobs, alerts, cloud list and [dashboard] settings
 
 Cloud

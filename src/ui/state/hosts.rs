@@ -106,6 +106,28 @@ impl App {
         }
     }
 
+    /// Opens the Hosts section narrowed to the hosts that carry `tag` (as if `/` and the tag had been typed and committed).
+    /// The hosts without a tag cannot be asked for by name, so they open the whole list.
+    pub(super) fn open_group(&mut self, tag: &str) {
+        if let Some(position) = self.sections.iter().position(|s| *s == Section::Hosts) {
+            self.selected_section = position;
+            self.pane_focus = PaneFocus::Middle;
+        }
+        self.host_filter_editing = false;
+        self.host_filter_origin = None;
+        if tag.is_empty() {
+            self.host_filter.clear();
+            self.status_message = Some("Those hosts have no tag: all hosts are listed".to_string());
+            return;
+        }
+        self.host_filter = tag.to_string();
+        let first = self.visible_hosts().first().copied();
+        if let Some(index) = first.filter(|i| *i != self.selected_host) {
+            self.selected_host = index;
+            self.clear_host_data();
+        }
+    }
+
     pub fn set_host_tags(&mut self, tags: Vec<String>) {
         self.host_tags = tags;
     }

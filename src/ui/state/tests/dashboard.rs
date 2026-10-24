@@ -254,3 +254,75 @@ fn a_reservation_above_the_quota_is_refused_with_the_quota_named() {
     assert!(submit_value(&mut app, "12G").is_none());
     assert!(app.status_error.as_deref().is_some_and(|m| m.contains("larger than the quota")), "{:?}", app.status_error);
 }
+
+fn calm_probe() -> crate::zfs::host_health::HostProbe {
+    use crate::zfs::host_health::{HostProbe, PoolProbe, ScanSummary};
+    let when = chrono::Utc::now().format("%a %b %e %H:%M:%S %Y").to_string();
+    let pool = PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: 10, frag_percent: None, errors: Some(0), scan: Some(ScanSummary::Finished { when: when.clone(), errors: 0 }), last_scrub: Some(when) };
+    HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None, os: None, os_name: None }
+}
+
+/// Two hosts, `fbsd16` tagged `web` and `local` untagged, both healthy.
+fn grouped_app() -> App {
+    let (mut app, dir) = dash_app();
+    std::mem::forget(dir);
+    app.set_host_tags(vec![String::new(), "web".to_string()]);
+    for name in ["local", "fbsd16"] {
+        app.host_probes.insert(name.into(), HostProbeState { last: Some(calm_probe()), utc_offset_secs: Some(0), ..HostProbeState::default() });
+    }
+    app
+}
+
+#[test]
+fn down_goes_through_the_attention_lines_and_then_the_groups_and_enter_on_a_group_opens_its_hosts() {
+    let mut app = grouped_app();
+    let d = app.dashboard();
+    let n = d.attention.len();
+    assert_eq!(d.selectable(), n + 2);
+    for _ in 0..=n {
+        app.handle_key(KeyCode::Down);
+    }
+    assert_eq!(app.dashboard_table.selected(), Some(n), "the first group row (web)");
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Open group"));
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Hosts);
+    assert_eq!(app.host_filter, "web", "the Hosts list is narrowed to the group");
+    assert!(!app.host_filter_editing);
+    assert_eq!(app.selected_host, 1, "the first host that matches");
+    assert_eq!(app.visible_hosts(), vec![1]);
+}
+
+#[test]
+fn enter_on_the_group_of_hosts_without_a_tag_opens_hosts_unfiltered_and_says_why() {
+    let mut app = grouped_app();
+    let n = app.dashboard().attention.len();
+    for _ in 0..(n + 2) {
+        app.handle_key(KeyCode::Down);
+    }
+    assert_eq!(app.dashboard_table.selected(), Some(n + 1), "the (no tag) group");
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Hosts);
+    assert!(app.host_filter.is_empty(), "there is no tag to filter by");
+    assert!(app.status_message.as_deref().unwrap_or("").contains("no tag"), "{:?}", app.status_message);
+}
+
+#[test]
+fn e_shows_every_host_under_its_group_and_e_again_folds_them() {
+    let mut app = grouped_app();
+    assert!(app.dashboard().groups.unwrap().iter().all(|g| g.members.is_empty()));
+    app.handle_key(KeyCode::Char('e'));
+    assert!(app.dashboard_expanded);
+    let groups = app.dashboard().groups.unwrap();
+    assert_eq!(groups.iter().map(|g| g.members.len()).sum::<usize>(), 2, "both hosts listed");
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "e" && h.label == "Problem hosts only"));
+    app.handle_key(KeyCode::Char('e'));
+    assert!(!app.dashboard_expanded);
+}
+
+#[test]
+fn e_does_nothing_without_tags_and_is_not_offered() {
+    let (mut app, _dir) = dash_app();
+    app.handle_key(KeyCode::Char('e'));
+    assert!(!app.dashboard_expanded);
+    assert!(!crate::ui::hints::hints(&app).iter().any(|h| h.key == "e"));
+}

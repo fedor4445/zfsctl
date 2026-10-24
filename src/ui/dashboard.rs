@@ -259,8 +259,10 @@ pub fn host_row(input: &HostInput, t: &Thresholds, now: DateTime<Utc>) -> HostRo
 /// One group of the Dashboard: a row that stands for every host with the same tag, and the hosts of it that need a look.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
+    /// The tag the group stands for; empty for the hosts that have none.
+    pub tag: String,
     pub row: HostRow,
-    /// Only the hosts whose state is not fine, in the order of the configuration.
+    /// Only the hosts whose state is not fine (all of them when the groups are expanded), in the order of the configuration.
     pub members: Vec<HostRow>,
 }
 
@@ -312,7 +314,7 @@ fn roll_up(name: String, members: &[&HostRow]) -> HostRow {
 
 /// The hosts rolled up by tag: `None` when no host has a tag (the Dashboard then shows every host, as it always did). Untagged
 /// hosts form the last group. A group with a problem comes first; inside a group only the hosts that are not fine are listed.
-fn groups_of(inputs: &[HostInput], rows: &[HostRow]) -> Option<Vec<Group>> {
+fn groups_of(inputs: &[HostInput], rows: &[HostRow], expanded: bool) -> Option<Vec<Group>> {
     if inputs.iter().all(|i| i.tag.trim().is_empty()) {
         return None;
     }
@@ -328,8 +330,8 @@ fn groups_of(inputs: &[HostInput], rows: &[HostRow]) -> Option<Vec<Group>> {
             let members: Vec<&HostRow> = inputs.iter().zip(rows).filter(|(i, _)| i.tag.trim() == tag).map(|(_, r)| r).collect();
             let shown = if tag.is_empty() { NO_TAG } else { tag };
             let row = roll_up(format!("{shown} ({})", members.len()), &members);
-            let listed = members.iter().filter(|m| m.state.level != Level::Fine).map(|m| (*m).clone()).collect();
-            (tag.is_empty(), Group { row, members: listed })
+            let listed = members.iter().filter(|m| expanded || m.state.level != Level::Fine).map(|m| (*m).clone()).collect();
+            (tag.is_empty(), Group { tag: tag.to_string(), row, members: listed })
         })
         .collect();
     groups.sort_by(|a, b| b.1.row.state.level.cmp(&a.1.row.state.level).then(a.0.cmp(&b.0)).then_with(|| a.1.row.name.cmp(&b.1.row.name)));
@@ -431,6 +433,8 @@ pub struct Inputs<'a> {
     pub storage: &'a crate::daemon::storage_check::StorageFile,
     /// The check that is running now, if any (a fresh marker).
     pub running: Option<&'a crate::daemon::checks::Marker>,
+    /// List every host under its group, not only the ones that need a look.
+    pub expand_groups: bool,
     pub now: DateTime<Utc>,
 }
 
@@ -663,6 +667,16 @@ pub struct ProtectionPopup {
 }
 
 impl Dashboard {
+    /// How many lines the selection moves through: the Needs attention lines, then one row per group.
+    pub fn selectable(&self) -> usize {
+        self.attention.len() + self.groups.as_ref().map_or(0, Vec::len)
+    }
+
+    /// The group a selection index stands for (the indexes past the attention lines), if any.
+    pub fn group_at(&self, selection: usize) -> Option<&Group> {
+        self.groups.as_ref()?.get(selection.checked_sub(self.attention.len())?)
+    }
+
     /// What a named protection line lacks (Enter goes straight to its fix); `None` for any other line.
     pub fn protection_fix(&self, item: &Item) -> Option<&crate::daemon::protection::Unprotected> {
         let at = self.unprotected.iter().take(PROTECTION_NAMED).position(|u| u == item)?;
@@ -713,7 +727,7 @@ fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
 pub fn build(inputs: &Inputs) -> Dashboard {
     let now = inputs.now;
     let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
-    let groups = groups_of(&inputs.hosts, &hosts);
+    let groups = groups_of(&inputs.hosts, &hosts, inputs.expand_groups);
     let daemon = daemon_line(inputs.jobs, now);
     let (jobs, failed_jobs) = jobs_line(inputs.jobs);
     let widths = CloudWidths {

@@ -56,6 +56,7 @@ impl App {
             shares: &self.shares_check,
             storage: &self.storage_check,
             running: self.checks_marker.as_ref(),
+            expand_groups: self.dashboard_expanded,
             now: chrono::Utc::now(),
         })
     }
