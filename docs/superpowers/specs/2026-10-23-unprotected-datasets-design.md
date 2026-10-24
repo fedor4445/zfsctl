@@ -8,7 +8,7 @@ zfsctl's mission is to protect data. It already says when a disk is failing, a p
 but it never says "this dataset has no safety net". A dataset can sit for months with no snapshots, or with snapshots
 only on the pool that holds it, and nothing complains until the pool is gone.
 
-This check judges every dataset on every managed host and says which ones are not protected, loudly, on the
+This check judges every dataset on every managed host and says which ones are not protected, in red on the
 Dashboard and by email.
 
 ## What "protected" means (the operator's words, then the details)
