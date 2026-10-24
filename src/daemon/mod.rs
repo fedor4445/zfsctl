@@ -697,6 +697,22 @@ mod tests {
     }
 
     #[test]
+    fn a_wrong_type_in_protection_does_not_stop_the_daemon_loading_its_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for (body, problem) in [
+            ("[protection]\nlevel = \"custom\"\ncopies = \"2\"\n", "[protection] copies must be 1, 2 or 3"),
+            ("[protection]\nlevel = \"custom\"\ncopies = 300\n", "[protection] copies must be 1, 2 or 3"),
+            ("[protection]\nlevel = 5\n", "[protection] level must be basic, careful or custom"),
+        ] {
+            std::fs::write(&path, format!("{body}\n[[hosts]]\nname = \"t2\"\nssh = \"fb@t2\"\n")).unwrap();
+            let l = load_hosts(&path).unwrap_or_else(|e| panic!("{body}: {e}"));
+            assert!(l.hosts.iter().any(|(n, _)| n == "t2"), "{body}: the hosts are read");
+            assert_eq!(l.protection_problem.as_deref(), Some(problem), "{body}");
+        }
+    }
+
+    #[test]
     fn the_monitor_runs_only_when_a_channel_is_configured() {
         assert!(!monitor_enabled(&crate::config::NotifySettings::default(), None));
         assert!(monitor_enabled(&crate::config::NotifySettings::default(), Some("true")));

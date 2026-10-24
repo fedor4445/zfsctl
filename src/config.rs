@@ -39,24 +39,46 @@ pub struct Config {
     pub cloud: CloudConfig,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "DashboardConfig::is_default")]
     pub dashboard: DashboardConfig,
-    #[serde(default, skip_serializing_if = "ProtectionConfig::is_default")]
+    #[serde(default, deserialize_with = "lenient_protection", skip_serializing_if = "ProtectionConfig::is_default")]
     pub protection: ProtectionConfig,
 }
 
 /// What counts as protected (`[protection]`): how many copies of a dataset, how many of them online, how recent, and when to
-/// email. Wrong values are not defaulted: `resolve` names the key and the allowed values.
+/// email. Wrong values are not defaulted: `resolve` names the key and the allowed values. Each key is kept as the TOML value
+/// the file has, so a value of the wrong type (`copies = "2"`, `level = 5`) still loads (the daemon must never stay down over
+/// it) and `resolve` reports it like any other wrong value.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ProtectionConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub level: Option<String>,
+    pub level: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub copies: Option<u8>,
+    pub copies: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub online: Option<u8>,
+    pub online: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub recent: Option<String>,
+    pub recent: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub email: Option<String>,
+    pub email: Option<toml::Value>,
+    /// `protection = 5`: the section is not a table at all.
+    #[serde(skip)]
+    pub not_a_table: bool,
+}
+
+/// `[protection]` as a table of any values (see `ProtectionConfig`); anything else is kept as `not_a_table`, for `resolve`.
+fn lenient_protection<'de, D>(deserializer: D) -> std::result::Result<ProtectionConfig, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(match value {
+        toml::Value::Table(_) => value.try_into().unwrap_or(ProtectionConfig { not_a_table: true, ..ProtectionConfig::default() }),
+        _ => ProtectionConfig { not_a_table: true, ..ProtectionConfig::default() },
+    })
+}
+
+/// How a `[protection]` value reads on the screen: a string as it is, anything else as its TOML text (`5`, `true`).
+pub fn protection_text(value: Option<&toml::Value>) -> Option<String> {
+    value.map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
 }
 
 /// When the unprotected-datasets alert is emailed.
@@ -88,40 +110,57 @@ impl Default for ProtectionSettings {
 
 impl ProtectionConfig {
     fn is_default(&self) -> bool {
-        *self == ProtectionConfig::default()
+        // A section that is not a table has nothing to write back.
+        ProtectionConfig { not_a_table: false, ..self.clone() } == ProtectionConfig::default()
     }
 
     pub fn resolve(&self) -> std::result::Result<ProtectionSettings, String> {
-        let (copies, online) = match self.level.as_deref().unwrap_or("basic") {
+        if self.not_a_table {
+            return Err("[protection] must be a table of keys (level, copies, online, recent, email)".into());
+        }
+        // A word key: absent is the default, a string is checked by the caller, any other type is wrong.
+        let word = |v: &Option<toml::Value>, default: &'static str, wrong: &str| -> std::result::Result<String, String> {
+            match v {
+                None => Ok(default.to_string()),
+                Some(toml::Value::String(s)) => Ok(s.clone()),
+                Some(_) => Err(wrong.to_string()),
+            }
+        };
+        // A number key: absent is the default, else a whole number in `range`.
+        let count = |v: &Option<toml::Value>, default: u8, range: std::ops::RangeInclusive<u8>, wrong: &str| -> std::result::Result<u8, String> {
+            match v {
+                None => Ok(default),
+                Some(toml::Value::Integer(n)) => u8::try_from(*n).ok().filter(|n| range.contains(n)).ok_or_else(|| wrong.to_string()),
+                Some(_) => Err(wrong.to_string()),
+            }
+        };
+        let level_wrong = "[protection] level must be basic, careful or custom";
+        let (copies, online) = match word(&self.level, "basic", level_wrong)?.as_str() {
             "basic" => (1, 0),
             "careful" => (3, 1),
             "custom" => {
-                let copies = self.copies.unwrap_or(1);
-                let online = self.online.unwrap_or(0);
-                if !(1..=3).contains(&copies) {
-                    return Err("[protection] copies must be 1, 2 or 3".into());
-                }
-                if online > 2 {
-                    return Err("[protection] online must be 0, 1 or 2".into());
-                }
+                let copies = count(&self.copies, 1, 1..=3, "[protection] copies must be 1, 2 or 3")?;
+                let online = count(&self.online, 0, 0..=2, "[protection] online must be 0, 1 or 2")?;
                 if online > copies {
                     return Err("[protection] online must not be more than copies".into());
                 }
                 (copies, online)
             }
-            _ => return Err("[protection] level must be basic, careful or custom".into()),
+            _ => return Err(level_wrong.into()),
         };
-        let tolerance = match self.recent.as_deref().unwrap_or("normal") {
+        let recent_wrong = "[protection] recent must be strict, normal or relaxed";
+        let tolerance = match word(&self.recent, "normal", recent_wrong)?.as_str() {
             "strict" => 1,
             "normal" => 2,
             "relaxed" => 4,
-            _ => return Err("[protection] recent must be strict, normal or relaxed".into()),
+            _ => return Err(recent_wrong.into()),
         };
-        let email = match self.email.as_deref().unwrap_or("immediate") {
+        let email_wrong = "[protection] email must be immediate, report or off";
+        let email = match word(&self.email, "immediate", email_wrong)?.as_str() {
             "immediate" => EmailTiming::Immediate,
             "report" => EmailTiming::Report,
             "off" => EmailTiming::Off,
-            _ => return Err("[protection] email must be immediate, report or off".into()),
+            _ => return Err(email_wrong.into()),
         };
         Ok(ProtectionSettings { copies, online, tolerance, email })
     }
@@ -798,7 +837,7 @@ mod tests {
             scrub_crit_days: Some(90),
             scrub_ignore: vec!["scratch".into()],
         };
-        let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2), online: Some(1), recent: Some("normal".into()), email: Some("report".into()) };
+        let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), recent: Some("normal".into()), email: Some("report".into()), not_a_table: false };
         let notify = NotifyConfig {
             mail_to: Some("a@b".into()),
             mail_command: Some("c".into()),
@@ -1030,7 +1069,7 @@ mod tests {
     }
 
     fn prot(level: Option<&str>, copies: Option<u8>, online: Option<u8>, recent: Option<&str>, email: Option<&str>) -> ProtectionConfig {
-        ProtectionConfig { level: level.map(Into::into), copies, online, recent: recent.map(Into::into), email: email.map(Into::into) }
+        ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), recent: recent.map(Into::into), email: email.map(Into::into), not_a_table: false }
     }
 
     #[test]
@@ -1077,6 +1116,31 @@ mod tests {
         assert!(err(prot(Some("custom"), Some(1), Some(2), None, None)).contains("online"));
         assert!(err(prot(None, None, None, Some("fast"), None)).contains("recent must be strict, normal or relaxed"));
         assert!(err(prot(None, None, None, None, Some("daily"))).contains("email must be immediate, report or off"));
+    }
+
+    #[test]
+    fn a_wrong_type_in_protection_loads_and_resolve_names_the_key() {
+        let resolved = |body: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, format!("{body}\n[[hosts]]\nname = \"t2\"\nssh = \"fb@t2\"\n")).unwrap();
+            let config = Config::load(&path).unwrap_or_else(|e| panic!("{body}: the file must still load: {e}"));
+            assert_eq!(config.hosts.len(), 1, "{body}: the rest of the file is read");
+            config.protection.resolve()
+        };
+        let level = "[protection] level must be basic, careful or custom";
+        assert_eq!(resolved("[protection]\nlevel = 5\n").unwrap_err(), level);
+        assert_eq!(resolved("[protection]\nlevel = \"Careful\"\n").unwrap_err(), level, "the words are lower case");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = \"2\"\n").unwrap_err(), "[protection] copies must be 1, 2 or 3");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 300\n").unwrap_err(), "[protection] copies must be 1, 2 or 3");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = -1\n").unwrap_err(), "[protection] copies must be 1, 2 or 3");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 3\nonline = 1.5\n").unwrap_err(), "[protection] online must be 0, 1 or 2");
+        assert_eq!(resolved("[protection]\nrecent = true\n").unwrap_err(), "[protection] recent must be strict, normal or relaxed");
+        assert_eq!(resolved("[protection]\nemail = \"of\"\n").unwrap_err(), "[protection] email must be immediate, report or off");
+        assert_eq!(resolved("[protection]\nemail = [\"off\"]\n").unwrap_err(), "[protection] email must be immediate, report or off");
+        assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, recent, email)");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate });
+        assert_eq!(resolved("[protection]\nlevel = \"careful\"\ncopies = \"x\"\n").unwrap().copies, 3, "copies only counts under custom");
     }
 
     #[test]

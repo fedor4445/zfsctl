@@ -87,16 +87,17 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
         row(THRESHOLDS, Setting::ScrubIgnore, "Scrub ignore", if t.scrub_ignore.is_empty() { "(none)".to_string() } else { t.scrub_ignore.join(", ") }, t.scrub_ignore.is_empty(), vec![t.scrub_ignore.join(", ")]),
     ];
     let p = &cfg.protection;
-    let shown = |v: &Option<String>, default: &str| v.clone().unwrap_or_else(|| default.to_string());
+    // What the file says (a wrong type as its TOML text), or the default; `protection_problem` says when it is wrong.
+    let raw = |v: &Option<toml::Value>| crate::config::protection_text(v.as_ref());
+    let shown = |v: &Option<toml::Value>, default: &str| raw(v).unwrap_or_else(|| default.to_string());
     let level = shown(&p.level, "basic");
-    let number = |v: Option<u8>, default: u8| v.unwrap_or(default).to_string();
-    rows.push(row(PROTECTION, Setting::ProtLevel, "Level", level.clone(), p.level.is_none(), vec![p.level.clone().unwrap_or_default()]));
-    if level == "custom" {
-        rows.push(row(PROTECTION, Setting::ProtCopies, PROT_COPIES, number(p.copies, 1), p.copies.is_none(), vec![p.copies.map(|n| n.to_string()).unwrap_or_default()]));
-        rows.push(row(PROTECTION, Setting::ProtOnline, PROT_ONLINE, number(p.online, 0), p.online.is_none(), vec![p.online.map(|n| n.to_string()).unwrap_or_default()]));
+    rows.push(row(PROTECTION, Setting::ProtLevel, "Level", level.clone(), p.level.is_none(), vec![raw(&p.level).unwrap_or_default()]));
+    if level.trim().eq_ignore_ascii_case("custom") {
+        rows.push(row(PROTECTION, Setting::ProtCopies, PROT_COPIES, shown(&p.copies, "1"), p.copies.is_none(), vec![raw(&p.copies).unwrap_or_default()]));
+        rows.push(row(PROTECTION, Setting::ProtOnline, PROT_ONLINE, shown(&p.online, "0"), p.online.is_none(), vec![raw(&p.online).unwrap_or_default()]));
     }
-    rows.push(row(PROTECTION, Setting::ProtRecent, PROT_RECENT, shown(&p.recent, "normal"), p.recent.is_none(), vec![p.recent.clone().unwrap_or_default()]));
-    rows.push(row(PROTECTION, Setting::ProtEmail, PROT_EMAIL, shown(&p.email, "immediate"), p.email.is_none(), vec![p.email.clone().unwrap_or_default()]));
+    rows.push(row(PROTECTION, Setting::ProtRecent, PROT_RECENT, shown(&p.recent, "normal"), p.recent.is_none(), vec![raw(&p.recent).unwrap_or_default()]));
+    rows.push(row(PROTECTION, Setting::ProtEmail, PROT_EMAIL, shown(&p.email, "immediate"), p.email.is_none(), vec![raw(&p.email).unwrap_or_default()]));
     let mut names: Vec<&String> = remotes.iter().chain(cfg.cloud.caps.keys()).collect();
     names.sort();
     names.dedup();
@@ -168,18 +169,19 @@ fn protection_change(setting: &Setting, value: &str, current: &crate::config::Pr
     let path = ["protection", key];
     let remove = value.is_empty() || value == default;
     let count = if !remove && matches!(setting, Setting::ProtCopies | Setting::ProtOnline) { Some(value.parse::<u8>().map_err(|_| format!("'{value}' is not a whole number"))?) } else { None };
-    let text = (!remove).then(|| value.to_string());
+    let text = (!remove).then(|| toml::Value::from(value));
+    let number = count.map(toml::Value::from);
     let mut cfg = current.clone();
     match setting {
         Setting::ProtLevel => cfg.level = text,
-        Setting::ProtCopies => cfg.copies = count,
-        Setting::ProtOnline => cfg.online = count,
+        Setting::ProtCopies => cfg.copies = number,
+        Setting::ProtOnline => cfg.online = number,
         Setting::ProtRecent => cfg.recent = text,
         _ => cfg.email = text,
     }
     if matches!(setting, Setting::ProtCopies | Setting::ProtOnline) {
         // These keys only count under `custom`, so check them as the config will once they do.
-        cfg.level = Some("custom".to_string());
+        cfg.level = Some("custom".into());
     }
     cfg.resolve()?;
     Ok(vec![match (remove, count) {
@@ -445,7 +447,7 @@ mod tests {
         assert_eq!(sets(&build_changes(&Setting::ProtLevel, &values(&[""])).unwrap()), ["remove protection.level"]);
         assert_eq!(sets(&build_changes(&Setting::ProtCopies, &values(&["2"])).unwrap()), ["set protection.copies 2"]);
         assert_eq!(sets(&build_changes(&Setting::ProtCopies, &values(&["1"])).unwrap()), ["remove protection.copies"]);
-        let with = |copies: Option<u8>, setting: &Setting, v: &str| build_changes_with(setting, &values(&[v]), &crate::config::ProtectionConfig { level: Some("custom".into()), copies, ..Default::default() });
+        let with = |copies: Option<u8>, setting: &Setting, v: &str| build_changes_with(setting, &values(&[v]), &crate::config::ProtectionConfig { level: Some("custom".into()), copies: copies.map(Into::into), ..Default::default() });
         assert_eq!(sets(&with(Some(3), &Setting::ProtOnline, "2").unwrap()), ["set protection.online 2"]);
         assert_eq!(sets(&build_changes(&Setting::ProtRecent, &values(&["strict"])).unwrap()), ["set protection.recent \"strict\""]);
         assert_eq!(sets(&build_changes(&Setting::ProtRecent, &values(&["normal"])).unwrap()), ["remove protection.recent"]);
@@ -455,7 +457,7 @@ mod tests {
 
     #[test]
     fn online_and_copies_are_checked_against_each_other_and_the_file() {
-        let cur = |copies: Option<u8>, online: Option<u8>| crate::config::ProtectionConfig { level: Some("custom".into()), copies, online, ..Default::default() };
+        let cur = |copies: Option<u8>, online: Option<u8>| crate::config::ProtectionConfig { level: Some("custom".into()), copies: copies.map(Into::into), online: online.map(Into::into), ..Default::default() };
         let run = |setting: &Setting, v: &str, c: &crate::config::ProtectionConfig| build_changes_with(setting, &values(&[v]), c);
         assert!(run(&Setting::ProtOnline, "2", &cur(None, None)).unwrap_err().contains("online must not be more than copies"));
         assert!(run(&Setting::ProtOnline, "1", &cur(None, None)).is_ok(), "one online of one copy is fine");
@@ -464,7 +466,7 @@ mod tests {
         assert_eq!(sets(&run(&Setting::ProtOnline, "2", &cur(Some(3), None)).unwrap()), ["set protection.online 2"]);
         assert_eq!(sets(&run(&Setting::ProtCopies, "3", &cur(Some(2), Some(2))).unwrap()), ["set protection.copies 3"]);
         // Level other than custom ignores copies and online, so they cannot break it.
-        let basic = crate::config::ProtectionConfig { copies: Some(1), online: Some(2), ..Default::default() };
+        let basic = crate::config::ProtectionConfig { copies: Some(1.into()), online: Some(2.into()), ..Default::default() };
         assert!(run(&Setting::ProtEmail, "report", &basic).is_ok());
     }
 
