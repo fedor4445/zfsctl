@@ -18,6 +18,19 @@ When the daemon is running and at least one way of reaching you is configured, i
 
 Failed scheduled jobs also reach you, through the same channels.
 
+### Unprotected data
+
+The monitor also judges every dataset on every host: is it protected, that is, covered by current snapshot and copy jobs (chapter 6 explains the rules and the three levels)? When a dataset becomes unprotected you get one email **per host**, listing every new dataset (a new pool with six datasets gives one email, not six), and when it is protected again a recovery email. A reminder follows the usual schedule. A daemon restart sends the alerts again for datasets that are still unprotected, again one email per host. The daily report has a section for it:
+
+```text
+UNPROTECTED DATA
+  local:tank/photos (your data): no snapshots (for 3d)
+  fbsd16:tank/vm (your data): no copy on another machine (for 1d)
+  fbsd16:zroot/var (OS data): 1 of 3 copies on other machines
+```
+
+When all is well the section says `All datasets are protected.` The setting **Email** (Settings, group Data protection, or `email` in `[protection]`) picks the timing: `immediate` (the default: the emails above plus the report section), `report` (only the report section, whose lines then carry no "for 3d") or `off` (the Dashboard only; no email at all about this check).
+
 ## The Alerts screen
 
 ```screen

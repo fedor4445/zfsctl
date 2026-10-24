@@ -19,6 +19,7 @@
 - **No secrets stored.** Jobs hold the path of a password file, not the password; the repository string may not contain credentials.
 - **Your own files stay yours.** `config.toml` saves change only their own section; the Samba block is the only part of `smb4.conf` zfsctl touches.
 - **No reboots.** zfsctl never reboots a host.
+- **It tells you what has no safety net.** A dataset without current snapshots and a copy on another machine is listed in red on the Dashboard and emailed (chapter 6, "Is my data protected?"). The check only reads; it never creates a job or touches a host.
 
 ## What it cannot do
 

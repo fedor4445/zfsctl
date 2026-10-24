@@ -78,7 +78,7 @@ When the Dashboard turns a reading yellow ("to watch") and red ("issue"). All ke
 
 ### `[protection]`
 
-What counts as a protected dataset. All keys are optional; a wrong value is reported by name and never replaced by a default.
+What counts as a protected dataset. All keys are optional; a wrong value makes zfsctl use the defaults for the whole table and say so in the daemon's log (`config.toml [protection] problem ...`); fix the file.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
