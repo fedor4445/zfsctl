@@ -154,10 +154,10 @@ fn pair_changes(values: &[String], keys: [&str; 2], max: u32, default: (u32, u32
     Ok(vec![Change::set(&dashboard(keys[0]), i64::from(w)), Change::set(&dashboard(keys[1]), i64::from(c))])
 }
 
-/// One `[protection]` key: empty or the default removes it. The value is checked by `ProtectionConfig::resolve`, so the
-/// screen and the config agree; the other keys are filled so that only this one can fail.
-fn protection_change(setting: &Setting, value: &str) -> Result<Vec<Change>, String> {
-    use crate::config::ProtectionConfig;
+/// One `[protection]` key: empty or the default removes it. The result is checked by `ProtectionConfig::resolve` on the
+/// file's current `[protection]` keys plus this edit, so the screen and the config agree and no combination that
+/// would make the section invalid can be saved.
+fn protection_change(setting: &Setting, value: &str, current: &crate::config::ProtectionConfig) -> Result<Vec<Change>, String> {
     let (key, default) = match setting {
         Setting::ProtLevel => ("level", "basic"),
         Setting::ProtCopies => ("copies", "1"),
@@ -166,33 +166,41 @@ fn protection_change(setting: &Setting, value: &str) -> Result<Vec<Change>, Stri
         _ => ("email", "immediate"),
     };
     let path = ["protection", key];
-    if value.is_empty() || value == default {
-        return Ok(vec![Change::remove(&path)]);
-    }
-    let mut cfg = ProtectionConfig::default();
-    let mut count = None;
-    if matches!(setting, Setting::ProtCopies | Setting::ProtOnline) {
-        cfg.level = Some("custom".to_string());
-        count = Some(value.parse::<u8>().map_err(|_| format!("'{value}' is not a whole number"))?);
-    }
+    let remove = value.is_empty() || value == default;
+    let count = if !remove && matches!(setting, Setting::ProtCopies | Setting::ProtOnline) { Some(value.parse::<u8>().map_err(|_| format!("'{value}' is not a whole number"))?) } else { None };
+    let text = (!remove).then(|| value.to_string());
+    let mut cfg = current.clone();
     match setting {
-        Setting::ProtLevel => cfg.level = Some(value.to_string()),
+        Setting::ProtLevel => cfg.level = text,
         Setting::ProtCopies => cfg.copies = count,
-        Setting::ProtOnline => {
-            cfg.copies = Some(3);
-            cfg.online = count;
-        }
-        Setting::ProtRecent => cfg.recent = Some(value.to_string()),
-        _ => cfg.email = Some(value.to_string()),
+        Setting::ProtOnline => cfg.online = count,
+        Setting::ProtRecent => cfg.recent = text,
+        _ => cfg.email = text,
+    }
+    if matches!(setting, Setting::ProtCopies | Setting::ProtOnline) {
+        // These keys only count under `custom`, so check them as the config will once they do.
+        cfg.level = Some("custom".to_string());
     }
     cfg.resolve()?;
-    Ok(vec![match count {
-        Some(n) => Change::set(&path, i64::from(n)),
-        None => Change::set(&path, value),
+    Ok(vec![match (remove, count) {
+        (true, _) => Change::remove(&path),
+        (_, Some(n)) => Change::set(&path, i64::from(n)),
+        _ => Change::set(&path, value),
     }])
 }
 
-pub fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>, String> {
+/// `build_changes` against the `[protection]` keys the file at `config_path` has now.
+pub fn build_changes_for(config_path: &Path, setting: &Setting, values: &[String]) -> Result<Vec<Change>, String> {
+    let current = crate::config::Config::load(config_path).map(|c| c.protection).unwrap_or_default();
+    build_changes_with(setting, values, &current)
+}
+
+#[cfg(test)]
+fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>, String> {
+    build_changes_with(setting, values, &crate::config::ProtectionConfig::default())
+}
+
+fn build_changes_with(setting: &Setting, values: &[String], current: &crate::config::ProtectionConfig) -> Result<Vec<Change>, String> {
     let first = values.first().map_or("", |v| v.trim());
     let number = |max: u64, min: u64, what: &str| -> Result<u64, String> {
         first.parse::<u64>().ok().filter(|n| (min..=max).contains(n)).ok_or_else(|| format!("{what} must be a whole number from {min} to {max}"))
@@ -236,7 +244,7 @@ pub fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>
             }
             vec![Change::set(&["cloud", "caps", name], first)]
         }
-        Setting::ProtLevel | Setting::ProtCopies | Setting::ProtOnline | Setting::ProtRecent | Setting::ProtEmail => protection_change(setting, first)?,
+        Setting::ProtLevel | Setting::ProtCopies | Setting::ProtOnline | Setting::ProtRecent | Setting::ProtEmail => protection_change(setting, first, current)?,
     })
 }
 
@@ -437,11 +445,27 @@ mod tests {
         assert_eq!(sets(&build_changes(&Setting::ProtLevel, &values(&[""])).unwrap()), ["remove protection.level"]);
         assert_eq!(sets(&build_changes(&Setting::ProtCopies, &values(&["2"])).unwrap()), ["set protection.copies 2"]);
         assert_eq!(sets(&build_changes(&Setting::ProtCopies, &values(&["1"])).unwrap()), ["remove protection.copies"]);
-        assert_eq!(sets(&build_changes(&Setting::ProtOnline, &values(&["2"])).unwrap()), ["set protection.online 2"]);
+        let with = |copies: Option<u8>, setting: &Setting, v: &str| build_changes_with(setting, &values(&[v]), &crate::config::ProtectionConfig { level: Some("custom".into()), copies, ..Default::default() });
+        assert_eq!(sets(&with(Some(3), &Setting::ProtOnline, "2").unwrap()), ["set protection.online 2"]);
         assert_eq!(sets(&build_changes(&Setting::ProtRecent, &values(&["strict"])).unwrap()), ["set protection.recent \"strict\""]);
         assert_eq!(sets(&build_changes(&Setting::ProtRecent, &values(&["normal"])).unwrap()), ["remove protection.recent"]);
         assert_eq!(sets(&build_changes(&Setting::ProtEmail, &values(&["report"])).unwrap()), ["set protection.email \"report\""]);
         assert_eq!(sets(&build_changes(&Setting::ProtEmail, &values(&["immediate"])).unwrap()), ["remove protection.email"]);
+    }
+
+    #[test]
+    fn online_and_copies_are_checked_against_each_other_and_the_file() {
+        let cur = |copies: Option<u8>, online: Option<u8>| crate::config::ProtectionConfig { level: Some("custom".into()), copies, online, ..Default::default() };
+        let run = |setting: &Setting, v: &str, c: &crate::config::ProtectionConfig| build_changes_with(setting, &values(&[v]), c);
+        assert!(run(&Setting::ProtOnline, "2", &cur(None, None)).unwrap_err().contains("online must not be more than copies"));
+        assert!(run(&Setting::ProtOnline, "1", &cur(None, None)).is_ok(), "one online of one copy is fine");
+        assert!(run(&Setting::ProtCopies, "1", &cur(Some(2), Some(2))).is_err());
+        assert!(run(&Setting::ProtCopies, "", &cur(Some(2), Some(2))).is_err());
+        assert_eq!(sets(&run(&Setting::ProtOnline, "2", &cur(Some(3), None)).unwrap()), ["set protection.online 2"]);
+        assert_eq!(sets(&run(&Setting::ProtCopies, "3", &cur(Some(2), Some(2))).unwrap()), ["set protection.copies 3"]);
+        // Level other than custom ignores copies and online, so they cannot break it.
+        let basic = crate::config::ProtectionConfig { copies: Some(1), online: Some(2), ..Default::default() };
+        assert!(run(&Setting::ProtEmail, "report", &basic).is_ok());
     }
 
     #[test]
