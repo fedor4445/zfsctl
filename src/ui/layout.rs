@@ -489,7 +489,7 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
         format!("Hosts (filter: {}{} — {}/{})", app.host_filter, if app.host_filter_editing { "_" } else { "" }, visible.len(), app.hosts.len())
     };
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title));
     // The offset follows the selection, so the selected host stays on screen however many hosts there are.
     let mut state = TableState::default().with_selected(visible.iter().position(|i| *i == app.selected_host));
@@ -577,7 +577,7 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let title = format!("Pools — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pools_table);
@@ -604,7 +604,7 @@ fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let pool = app.selected_pool_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Property", "Value", "Source"]))
+        .header(theme.header_row(vec!["Property", "Value", "Source"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pool_properties_table);
@@ -620,7 +620,7 @@ fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
     let pool = app.drilled_pool.as_deref().unwrap_or("?");
     let title = format!("Vdevs — {pool} ('r' refresh, Esc/Backspace back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Device", "Health"]))
+        .header(theme.header_row(vec!["Device", "Health"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.vdevs_table);
@@ -672,7 +672,7 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     headers.push("Kind");
     let title = format!("Datasets — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.datasets_table);
@@ -698,7 +698,7 @@ fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, * fixed at creation, ← back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Property", "Value", "Source"]))
+        .header(theme.header_row(vec!["Property", "Value", "Source"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.dataset_properties_table);
@@ -727,7 +727,7 @@ fn draw_dataset_permissions(f: &mut Frame, app: &mut App, area: Rect) {
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Permissions — {dataset} ('r' refresh, n/s/c grant, d/x revoke, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Target", "Scope", "Permissions"]))
+        .header(theme.header_row(vec!["Target", "Scope", "Permissions"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.dataset_permissions_table);
@@ -760,7 +760,7 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
         None => format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)"),
     };
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["#", "Target", "Permissions", "Flags", "Type"]))
+        .header(theme.header_row(vec!["#", "Target", "Permissions", "Flags", "Type"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.acl_entries_table);
@@ -787,7 +787,7 @@ fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W), Constraint::Length(SIZE_COL_W), Constraint::Length(4)];
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Snapshot", "Used", "Written", "Hold"]))
+        .header(theme.header_row(vec!["Snapshot", "Used", "Written", "Hold"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
@@ -882,7 +882,7 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
         app.active_host_name()
     );
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.disks_table);
@@ -912,7 +912,7 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
     };
     let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(55), Constraint::Min(0)]).areas(inner);
 
-    let mut runs = vec![Line::styled("Last runs", theme.dim())];
+    let mut runs = vec![Line::styled("Last runs", theme.header())];
     let history = app.jobs_view.runs_of(&job.id, 8);
     if history.is_empty() {
         runs.push(Line::from("No runs yet"));
@@ -1005,7 +1005,7 @@ fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let widths = [Constraint::Length(16), Constraint::Length(14), Constraint::Length(8), Constraint::Length(4), Constraint::Length(12), Constraint::Min(10)];
-    let table = Table::new(table_rows, widths).header(Row::new(vec!["Provider", "Remote", "Host", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
+    let table = Table::new(table_rows, widths).header(theme.header_row(vec!["Provider", "Remote", "Host", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.cloud_table);
 }
 
@@ -1083,7 +1083,7 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         if !lines.is_empty() {
             lines.push(Line::raw(String::new()));
         }
-        lines.push(Line::styled(name.to_string(), theme.dim()));
+        lines.push(Line::styled(name.to_string(), theme.header()));
     };
     for (i, row) in v.rows.iter().enumerate() {
         let Row { group: g, label, value, is_default, setting, .. } = row;
@@ -1129,7 +1129,7 @@ fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new("Loading…").style(theme.dim()).block(block), area);
         return;
     }
-    let mut lines: Vec<Line> = vec![Line::styled("Settings (config.toml)".to_string(), theme.dim())];
+    let mut lines: Vec<Line> = vec![Line::styled("Settings (config.toml)".to_string(), theme.header())];
     for (label, value, is_default) in v.setting_rows() {
         let text = format!("{label:<14} {value}");
         if is_default && label != "Hook command" {
@@ -1148,7 +1148,7 @@ fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
         None => "Last report: never".to_string(),
     }));
     lines.push(Line::raw(String::new()));
-    lines.push(Line::styled("Recent events".to_string(), theme.dim()));
+    lines.push(Line::styled("Recent events".to_string(), theme.header()));
     if v.events.is_empty() {
         lines.push(Line::styled("  (none yet)".to_string(), theme.dim()));
     } else {
@@ -1203,7 +1203,7 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
     let target_w = u16::try_from(longest).unwrap_or(u16::MAX).clamp(14, room);
     let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(target_w), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Job", "Host", "Target", "Schedule", "Next run", "Last"]))
+        .header(theme.header_row(vec!["Job", "Host", "Target", "Schedule", "Next run", "Last"]))
         .block(block)
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.jobs_table);
@@ -1245,7 +1245,7 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let title = format!("Shares — {} ({actions}){hint_suffix}", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Dataset", "Protocol", "Details"]))
+        .header(theme.header_row(vec!["Dataset", "Protocol", "Details"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.shares_table);
@@ -1308,7 +1308,7 @@ fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
         None => format!("Boot Environments — {host} ('r' to refresh){suffix}"),
     };
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.bootenvs_table);
@@ -1502,7 +1502,15 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
                 .lines()
                 .filter(|l| fits || !crate::ui::logo::is_wordmark_line(l))
                 .map(|l| {
-                    let line = if crate::ui::logo::is_wordmark_line(l) { Line::styled(l.to_string(), theme.warn) } else { Line::raw(l.to_string()) };
+                    // Help's section titles ("Global", a section's name) are the lines that do not start with a space.
+                    let help_title = title == "Help" && !l.is_empty() && !l.starts_with(' ');
+                    let line = if crate::ui::logo::is_wordmark_line(l) {
+                        Line::styled(l.to_string(), theme.warn)
+                    } else if help_title {
+                        Line::styled(l.to_string(), theme.header())
+                    } else {
+                        Line::raw(l.to_string())
+                    };
                     if crate::ui::logo::is_centred_line(l) { line.centered() } else { line }
                 })
                 .collect();
@@ -3260,6 +3268,63 @@ mod tests {
         app.selected_section = app.sections.iter().position(|s| *s == Section::Settings).unwrap();
         app.refresh_settings();
         (app, dir)
+    }
+
+    /// The foreground colour and boldness of the first cell of `word` on the first row that contains it.
+    fn style_of(buf: &ratatui::buffer::Buffer, w: u16, h: u16, word: &str) -> (ratatui::style::Color, bool) {
+        for y in 0..h {
+            let row: Vec<String> = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            let text = row.concat();
+            if let Some(at) = text.find(word) {
+                let x = u16::try_from(text[..at].chars().count()).unwrap();
+                let cell = &buf[(x, y)];
+                return (cell.fg, cell.modifier.contains(ratatui::style::Modifier::BOLD));
+            }
+        }
+        panic!("{word:?} not on screen");
+    }
+
+    fn render_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn settings_group_titles_use_the_header_style_and_their_rows_do_not() {
+        let (mut app, _dir) = settings_render_app("");
+        let buf = render_buffer(&mut app, 120, 30);
+        let header = app.theme.header();
+        assert_eq!(style_of(&buf, 120, 30, "Dashboard thresholds"), (header.fg.unwrap(), true), "group title");
+        let (row_fg, row_bold) = style_of(&buf, 120, 30, "Memory warn");
+        assert!(row_fg != header.fg.unwrap() && !row_bold, "a row stays body-coloured");
+    }
+
+    #[test]
+    fn the_help_screens_section_titles_use_the_header_style_and_its_keys_do_not() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Info { title: "Help".to_string(), body: crate::ui::state::help_text_for_book() });
+        let buf = render_buffer(&mut app, 140, 50);
+        assert_eq!(style_of(&buf, 140, 50, "Global"), (app.theme.header().fg.unwrap(), true), "section title");
+        let (fg, bold) = style_of(&buf, 140, 50, "switch sections");
+        assert!(fg != app.theme.header().fg.unwrap() && !bold, "a key line stays body-coloured");
+    }
+
+    #[test]
+    fn an_info_pop_up_other_than_help_keeps_its_plain_lines() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Info { title: "Report preview (nothing sent)".to_string(), body: "NEEDS ATTENTION\n  nothing".to_string() });
+        let buf = render_buffer(&mut app, 100, 30);
+        let (fg, bold) = style_of(&buf, 100, 30, "NEEDS ATTENTION");
+        assert!(fg != app.theme.header().fg.unwrap() && !bold, "only Help styles its non-indented lines");
+    }
+
+    #[test]
+    fn a_table_screens_column_titles_use_the_header_style() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        let buf = render_buffer(&mut app, 120, 30);
+        assert_eq!(style_of(&buf, 120, 30, "Written"), (app.theme.header().fg.unwrap(), true));
     }
 
     #[test]

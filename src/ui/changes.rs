@@ -370,7 +370,7 @@ pub fn draw(f: &mut Frame, view: &ChangesView, theme: &Theme, host: &str, area: 
                     rows.push(Row::new(vec![format!("… {} more folders", group_digits(view.groups_more as u64))]));
                 }
                 let widths = [Constraint::Min(20), Constraint::Length(9), Constraint::Length(9), Constraint::Length(9), Constraint::Length(9)];
-                let table = Table::new(rows, widths).header(Row::new(vec!["Folder", "Added", "Removed", "Modified", "Renamed"])).row_highlight_style(theme.selected_row());
+                let table = Table::new(rows, widths).header(theme.header_row(vec!["Folder", "Added", "Removed", "Modified", "Renamed"])).row_highlight_style(theme.selected_row());
                 f.render_stateful_widget(table, list, &mut state);
             } else {
                 let mut table_rows: Vec<Row> = view
@@ -393,7 +393,7 @@ pub fn draw(f: &mut Frame, view: &ChangesView, theme: &Theme, host: &str, area: 
                     table_rows.push(Row::new(vec![format!("… {} more", group_digits(view.entries_more as u64))]));
                 }
                 let widths = [Constraint::Length(12), Constraint::Length(17), Constraint::Length(20), Constraint::Min(20)];
-                let table = Table::new(table_rows, widths).header(Row::new(vec!["Change", "Type", "Changed", "Path"])).row_highlight_style(theme.selected_row());
+                let table = Table::new(table_rows, widths).header(theme.header_row(vec!["Change", "Type", "Changed", "Path"])).row_highlight_style(theme.selected_row());
                 f.render_stateful_widget(table, list, &mut state);
             }
         }

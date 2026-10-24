@@ -63,10 +63,10 @@ fn pad(text: &str, width: usize) -> String {
     format!("{cut:<width$}")
 }
 
-/// `HOSTS ─────────`: a dim capitalised heading with a thin rule to the right edge.
+/// `HOSTS ─────────`: a capitalised heading in the header style with a thin dim rule to the right edge.
 fn heading(label: &str, width: usize, theme: &Theme) -> Line<'static> {
     let rule = width.saturating_sub(label.chars().count() + 3);
-    Line::styled(format!(" {label} {}", "─".repeat(rule)), theme.dim())
+    Line::from(vec![Span::raw(" "), Span::styled(label.to_string(), theme.header()), Span::styled(format!(" {}", "─".repeat(rule)), theme.dim())])
 }
 
 fn header(d: &Dashboard, width: usize, now: &str, theme: &Theme) -> Line<'static> {
@@ -236,9 +236,9 @@ fn host_lines(d: &Dashboard, width: usize, theme: &Theme) -> Vec<Line<'static>> 
         return lines;
     }
     let plan = plan(&d.hosts, width);
-    let mut head = vec![Span::raw("  "), Span::styled(pad("Host", plan.name_w), theme.dim()), Span::raw("  "), Span::styled(pad("State", plan.state_w), theme.dim())];
+    let mut head = vec![Span::raw("  "), Span::styled(pad("Host", plan.name_w), theme.header()), Span::raw("  "), Span::styled(pad("State", plan.state_w), theme.header())];
     for col in &plan.columns {
-        head.push(Span::styled(format!("  {}", pad(col.title(), plan.col_width(*col, &d.hosts))), theme.dim()));
+        head.push(Span::styled(format!("  {}", pad(col.title(), plan.col_width(*col, &d.hosts))), theme.header()));
     }
     lines.push(Line::from(head));
     for row in &d.hosts {
@@ -292,7 +292,7 @@ fn component_lines(d: &Dashboard, width: usize, compact: bool, theme: &Theme) ->
     }
     if !d.cloud_header.is_empty() {
         // Aligned with the lines below: the same three-space marker and label prefix, then the column names.
-        lines.push(Line::styled(cut(&format!("     {}{}", label("", "        "), d.cloud_header), width), theme.dim()));
+        lines.push(Line::styled(cut(&format!("     {}{}", label("", "        "), d.cloud_header), width), theme.header()));
     }
     for line in &d.cloud {
         lines.push(status_line(line.level, label("", "cloud   "), &line.text, width, theme));
@@ -388,6 +388,21 @@ mod tests {
         app.host_probes.insert("fbsd16t1".into(), HostProbeState { last: Some(HostProbe::Disconnected), ..HostProbeState::default() });
         heartbeat(&mut app);
         app
+    }
+
+    #[test]
+    fn dashboard_headings_and_column_titles_use_the_header_style_and_the_rule_stays_dim() {
+        let app = mixed_app();
+        let lines = screen_lines(&app.dashboard(), None, 120, 40, "Sat", &app.theme);
+        let span_style = |needle: &str, line_has: &str| {
+            let line = lines.iter().find(|l| l.to_string().contains(line_has)).unwrap_or_else(|| panic!("{line_has}"));
+            line.spans.iter().find(|s| s.content.contains(needle)).unwrap_or_else(|| panic!("{needle}")).style
+        };
+        assert_eq!(span_style("HOSTS", "HOSTS"), app.theme.header(), "block heading");
+        assert_eq!(span_style("NEEDS ATTENTION", "NEEDS ATTENTION"), app.theme.header());
+        assert_eq!(span_style("─", "HOSTS"), app.theme.dim(), "the rule stays dim");
+        assert_eq!(span_style("Host", "Host   "), app.theme.header(), "table column title");
+        assert_eq!(span_style("State", "Host   "), app.theme.header());
     }
 
     #[test]
