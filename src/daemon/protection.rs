@@ -95,16 +95,13 @@ pub(crate) fn covers(job: &Job, host: &str, dataset: &str) -> bool {
 }
 
 /// A dataset created less than this long ago is not judged yet.
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 pub const GRACE: chrono::Duration = chrono::Duration::hours(24);
 
 /// A host whose dataset list is older than this says nothing about its datasets. The Dashboard has no staleness rule
 /// for the dataset list itself (its quota-check line is about the loop, not one host), so this is our own.
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 pub const STALE_AFTER: chrono::Duration = chrono::Duration::days(2);
 
 /// Whether a dataset is the operator's data or the operating system's (ranked lower, never left out).
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Tier {
     Data,
@@ -114,7 +111,6 @@ pub enum Tier {
 /// OS data: the boot environments (`<pool>/ROOT` and below), `<pool>/tmp`, `<pool>/var` and below, `<pool>/usr/ports`,
 /// `<pool>/usr/src`, `<pool>/usr/obj` (and below), and volumes named `swap` or `dump`. Everything else is data
 /// (`<pool>/usr/home` too).
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 pub fn tier_of(dataset: &str, volume: bool) -> Tier {
     let below = dataset.split_once('/').map_or("", |(_, rest)| rest);
     let at_or_under = |base: &str| below == base || below.strip_prefix(base).is_some_and(|rest| rest.starts_with('/'));
@@ -124,7 +120,6 @@ pub fn tier_of(dataset: &str, volume: bool) -> Tier {
 }
 
 /// What is wrong with one half (snapshots or copies).
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gap {
     /// No job gives it (or none has succeeded yet).
@@ -136,7 +131,6 @@ pub enum Gap {
 }
 
 /// The copy half: how many current copies on other machines there are, how many the level asks, and with none, why.
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyGap {
     pub have: u8,
@@ -149,7 +143,6 @@ pub struct CopyGap {
 }
 
 /// One dataset that is not protected, and what it lacks (at least one of the two halves is `Some`).
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unprotected {
     pub host: String,
@@ -161,7 +154,6 @@ pub struct Unprotected {
 
 /// Every dataset of every host with a fresh list, past its grace, that lacks a current snapshot job or enough current
 /// copies on other machines; sorted data first, then by host and dataset.
-#[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the judging
 pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Vec<Unprotected> {
     // Worked out once per call: each enabled snapshot job and each enabled copy job, with where it stands.
     let standing = |job: &Job| gap_of(&job_state(job, runs, settings.tolerance, now), now);
@@ -270,8 +262,7 @@ fn small(n: usize) -> u8 {
 impl Unprotected {
     /// What is missing, in a short phrase (`no snapshots; no copy on another machine`). `age` words a past time
     /// (`3 days ago`).
-    #[allow(dead_code)] // the Dashboard (Task 7), the email (Task 8) and the report (Task 9) use the words
-    pub fn describe(&self, age: &dyn Fn(DateTime<Utc>) -> String) -> String {
+        pub fn describe(&self, age: &dyn Fn(DateTime<Utc>) -> String) -> String {
         let mut parts: Vec<String> = Vec::new();
         match self.snapshots {
             Some(Gap::Missing) => parts.push("no snapshots".into()),

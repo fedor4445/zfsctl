@@ -329,6 +329,8 @@ pub struct Inputs<'a> {
     pub cloud_caps: &'a Caps,
     pub alerts: &'a AlertsView,
     pub thresholds: &'a Thresholds,
+    /// How well protected a dataset must be (`[protection]`).
+    pub protection: &'a crate::config::ProtectionSettings,
     /// What the daemon's daily `smartctl` check found (`smart.json`).
     pub smart: &'a crate::daemon::smart_check::SmartFile,
     /// What the daily check found about file sharing (`shares.json`).
@@ -519,6 +521,24 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     items
 }
 
+/// One line per unprotected dataset of a reached host: red for the operator's data, amber for the operating system's.
+/// Always shown whatever the email timing is (that setting is about email only).
+fn protection_items(inputs: &Inputs) -> Vec<Item> {
+    use crate::daemon::protection::{judge, Tier};
+    let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
+    judge(inputs.storage, &inputs.jobs.jobs, &inputs.jobs.runs, inputs.protection, inputs.now)
+        .into_iter()
+        .filter(|u| reached(&u.host))
+        .map(|u| Item {
+            level: if u.tier == Tier::Data { Level::Issue } else { Level::Watch },
+            subject: if u.host == "local" { u.dataset.clone() } else { format!("{}:{}", u.host, u.dataset) },
+            what: u.describe(&|t| age_text(inputs.now, t)),
+            goto: Section::Jobs,
+            target: None,
+        })
+        .collect()
+}
+
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
     let since = marker.since.with_timezone(&chrono::Local).format("%H:%M");
@@ -572,6 +592,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         for late in crate::ui::overdue::overdue(inputs.jobs, now) {
             attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
         }
+        attention.extend(protection_items(inputs));
     }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
@@ -897,6 +918,7 @@ mod tests {
         sizes: HashMap<String, crate::ui::cloud::Size>,
         caps: crate::ui::cloud::Caps,
         thresholds: Thresholds,
+        protection: crate::config::ProtectionSettings,
         smart: crate::daemon::smart_check::SmartFile,
         shares: crate::daemon::shares_check::SharesFile,
         storage: crate::daemon::storage_check::StorageFile,
@@ -905,11 +927,11 @@ mod tests {
 
     impl Fixture {
         fn new(view: JobsView) -> Fixture {
-            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), protection: crate::config::ProtectionSettings::default(), smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
         }
 
         fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, protection: &self.protection, smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
         }
     }
 
@@ -1218,6 +1240,94 @@ mod tests {
         assert_eq!((by("h").level, by("red").level), (Level::Watch, Level::Issue));
         assert!(by("h").what.starts_with("tank/home 94% of its 100 quota") && by("h").what.contains("checked 4m ago"), "{}", by("h").what);
         assert_eq!(by("h").target.as_deref(), Some("h"));
+    }
+
+    /// A storage file where each host has these datasets, all a week old, checked a minute ago.
+    fn with_datasets(fx: &mut Fixture, hosts: &[(&str, &[&str])]) {
+        use crate::daemon::storage_check::SeenDataset;
+        let created = Some((now() - chrono::Duration::days(7)).timestamp());
+        for (host, names) in hosts {
+            let mut entry = storage_entry(1, "x/x", 10);
+            entry.datasets.clear();
+            entry.seen = names.iter().map(|n| SeenDataset { name: (*n).into(), volume: false, created }).collect();
+            fx.storage.hosts.insert((*host).into(), entry);
+        }
+    }
+
+    fn protection_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Jobs && i.what.contains("no snapshots")).collect()
+    }
+
+    #[test]
+    fn an_unprotected_dataset_is_a_red_line_and_an_os_one_amber() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"]), ("nas", &["tank/media"])]);
+        let items = protection_items(&fx, &["local", "nas"]);
+        let by = |s: &str| items.iter().find(|i| i.subject == s).unwrap_or_else(|| panic!("{s} in {items:?}"));
+        assert_eq!(items.len(), 3, "{items:?}");
+        assert_eq!((by("tank/photos").level, by("zroot/var").level, by("nas:tank/media").level), (Level::Issue, Level::Watch, Level::Issue));
+        assert_eq!(by("tank/photos").what, "no snapshots; no copy on another machine");
+        assert_eq!((by("tank/photos").goto, by("tank/photos").target.clone()), (Section::Jobs, None));
+    }
+
+    #[test]
+    fn a_host_that_is_not_reached_adds_no_protection_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"]), ("gone", &["tank/x"])]);
+        let items = protection_items(&fx, &["local"]);
+        assert_eq!(items.iter().map(|i| i.subject.as_str()).collect::<Vec<_>>(), ["tank/photos"]);
+    }
+
+    #[test]
+    fn the_verdict_counts_the_protection_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.verdict.text == "1 issue, 1 to watch", "{}", d.verdict.text);
+    }
+
+    fn protected_view() -> JobsView {
+        let jobs = vec![Job::test_snapshot("s", "tank/photos", "auto", 24), Job::test_replicate("r", "tank/photos", "rep", "nas", "tank/copy")];
+        view(jobs, &[("s", RunResult::Ok, ""), ("r", RunResult::Ok, "")], beat(1))
+    }
+
+    #[test]
+    fn protected_datasets_add_nothing() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.attention.is_empty(), "{:?}", d.attention);
+        assert_eq!(d.verdict.text, "all quiet");
+    }
+
+    #[test]
+    fn the_chosen_level_changes_the_verdict() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        assert!(fx.build(vec![]).attention.is_empty());
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let at = |fx: &Fixture| fx.build(vec![fine_host("local", &probe, &r, &b)]).attention;
+        assert!(at(&fx).is_empty(), "basic: one snapshot job and one copy");
+        fx.protection = crate::config::ProtectionConfig { level: Some("careful".into()), ..Default::default() }.resolve().unwrap();
+        let lines = at(&fx);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].what, "1 of 3 copies on other machines; no online copy");
+    }
+
+    #[test]
+    fn email_off_still_shows_the_dashboard_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        fx.protection.email = crate::config::EmailTiming::Off;
+        assert_eq!(protection_items(&fx, &["local"]).len(), 1);
     }
 
     #[test]
