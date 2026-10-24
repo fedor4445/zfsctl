@@ -326,3 +326,17 @@ fn e_does_nothing_without_tags_and_is_not_offered() {
     assert!(!app.dashboard_expanded);
     assert!(!crate::ui::hints::hints(&app).iter().any(|h| h.key == "e"));
 }
+
+#[test]
+fn the_dashboard_judges_each_group_by_its_own_level_and_names_a_wrong_group() {
+    let (mut app, dir) = dash_app();
+    std::fs::write(dir.path().join("config.toml"), "[[hosts]]\nname = \"fbsd16\"\nssh_target = \"u@x\"\ntag = \"db\"\n\n[groups.db.protection]\nlevel = \"careful\"\n").unwrap();
+    app.refresh_dashboard();
+    assert_eq!((app.dashboard_protection.for_host("fbsd16").copies, app.dashboard_protection.for_host("local").copies), (3, 1));
+    assert!(app.dashboard_protection_problem.is_none());
+    std::fs::write(dir.path().join("config.toml"), "[[hosts]]\nname = \"fbsd16\"\nssh_target = \"u@x\"\ntag = \"db\"\n\n[groups.db.protection]\nlevel = \"paranoid\"\n").unwrap();
+    app.refresh_dashboard();
+    assert_eq!(app.dashboard_protection.for_host("fbsd16").copies, 1, "a wrong group is judged by the global settings");
+    assert_eq!(app.dashboard_protection_problem.as_deref(), Some("[groups.db.protection] level must be basic, careful or custom"));
+    assert!(app.dashboard().attention.iter().any(|i| i.subject == "config.toml" && i.what.ends_with("those hosts use the global settings")), "{:?}", app.dashboard().attention);
+}

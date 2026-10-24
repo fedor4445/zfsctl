@@ -15,7 +15,7 @@ impl App {
     pub fn refresh_dashboard(&mut self) {
         let config = crate::config::Config::load(&self.config_path);
         self.dashboard_thresholds = config.as_ref().map(|c| c.dashboard.resolve()).unwrap_or_default();
-        (self.dashboard_protection, self.dashboard_protection_problem) = config.map(|c| c.protection.resolve_or_basic()).unwrap_or_default();
+        (self.dashboard_protection, self.dashboard_protection_problem) = config.map(|c| first_problem(c.protection_settings())).unwrap_or_default();
         self.reload_check_files();
         self.refresh_alerts();
         self.refresh_cloud();
@@ -228,7 +228,12 @@ impl App {
         }
         self.auto_refresh_interval = config.ui.auto_refresh_interval();
         self.dashboard_thresholds = config.dashboard.resolve();
-        (self.dashboard_protection, self.dashboard_protection_problem) = config.protection.resolve_or_basic();
+        (self.dashboard_protection, self.dashboard_protection_problem) = first_problem(config.protection_settings());
         self.reload_cloud_caps();
     }
+}
+
+/// The settings, and the first thing wrong with them (the global section's, when it has one) as the one line the screens show.
+fn first_problem((settings, problems): (crate::config::ProtectionSettings, Vec<String>)) -> (crate::config::ProtectionSettings, Option<String>) {
+    (settings, problems.into_iter().next())
 }

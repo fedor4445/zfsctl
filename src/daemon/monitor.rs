@@ -56,7 +56,10 @@ pub fn judge_reachable<'a>(file: &StorageFile, probed: &[Probed], rows: &'a [Hos
     let mut known: HashSet<&str> = HashSet::new();
     let mut unchecked = Vec::new();
     for r in rows {
-        let why = if matches!(r.level, Level::Disconnected | Level::Probing) || !answered(&r.name) {
+        let why = if settings.for_host(&r.name).email == EmailTiming::Off {
+            // Its group chose not to be mailed or reported about: say so, so "all protected" never speaks for it.
+            Some("email off".to_string())
+        } else if matches!(r.level, Level::Disconnected | Level::Probing) || !answered(&r.name) {
             Some("unreachable".to_string())
         } else {
             match file.hosts.get(&r.name) {
@@ -337,7 +340,7 @@ impl Monitor {
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
             let since = self.last_report_at.unwrap_or(now - chrono::Duration::hours(24));
-            let protection = (self.protection_settings.email != EmailTiming::Off).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.unprotected_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone() });
+            let protection = (!self.protection_quiet(&rows)).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.unprotected_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone() });
             let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_ref());
             if sink.send(&msg) {
                 self.last_report_at = Some(now);
@@ -361,6 +364,11 @@ impl Monitor {
     }
 
     /// Drops every dataset alert and the messages still queued for them: the email timing is no longer immediate.
+    /// Whether no host at all is to be mailed or reported about: the global timing is off and so is every group's.
+    fn protection_quiet(&self, rows: &[HostRow]) -> bool {
+        self.protection_settings.email == EmailTiming::Off && rows.iter().all(|r| self.protection_settings.for_host(&r.name).email == EmailTiming::Off)
+    }
+
     fn stop_protection_alerts(&mut self) {
         if !self.protection_keys.is_empty() {
             self.protection = Tracker::new(CONFIRM, protection_remind(self.settings.remind));
@@ -373,7 +381,7 @@ impl Monitor {
     /// one message per host and kind. Only configured hosts that answered this pass and have a fresh dataset list are
     /// judged; the alerts of any other configured host are left as they are (unknown is not a recovery).
     fn observe_protection(&mut self, now: DateTime<Utc>, probed: &[Probed], rows: &[HostRow], jobs: &[Job], runs: &[Run]) {
-        if self.protection_settings.email == EmailTiming::Off {
+        if self.protection_quiet(rows) {
             self.unprotected.clear();
             self.first_seen.clear();
             self.stop_protection_alerts();
@@ -390,7 +398,9 @@ impl Monitor {
         for key in now_bad {
             self.first_seen.entry(key).or_insert(now);
         }
-        if self.protection_settings.email != EmailTiming::Immediate {
+        // Which hosts are mailed at once is each group's choice; the others are only listed in the daily report.
+        let immediate = |host: &str| self.protection_settings.for_host(host).email == EmailTiming::Immediate;
+        if !rows.iter().any(|r| immediate(&r.name)) && !immediate("local") {
             self.unprotected = found;
             self.stop_protection_alerts();
             return;
@@ -400,7 +410,8 @@ impl Monitor {
         let mut alerts: Vec<(String, String, Alert)> = Vec::new();
         let mut keys: HashSet<String> = HashSet::with_capacity(found.len());
         // OS data is not mailed one by one: it stays on the Dashboard and in the daily report.
-        for u in found.iter().filter(|u| u.tier == Tier::Data) {
+        let mailed: HashSet<String> = found.iter().filter(|u| self.protection_settings.for_host(&u.host).email == EmailTiming::Immediate).map(|u| u.host.clone()).collect();
+        for u in found.iter().filter(|u| u.tier == Tier::Data && mailed.contains(&u.host)) {
             let key = format!("{}\t{}", u.host, u.dataset);
             if let Some(alert) = self.protection.observe(&key, Level::Critical, &u.describe(&|t| ago(now, t)), now) {
                 alerts.push((u.host.clone(), u.dataset.clone(), alert));
@@ -412,7 +423,8 @@ impl Monitor {
         earlier.sort_unstable();
         for key in earlier {
             let Some((host, dataset)) = key.split_once('\t') else { continue };
-            if !configured.contains(host) {
+            // A host whose group is no longer mailed at once is forgotten without a word: that is not a recovery.
+            if !configured.contains(host) || self.protection_settings.for_host(host).email != EmailTiming::Immediate {
                 continue;
             }
             if !known.contains(host) {

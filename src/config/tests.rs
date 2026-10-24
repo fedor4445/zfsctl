@@ -278,7 +278,7 @@ fn prot(level: Option<&str>, copies: Option<u8>, online: Option<u8>, recent: Opt
 #[test]
 fn protection_defaults_are_basic_normal_immediate() {
     let s = ProtectionConfig::default().resolve().unwrap();
-    assert_eq!(s, ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate });
+    assert_eq!(s, ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
     assert_eq!(s, ProtectionSettings::default());
     assert_eq!(Config::default().protection.resolve().unwrap(), s);
 }
@@ -342,7 +342,7 @@ fn a_wrong_type_in_protection_loads_and_resolve_names_the_key() {
     assert_eq!(resolved("[protection]\nemail = \"of\"\n").unwrap_err(), "[protection] email must be immediate, report or off");
     assert_eq!(resolved("[protection]\nemail = [\"off\"]\n").unwrap_err(), "[protection] email must be immediate, report or off");
     assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, recent, email)");
-    assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate });
+    assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
     assert_eq!(resolved("[protection]\nlevel = \"careful\"\ncopies = \"x\"\n").unwrap().copies, 3, "copies only counts under custom");
 }
 
@@ -708,4 +708,87 @@ fn daemon_notify_command_parses_and_is_only_written_back_when_set() {
     assert!(toml::to_string_pretty(&config).unwrap().contains("notify_command"));
     let text = toml::to_string_pretty(&Config::default()).unwrap();
     assert!(!text.contains("daemon") && !text.contains("notify"), "{text}");
+}
+
+fn with_groups(toml: &str) -> (ProtectionSettings, Vec<String>) {
+    let text = format!("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"db\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\ntag = \"web\"\n\n[[hosts]]\nname = \"c\"\nssh_target = \"u@c\"\n\n{toml}");
+    toml::from_str::<Config>(&text).unwrap().protection_settings()
+}
+
+#[test]
+fn without_groups_every_host_has_the_global_settings() {
+    let (s, problems) = with_groups("[protection]\nlevel = \"careful\"\n");
+    assert!(problems.is_empty(), "{problems:?}");
+    for host in ["a", "b", "c", "local", "unknown"] {
+        let e = s.for_host(host);
+        assert_eq!((e.copies, e.online, e.tolerance, e.email), (3, 1, 2, EmailTiming::Immediate), "{host}");
+    }
+}
+
+#[test]
+fn a_group_overrides_only_the_keys_it_sets_and_only_for_its_hosts() {
+    let (s, problems) = with_groups("[protection]\nrecent = \"strict\"\n\n[groups.db.protection]\nlevel = \"careful\"\nemail = \"off\"\n");
+    assert!(problems.is_empty(), "{problems:?}");
+    let db = s.for_host("a");
+    assert_eq!((db.copies, db.online, db.tolerance, db.email), (3, 1, 1, EmailTiming::Off), "the level and the email are the group's, how recent is inherited");
+    let web = s.for_host("b");
+    assert_eq!((web.copies, web.online, web.tolerance, web.email), (1, 0, 1, EmailTiming::Immediate), "another group keeps the global settings");
+    assert_eq!(s.for_host("c"), s.for_host("local"), "a host without a tag is global");
+    assert_eq!((s.copies, s.online), (1, 0), "the global settings themselves are untouched");
+}
+
+#[test]
+fn a_group_may_make_the_rule_looser_or_custom() {
+    let (s, problems) = with_groups("[protection]\nlevel = \"careful\"\n\n[groups.web.protection]\nlevel = \"custom\"\ncopies = 2\nonline = 0\n\n[groups.db.protection]\nlevel = \"basic\"\n");
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!((s.for_host("b").copies, s.for_host("b").online), (2, 0));
+    assert_eq!((s.for_host("a").copies, s.for_host("a").online), (1, 0));
+    assert_eq!((s.for_host("c").copies, s.for_host("c").online), (3, 1));
+}
+
+#[test]
+fn a_wrong_group_value_is_named_and_that_group_falls_back_to_the_global_settings() {
+    let (s, problems) = with_groups("[protection]\nlevel = \"careful\"\n\n[groups.db.protection]\nlevel = \"paranoid\"\n\n[groups.web.protection]\nemail = \"report\"\n");
+    assert_eq!(problems, ["[groups.db.protection] level must be basic, careful or custom"]);
+    assert_eq!((s.for_host("a").copies, s.for_host("a").email), (3, EmailTiming::Immediate), "the broken group is judged as the global settings, never silently looser");
+    assert_eq!(s.for_host("b").email, EmailTiming::Report, "a good group still applies");
+}
+
+#[test]
+fn a_group_that_is_not_a_table_and_a_groups_that_is_not_a_table_are_problems_not_a_crash() {
+    let (s, problems) = with_groups("[groups]\ndb = 5\n");
+    assert_eq!(problems, ["[groups.db] must be a table"]);
+    assert_eq!(s.for_host("a"), s.for_host("c"));
+    let config: Config = toml::from_str("groups = 5\n").unwrap();
+    assert_eq!(config.protection_settings().1, ["[groups] must be a table of groups, one per tag"]);
+}
+
+#[test]
+fn a_global_protection_problem_still_comes_first_and_judges_at_basic() {
+    let (s, problems) = with_groups("[protection]\nlevel = \"paranoid\"\n\n[groups.db.protection]\nlevel = \"careful\"\n");
+    assert_eq!(problems[0], "[protection] level must be basic, careful or custom");
+    assert_eq!(s.for_host("c").copies, 1);
+    assert_eq!(s.for_host("a").copies, 3, "the group is judged on its own keys over the Basic defaults");
+}
+
+fn mail_of(toml: &str) -> (std::collections::BTreeMap<String, Vec<String>>, Vec<String>) {
+    let text = format!("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"db\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\ntag = \"web\"\n\n[[hosts]]\nname = \"c\"\nssh_target = \"u@c\"\n\n{toml}");
+    toml::from_str::<Config>(&text).unwrap().group_mail()
+}
+
+#[test]
+fn a_group_may_have_its_own_recipients_and_its_hosts_alerts_go_there() {
+    let (mail, problems) = mail_of("[groups.db.notify]\nmail_to = \"dba@example.com, oncall@example.com\"\n");
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(mail.get("a").map(Vec::as_slice), Some(&["dba@example.com".to_string(), "oncall@example.com".to_string()][..]));
+    assert!(!mail.contains_key("b") && !mail.contains_key("c"), "hosts of other groups keep the global recipients: {mail:?}");
+}
+
+#[test]
+fn a_bad_group_address_is_a_named_problem_and_that_group_keeps_the_global_recipients() {
+    let (mail, problems) = mail_of("[groups.db.notify]\nmail_to = \"not an address\"\n\n[groups.web.notify]\nmail_to = 5\n");
+    assert!(mail.is_empty(), "{mail:?}");
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems.iter().any(|p| p.starts_with("[groups.db.notify] mail_to: 'not an address' is not a plain address")), "{problems:?}");
+    assert!(problems.iter().any(|p| p == "[groups.web.notify] mail_to must be an address, or several separated by commas"), "{problems:?}");
 }

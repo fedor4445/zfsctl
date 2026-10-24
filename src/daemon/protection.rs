@@ -188,7 +188,7 @@ pub fn fix_for(gap: &Unprotected, jobs: &[Job]) -> Fix {
 /// copies on other machines; sorted data first, then by host and dataset.
 pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Vec<Unprotected> {
     // Worked out once per call: each enabled snapshot job and each enabled copy job, with where it stands.
-    let standing = |job: &Job| gap_of(&job_state(job, runs, settings.tolerance, now), now);
+    let standing = |job: &Job| gap_of(&job_state(job, runs, settings.for_host(&job.host).tolerance, now), now);
     let snap_jobs: Vec<(&Job, Option<Gap>, bool)> = jobs.iter().filter(|j| gives_snapshots(j)).map(|j| (j, standing(j), ran_recursively(j, runs))).collect();
     let made: Vec<(&Job, CopyKind, String)> = jobs.iter().filter_map(|j| copy_of(j).map(|(kind, place)| (j, kind, place))).collect();
     // Two jobs that write to the same place are one copy: each copy job carries the index of the first one writing there.
@@ -295,8 +295,9 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
             }
 
             let root_is_volume = file.hosts.get(&root.0).and_then(|h| h.seen.iter().find(|s| s.name == root.1)).is_some_and(|s| s.volume);
+            // What the data must have is asked by the group of its original: where it lives.
             let (need, online_need) = match tier_of(&root.1, root_is_volume) {
-                Tier::Data => (settings.copies, settings.online),
+                Tier::Data => (settings.for_host(&root.0).copies, settings.for_host(&root.0).online),
                 Tier::Os => (1, 0),
             };
             let (have, online_have, worst) = body_copies(&root, &members);
@@ -420,7 +421,7 @@ mod tests {
     }
 
     fn level(copies: u8, online: u8) -> ProtectionSettings {
-        ProtectionSettings { copies, online, tolerance: 2, email: EmailTiming::Immediate }
+        ProtectionSettings { copies, online, tolerance: 2, email: EmailTiming::Immediate, ..ProtectionSettings::default() }
     }
 
     /// A run that succeeded ten minutes ago for each job: all current.
@@ -651,6 +652,52 @@ mod tests {
         let found = judge(&file, &jobs, &ok_runs(&jobs), &level(1, 0), now());
         assert_eq!(places(&found), ["fbsd16:tank/b", "local:tank/a"], "neither is exempt: each needs its own snapshots");
         assert!(found.iter().all(|u| u.snapshots == Some(Gap::Missing) && u.copies.is_none()), "its outgoing replication is its copy: {found:?}");
+    }
+
+    /// The settings of a `config.toml` whose hosts are `a` (tag `db`), `b` (tag `web`), `c` (no tag).
+    fn grouped(toml: &str) -> ProtectionSettings {
+        let text = format!("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"db\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\ntag = \"web\"\n\n[[hosts]]\nname = \"c\"\nssh_target = \"u@c\"\n\n{toml}");
+        let (settings, problems) = toml::from_str::<crate::config::Config>(&text).unwrap().protection_settings();
+        assert!(problems.is_empty(), "{problems:?}");
+        settings
+    }
+
+    fn on(host: &str, job: Job) -> Job {
+        Job { host: host.into(), ..job }
+    }
+
+    #[test]
+    fn each_group_asks_its_own_level_of_the_data_it_holds() {
+        let file = storage(&[("a", &["tank/x"]), ("c", &["tank/y"])]);
+        let jobs = vec![on("a", snap("s1", "tank/x")), on("a", bk("b1", "tank/x", "sftp:nas:/r1")), on("c", snap("s2", "tank/y")), on("c", bk("b2", "tank/y", "sftp:nas:/r2"))];
+        let settings = grouped("[groups.db.protection]\nlevel = \"careful\"\n");
+        let found = judge(&file, &jobs, &ok_runs(&jobs), &settings, now());
+        assert_eq!(places(&found), ["a:tank/x"], "the db group wants three copies and one online; the others one copy: {found:?}");
+        assert_eq!(found[0].copies.map(|c| (c.have, c.need, c.online_need)), Some((1, 3, 1)));
+    }
+
+    #[test]
+    fn a_chain_across_groups_is_judged_by_the_group_of_its_original() {
+        let file = storage(&[("a", &["tank/x"]), ("c", &["tank/copy"])]);
+        let jobs = vec![on("a", snap("s", "tank/x")), on("a", repl("r", "tank/x", "c", "tank/copy"))];
+        let careful_original = grouped("[groups.db.protection]\nlevel = \"careful\"\n");
+        assert_eq!(places(&judge(&file, &jobs, &ok_runs(&jobs), &careful_original, now())), ["a:tank/x", "c:tank/copy"], "the original's group asks three copies of both");
+        // The same chain the other way: the original in the basic group, its replica on a careful host.
+        let file = storage(&[("c", &["tank/x"]), ("a", &["tank/copy"])]);
+        let jobs = vec![on("c", snap("s", "tank/x")), on("c", repl("r", "tank/x", "a", "tank/copy"))];
+        assert!(judge(&file, &jobs, &ok_runs(&jobs), &careful_original, now()).is_empty(), "the original is on a basic host, so one copy is enough, wherever the replica sits");
+    }
+
+    #[test]
+    fn how_recent_is_the_groups_of_the_host_that_runs_the_job() {
+        let file = storage(&[("a", &["tank/x"]), ("c", &["tank/y"])]);
+        let jobs = vec![on("a", snap("s1", "tank/x")), on("c", snap("s2", "tank/y"))];
+        let runs = vec![run("s1", Duration::minutes(150), Some(RunResult::Ok)), run("s2", Duration::minutes(150), Some(RunResult::Ok))];
+        let settings = grouped("[groups.db.protection]\nrecent = \"relaxed\"\n");
+        let found = judge(&file, &jobs, &runs, &settings, now());
+        let by = |p: &str| found.iter().find(|u| format!("{}:{}", u.host, u.dataset) == p);
+        assert!(by("a:tank/x").is_none_or(|u| u.snapshots.is_none()), "an hourly job 2.5 hours old is current for a group that allows four intervals");
+        assert!(matches!(by("c:tank/y").and_then(|u| u.snapshots), Some(Gap::Stopped { .. })), "and stopped for the global two");
     }
 
     #[test]

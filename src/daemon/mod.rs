@@ -70,8 +70,10 @@ struct Shared {
     notify_command: RwLock<Option<String>>,
     /// The `[notify]` section: email, the monitor's interval, the daily report.
     settings: RwLock<crate::config::NotifySettings>,
-    /// The `[protection]` section, for the monitor's mail about unprotected datasets.
+    /// The `[protection]` section and the `[groups]` laid over it, for the monitor's mail about unprotected datasets.
     protection: RwLock<crate::config::ProtectionSettings>,
+    /// The recipients of the alerts about the hosts whose group has its own `mail_to`.
+    host_mail: RwLock<std::collections::BTreeMap<String, Vec<String>>>,
     /// Name, address and tag of each host, for the monitor's messages.
     host_info: RwLock<Vec<(String, String, String)>>,
     stop: Arc<AtomicBool>,
@@ -95,6 +97,10 @@ struct Loaded {
     /// previous settings, as for `[notify]`, or uses the defaults at startup.
     protection: Option<crate::config::ProtectionSettings>,
     protection_problem: Option<String>,
+    /// What is wrong with `[groups]` (a group falls back to the global settings), for the log.
+    group_problems: Vec<String>,
+    /// The recipients of the alerts about each host whose group sets its own.
+    host_mail: std::collections::BTreeMap<String, Vec<String>>,
     info: Vec<(String, String, String)>,
 }
 
@@ -108,11 +114,18 @@ fn load_hosts(config_path: &Path) -> Result<Loaded> {
         Ok(settings) => (Some(settings), None),
         Err(problem) => (None, Some(problem)),
     };
+    // A wrong global section keeps the previous settings; a wrong group only falls back to the global ones.
+    let (settings, mut problems) = config.protection_settings();
     let (protection, protection_problem) = match config.protection.resolve() {
-        Ok(settings) => (Some(settings), None),
-        Err(problem) => (None, Some(problem)),
+        Ok(_) => (Some(settings), None),
+        Err(problem) => {
+            problems.remove(0);
+            (None, Some(problem))
+        }
     };
-    Ok(Loaded { hosts, notify_command: config.daemon.notify_command, notify, notify_problem, protection, protection_problem, info })
+    let (host_mail, mail_problems) = config.group_mail();
+    problems.extend(mail_problems);
+    Ok(Loaded { hosts, notify_command: config.daemon.notify_command, notify, notify_problem, protection, protection_problem, group_problems: problems, host_mail, info })
 }
 
 /// Progress and cancel files can only belong to a transfer of a previous daemon: remove them.
@@ -153,8 +166,21 @@ impl Shared {
         if let Some(settings) = loaded.protection {
             *self.protection.write().unwrap_or_else(PoisonError::into_inner) = settings;
         }
+        *self.host_mail.write().unwrap_or_else(PoisonError::into_inner) = loaded.host_mail;
         *self.host_info.write().unwrap_or_else(PoisonError::into_inner) = loaded.info;
         names
+    }
+
+    /// The notify settings for one message: an alert about a host whose group has its own recipients goes to them, and
+    /// everything else (the daily report, a host of no group) to the global ones.
+    fn settings_for(&self, msg: &deliver::Message) -> crate::config::NotifySettings {
+        let mut settings = self.settings.read().unwrap_or_else(PoisonError::into_inner).clone();
+        if msg.kind != "health-report" {
+            if let Some(to) = self.host_mail.read().unwrap_or_else(PoisonError::into_inner).get(&msg.host) {
+                settings.mail_to.clone_from(to);
+            }
+        }
+        settings
     }
 
     /// Tells the operator about a failed run: the notify hook, and email when it is configured. A failing
@@ -322,7 +348,7 @@ struct DaemonSink<'a>(&'a Shared);
 
 impl monitor::Sink for DaemonSink<'_> {
     fn send(&mut self, msg: &deliver::Message) -> bool {
-        let settings = self.0.settings.read().unwrap_or_else(PoisonError::into_inner).clone();
+        let settings = self.0.settings_for(msg);
         let hook = self.0.notify_command.read().unwrap_or_else(PoisonError::into_inner).clone();
         let results = deliver::send(&settings, hook.as_deref(), msg, Utc::now(), deliver::TIMEOUT);
         for d in &results {
@@ -488,6 +514,9 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
     if let Some(problem) = &loaded.protection_problem {
         log(&format!("config.toml [protection] problem, using the default protection settings until it is fixed: {problem}"));
     }
+    for problem in &loaded.group_problems {
+        log(&format!("config.toml group problem, that group uses the global settings until it is fixed: {problem}"));
+    }
     let names: Vec<String> = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
     let shared = Arc::new(Shared {
         history: History::new(paths.history()),
@@ -498,6 +527,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         notify_command: RwLock::new(loaded.notify_command),
         settings: RwLock::new(loaded.notify.clone().unwrap_or_default()),
         protection: RwLock::new(loaded.protection.clone().unwrap_or_default()),
+        host_mail: RwLock::new(loaded.host_mail.clone()),
         host_info: RwLock::new(loaded.info),
         stop: Arc::clone(stop),
         progress_dir: paths.progress_dir(),
@@ -558,6 +588,9 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
                     }
                     if let Some(problem) = &loaded.protection_problem {
                         log(&format!("config.toml [protection] problem, keeping the previous protection settings: {problem}"));
+                    }
+                    for problem in &loaded.group_problems {
+                        log(&format!("config.toml group problem, that group uses the global settings until it is fixed: {problem}"));
                     }
                     let names = shared.apply(loaded);
                     log(&format!("config.toml reloaded: hosts {}", names.join(", ")));
@@ -623,6 +656,7 @@ mod tests {
             notify_command: RwLock::new(notify),
             settings: RwLock::new(crate::config::NotifySettings::default()),
             protection: RwLock::new(crate::config::ProtectionSettings::default()),
+            host_mail: RwLock::new(std::collections::BTreeMap::new()),
             host_info: RwLock::new(Vec::new()),
             stop: Arc::new(AtomicBool::new(false)),
             progress_dir: dir.path().join("progress"),
@@ -681,6 +715,36 @@ mod tests {
         shared.apply(l);
         assert_eq!(shared.settings.read().unwrap().mail_to, ["me@x.org"], "the previous settings are kept");
         assert!(shared.runner("later").is_some());
+    }
+
+    #[test]
+    fn group_settings_load_with_the_hosts_and_a_bad_group_does_not_keep_the_previous_global_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"db\"\n\n[protection]\nrecent = \"strict\"\n\n[groups.db.protection]\nlevel = \"careful\"\n\n[groups.db.notify]\nmail_to = \"dba@example.com\"\n").unwrap();
+        let l = load_hosts(&path).unwrap();
+        let settings = l.protection.clone().expect("the global section is fine");
+        assert_eq!((settings.for_host("a").copies, settings.for_host("a").tolerance), (3, 1));
+        assert_eq!(l.host_mail.get("a").map(Vec::as_slice), Some(&["dba@example.com".to_string()][..]));
+        assert!(l.group_problems.is_empty());
+        std::fs::write(&path, "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"db\"\n\n[groups.db.protection]\nlevel = \"paranoid\"\n\n[groups.db.notify]\nmail_to = \"nope\"\n").unwrap();
+        let l = load_hosts(&path).unwrap();
+        assert!(l.protection.is_some() && l.protection_problem.is_none(), "a typo in a group is not the global section's problem");
+        assert_eq!(l.group_problems.len(), 2, "{:?}", l.group_problems);
+        assert!(l.host_mail.is_empty());
+    }
+
+    #[test]
+    fn alerts_about_a_host_go_to_its_groups_recipients_and_the_daily_report_to_the_global_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        *shared.settings.write().unwrap() = crate::config::NotifyConfig { mail_to: Some("me@x.org".into()), ..Default::default() }.resolve().unwrap();
+        *shared.host_mail.write().unwrap() = [("a".to_string(), vec!["dba@example.com".to_string()])].into();
+        let msg = |kind: &str, host: &str| deliver::Message { kind: kind.into(), host: host.into(), level: "critical".into(), subject: "s".into(), body: "b".into() };
+        assert_eq!(shared.settings_for(&msg("health-alert", "a")).mail_to, ["dba@example.com"]);
+        assert_eq!(shared.settings_for(&msg("health-recovered", "a")).mail_to, ["dba@example.com"]);
+        assert_eq!(shared.settings_for(&msg("health-alert", "c")).mail_to, ["me@x.org"], "a host of no group, or of one without recipients");
+        assert_eq!(shared.settings_for(&msg("health-report", "a")).mail_to, ["me@x.org"], "the daily report is the operator's, whatever host name it carries");
     }
 
     #[test]
@@ -847,7 +911,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = shared(&dir, FakeRunner::new(""), None);
         assert!(shared.runner("later").is_none());
-        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()), notify: Some(crate::config::NotifySettings::default()), notify_problem: None, protection: Some(crate::config::ProtectionSettings::default()), protection_problem: None, info: Vec::new() };
+        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()), notify: Some(crate::config::NotifySettings::default()), notify_problem: None, protection: Some(crate::config::ProtectionSettings::default()), protection_problem: None, group_problems: Vec::new(), host_mail: std::collections::BTreeMap::new(), info: Vec::new() };
         let names = shared.apply(loaded);
         assert_eq!(names, vec!["local", "later"]);
         assert!(shared.runner("later").is_some());

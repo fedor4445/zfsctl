@@ -39,3 +39,12 @@ that data is safe.
   copies; the host `tag` could mark a domain), single points of failure (an articulation point on every path to the
   cloud), and hop count.
 - A replica whose feeding replication is broken still reads `no snapshot job`; it could name the replication instead.
+
+## Groups own their rules (added 2026-10-24)
+
+A group (the hosts with one `tag`) may set `[groups.<tag>.protection]` (the keys of `[protection]`) and
+`[groups.<tag>.notify] mail_to`. Decisions: how much protection a body of data needs is the **original's** group; how
+recent a job must be is the group of the host that **runs** the job; the email timing (and who is mailed) is the group of
+the host the dataset **is on**; `email = "off"` in a group also leaves it out of the daily report (and the report says so).
+Unset keys inherit the global ones; a wrong group is named and judged by the global settings (never looser); a wrong global
+section keeps the previous settings. Config file only, for now (no Settings screen for groups).

@@ -41,6 +41,26 @@ pub struct Config {
     pub dashboard: DashboardConfig,
     #[serde(default, deserialize_with = "lenient_protection", skip_serializing_if = "ProtectionConfig::is_default")]
     pub protection: ProtectionConfig,
+    /// `[groups.<tag>]`: what the hosts with that `tag` set for themselves (protection, mail recipients), kept as TOML so a wrong
+    /// value is reported by `protection_settings` and `group_mail` instead of stopping the program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<toml::Value>,
+}
+
+/// What one group may set (`[groups.<tag>]`): the keys of `[protection]` for its hosts and where its hosts' alerts go.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GroupConfig {
+    #[serde(default, deserialize_with = "lenient_protection", skip_serializing_if = "ProtectionConfig::is_default")]
+    pub protection: ProtectionConfig,
+    #[serde(default)]
+    pub notify: GroupNotify,
+}
+
+/// `[groups.<tag>.notify]`: only the recipients; everything else about mail is global.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GroupNotify {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mail_to: Option<toml::Value>,
 }
 
 /// What counts as protected (`[protection]`): how many copies of a dataset, how many of them online, how recent, and when to
@@ -76,6 +96,20 @@ where
     })
 }
 
+/// A comma-separated list of plain addresses, or the first one that is not (`user@host`, no spaces or control characters).
+pub fn parse_addresses(list: &str) -> std::result::Result<Vec<String>, String> {
+    let valid_address = |a: &str| {
+        let mut parts = a.split('@');
+        matches!((parts.next(), parts.next(), parts.next()), (Some(l), Some(d), None) if !l.is_empty() && !d.is_empty())
+            && !a.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, ',' | '<' | '>' | '"'))
+    };
+    let parts: Vec<String> = list.split(',').map(|p| p.trim().to_string()).collect();
+    match parts.iter().find(|p| !valid_address(p)) {
+        Some(bad) => Err(bad.clone()),
+        None => Ok(parts),
+    }
+}
+
 /// How a `[protection]` value reads on the screen: a string as it is, anything else as its TOML text (`5`, `true`).
 pub fn protection_text(value: Option<&toml::Value>) -> Option<String> {
     value.map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
@@ -100,11 +134,37 @@ pub struct ProtectionSettings {
     /// How many intervals old a copy may be and still count as recent.
     pub tolerance: i32,
     pub email: EmailTiming,
+    /// Which group each host is in, and what each group sets for itself.
+    pub groups: GroupRules,
+}
+
+/// What applies to one host once its group's keys are laid over the global ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Effective {
+    pub copies: u8,
+    pub online: u8,
+    pub tolerance: i32,
+    pub email: EmailTiming,
+}
+
+/// The `tag` of each configured host and the settings of each group that has its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupRules {
+    host_tag: std::collections::BTreeMap<String, String>,
+    by_tag: std::collections::BTreeMap<String, Effective>,
+}
+
+impl ProtectionSettings {
+    /// The settings that apply to `host`: its group's, or the global ones (a host without a tag, or in a group that sets
+    /// nothing, and `local`, the hub).
+    pub fn for_host(&self, host: &str) -> Effective {
+        self.groups.host_tag.get(host).and_then(|tag| self.groups.by_tag.get(tag)).copied().unwrap_or(Effective { copies: self.copies, online: self.online, tolerance: self.tolerance, email: self.email })
+    }
 }
 
 impl Default for ProtectionSettings {
     fn default() -> Self {
-        ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate }
+        ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() }
     }
 }
 
@@ -162,7 +222,7 @@ impl ProtectionConfig {
             "off" => EmailTiming::Off,
             _ => return Err(email_wrong.into()),
         };
-        Ok(ProtectionSettings { copies, online, tolerance, email })
+        Ok(ProtectionSettings { copies, online, tolerance, email, groups: GroupRules::default() })
     }
 
     /// The settings to judge with on a screen: `resolve`, or Basic's defaults with the problem in words.
@@ -176,7 +236,11 @@ impl ProtectionConfig {
 
 /// How a screen states a wrong `[protection]`: `[protection]: email must be immediate, report or off; judging at Basic`.
 pub fn protection_problem_line(problem: &str) -> String {
-    format!("[protection]: {}; judging at Basic", problem.strip_prefix("[protection] ").unwrap_or(problem))
+    match problem.strip_prefix("[protection] ") {
+        Some(rest) => format!("[protection]: {rest}; judging at Basic"),
+        // A wrong group: its hosts are judged by the global settings meanwhile.
+        None => format!("{problem}; those hosts use the global settings"),
+    }
 }
 
 /// When the Dashboard turns a reading yellow (watch) and red (issue) (`[dashboard]`). Unset keys take the defaults of
@@ -396,20 +460,9 @@ impl NotifyConfig {
 
     /// Validates the section and fills in the defaults.
     pub fn resolve(&self) -> std::result::Result<NotifySettings, String> {
-        let valid_address = |a: &str| {
-            let mut parts = a.split('@');
-            matches!((parts.next(), parts.next(), parts.next()), (Some(l), Some(d), None) if !l.is_empty() && !d.is_empty())
-                && !a.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, ',' | '<' | '>' | '"'))
-        };
         let mail_to: Vec<String> = match self.mail_to.as_deref() {
             None => Vec::new(),
-            Some(list) => {
-                let parts: Vec<String> = list.split(',').map(|p| p.trim().to_string()).collect();
-                if let Some(bad) = parts.iter().find(|p| !valid_address(p)) {
-                    return Err(format!("notify.mail_to: '{bad}' is not a plain address (user@host, no spaces or control characters)"));
-                }
-                parts
-            }
+            Some(list) => parse_addresses(list).map_err(|bad| format!("notify.mail_to: '{bad}' is not a plain address (user@host, no spaces or control characters)"))?,
         };
         let mail_command = match self.mail_command.as_deref() {
             None => DEFAULT_MAIL_COMMAND.to_string(),
@@ -782,6 +835,89 @@ pub fn clean_tag(raw: &str) -> Option<String> {
 }
 
 impl Config {
+    /// The groups of `[groups]`, each with its tag and what it sets, and what is wrong with the section.
+    fn group_entries(&self) -> (Vec<(String, GroupConfig)>, Vec<String>) {
+        let (mut groups, mut problems) = (Vec::new(), Vec::new());
+        match &self.groups {
+            None => {}
+            Some(toml::Value::Table(table)) => {
+                for (tag, entry) in table {
+                    match entry {
+                        toml::Value::Table(_) => match entry.clone().try_into::<GroupConfig>() {
+                            Ok(group) => groups.push((tag.clone(), group)),
+                            Err(e) => problems.push(format!("[groups.{tag}] {}", e.message())),
+                        },
+                        _ => problems.push(format!("[groups.{tag}] must be a table")),
+                    }
+                }
+            }
+            Some(_) => problems.push("[groups] must be a table of groups, one per tag".to_string()),
+        }
+        (groups, problems)
+    }
+
+    /// The hosts that carry `tag`.
+    fn hosts_tagged(&self, tag: &str) -> impl Iterator<Item = &str> {
+        let tag = tag.to_string();
+        self.hosts.iter().filter(move |h| h.tag.as_deref().is_some_and(|t| t.trim() == tag)).map(|h| h.name.as_str())
+    }
+
+    /// `[protection]` with the `[groups.<tag>.protection]` keys laid over it for each group, and what is wrong (the global
+    /// section first). A wrong group falls back to the global settings: never looser than what the operator wrote.
+    pub fn protection_settings(&self) -> (ProtectionSettings, Vec<String>) {
+        let (mut settings, global_problem) = self.protection.resolve_or_basic();
+        let mut problems: Vec<String> = global_problem.iter().cloned().collect();
+        let (groups, group_problems) = self.group_entries();
+        problems.extend(group_problems);
+        let over = |mine: &Option<toml::Value>, base: &Option<toml::Value>| mine.clone().or_else(|| base.clone());
+        let mut rules = GroupRules::default();
+        for host in &self.hosts {
+            if let Some(tag) = host.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                rules.host_tag.insert(host.name.clone(), tag.to_string());
+            }
+        }
+        for (tag, group) in groups {
+            let (g, b) = (&group.protection, &self.protection);
+            if g.is_default() {
+                continue;
+            }
+            let merged = ProtectionConfig { level: over(&g.level, &b.level), copies: over(&g.copies, &b.copies), online: over(&g.online, &b.online), recent: over(&g.recent, &b.recent), email: over(&g.email, &b.email), not_a_table: false };
+            match merged.resolve() {
+                Ok(s) => {
+                    rules.by_tag.insert(tag, Effective { copies: s.copies, online: s.online, tolerance: s.tolerance, email: s.email });
+                }
+                // The global section is already reported, and the group would only repeat it.
+                Err(e) if global_problem.as_deref() == Some(e.as_str()) => {}
+                Err(e) => problems.push(format!("[groups.{tag}.protection]{}", e.strip_prefix("[protection]").unwrap_or(&e))),
+            }
+        }
+        settings.groups = rules;
+        (settings, problems)
+    }
+
+    /// The recipients of the alerts about each host whose group has its own `mail_to`, and what is wrong with them. A host
+    /// that is not in the map is mailed at the global address.
+    pub fn group_mail(&self) -> (std::collections::BTreeMap<String, Vec<String>>, Vec<String>) {
+        let (groups, mut problems) = self.group_entries();
+        let mut mail = std::collections::BTreeMap::new();
+        for (tag, group) in groups {
+            let Some(value) = group.notify.mail_to else { continue };
+            let parsed = match &value {
+                toml::Value::String(list) => parse_addresses(list).map_err(|bad| format!("[groups.{tag}.notify] mail_to: '{bad}' is not a plain address (user@host, no spaces or control characters)")),
+                _ => Err(format!("[groups.{tag}.notify] mail_to must be an address, or several separated by commas")),
+            };
+            match parsed {
+                Ok(addresses) => {
+                    for host in self.hosts_tagged(&tag) {
+                        mail.insert(host.to_string(), addresses.clone());
+                    }
+                }
+                Err(problem) => problems.push(problem),
+            }
+        }
+        (mail, problems)
+    }
+
     pub fn load(path: &Path) -> Result<Config> {
         if !path.exists() {
             return Ok(Config::default());
