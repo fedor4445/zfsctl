@@ -429,7 +429,7 @@ You should not have to remember which buckets you have set up. The **Cloud** sec
 │                      ││                                                                          │
 │                      ││                                                                          │
 └──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  n Set up a provider  C New cloud mirror  r Refresh  Tab Section  ! Shell  ? Help  q Quit
 ```
 
 - **Provider, Remote, Host:** the provider behind the remote (`Backblaze B2`, `Amazon S3 (etc.)`, `Google Drive`, `SFTP`...), the name you gave in `rclone config`, and the host whose rclone config has it. rclone says only the *type* of a remote, so every `s3` remote reads `Amazon S3 (etc.)`, whether it is Amazon, Wasabi, Cloudflare R2 or your own MinIO, and a type zfsctl has no name for is shown as rclone calls it. Only names and types are read (`rclone listremotes --long`): no key is ever read into the screen.
