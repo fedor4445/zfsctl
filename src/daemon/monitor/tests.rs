@@ -810,3 +810,69 @@ fn a_big_fleet_is_probed_a_few_hosts_at_a_time_and_every_host_still_answers() {
     assert!(most <= PROBE_PARALLEL, "{most} probes at once, the limit is {PROBE_PARALLEL}");
     assert!(most >= 4, "but they do run side by side ({most})");
 }
+
+/// The settings of a `config.toml` whose hosts are `a` (tag `db`), `b` (tag `web`), `c` (no tag).
+fn group_settings(toml: &str) -> ProtectionSettings {
+    let text = format!("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"db\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\ntag = \"web\"\n\n[[hosts]]\nname = \"c\"\nssh_target = \"u@c\"\n\n{toml}");
+    let (settings, problems) = toml::from_str::<crate::config::Config>(&text).unwrap().protection_settings();
+    assert!(problems.is_empty(), "{problems:?}");
+    settings
+}
+
+#[test]
+fn a_group_with_email_off_is_neither_mailed_nor_reported_and_says_so_while_the_other_hosts_still_are() {
+    let (mut m, dir) = guarding(EmailTiming::Immediate);
+    m.set_protection(group_settings("[groups.db.protection]\nemail = \"off\"\n"));
+    write_storage(&dir, &[("a", &["tank/x"]), ("c", &["tank/y"])], week());
+    let hosts = [host("a"), host("c")];
+    let mut sink = FakeSink::new();
+    for i in 0..2 {
+        m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a"), probed_ok("c")], &[], &[], &mut sink);
+    }
+    let mail = protection_mail(&sink);
+    assert_eq!(mail.iter().map(|x| x.host.as_str()).collect::<Vec<_>>(), ["c"], "{:?}", sink.sent);
+    assert_eq!(m.unprotected.iter().map(|u| u.host.as_str()).collect::<Vec<_>>(), ["c"], "the quiet group is not in the report list");
+    assert!(m.unchecked.iter().any(|u| u == "a (email off)"), "and the report says it was not reported: {:?}", m.unchecked);
+}
+
+#[test]
+fn a_group_with_report_timing_is_in_the_report_list_but_not_mailed_at_once() {
+    let (mut m, dir) = guarding(EmailTiming::Immediate);
+    m.set_protection(group_settings("[groups.web.protection]\nemail = \"report\"\n"));
+    write_storage(&dir, &[("b", &["tank/x"]), ("c", &["tank/y"])], week());
+    let hosts = [host("b"), host("c")];
+    let mut sink = FakeSink::new();
+    for i in 0..2 {
+        m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("b"), probed_ok("c")], &[], &[], &mut sink);
+    }
+    assert_eq!(protection_mail(&sink).iter().map(|x| x.host.as_str()).collect::<Vec<_>>(), ["c"], "{:?}", sink.sent);
+    assert_eq!(m.unprotected.len(), 2, "both are in the list the daily report prints");
+}
+
+#[test]
+fn moving_a_host_to_a_quiet_group_drops_its_alerts_without_a_recovery_mail() {
+    let (mut m, dir) = guarding(EmailTiming::Immediate);
+    write_storage(&dir, &[("a", &["tank/x"])], week());
+    let hosts = [host("a")];
+    let mut sink = FakeSink::new();
+    for i in 0..2 {
+        m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+    }
+    assert_eq!(protection_mail(&sink).len(), 1);
+    m.set_protection(group_settings("[groups.db.protection]\nemail = \"report\"\n"));
+    for i in 2..5 {
+        m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+    }
+    assert_eq!(protection_mail(&sink).len(), 1, "no recovery and no new alert: {:?}", sink.sent.iter().map(|x| &x.subject).collect::<Vec<_>>());
+    assert_eq!(m.unprotected.len(), 1, "it is still listed for the report");
+}
+
+#[test]
+fn when_every_host_is_quiet_nothing_is_judged_for_mail_at_all() {
+    let (mut m, dir) = guarding(EmailTiming::Off);
+    m.set_protection(ProtectionSettings { email: EmailTiming::Off, ..group_settings("[groups.db.protection]\nemail = \"off\"\n") });
+    write_storage(&dir, &[("a", &["tank/x"])], week());
+    let mut sink = FakeSink::new();
+    m.observe(t(0), local(0), &[host("a")], &[probed_ok("a")], &[], &[], &mut sink);
+    assert!(m.unprotected.is_empty() && protection_mail(&sink).is_empty());
+}

@@ -77,8 +77,10 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
     let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
     let local = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
     // The same judgment the daemon makes; the alert tracker lives only in the daemon, so the preview has no "(for 3d)".
-    let (settings, problem) = config.protection.resolve_or_basic();
-    let protection = (settings.email != EmailTiming::Off).then(|| judge_reachable(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), &probed, &rows, &jobs, &runs, &settings, now).section(&|_| None, now));
+    let (settings, problems) = config.protection_settings();
+    let problem = problems.into_iter().next();
+    let quiet = settings.email == EmailTiming::Off && rows.iter().all(|r| settings.for_host(&r.name).email == EmailTiming::Off);
+    let protection = (!quiet).then(|| judge_reachable(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), &probed, &rows, &jobs, &runs, &settings, now).section(&|_| None, now));
     let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::check_lines(state_dir), protection.as_ref());
     let mut text = format!("Subject: {}\n\n{}", msg.subject, msg.body);
     if let Some(problem) = problem {

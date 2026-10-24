@@ -180,6 +180,8 @@ Some examples, at the Careful level (three copies, one of them online), with hos
 | `a` replicates to `b`, and `a` mirrors `tank/data` to the cloud | `2 of 3 copies on other machines`, as above | the same line: it does not matter which machine sends to the cloud |
 | the replication to `b` stopped three days ago | `copy on another machine stopped 3 days ago` | listed on its own again: `no snapshot job; no copy job` |
 
+A group of hosts can ask for more or less than the rest: `[groups.databases.protection]` with `level = "careful"` makes the data whose original lives on a `databases` host need three copies, while the other hosts keep Basic (chapter 21 says which group decides what).
+
 At the **Basic** level one copy on another machine is enough, so `a` replicating to `b` clears both lines without a cloud copy. To make the cloud mandatory, choose Careful, or Custom with at least one online copy.
 
 

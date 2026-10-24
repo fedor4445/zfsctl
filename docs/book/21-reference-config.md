@@ -88,6 +88,31 @@ What counts as a protected dataset. All keys are optional, and the words are low
 | `recent` | text | `normal` | how old a copy may be and still count: `strict` (one interval), `normal` (two) or `relaxed` (four) |
 | `email` | text | `immediate` | when an unprotected dataset is emailed: `immediate`, `report` (only in the daily report) or `off` |
 
+### `[groups.<tag>]`
+
+Hosts that share a `tag` (chapter 7) form a group, and a group may set some things for itself. Every key is optional; what a group does not set it inherits from the global sections. A host without a tag, and `local`, the hub, use the global settings.
+
+```toml
+[groups.databases.protection]
+level = "careful"
+
+[groups.lab.protection]
+email = "off"
+
+[groups.web.notify]
+mail_to = "web-team@example.com, oncall@example.com"
+```
+
+`[groups.<tag>.protection]` takes the same keys as `[protection]` above (`level`, `copies`, `online`, `recent`, `email`), laid over them for the hosts of the group.
+
+| Key | Type | What it does |
+|---|---|---|
+| `mail_to` | text | in `[groups.<tag>.notify]`: where the alerts about this group's hosts are mailed, one address or several separated by commas. The daily report always goes to the global `mail_to` |
+
+Which group decides what: how much protection a body of data needs (copies and online copies) is asked by the group of its **original**, the dataset that is not a replica of another (chapter 6); how recent a job must be is the group of the host that **runs** the job; whether a dataset is mailed at once, in the daily report only, or not at all is the group of the host the dataset **is on**. A group with `email = "off"` is not reported either, and the report says `(email off)` next to the host instead of calling its datasets protected.
+
+A wrong value in a group never stops the program: zfsctl names it (`[groups.db.protection] level must be basic, careful or custom`) in the daemon's log, in the report preview and as a yellow line in Needs attention, and that group is judged by the global settings meanwhile. A wrong global `[protection]` still keeps the previous settings, as before.
+
 ## jobs.toml
 
 The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TUI writes it for you, and the daemon notices a change within a second. A job needs only the keys its kind uses.
