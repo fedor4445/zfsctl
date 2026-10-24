@@ -143,9 +143,9 @@ fn replace_emails(line: &str) -> String {
     out
 }
 
-/// Names of real people in the test machines' data, and what the book shows instead. Each pair has the same length,
-/// so a column that was aligned stays aligned.
-const REAL_NAMES: [(&str, &str); 2] = [("alice", "alice"), ("carol", "carol")];
+/// Names in the test machines' data that must not reach the book (real people, and the project's earlier name in an rclone
+/// remote's name), and what the book shows instead. Each pair has the same length, so a column that was aligned stays aligned.
+const REAL_NAMES: [(&str, &str); 3] = [("alice", "alice"), ("carol", "carol"), ("zfsctl", "zfsctl")];
 
 /// Replaces each real name (also capitalised) that stands alone, with letters on neither side: `home/alice@alice`
 /// and `carol1` change, a longer word that merely contains the name does not.
@@ -369,6 +369,9 @@ mod tests {
         assert_eq!(scrub_names("Alice and Carol"), "Alice and Carol");
         assert_eq!(scrub_names("Frankfurt franking agnesia"), "Frankfurt franking agnesia", "a longer word is left alone");
         assert_eq!(scrub_names("nothing to change"), "nothing to change");
+        assert_eq!(scrub_names("Amazon S3 (etc.)  zfsctl-aws  no jobs"), "Amazon S3 (etc.)  zfsctl-aws  no jobs", "the earlier project name in a remote's name");
+        assert_eq!(scrub_names("zfsctl"), "zfsctl");
+        assert_eq!(scrub_names("zfs list -t snapshot"), "zfs list -t snapshot", "zfs on its own is untouched");
         for (real, alias) in REAL_NAMES {
             assert_eq!(real.len(), alias.len(), "same length keeps columns aligned");
         }

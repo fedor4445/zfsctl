@@ -102,6 +102,31 @@ fn relative_links_resolve_to_a_file_and_an_existing_heading() {
     }
 }
 
+/// The names the book must never show (the capture tool replaces them, `examples/capture.rs`): two real people's first names
+/// and the project's earlier name. A name counts when no letter stands next to it, so `Frankfurt` is fine.
+#[test]
+fn the_book_and_its_captures_show_no_real_names() {
+    let banned = ["alice", "carol", "zfsctl"];
+    let mut files: Vec<(String, String)> = chapters();
+    for e in std::fs::read_dir(book_dir().join("captures")).unwrap().filter_map(Result::ok) {
+        if let Ok(text) = std::fs::read_to_string(e.path()) {
+            files.push((format!("captures/{}", e.file_name().to_string_lossy()), text));
+        }
+    }
+    for (name, text) in files {
+        let lower = text.to_lowercase();
+        for word in banned {
+            let mut from = 0;
+            while let Some(i) = lower[from..].find(word).map(|i| i + from) {
+                let before = lower[..i].chars().next_back().is_some_and(|c| c.is_ascii_alphabetic());
+                let after = lower[i + word.len()..].chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+                assert!(before || after, "{name}: shows '{word}' (run the capture tool's --rescrub, or retake the capture)");
+                from = i + word.len();
+            }
+        }
+    }
+}
+
 #[test]
 fn callouts_use_only_the_known_labels() {
     const LABELS: [&str; 5] = ["Coming from Linux", "Coming from Windows", "Safety", "Not built yet", "Tip"];
