@@ -476,6 +476,19 @@ mod tests {
     }
 
     #[test]
+    fn every_data_protection_row_saves_into_a_real_config_file() {
+        // The changes a row produces must survive the config writer's own checks (editable tables, parse, "says what was asked").
+        let file = "[ui]\ntheme = \"mono\"\n";
+        let current = crate::config::ProtectionConfig { level: Some("custom".into()), copies: Some(3.into()), ..Default::default() };
+        let rows = [(Setting::ProtLevel, "custom"), (Setting::ProtCopies, "2"), (Setting::ProtOnline, "1"), (Setting::ProtRecent, "strict"), (Setting::ProtEmail, "report")];
+        for (setting, value) in rows {
+            let changes = build_changes_with(&setting, &values(&[value]), &current).unwrap();
+            let written = crate::config_edit::apply(file, &changes).unwrap_or_else(|e| panic!("{setting:?} = {value}: {e}"));
+            assert!(written.contains("[protection]"), "{setting:?}: {written}");
+        }
+    }
+
+    #[test]
     fn online_and_copies_are_checked_against_each_other_and_the_file() {
         let cur = |copies: Option<u8>, online: Option<u8>| crate::config::ProtectionConfig { level: Some("custom".into()), copies: copies.map(Into::into), online: online.map(Into::into), ..Default::default() };
         let run = |setting: &Setting, v: &str, c: &crate::config::ProtectionConfig| build_changes_with(setting, &values(&[v]), c);
