@@ -31,6 +31,22 @@ pub struct HostInfo {
     pub runner: Arc<dyn CommandRunner>,
 }
 
+/// The datasets judged unprotected, only for configured hosts that answered this pass and have a fresh dataset list
+/// (unknown is not a verdict), and those hosts' names. Shared by the monitor and the report preview so the two cannot
+/// drift apart.
+pub fn judge_reachable<'a>(file: &StorageFile, probed: &[Probed], rows: &'a [HostRow], jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> (Vec<Unprotected>, HashSet<&'a str>) {
+    let answered = |name: &str| probed.iter().any(|p| p.name == name && p.probe.is_some());
+    let known: HashSet<&str> = rows
+        .iter()
+        .filter(|r| !matches!(r.level, Level::Disconnected | Level::Probing) && answered(&r.name))
+        .filter(|r| file.hosts.get(&r.name).is_some_and(|h| now - h.checked_at <= STALE_AFTER))
+        .map(|r| r.name.as_str())
+        .collect();
+    let mut found = judge(file, jobs, runs, settings, now);
+    found.retain(|u| known.contains(u.host.as_str()));
+    (found, known)
+}
+
 /// One host's probe; `None` means it did not answer before the deadline.
 pub struct Probed {
     pub name: String,
@@ -298,15 +314,7 @@ impl Monitor {
             return;
         }
         let file = StorageFile::load(&self.state_dir.join(storage_check::FILE));
-        let answered = |name: &str| probed.iter().any(|p| p.name == name && p.probe.is_some());
-        let known: HashSet<&str> = rows
-            .iter()
-            .filter(|r| !matches!(r.level, Level::Disconnected | Level::Probing) && answered(&r.name))
-            .filter(|r| file.hosts.get(&r.name).is_some_and(|h| now - h.checked_at <= STALE_AFTER))
-            .map(|r| r.name.as_str())
-            .collect();
-        let mut found = judge(&file, jobs, runs, &self.protection_settings, now);
-        found.retain(|u| known.contains(u.host.as_str()));
+        let (found, known) = judge_reachable(&file, probed, rows, jobs, runs, &self.protection_settings, now);
         if self.protection_settings.email != EmailTiming::Immediate {
             self.unprotected = found;
             self.stop_protection_alerts();
