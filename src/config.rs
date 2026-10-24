@@ -61,7 +61,6 @@ pub struct ProtectionConfig {
 
 /// When the unprotected-datasets alert is emailed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)] // used by the unprotected-datasets check (later tasks)
 pub enum EmailTiming {
     #[default]
     Immediate,
@@ -71,7 +70,6 @@ pub enum EmailTiming {
 
 /// `ProtectionConfig` validated, with the defaults filled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // used by the unprotected-datasets check (later tasks)
 pub struct ProtectionSettings {
     /// Copies a dataset needs (1 to 3).
     pub copies: u8,
@@ -93,7 +91,6 @@ impl ProtectionConfig {
         *self == ProtectionConfig::default()
     }
 
-    #[allow(dead_code)] // used by the unprotected-datasets check (later tasks)
     pub fn resolve(&self) -> std::result::Result<ProtectionSettings, String> {
         let (copies, online) = match self.level.as_deref().unwrap_or("basic") {
             "basic" => (1, 0),
