@@ -541,6 +541,17 @@ fn protection_items(inputs: &Inputs) -> Vec<Item> {
         .collect()
 }
 
+/// `[protection] dashboard = "summary"`: all the protection lines as one, red while any of the operator's data is in them and
+/// amber when only the operating system's is. The datasets are still judged, and email and the report still name each one.
+fn protection_summary(lines: &[Item]) -> Option<Item> {
+    if lines.is_empty() {
+        return None;
+    }
+    let data = lines.iter().filter(|i| i.level == Level::Issue).count();
+    let what = format!("{} not protected ({data} of your data)", if lines.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", lines.len()) });
+    Some(Item { level: if data > 0 { Level::Issue } else { Level::Watch }, subject: "protection".to_string(), what, goto: Section::Jobs, target: None })
+}
+
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
     let since = marker.since.with_timezone(&chrono::Local).format("%H:%M");
@@ -596,6 +607,9 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
         }
         protection = protection_items(inputs);
+        if inputs.protection.view == crate::config::ProtectionView::Summary {
+            protection = protection_summary(&protection).into_iter().collect();
+        }
     }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
@@ -1361,6 +1375,35 @@ mod tests {
         let lines = at(&fx);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert_eq!(lines[0].what, "1 of 3 copies on other machines; no online copy");
+    }
+
+    #[test]
+    fn the_summary_view_folds_the_protection_lines_into_one_that_still_counts() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "tank/docs", "zroot/var"])]);
+        fx.protection.view = crate::config::ProtectionView::Summary;
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert_eq!(d.attention.len(), 1, "{:?}", d.attention);
+        let item = &d.attention[0];
+        assert_eq!((item.level, item.subject.as_str(), item.what.as_str(), item.goto, item.target.clone()), (Level::Issue, "protection", "3 datasets are not protected (2 of your data)", Section::Jobs, None));
+        assert_eq!(d.verdict.text, "1 issue", "one line, one issue, not three");
+    }
+
+    #[test]
+    fn the_summary_view_is_amber_when_only_os_data_is_unprotected_and_silent_when_all_is_protected() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.protection.view = crate::config::ProtectionView::Summary;
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        with_datasets(&mut fx, &[("local", &["zroot/var"])]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert_eq!((d.attention.len(), d.attention[0].level, d.attention[0].what.as_str()), (1, Level::Watch, "1 dataset is not protected (0 of your data)"));
+        let mut fx = Fixture::new(protected_view());
+        fx.protection.view = crate::config::ProtectionView::Summary;
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        assert!(fx.build(vec![fine_host("local", &probe, &r, &b)]).attention.is_empty());
     }
 
     #[test]

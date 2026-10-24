@@ -15,7 +15,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
         "memory_warn", "memory_crit", "swap_warn", "swap_crit", "quota_warn", "quota_crit", "dedup_min_ratio", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
-        "level", "copies", "online", "recent", "email",
+        "level", "copies", "online", "recent", "email", "dashboard",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -59,6 +59,8 @@ pub struct ProtectionConfig {
     pub recent: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub email: Option<toml::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub dashboard: Option<toml::Value>,
     /// `protection = 5`: the section is not a table at all.
     #[serde(skip)]
     pub not_a_table: bool,
@@ -100,11 +102,20 @@ pub struct ProtectionSettings {
     /// How many intervals old a copy may be and still count as recent.
     pub tolerance: i32,
     pub email: EmailTiming,
+    /// How the Dashboard draws unprotected datasets (a display choice only: judging and email do not change).
+    pub view: ProtectionView,
+}
+
+/// `[protection] dashboard`: one line per unprotected dataset, or one line for all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectionView {
+    List,
+    Summary,
 }
 
 impl Default for ProtectionSettings {
     fn default() -> Self {
-        ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate }
+        ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate, view: ProtectionView::List }
     }
 }
 
@@ -116,7 +127,7 @@ impl ProtectionConfig {
 
     pub fn resolve(&self) -> std::result::Result<ProtectionSettings, String> {
         if self.not_a_table {
-            return Err("[protection] must be a table of keys (level, copies, online, recent, email)".into());
+            return Err("[protection] must be a table of keys (level, copies, online, recent, email, dashboard)".into());
         }
         // A word key: absent is the default, a string is checked by the caller, any other type is wrong.
         let word = |v: &Option<toml::Value>, default: &'static str, wrong: &str| -> std::result::Result<String, String> {
@@ -162,7 +173,13 @@ impl ProtectionConfig {
             "off" => EmailTiming::Off,
             _ => return Err(email_wrong.into()),
         };
-        Ok(ProtectionSettings { copies, online, tolerance, email })
+        let view_wrong = "[protection] dashboard must be list or summary";
+        let view = match word(&self.dashboard, "list", view_wrong)?.as_str() {
+            "list" => ProtectionView::List,
+            "summary" => ProtectionView::Summary,
+            _ => return Err(view_wrong.into()),
+        };
+        Ok(ProtectionSettings { copies, online, tolerance, email, view })
     }
 
     /// The settings to judge with on a screen: `resolve`, or Basic's defaults with the problem in words.
@@ -850,7 +867,7 @@ mod tests {
             scrub_crit_days: Some(90),
             scrub_ignore: vec!["scratch".into()],
         };
-        let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), recent: Some("normal".into()), email: Some("report".into()), not_a_table: false };
+        let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), recent: Some("normal".into()), email: Some("report".into()), dashboard: Some("summary".into()), not_a_table: false };
         let notify = NotifyConfig {
             mail_to: Some("a@b".into()),
             mail_command: Some("c".into()),
@@ -1082,13 +1099,13 @@ mod tests {
     }
 
     fn prot(level: Option<&str>, copies: Option<u8>, online: Option<u8>, recent: Option<&str>, email: Option<&str>) -> ProtectionConfig {
-        ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), recent: recent.map(Into::into), email: email.map(Into::into), not_a_table: false }
+        ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), recent: recent.map(Into::into), email: email.map(Into::into), dashboard: None, not_a_table: false }
     }
 
     #[test]
     fn protection_defaults_are_basic_normal_immediate() {
         let s = ProtectionConfig::default().resolve().unwrap();
-        assert_eq!(s, ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate });
+        assert_eq!(s, ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate, view: ProtectionView::List });
         assert_eq!(s, ProtectionSettings::default());
         assert_eq!(Config::default().protection.resolve().unwrap(), s);
     }
@@ -1132,6 +1149,19 @@ mod tests {
     }
 
     #[test]
+    fn protection_dashboard_defaults_to_the_list_and_accepts_summary() {
+        use crate::config::ProtectionView;
+        let resolved = |toml: &str| toml::from_str::<Config>(toml).unwrap().protection.resolve();
+        assert_eq!(ProtectionConfig::default().resolve().unwrap().view, ProtectionView::List);
+        assert_eq!(resolved("[protection]\ndashboard = \"summary\"\n").unwrap().view, ProtectionView::Summary);
+        assert_eq!(resolved("[protection]\ndashboard = \"list\"\n").unwrap().view, ProtectionView::List);
+        let wrong = "[protection] dashboard must be list or summary";
+        assert_eq!(resolved("[protection]\ndashboard = \"short\"\n").unwrap_err(), wrong);
+        assert_eq!(resolved("[protection]\ndashboard = 5\n").unwrap_err(), wrong);
+        assert_eq!(resolved("[protection]\ndashboard = \"Summary\"\n").unwrap_err(), wrong, "the words are lower case");
+    }
+
+    #[test]
     fn a_wrong_type_in_protection_loads_and_resolve_names_the_key() {
         let resolved = |body: &str| {
             let dir = tempfile::tempdir().unwrap();
@@ -1151,8 +1181,8 @@ mod tests {
         assert_eq!(resolved("[protection]\nrecent = true\n").unwrap_err(), "[protection] recent must be strict, normal or relaxed");
         assert_eq!(resolved("[protection]\nemail = \"of\"\n").unwrap_err(), "[protection] email must be immediate, report or off");
         assert_eq!(resolved("[protection]\nemail = [\"off\"]\n").unwrap_err(), "[protection] email must be immediate, report or off");
-        assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, recent, email)");
-        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate });
+        assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, recent, email, dashboard)");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate, view: ProtectionView::List });
         assert_eq!(resolved("[protection]\nlevel = \"careful\"\ncopies = \"x\"\n").unwrap().copies, 3, "copies only counts under custom");
     }
 

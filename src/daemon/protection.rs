@@ -316,7 +316,7 @@ mod tests {
     }
 
     fn level(copies: u8, online: u8) -> ProtectionSettings {
-        ProtectionSettings { copies, online, tolerance: 2, email: EmailTiming::Immediate }
+        ProtectionSettings { copies, online, tolerance: 2, email: EmailTiming::Immediate, ..ProtectionSettings::default() }
     }
 
     /// A run that succeeded ten minutes ago for each job: all current.
