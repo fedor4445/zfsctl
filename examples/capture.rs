@@ -145,10 +145,11 @@ fn replace_emails(line: &str) -> String {
 
 /// Names in the test machines' data that must not reach the book (real people, and the project's earlier name in an rclone
 /// remote's name), and what the book shows instead. Each pair has the same length, so a column that was aligned stays aligned.
-const REAL_NAMES: [(&str, &str); 3] = [("alice", "alice"), ("carol", "carol"), ("zfsctl", "zfsctl")];
+// The names are written in two pieces so that this file never holds a name it exists to keep out of the book.
+const REAL_NAMES: [(&str, &str); 3] = [(concat!("ag", "nes"), "alice"), (concat!("fr", "ank"), "carol"), (concat!("zfs", "-it"), "zfsctl")];
 
-/// Replaces each real name (also capitalised) that stands alone, with letters on neither side: `home/alice@alice`
-/// and `carol1` change, a longer word that merely contains the name does not.
+/// Replaces each real name (also capitalised) that stands alone, with letters on neither side: `home/<name>@<name>`
+/// and `<name>1` change, a longer word that merely contains the name does not.
 fn scrub_names(line: &str) -> String {
     let mut out = line.to_string();
     for (real, alias) in REAL_NAMES {
@@ -364,18 +365,21 @@ mod tests {
 
     #[test]
     fn real_names_become_their_stand_ins_only_when_they_stand_alone() {
-        assert_eq!(scrub_names("zroot/home/alice@alice  8.0K"), "zroot/home/alice@alice  8.0K");
-        assert_eq!(scrub_names("zroot/home/carol@carol1 zroot/home/carol@snap5"), "zroot/home/carol@carol1 zroot/home/carol@snap5");
-        assert_eq!(scrub_names("Alice and Carol"), "Alice and Carol");
-        assert_eq!(scrub_names("Frankfurt franking agnesia"), "Frankfurt franking agnesia", "a longer word is left alone");
+        let [(a, alice), (f, carol), (z, ctl)] = REAL_NAMES;
+        let (cap_a, cap_f) = (capitalise(a), capitalise(f));
+        assert_eq!(scrub_names(&format!("zroot/home/{a}@{a}  8.0K")), format!("zroot/home/{alice}@{alice}  8.0K"));
+        assert_eq!(scrub_names(&format!("zroot/home/{f}@{f}1 zroot/home/{f}@snap5")), format!("zroot/home/{carol}@{carol}1 zroot/home/{carol}@snap5"));
+        assert_eq!(scrub_names(&format!("{cap_a} and {cap_f}")), format!("{} and {}", capitalise(alice), capitalise(carol)));
+        let longer = format!("{cap_f}furt {f}ing {a}ia");
+        assert_eq!(scrub_names(&longer), longer, "a longer word is left alone");
         assert_eq!(scrub_names("nothing to change"), "nothing to change");
-        assert_eq!(scrub_names("Amazon S3 (etc.)  zfsctl-aws  no jobs"), "Amazon S3 (etc.)  zfsctl-aws  no jobs", "the earlier project name in a remote's name");
-        assert_eq!(scrub_names("zfsctl"), "zfsctl");
+        assert_eq!(scrub_names(&format!("Amazon S3 (etc.)  {z}-aws  no jobs")), format!("Amazon S3 (etc.)  {ctl}-aws  no jobs"), "the earlier project name in a remote's name");
+        assert_eq!(scrub_names(z), ctl);
         assert_eq!(scrub_names("zfs list -t snapshot"), "zfs list -t snapshot", "zfs on its own is untouched");
         for (real, alias) in REAL_NAMES {
             assert_eq!(real.len(), alias.len(), "same length keeps columns aligned");
         }
-        assert_eq!(clean(&s(&["carol   "])), s(&["carol"]));
+        assert_eq!(clean(&s(&[&format!("{f}   ")])), s(&["carol"]));
     }
 
     #[test]

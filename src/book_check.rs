@@ -103,10 +103,11 @@ fn relative_links_resolve_to_a_file_and_an_existing_heading() {
 }
 
 /// The names the book must never show (the capture tool replaces them, `examples/capture.rs`): two real people's first names
-/// and the project's earlier name. A name counts when no letter stands next to it, so `Frankfurt` is fine.
+/// and the project's earlier name. A name counts when no letter stands next to it, so a longer word that contains one is fine.
 #[test]
 fn the_book_and_its_captures_show_no_real_names() {
-    let banned = ["alice", "carol", "zfsctl"];
+    // Written in pieces so that no source file holds the names it keeps out of the book.
+    let banned = [concat!("ag", "nes"), concat!("fr", "ank"), concat!("zfs", "-it")];
     let mut files: Vec<(String, String)> = chapters();
     for e in std::fs::read_dir(book_dir().join("captures")).unwrap().filter_map(Result::ok) {
         if let Ok(text) = std::fs::read_to_string(e.path()) {
