@@ -266,7 +266,9 @@ pub fn collect(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: Date
         .collect()
 }
 
-/// The status line after a check of one host: what each half found, in words.
+/// The status line after a check of one host: what each half found, in words, with no disk roles. The screens use
+/// `describe_with` and the roles; this form is what the tests compare it against.
+#[cfg(test)]
 pub fn describe(host: &str, checks: &HostChecks) -> String {
     describe_with(host, checks, &|_, _| None)
 }
