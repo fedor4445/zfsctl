@@ -152,6 +152,7 @@ pub fn protection_message(host: &str, kind: AlertKind, items: &[(String, Alert)]
     };
     let level = if kind == AlertKind::Recovery { Severity::Ok } else { items.iter().map(|(_, a)| a.severity).max().unwrap_or(Severity::Warning) };
     let mut body = format!("Host:     {name}\nHub:      {}\nTime:     {}\n\n", ascii_line(hub), utc(now));
+    let mut lines = Vec::with_capacity(items.len().min(LIST_MAX + 1));
     for (dataset, alert) in items {
         let line = if kind == AlertKind::Recovery {
             alert.bad_for.map_or_else(|| format!("  {dataset}: protected again"), |d| format!("  {dataset}: protected again after {}", dur(d)))
@@ -160,7 +161,11 @@ pub fn protection_message(host: &str, kind: AlertKind, items: &[(String, Alert)]
             let since = if kind == AlertKind::Reminder { alert.bad_for.map(|d| format!(" (for {})", dur(d))).unwrap_or_default() } else { String::new() };
             format!("  {dataset}: {}{os}{since}", alert.reason)
         };
-        body.push_str(&ascii_line(&line));
+        lines.push(ascii_line(&line));
+    }
+    // Cut like the report's lists (the subject keeps the full count).
+    for line in cut_list(lines) {
+        body.push_str(&line);
         body.push('\n');
     }
     if kind != AlertKind::Recovery {
@@ -488,6 +493,16 @@ mod tests {
         let ok = protection_message("bad\nhost", AlertKind::Recovery, &back, t(0), "hub");
         assert_eq!((ok.subject.as_str(), ok.kind.as_str(), ok.level.as_str()), ("[zfsctl] bad host: 1 dataset protected again", "health-recovered", "ok"));
         assert!(ok.body.contains("  tank/a: protected again after 2h"), "{}", ok.body);
+    }
+
+    #[test]
+    fn a_protection_message_about_many_datasets_is_cut_like_the_report() {
+        let items: Vec<(String, Alert)> = (0..100).map(|i| (format!("tank/d{i:03}"), Alert { host: format!("h\ttank/d{i:03}"), kind: AlertKind::Alert, severity: Severity::Critical, reason: "no snapshots".into(), bad_for: None })).collect();
+        let m = protection_message("h", AlertKind::Alert, &items, t(0), "hub");
+        assert_eq!(m.subject, "[zfsctl] h: 100 datasets not protected", "the subject keeps the full count");
+        assert_eq!(m.body.lines().filter(|l| l.starts_with("  tank/d")).count(), LIST_MAX);
+        assert!(m.body.contains("  tank/d039: no snapshots\n  (+60 more)\n"), "{}", m.body);
+        assert!(!m.body.contains("tank/d040"), "{}", m.body);
     }
 
     #[test]
