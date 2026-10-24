@@ -3,7 +3,7 @@
 //! between runs), run `restic backup` on it, destroy the clone on every exit path, then optionally
 //! `restic forget --prune` this job's own backups. The source's snapshots are never touched.
 
-use super::history::{EventKind, RunResult};
+use super::history::{EventKind, RunResult, UP_TO_DATE};
 use super::progress::{self, ProgressWriter};
 use super::replicate::Env;
 use super::scrub::{event, finish, Outcome, Slot};
@@ -305,7 +305,7 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
     let machine = machine_name(runner, &job.host);
     match restic_query(runner, &repo, &restic::snapshots_args(&repo, &password_file, &machine, &job.id, &snapshot)).and_then(|json| restic::snapshot_count(&json)) {
         Ok(0) => {}
-        Ok(_) => return skipped(format!("skipped: up to date ({snapshot})")),
+        Ok(_) => return skipped(format!("{UP_TO_DATE} ({snapshot})")),
         Err(e) => return failed(e),
     }
 

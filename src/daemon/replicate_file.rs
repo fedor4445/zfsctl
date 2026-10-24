@@ -4,7 +4,7 @@
 //! `replication.json` remembers what each job last wrote, which is all a file target knows about
 //! "the other side": a file target cannot resume, a failed or cancelled run just starts again.
 
-use super::history::{EventKind, RunResult};
+use super::history::{EventKind, RunResult, UP_TO_DATE};
 use super::progress::{self, ProgressWriter};
 use super::replicate::{message_of, Env};
 use super::scrub::{event, finish, Outcome, Slot};
@@ -105,7 +105,7 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     let known: Vec<SnapInfo> = recorded.iter().map(|s| SnapInfo { name: s.snapshot.clone(), guid: s.guid, createtxg: 0 }).collect();
     let (new, base) = match plan(&source, &known, &prefix) {
         Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
-        Plan::UpToDate(name) => return skipped(format!("skipped: up to date ({name})")),
+        Plan::UpToDate(name) => return skipped(format!("{UP_TO_DATE} ({name})")),
         Plan::Send { new, base } => (new, base),
     };
     let Some(new_guid) = source.iter().find(|s| s.name == new).map(|s| s.guid) else { return failed(format!("snapshot {new} vanished from {dataset}")) };
