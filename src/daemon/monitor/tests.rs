@@ -781,3 +781,32 @@ fn probe_all_collects_every_host_and_a_hung_one_comes_back_as_no_answer() {
     assert!(probed.iter().find(|p| p.name == "slow").unwrap().probe.is_none());
     assert!(matches!(probed.iter().find(|p| p.name == "fast").unwrap().probe, Some(HostProbe::Reached { .. })));
 }
+
+#[test]
+fn a_big_fleet_is_probed_a_few_hosts_at_a_time_and_every_host_still_answers() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counting(Arc<AtomicUsize>, Arc<AtomicUsize>);
+    impl CommandRunner for Counting {
+        fn run(&self, _: &str, _: &[&str]) -> crate::error::Result<CommandOutput> {
+            let now = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+            self.1.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            self.0.fetch_sub(1, Ordering::SeqCst);
+            Ok(CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, c: &str, a: &[&str], _: &str) -> crate::error::Result<CommandOutput> {
+            self.run(c, a)
+        }
+        fn run_unprivileged(&self, c: &str, a: &[&str]) -> crate::error::Result<CommandOutput> {
+            self.run(c, a)
+        }
+    }
+    let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let hosts: Vec<HostInfo> = (0..60).map(|i| HostInfo { name: format!("h{i}"), address: "x".into(), tag: String::new(), runner: Arc::new(Counting(Arc::clone(&now), Arc::clone(&most))) }).collect();
+    let probed = probe_all(&hosts, &|_| false, Duration::from_secs(20), &Busy::default());
+    assert_eq!(probed.len(), 60);
+    assert!(probed.iter().all(|p| p.probe.is_some()), "every host answered: waiting in the queue is not a failure");
+    let most = most.load(Ordering::SeqCst);
+    assert!(most <= PROBE_PARALLEL, "{most} probes at once, the limit is {PROBE_PARALLEL}");
+    assert!(most >= 4, "but they do run side by side ({most})");
+}

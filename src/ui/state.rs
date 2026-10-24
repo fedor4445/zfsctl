@@ -314,7 +314,7 @@ pub const ACCOUNT_FETCH_STUCK_AFTER: Duration = Duration::from_secs(30);
 
 /// How often each host is probed for its health, and how far apart the first probes of different hosts start.
 const HOST_PROBE_INTERVAL: Duration = Duration::from_secs(30);
-const HOST_PROBE_STAGGER: Duration = Duration::from_secs(1);
+const HOST_PROBE_STAGGER: Duration = Duration::from_millis(250);
 /// A probe still running after this long is reported as "no answer".
 const HOST_PROBE_GIVE_UP: Duration = Duration::from_secs(45);
 

@@ -215,19 +215,21 @@ enum Half {
 pub fn collect(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: Duration) -> Vec<(String, HostChecks)> {
     let smart_before = SmartFile::load(&dir.join("smart.json"));
     let (tx, rx) = std::sync::mpsc::channel();
+    let mut tasks: Vec<crate::daemon::workers::Task> = Vec::new();
     for (name, runner) in hosts {
         let before = smart_before.hosts.get(name).cloned();
         let (tx_disks, tx_shares, name_disks, name_shares) = (tx.clone(), tx.clone(), name.clone(), name.clone());
         let (disks_runner, shares_runner) = (Arc::clone(runner), Arc::clone(runner));
-        // A thread that outlives the deadline is left to finish by itself, as the health probe's are.
-        std::thread::spawn(move || {
+        // A task that outlives the deadline is left to finish by itself, as the health probe's are.
+        tasks.push(Box::new(move || {
             let _ = tx_disks.send((name_disks, Half::Disks(smart_check::check_host(disks_runner.as_ref(), now, before.as_ref(), smart_check::HOST_BUDGET.min(deadline)))));
-        });
-        std::thread::spawn(move || {
+        }));
+        tasks.push(Box::new(move || {
             let _ = tx_shares.send((name_shares, Half::Shares(shares_check::check_host(shares_runner.as_ref(), now))));
-        });
+        }));
     }
     drop(tx);
+    crate::daemon::workers::run_limited(crate::daemon::workers::PARALLEL_CHECKS, tasks);
     let started = std::time::Instant::now();
     let mut answers: Vec<(String, Option<smart_check::Outcome>, Option<shares_check::Outcome>)> = hosts.iter().map(|(n, _)| (n.clone(), None, None)).collect();
     let mut waiting = hosts.len() * 2;

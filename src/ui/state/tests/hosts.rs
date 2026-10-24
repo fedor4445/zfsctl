@@ -664,9 +664,23 @@ fn addresses_default_to_local_and_a_dash_and_follow_set_host_addresses() {
 fn nothing_is_due_before_the_stagger_and_every_host_is_due_once_it_has_passed() {
     let app = probes_app();
     let t0 = app.probe_epoch;
-    assert_eq!(app.due_host_probes(t0), vec![0], "host 0 immediately, the others one second apart");
-    assert_eq!(app.due_host_probes(t0 + Duration::from_secs(1)), vec![0, 1]);
+    assert_eq!(app.due_host_probes(t0), vec![0], "host 0 immediately, the others a fraction of a second apart");
+    assert_eq!(app.due_host_probes(t0 + Duration::from_millis(250)), vec![0, 1]);
     assert_eq!(app.due_host_probes(t0 + Duration::from_secs(5)), vec![0, 1, 2]);
+}
+
+#[test]
+fn at_most_the_limit_of_probes_run_at_once_however_many_hosts_are_due() {
+    let limit = crate::daemon::workers::PARALLEL;
+    let mut app = App::new((0..limit * 3).map(|i| format!("h{i}")).collect());
+    let late = app.probe_epoch + Duration::from_hours(1);
+    assert_eq!(app.due_host_probes(late).len(), limit, "a big fleet is asked a few hosts at a time");
+    for name in app.hosts.clone().iter().take(limit - 1) {
+        app.host_probes.entry(name.clone()).or_default().in_flight = true;
+    }
+    assert_eq!(app.due_host_probes(late).len(), 1, "one place free: one more host");
+    app.host_probes.entry(app.hosts[limit].clone()).or_default().in_flight = true;
+    assert!(app.due_host_probes(late).is_empty(), "no place free: none");
 }
 
 #[test]

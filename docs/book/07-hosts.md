@@ -8,7 +8,7 @@
 
 ## The list
 
-The Hosts section is where zfsctl opens. Every host in your configuration is probed in the background about every 30 seconds (an unreachable host costs a single 10-second timeout and never freezes the screen), so the table is a live health overview:
+The Hosts section is where zfsctl opens. Every host in your configuration is probed in the background about every 30 seconds (an unreachable host costs a single 10-second timeout and never freezes the screen; the screen and the daemon ask at most 16 hosts at a time, so a fleet of hundreds does not open hundreds of ssh connections at once, and the hosts queue for their turn), so the table is a live health overview:
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
