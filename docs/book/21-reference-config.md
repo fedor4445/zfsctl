@@ -48,7 +48,6 @@ The file is `/usr/local/etc/zfsctl/config.toml`. It has up to eight parts: any n
 | `mail_from` | text | `zfsctl@<hub name>` | the From address |
 | `check_interval_minutes` | number | `5` | minutes between health checks (at least 1) |
 | `report_time` | text | `07:00` | local time of the daily report, `HH:MM`, or `off` |
-| `dashboard` | text | `list` | how the Dashboard draws unprotected datasets: `list` (one line each) or `summary` (one line for all of them) |
 | `remind_hours` | number | `6` | repeat an unresolved alert this often; `0` for never |
 
 The monitor runs only when at least one way of reaching you is set: `mail_to` or `notify_command`.

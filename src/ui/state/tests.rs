@@ -8375,28 +8375,51 @@ fn up_down_and_enter_on_the_dashboard_only_navigate() {
     assert!(app.pending_mutations.is_empty() && app.modal.is_none() && app.picker.is_none(), "Enter changed nothing but the section");
 }
 
-#[test]
-fn enter_on_a_protection_line_opens_the_list_of_unprotected_datasets_and_stays_on_the_dashboard() {
-    let (mut app, _dir) = dash_app();
+/// A Dashboard app whose daemon is up and whose `local` host has these datasets, a week old and unprotected.
+fn unprotected_app(names: &[&str]) -> App {
+    let (mut app, dir) = dash_app();
+    std::mem::forget(dir);
     app.jobs_view.loaded = true;
     app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now() - chrono::Duration::days(1), last_tick: chrono::Utc::now() });
     app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
     let created = Some((chrono::Utc::now() - chrono::Duration::days(7)).timestamp());
-    let seen = ["tank/docs", "tank/photos"].iter().map(|n| crate::daemon::storage_check::SeenDataset { name: (*n).into(), volume: false, created }).collect();
+    let seen = names.iter().map(|n| crate::daemon::storage_check::SeenDataset { name: (*n).into(), volume: false, created }).collect();
     let entry = crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
     app.storage_check.hosts.insert("local".into(), entry);
+    app
+}
+
+#[test]
+fn enter_on_a_named_protection_line_goes_straight_to_its_fix() {
+    let mut app = unprotected_app(&["tank/docs", "tank/photos"]);
     let items = app.dashboard().attention;
     assert_eq!(items.iter().filter(|i| i.what.contains("no snapshots")).count(), 2, "{items:?}");
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Down);
-    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Show list"), "the hint says what Enter does here");
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Fix"), "the hint says what Enter does here");
     app.handle_key(KeyCode::Enter);
-    assert_eq!(app.current_section(), Section::Dashboard, "the list opens over the Dashboard");
+    assert_eq!(app.current_section(), Section::Dashboard);
+    assert!(matches!(&app.modal, Some(Modal::Form { title, .. }) if title == "New snapshot job"), "no list in between: {:?}", app.modal);
+    assert_eq!(field(app.modal.as_ref(), 1), ("Dataset".to_string(), "tank/photos".to_string()), "the line that was selected");
+    assert_eq!(field(app.modal.as_ref(), 0).1, "local");
+}
+
+#[test]
+fn enter_on_the_and_more_line_opens_the_list_at_the_first_dataset_without_a_line() {
+    let mut app = unprotected_app(&["tank/a", "tank/b", "tank/c", "tank/d", "tank/e"]);
+    let items = app.dashboard().attention;
+    let more = items.iter().position(|i| i.subject == "protection").expect("the folded line");
+    for _ in 0..=more {
+        app.handle_key(KeyCode::Down);
+    }
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Show list"));
+    app.handle_key(KeyCode::Enter);
     match &app.modal {
         Some(Modal::Choose { title, rows, selected, .. }) => {
             assert_eq!(title, "Unprotected data");
-            assert!(rows[0].contains("tank/docs") && rows[1].contains("tank/photos"), "{rows:?}");
-            assert_eq!(*selected, 1, "the line that was selected is the row that is");
+            assert_eq!(rows.len(), 5);
+            assert_eq!(*selected, 3);
+            assert!(rows[3].contains("tank/d"), "{rows:?}");
         }
         other => panic!("expected the list, got {other:?}"),
     }

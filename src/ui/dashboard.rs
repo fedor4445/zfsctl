@@ -311,8 +311,8 @@ pub struct Dashboard {
     pub unprotected: Vec<Item>,
     /// What each of `unprotected` lacks (the same order), for the pop-up's fixes.
     pub gaps: Vec<crate::daemon::protection::Unprotected>,
-    /// The one line that stands for them all (`dashboard = "summary"`), or `None` in the list view.
-    pub protection_summary: Option<Item>,
+    /// The line that stands for those past the first `PROTECTION_NAMED`, or `None` when all of them have a line.
+    pub protection_more: Option<Item>,
     pub hosts: Vec<HostRow>,
     pub daemon: Line,
     pub jobs: Line,
@@ -550,15 +550,17 @@ fn protection_items(inputs: &Inputs) -> Vec<(Item, crate::daemon::protection::Un
         .collect()
 }
 
-/// `[protection] dashboard = "summary"`: all the protection lines as one, red while any of the operator's data is in them and
-/// amber when only the operating system's is. The datasets are still judged, and email and the report still name each one.
-fn protection_summary(lines: &[Item]) -> Option<Item> {
-    if lines.is_empty() {
+/// How many unprotected datasets the Dashboard names, one line each; the rest are folded into one line that opens the list.
+pub const PROTECTION_NAMED: usize = 3;
+
+/// The one line for the datasets past the named ones: red while any of your data is among them, amber when only the
+/// operating system's is. The datasets are still judged, and email and the report still name each one.
+fn protection_more(rest: &[Item]) -> Option<Item> {
+    if rest.is_empty() {
         return None;
     }
-    let data = lines.iter().filter(|i| i.level == Level::Issue).count();
-    let what = format!("{} not protected ({data} of your data)", if lines.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", lines.len()) });
-    Some(Item { level: if data > 0 { Level::Issue } else { Level::Watch }, subject: "protection".to_string(), what, goto: Section::Jobs, target: None })
+    let data = rest.iter().filter(|i| i.level == Level::Issue).count();
+    Some(Item { level: if data > 0 { Level::Issue } else { Level::Watch }, subject: "protection".to_string(), what: format!("and {} more not protected ({data} of your data)", rest.len()), goto: Section::Jobs, target: None })
 }
 
 /// The title of the pop-up that lists the unprotected datasets.
@@ -575,9 +577,19 @@ pub struct ProtectionPopup {
 }
 
 impl Dashboard {
-    /// The pop-up for a protection line, with its own row selected (the first for the summary line). `None` for any other line.
+    /// What a named protection line lacks (Enter goes straight to its fix); `None` for any other line.
+    pub fn protection_fix(&self, item: &Item) -> Option<&crate::daemon::protection::Unprotected> {
+        let at = self.unprotected.iter().take(PROTECTION_NAMED).position(|u| u == item)?;
+        self.gaps.get(at)
+    }
+
+    /// The pop-up behind the "and N more" line: every unprotected dataset, starting at the first one that has no line of
+    /// its own. `None` for any other line.
     pub fn protection_popup(&self, item: &Item) -> Option<ProtectionPopup> {
-        let selected = if self.protection_summary.as_ref() == Some(item) { 0 } else { self.unprotected.iter().position(|u| u == item)? };
+        if self.protection_more.as_ref() != Some(item) {
+            return None;
+        }
+        let selected = PROTECTION_NAMED;
         let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
         let width = self.unprotected.iter().map(|u| u.subject.chars().count()).max().unwrap_or(0);
         let note = format!(
@@ -641,7 +653,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     let mut protection = Vec::new();
     let mut unprotected = Vec::new();
     let mut gaps = Vec::new();
-    let mut summary = None;
+    let mut more = None;
     if daemon.level == Level::Fine {
         for late in crate::ui::overdue::overdue(inputs.jobs, now) {
             attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
@@ -650,10 +662,9 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         protection = items;
         gaps = found;
         unprotected.clone_from(&protection);
-        if inputs.protection.view == crate::config::ProtectionView::Summary {
-            summary = protection_summary(&protection);
-            protection = summary.iter().cloned().collect();
-        }
+        let rest = protection.split_off(PROTECTION_NAMED.min(protection.len()));
+        more = protection_more(&rest);
+        protection.extend(more.clone());
     }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
@@ -706,7 +717,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, unprotected, gaps, protection_summary: summary, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 
@@ -1421,64 +1432,76 @@ mod tests {
         assert_eq!(lines[0].what, "1 of 3 copies on other machines; no online copy");
     }
 
+    /// `local` has these datasets and nothing protects them; the screen is built for it.
+    fn five_unprotected(os_only_rest: bool) -> Dashboard {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        let names: &[&str] = if os_only_rest { &["tank/a", "tank/b", "tank/c", "zroot/var", "zroot/tmp"] } else { &["tank/a", "tank/b", "tank/c", "tank/d", "zroot/var"] };
+        with_datasets(&mut fx, &[("local", names)]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        fx.build(vec![fine_host("local", &probe, &r, &b)])
+    }
+
     #[test]
-    fn the_summary_view_folds_the_protection_lines_into_one_that_still_counts() {
+    fn up_to_three_unprotected_datasets_are_named_and_nothing_is_folded() {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         with_datasets(&mut fx, &[("local", &["tank/photos", "tank/docs", "zroot/var"])]);
-        fx.protection.view = crate::config::ProtectionView::Summary;
         let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
         let probe = reached(vec![]);
         let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
-        assert_eq!(d.attention.len(), 1, "{:?}", d.attention);
-        let item = &d.attention[0];
-        assert_eq!((item.level, item.subject.as_str(), item.what.as_str(), item.goto, item.target.clone()), (Level::Issue, "protection", "3 datasets are not protected (2 of your data)", Section::Jobs, None));
-        assert_eq!(d.verdict.text, "1 issue", "one line, one issue, not three");
+        assert_eq!(d.attention.len(), 3, "{:?}", d.attention);
+        assert!(d.protection_more.is_none());
+        assert_eq!(d.verdict.text, "2 issues, 1 to watch");
     }
 
     #[test]
-    fn the_summary_view_is_amber_when_only_os_data_is_unprotected_and_silent_when_all_is_protected() {
-        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
-        fx.protection.view = crate::config::ProtectionView::Summary;
-        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
-        let probe = reached(vec![]);
-        with_datasets(&mut fx, &[("local", &["zroot/var"])]);
-        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
-        assert_eq!((d.attention.len(), d.attention[0].level, d.attention[0].what.as_str()), (1, Level::Watch, "1 dataset is not protected (0 of your data)"));
-        let mut fx = Fixture::new(protected_view());
-        fx.protection.view = crate::config::ProtectionView::Summary;
-        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
-        assert!(fx.build(vec![fine_host("local", &probe, &r, &b)]).attention.is_empty());
+    fn past_three_the_rest_fold_into_one_line_that_is_red_while_any_of_your_data_is_in_it() {
+        let d = five_unprotected(false);
+        let subjects: Vec<&str> = d.attention.iter().map(|i| i.subject.as_str()).collect();
+        assert_eq!(subjects, ["tank/a", "tank/b", "tank/c", "protection"], "your data first; three named, then the rest as one line");
+        let more = d.protection_more.clone().unwrap();
+        assert_eq!((more.level, more.what.as_str(), more.goto, more.target.clone()), (Level::Issue, "and 2 more not protected (1 of your data)", Section::Jobs, None));
+        assert_eq!(d.attention[3], more);
+        assert_eq!(d.verdict.text, "4 issues", "each line counts once; the folded datasets are one");
+        assert_eq!(d.unprotected.len(), 5, "the full list is kept for the pop-up");
     }
 
     #[test]
-    fn the_popup_lists_every_unprotected_dataset_and_a_line_scrolls_to_its_own_row() {
-        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
-        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"]), ("nas", &["tank/media"])]);
-        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
-        let (probe, probe2) = (reached(vec![]), reached(vec![]));
-        let hosts = || vec![fine_host("local", &probe, &r, &b), fine_host("nas", &probe2, &r, &b)];
-        let d = fx.build(hosts());
-        assert!(d.protection_summary.is_none());
-        let line = |name: &str| d.attention.iter().find(|i| i.subject.ends_with(name)).unwrap().clone();
-        let popup = d.protection_popup(&line("tank/photos")).expect("a protection line has a popup");
+    fn the_folded_line_is_amber_when_only_operating_system_data_is_in_it() {
+        let d = five_unprotected(true);
+        let more = d.protection_more.unwrap();
+        assert_eq!((more.level, more.what.as_str()), (Level::Watch, "and 2 more not protected (0 of your data)"));
+    }
+
+    #[test]
+    fn a_named_line_goes_straight_to_its_fix_and_the_folded_line_opens_the_list_at_the_first_hidden_dataset() {
+        let d = five_unprotected(false);
+        let fix = d.protection_fix(&d.attention[1]).expect("a named line has a fix");
+        assert_eq!(fix.dataset, "tank/b");
+        assert!(d.protection_popup(&d.attention[1]).is_none(), "a named line opens no list");
+        let more = d.attention[3].clone();
+        assert!(d.protection_fix(&more).is_none());
+        let popup = d.protection_popup(&more).expect("the folded line opens the list");
         let note: Vec<&str> = popup.note.lines().collect();
-        assert_eq!(note[0], "3 datasets are not protected (2 of your data)");
+        assert_eq!(note[0], "5 datasets are not protected (4 of your data)");
         assert!(note[1].starts_with("Protected means snapshots plus a copy on another machine"), "{}", note[1]);
         assert_eq!(note[2], "Enter fixes the selected one.");
-        assert_eq!(popup.rows.len(), 3);
-        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/photos") && popup.rows[0].ends_with("no snapshots; no copy on another machine"), "data first: {}", popup.rows[0]);
-        assert!(popup.rows[1].starts_with("issue") && popup.rows[1].contains("nas:tank/media"), "{}", popup.rows[1]);
-        assert!(popup.rows[2].starts_with("watch") && popup.rows[2].contains("zroot/var"), "{}", popup.rows[2]);
-        assert_eq!(popup.selected, 0, "tank/photos is the first row");
-        assert_eq!(popup.gaps.iter().map(|g| g.dataset.as_str()).collect::<Vec<_>>(), ["tank/photos", "tank/media", "zroot/var"], "what each row lacks, in the rows' order");
-        assert_eq!(d.protection_popup(&line("zroot/var")).unwrap().selected, 2);
+        assert_eq!(popup.rows.len(), 5);
+        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/a") && popup.rows[0].ends_with("no snapshots; no copy on another machine"), "{}", popup.rows[0]);
+        assert!(popup.rows[4].starts_with("watch") && popup.rows[4].contains("zroot/var"), "{}", popup.rows[4]);
+        assert_eq!(popup.selected, 3, "the first dataset without a line of its own");
+        assert_eq!(popup.gaps.iter().map(|g| g.dataset.as_str()).collect::<Vec<_>>(), ["tank/a", "tank/b", "tank/c", "tank/d", "zroot/var"], "what each row lacks, in the rows' order");
         assert!(d.protection_popup(&Item { level: Level::Issue, subject: "daemon".into(), what: "x".into(), goto: Section::Jobs, target: None }).is_none());
-        fx.protection.view = crate::config::ProtectionView::Summary;
-        let d = fx.build(hosts());
-        let summary = d.protection_summary.clone().expect("summary mode keeps its line");
-        assert_eq!(d.attention, vec![summary.clone()]);
-        let from_summary = d.protection_popup(&summary).unwrap();
-        assert_eq!((from_summary.rows, from_summary.selected), (popup.rows, 0), "the same list, from the top");
+    }
+
+    #[test]
+    fn nothing_is_folded_or_named_when_every_dataset_is_protected() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.attention.is_empty() && d.protection_more.is_none() && d.unprotected.is_empty());
     }
 
     #[test]
@@ -1734,8 +1757,9 @@ mod tests {
         let d = fx.build(vec![fine_host("local", &degraded, &r, &before)]);
         let order: Vec<(Level, &str)> = d.attention.iter().map(|i| (i.level, i.subject.as_str())).collect();
         assert_eq!(order[..3], [(Level::Issue, "local"), (Level::Issue, "zz-scrub"), (Level::Issue, "aa/d00")], "the pool and the failed job first: {order:?}");
-        assert_eq!(order[2..32].iter().map(|(_, s)| *s).collect::<Vec<_>>(), refs[..30], "then the protection lines, in their own order");
-        assert_eq!(order[32..], [(Level::Watch, "zroot/var")], "Issue before Watch still: {order:?}");
+        assert_eq!(order[2..5].iter().map(|(_, s)| *s).collect::<Vec<_>>(), refs[..3], "then the named protection lines, in their own order");
+        assert_eq!(order[5..], [(Level::Issue, "protection")], "the other 28 are one line, red because your data is among them: {order:?}");
+        assert_eq!(d.attention[5].what, "and 28 more not protected (27 of your data)");
     }
 
     #[test]

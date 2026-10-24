@@ -86,28 +86,35 @@ impl App {
         None
     }
 
+    /// The fix for one unprotected dataset: open the form that makes the missing job, ask which kind of copy, or go to the
+    /// job that should be helping.
+    pub(super) fn fix_unprotected(&mut self, gap: &crate::daemon::protection::Unprotected) {
+        use crate::daemon::protection::{fix_for, Fix};
+        match fix_for(gap, &self.jobs_view.jobs) {
+            Fix::NewSnapshotJob => self.modal = Some(prefilled(self.snapshot_job_form(None, &gap.dataset), &gap.host, &gap.dataset)),
+            Fix::ChooseCopy => {
+                let rows = vec!["Replicate to another host".to_string(), "Back up with restic".to_string(), "Mirror to the cloud (rclone)".to_string()];
+                let note = format!("{}:{} needs a copy on another machine.\nEnter opens the form for the kind you pick.", gap.host, gap.dataset);
+                self.modal = Some(Modal::Choose { title: "Which copy?".to_string(), note, rows, selected: 0, then: ChooseThen::Copy { host: gap.host.clone(), dataset: gap.dataset.clone() } });
+            }
+            Fix::GoToJob(id) => {
+                if let Some(position) = self.sections.iter().position(|s| *s == Section::Jobs) {
+                    self.selected_section = position;
+                    self.pane_focus = PaneFocus::Middle;
+                }
+                if let Some(index) = self.jobs_view.jobs.iter().position(|j| j.id == id) {
+                    self.jobs_table.select(Some(index));
+                }
+            }
+        }
+    }
+
     /// What Enter does on a row: open the form that fixes the dataset, ask which kind of copy, or go to the job that should be helping.
     fn choose_row(&mut self, row: usize, then: ChooseThen) {
-        use crate::daemon::protection::{fix_for, Fix};
         match then {
             ChooseThen::Unprotected(gaps) => {
-                let Some(gap) = gaps.get(row) else { return };
-                match fix_for(gap, &self.jobs_view.jobs) {
-                    Fix::NewSnapshotJob => self.modal = Some(prefilled(self.snapshot_job_form(None, &gap.dataset), &gap.host, &gap.dataset)),
-                    Fix::ChooseCopy => {
-                        let rows = vec!["Replicate to another host".to_string(), "Back up with restic".to_string(), "Mirror to the cloud (rclone)".to_string()];
-                        let note = format!("{}:{} needs a copy on another machine.\nEnter opens the form for the kind you pick.", gap.host, gap.dataset);
-                        self.modal = Some(Modal::Choose { title: "Which copy?".to_string(), note, rows, selected: 0, then: ChooseThen::Copy { host: gap.host.clone(), dataset: gap.dataset.clone() } });
-                    }
-                    Fix::GoToJob(id) => {
-                        if let Some(position) = self.sections.iter().position(|s| *s == Section::Jobs) {
-                            self.selected_section = position;
-                            self.pane_focus = PaneFocus::Middle;
-                        }
-                        if let Some(index) = self.jobs_view.jobs.iter().position(|j| j.id == id) {
-                            self.jobs_table.select(Some(index));
-                        }
-                    }
+                if let Some(gap) = gaps.get(row) {
+                    self.fix_unprotected(gap);
                 }
             }
             ChooseThen::Copy { host, dataset } => {
