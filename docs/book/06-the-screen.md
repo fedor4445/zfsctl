@@ -135,7 +135,7 @@ These defaults can be changed under `[dashboard]` in `config.toml` (see the conf
 
 ### Is my data protected?
 
-zfsctl calls a dataset **protected** when two things hold: **snapshots** and **a copy on another machine**, both made by jobs that are *current*. A job counts only while it keeps running: its last success must be no older than 1, 2 or 4 of its own schedule intervals, which is the "overdue" idea used above (the setting **How recent** picks strict, normal or relaxed; normal is 2). A job that never ran, failed last time or is disabled protects nothing.
+zfsctl calls a dataset **protected** when two things hold: **snapshots** and **a copy on another machine**, both made by jobs that are *current*. A job counts only while it keeps running: its last success must be no older than 1, 2 or 4 of its own schedule intervals, which is the "overdue" idea used above (the setting **How recent** picks strict, normal or relaxed; normal is 2). A copy job's run that found nothing new to send (`skipped: up to date`) counts as a success. A job that never ran, failed last time or is disabled protects nothing.
 
 How many copies are needed is your choice, the **level**:
 
