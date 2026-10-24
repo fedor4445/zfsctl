@@ -127,11 +127,10 @@ A dataset that uses 90% or more of its quota (or refquota) is listed too, one li
 
 These defaults can be changed under `[dashboard]` in `config.toml` (see the configuration reference). To stop a pool nobody scrubs, such as a scratch pool, from keeping the screen yellow, list it in `scrub_ignore = ["scratch"]`.
 
-> **Safety:** the Dashboard only displays. `Up` / `Down` select a line of Needs attention and `Enter` takes you to the section that owns it; that is all. To fix something, go there: scrub a pool in Pools, look at a failed job in Jobs.
+> **Safety:** the Dashboard itself changes nothing. `Up` / `Down` select a line of Needs attention and `Enter` takes you to the section that owns it: scrub a pool in Pools, look at a failed job in Jobs. On an unprotected-data line `Enter` opens the form that makes the missing job (or the list of the datasets, from the "and N more" line); nothing is created until you confirm that form.
 
 > **Tip:** gauges (`━━━━╌╌╌╌╌╌`) appear when the terminal is wide enough. On a narrower one they go first, then the least useful columns; the host's name and state always stay. It stays readable at 80 columns.
 
-> **Not built yet:** NFS and Samba availability, disk wear (SMART) and predictions such as "this pool fills in 40 days". The first needs a privileged check per host on every probe, the second needs smartmontools on each host, the third needs a history of samples that zfsctl does not keep.
 
 ### Is my data protected?
 

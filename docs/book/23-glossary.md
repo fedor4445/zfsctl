@@ -16,8 +16,6 @@ Terms are in alphabetical order.
 
 **bectl**: FreeBSD's tool for boot environments.
 
-**bhyve**: FreeBSD's built-in hypervisor for virtual machines.
-
 **browse**: looking inside a snapshot's folders (`f` in Snapshots) with each entry's type, size, dates, mode and owner; names and metadata only, never contents; other hosts need the off-by-default `browse` sudoers feature; chapter 10.
 **boot environment**: a bootable copy of the operating system kept as a ZFS clone, so a bad upgrade can be undone; chapter 13.
 **restore as a copy**: getting one file back out of a snapshot by copying it to a new name next to the original (`R` in the snapshot browser); it never overwrites or replaces anything; needs the off-by-default `restore` sudoers feature on other hosts; chapter 10.

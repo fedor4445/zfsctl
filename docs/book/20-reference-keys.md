@@ -146,7 +146,7 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | Key | What it does |
 |---|---|
 | `Up / Down` | select a line of Needs attention |
-| `Enter` | go to the section that owns that line (the Dashboard itself changes nothing) |
+| `Enter` | go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job, or (on "and N more") the list of the unprotected datasets (the Dashboard itself changes nothing) |
 | `r` | reload the jobs, alerts, cloud list and `[dashboard]` settings |
 
 ## Cloud
