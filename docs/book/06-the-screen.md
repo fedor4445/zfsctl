@@ -59,42 +59,42 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Thu 22 Oct 20:43                                                                                                  ● all quiet
+┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 09:09                                                                                    ✖ 68 issues, 57 to watch
 │Dashboard             │
-│Hosts                 │ NEEDS ATTENTION ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Pools                 │   ● nothing needs attention
-│Datasets              │
-│Snapshots             │ HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Disks                 │  Host      State       Pools  Capacity             Memory             ARC     CPU              Load  Scrub     Errors
-│Shares                │  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 17%     100.0%  ?                3.45  14 d ago  0
-│Boot Envs             │  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.18  4 d ago   0
-│Jobs                  │  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.55  4 d ago   0
-│Cloud                 │  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.68  4 d ago   0
-│Alerts                │  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.00  4 d ago   0
-│Settings              │  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     84.0%   ?                0.02  5 d ago   0
+│Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Pools                 │   ✖ issue fbsd16:zroot      no snapshots; no copy on another machine; no online copy
+│Datasets              │   ✖ issue fbsd16:zroot/ho…  no snapshots; no copy on another machine; no online copy
+│Snapshots             │   ✖ issue fbsd16:zroot/ho…  no snapshots; no copy on another machine; no online copy
+│Disks                 │   ✖ issue fbsd16:zroot/usr  no snapshots; no copy on another machine; no online copy
+│Shares                │   ✖ issue fbsd16t1:tpool    no snapshots; no copy on another machine; no online copy
+│Boot Envs             │   ✖ issue fbsd16t1:tpool/…  no snapshots; no copy on another machine; no online copy
+│Jobs                  │     +119 more
+│Cloud                 │
+│Alerts                │ HOSTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Settings              │  Host      State       Pools  Capacity             Memory             ARC     CPU              Load  Scrub     Errors
+│                      │  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 16%     100.0%  ?                0.40  15 d ago  0
+│                      │  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.15  6 d ago   0
+│                      │  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.23  6 d ago   0
+│                      │  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.57  6 d ago   0
+│                      │  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.00  6 d ago   0
+│                      │  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     83.7%   ?                0.03  6 d ago   0
 │                      │
-│                      │ DAEMON AND JOBS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 42975), heartbeat 0s ago
+│                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ● daemon  running (pid 3302), heartbeat 2s ago
 │                      │   ● jobs    scrub 2/2 ok
 │                      │
-│                      │ CLOUD ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │ CLOUD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
 │                      │   ○ Backblaze B2      b2          no jobs  -         -                -        -
 │                      │   ○ SFTP              t1          no jobs  -         -                -        -
 │                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 │                      │
-│                      │ ALERTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert fbsd16t2 unreachable (3d ago) · report 2026-10-22
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
+│                      │ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ● monitor on · last alert fbsd16t2 unreachable (4d ago) · report 2026-10-24
 │                      │
 │                      │
 └──────────────────────┘
-r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 - **The header** names the screen and gives the verdict on the right: `all quiet`, or how many things need attention (`1 issue, 1 to watch`). Until every host has answered its first probe it says `checking...`, because a screen that does not know yet must not say all is quiet.
