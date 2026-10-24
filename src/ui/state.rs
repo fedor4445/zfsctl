@@ -76,6 +76,16 @@ pub enum Section {
 /// Which pane currently receives navigation keys. Meaningful only while
 /// the current section is Pools or Datasets — those are the only two
 /// sections with a right pane at all.
+/// What a job form's live-fetched picker is for, beyond the pools or datasets a host field names.
+pub(crate) enum Wanted {
+    /// The pool or dataset names of the host.
+    Names,
+    /// `new`, the prefixes and the snapshots of this dataset.
+    Snapshots(String),
+    /// The host's rclone remotes, each written with this prefix (`rclone:` for a restic repository, else none).
+    Remotes(&'static str),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneFocus {
     Middle,
@@ -2585,6 +2595,11 @@ impl App {
                 move_table_selection(&mut self.cloud_table, rows, false);
             }
             KeyCode::Char('s') if self.current_section() == Section::Cloud => self.request_cloud_sizes(),
+            KeyCode::Char('n') if self.current_section() == Section::Cloud && self.modal.is_none() && self.picker.is_none() => {
+                let rows = crate::ui::cloud_guide::PROVIDERS.iter().map(|p| p.name.to_string()).collect();
+                let note = "Which provider do you want to use? Enter shows what to get and what to answer in rclone config.\nzfsctl never creates the remote or sees its keys.".to_string();
+                self.modal = Some(Modal::Choose { title: "Set up a cloud provider".to_string(), note, rows, selected: 0, then: crate::ui::modal::ChooseThen::Provider, look: crate::ui::modal::ChooseLook::default() });
+            }
             KeyCode::F(5) if self.current_section() == Section::Cloud => self.request_cloud_check(),
             KeyCode::Down if self.current_section() == Section::Jobs => {
                 move_table_selection(&mut self.jobs_table, self.jobs_view.jobs.len(), true);
@@ -2835,7 +2850,7 @@ impl App {
 
     /// Points the job form's Pool picker at the host named in the form's Host field and queues
     /// one fetch of its pool names; an unknown host name fails the picker right away.
-    fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str, snapshots_of: Option<String>) {
+    fn open_pool_picker(&mut self, picker: &mut PickerState, kind: &FormKind, host_name: &str, wanted: Wanted) {
         let (hosts, mut what) = match kind {
             FormKind::Job { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Pools),
             FormKind::SnapshotJob { hosts, .. } | FormKind::ReplicateJob { hosts, .. } | FormKind::BackupJob { hosts, .. } | FormKind::MirrorJob { hosts, .. } => (hosts, crate::ui::picker::LiveNames::Datasets),
@@ -2845,7 +2860,10 @@ impl App {
             picker.load = crate::ui::picker::PickerLoad::Failed("the destination is a directory on the hub: type its path".to_string());
             return;
         }
-        if let Some(dataset) = snapshots_of {
+        if let Wanted::Remotes(prefix) = &wanted {
+            what = crate::ui::picker::LiveNames::Remotes { prefix: (*prefix).to_string() };
+        }
+        if let Wanted::Snapshots(dataset) = wanted {
             if !crate::jobs::valid_dataset(&dataset) {
                 picker.load = crate::ui::picker::PickerLoad::Failed("enter the dataset first: the snapshots listed are that dataset's".to_string());
                 return;
@@ -2864,6 +2882,7 @@ impl App {
     /// Lists the host's pools or datasets on a worker thread and reports them as `WorkerMsg::PoolNames`.
     pub fn fetch_pool_names(&mut self, runner: Arc<dyn CommandRunner>, host: usize, what: crate::ui::picker::LiveNames) {
         let tx = self.tx.clone();
+        let host_name = self.hosts.get(host).cloned().unwrap_or_default();
         std::thread::spawn(move || {
             let result = match what {
                 crate::ui::picker::LiveNames::Pools => crate::zfs::pool::list_pools(runner.as_ref()).map(|v| v.into_iter().map(|p| p.name).collect()),
@@ -2871,6 +2890,11 @@ impl App {
                 crate::ui::picker::LiveNames::Snapshots(dataset) => {
                     crate::zfs::replication::list_snapshot_infos_or_empty(runner.as_ref(), &dataset).map(|v| crate::ui::picker::source_choices(&v.into_iter().map(|s| s.name).collect::<Vec<_>>()))
                 }
+                crate::ui::picker::LiveNames::Remotes { prefix } => match crate::ui::cloud::list_remotes(runner.as_ref(), &host_name) {
+                    Ok(remotes) if remotes.is_empty() => Err(crate::error::AppError::Message("no rclone remotes on this host yet: in Cloud, press n for how to add one".to_string())),
+                    Ok(remotes) => Ok(crate::ui::picker::remote_choices(&remotes, &prefix)),
+                    Err(problem) => Err(crate::error::AppError::Message(problem)),
+                },
             };
             let _ = tx.send(WorkerMsg::PoolNames(host, result));
         });
@@ -2955,13 +2979,13 @@ impl App {
         self.status_message = Some(if asked == 0 { "Nothing to measure: no cloud mirror job uses this remote".to_string() } else { "Measuring the bucket (it lists the files, which a cloud account may count as requests)...".to_string() });
     }
 
-    /// F5 in Cloud: the form's remote check, for the first cloud mirror job of the selected remote.
+    /// F5 in Cloud: the form's remote check, for the first cloud mirror job of the selected remote, or for the remote itself
+    /// (its top level, read-only) when no job uses it yet.
     fn request_cloud_check(&mut self) {
         let Some(row) = self.selected_cloud_row() else { return };
-        let target = self.jobs_view.jobs.iter().find(|j| row.job_ids.contains(&j.id) && j.kind == crate::jobs::KIND_MIRROR).and_then(|j| j.remote.clone().map(|r| (j.host.clone(), r)));
-        match target {
-            Some((host, remote)) => self.request_mirror_check(&host, &remote),
-            None => self.status_message = Some("Nothing to check: F5 tries the remote of a cloud mirror job, and none uses this one".to_string()),
+        match crate::ui::cloud::check_target(&row, &self.jobs_view.jobs) {
+            Some(remote) => self.request_remote_check(&row.host, &remote),
+            None => self.status_message = Some("Nothing to check: this remote's name is not one a job could use".to_string()),
         }
     }
 
@@ -3015,14 +3039,19 @@ impl App {
     /// F5 in the cloud mirror form: queues one check of the remote on the form's host. It rides the backup form's
     /// check (an empty `password_file` marks it as a remote check), so a result for edited values is dropped the same way.
     pub(super) fn request_mirror_check(&mut self, host_name: &str, remote: &str) {
-        let Some(host) = self.hosts.iter().position(|h| h == host_name) else {
-            self.set_error(format!("Unknown host '{host_name}'. Configured hosts: {}", self.hosts.join(", ")));
-            return;
-        };
         if !crate::rclone::valid_remote(remote) {
             self.set_error("Check: enter the remote first, like aws:mybucket/photos (the name of an rclone remote, a colon and a bucket or folder, with no keys in it)".to_string());
             return;
         }
+        self.request_remote_check(host_name, remote);
+    }
+
+    /// Queues the read-only check of `remote` (already validated by the caller) on the host's runner, once while one runs.
+    fn request_remote_check(&mut self, host_name: &str, remote: &str) {
+        let Some(host) = self.hosts.iter().position(|h| h == host_name) else {
+            self.set_error(format!("Unknown host '{host_name}'. Configured hosts: {}", self.hosts.join(", ")));
+            return;
+        };
         let same = |c: &PreflightCheck| c.host == host && c.repository == remote && c.password_file.is_empty();
         if self.backup_preflight.as_ref().is_some_and(|c| same(c) && c.result.is_none()) {
             return;
@@ -3157,9 +3186,12 @@ impl App {
                         }
                     }
                 } else if let Some(value) = filtered.get(picker.selected).cloned() {
-                    if let Some(Modal::Form { fields, focused, .. }) = &mut self.modal {
+                    if let Some(Modal::Form { fields, focused, kind, .. }) = &mut self.modal {
+                        // The remote field keeps the bucket and folder that were typed after the remote's name.
+                        let remote_field = *focused == 5 && matches!(kind, FormKind::MirrorJob { .. } | FormKind::BackupJob { .. });
                         if let Some(field) = fields.get_mut(*focused) {
-                            field.value = crate::ui::jobs::insert_text(&value).to_string();
+                            let chosen = crate::ui::jobs::insert_text(&value);
+                            field.value = if remote_field { crate::ui::picker::with_remote(&field.value, chosen) } else { chosen.to_string() };
                         }
                     }
                 } else {
@@ -3904,7 +3936,8 @@ Dashboard
 Cloud
   Up / Down        select an rclone remote (the hub's, and those of hosts that have a cloud job)
   s                measure the bucket: the size of current/ and old/ of the remote's cloud mirror jobs (reads the file list, which a cloud account may count as requests)
-  F5               check the remote of its cloud mirror job (read-only)
+  F5               check the selected remote (read-only): the remote of its cloud mirror job, or, when no job uses it yet, its top level
+  n                set up a provider: a list (Backblaze B2, Amazon S3, Google Drive, OneDrive, Dropbox, SFTP...) and the steps for the one you pick; nothing is created
   C                new cloud mirror job
   r                refresh the list of remotes and jobs
 

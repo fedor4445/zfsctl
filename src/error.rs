@@ -24,6 +24,9 @@ pub enum AppError {
     HoldCheck(String),
     #[error("SMB: {0}")]
     Smb(String),
+    /// A message that is already in words for the operator, shown as it is.
+    #[error("{0}")]
+    Message(String),
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
