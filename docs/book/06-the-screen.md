@@ -158,7 +158,29 @@ A copy counts when a job makes it on **another machine**, for the **whole datase
 | Backup (restic) | the repository starts with `s3:`, `b2:`, `azure:`, `gs:`, `swift:` or `rclone:` | **online** |
 | Cloud mirror (rclone) | the remote is a real `name:path` remote | **online** |
 
-Two jobs that write to the same place count as one copy. The destination of a current replication is a replica, and its source protects it.
+Two jobs that write to the same place count as one copy.
+
+#### Replicas and the chain: one body of data
+
+A dataset that a current replication writes into is a **replica**: it holds the same data as its source. zfsctl follows these links and treats the original and all its replicas as **one body of data**. The body is judged once, and the verdict is shown on every dataset in it:
+
+- Each replica is a copy on another machine.
+- A cloud job, a backup or a replication on any dataset of the body is a copy of the whole body: a cloud mirror of the replica protects the original, and a cloud mirror of the original protects the replica. A place that several of them write to counts once.
+- The original's own snapshots come from its snapshot job. A replica has the snapshots it was sent, so it needs no snapshot job of its own, as long as the replication that feeds it is current.
+- If the replication stops, fails or is disabled, the link is cut: the replica is judged alone again and the original loses that copy.
+- The original is never counted as a copy of itself. Where the data lives is the first thing to protect, and every check starts from it.
+
+Some examples, at the Careful level (three copies, one of them online), with host `a` (the original) and host `b` (cold storage, a replica):
+
+| Set up | `a:tank/data` | `b:tank/copy` |
+|---|---|---|
+| `a` replicates to `b` only | `1 of 3 copies on other machines; no online copy` | the same line: the data is short of copies, wherever it is held |
+| `a` replicates to `b`, and `b` mirrors `tank/copy` to the cloud | `2 of 3 copies on other machines` (the replica and the cloud copy) | the same line |
+| `a` replicates to `b`, and `a` mirrors `tank/data` to the cloud | `2 of 3 copies on other machines`, as above | the same line: it does not matter which machine sends to the cloud |
+| the replication to `b` stopped three days ago | `copy on another machine stopped 3 days ago` | listed on its own again: `no snapshot job; no copy job` |
+
+At the **Basic** level one copy on another machine is enough, so `a` replicating to `b` clears both lines without a cloud copy. To make the cloud mandatory, choose Careful, or Custom with at least one online copy.
+
 
 #### What does not count as a copy
 
