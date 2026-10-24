@@ -144,6 +144,12 @@ impl App {
             // The Dashboard shows, the section that owns the problem fixes it; an unprotected-data line opens the form that makes the missing job.
             KeyCode::Enter if self.current_section() == Section::Dashboard => {
                 let dashboard = self.dashboard();
+                // The data-safety line opens the graph of where each dataset's data lives.
+                if self.dashboard_table.selected().is_some_and(|i| dashboard.is_safety(i)) {
+                    self.info_scroll = 0;
+                    self.modal = Some(Modal::Info { title: "Data safety".to_string(), body: dashboard.safety_popup() });
+                    return true;
+                }
                 // A group row opens the Hosts list narrowed to that tag.
                 if let Some(group) = self.dashboard_table.selected().and_then(|i| dashboard.group_at(i)) {
                     let tag = group.tag.clone();

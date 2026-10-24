@@ -1175,8 +1175,27 @@ fn a_group_knows_its_tag_and_the_lines_to_move_through_are_the_attention_lines_t
     assert_eq!((groups[0].tag.as_str(), groups[1].tag.as_str()), ("web", ""), "the untagged group has an empty tag");
     let n = d.attention.len();
     assert!(n >= 1, "never scrubbed gives each host a line");
-    assert_eq!(d.selectable(), n + 2);
+    assert_eq!(d.selectable(), n + 3, "the lines, the two groups and the data-safety line");
     assert!(d.group_at(n - 1).is_none() && d.group_at(n).map(|g| g.tag.as_str()) == Some("web") && d.group_at(n + 1).map(|g| g.tag.as_str()) == Some("") && d.group_at(n + 2).is_none());
+    assert!(d.is_safety(n + 2) && !d.is_safety(n + 1));
     let flat = fx.build(vec![fine_host("a", &probe, &r, &b)]);
-    assert_eq!(flat.selectable(), flat.attention.len(), "without tags only the attention lines");
+    assert_eq!(flat.selectable(), flat.attention.len() + 1, "without tags the attention lines and the data-safety line");
+}
+
+#[test]
+fn the_dashboard_says_where_the_weakest_data_stands_or_that_nothing_has_a_copy_and_says_nothing_before_the_jobs_are_loaded() {
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
+    let jobs = vec![Job::test_replicate("r", "tank/data", "rep", "fbsd16", "tank/copy")];
+    let runs = [("r", RunResult::Ok, "")];
+    let with = Fixture::new(view(jobs, &runs, beat(1))).build(vec![fine_host("local", &probe, &r, &b)]);
+    let line = with.safety.clone().expect("a replication makes a body");
+    assert!(line.text.starts_with("weakest: tank/data") || line.text.starts_with("weakest: local:tank/data"), "{}", line.text);
+    assert_eq!(with.bodies.len(), 1);
+    assert!(with.safety_popup().contains("tank/copy") && with.safety_popup().contains("replica"));
+    let none = Fixture::new(view(vec![], &[], beat(1))).build(vec![fine_host("local", &probe, &r, &b)]);
+    assert_eq!((none.safety.as_ref().map(|l| l.text.as_str()), none.safety.as_ref().map(|l| l.level)), (Some("no dataset has a copy yet"), Some(Level::Unknown)));
+    assert!(none.safety_popup().starts_with("No dataset has a copy yet"));
+    let unloaded = Fixture::new(JobsView::default()).build(vec![]);
+    assert!(unloaded.safety.is_none() && unloaded.bodies.is_empty(), "no line while the jobs are not loaded");
 }

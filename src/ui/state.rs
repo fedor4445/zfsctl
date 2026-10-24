@@ -1252,9 +1252,10 @@ Jobs
   d                delete the job (y/n; its past runs stay in the history)
 
 Dashboard
-  Up / Down        select a line of Needs attention, then (with tags) a group row
+  Up / Down        select a line of Needs attention, then (with tags) a group row, then the data-safety line
   Enter            go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job;
-                   on a group row, open the Hosts list narrowed to that tag (the Dashboard itself changes nothing)
+                   on a group row, open the Hosts list narrowed to that tag;
+                   on the data-safety line, show where each dataset's data lives (the Dashboard itself changes nothing)
   e                with tags: list every host under its group, or only the ones that need a look
   r                reload the jobs, alerts, cloud list and [dashboard] settings
 

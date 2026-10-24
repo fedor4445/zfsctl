@@ -340,3 +340,28 @@ fn the_dashboard_judges_each_group_by_its_own_level_and_names_a_wrong_group() {
     assert_eq!(app.dashboard_protection_problem.as_deref(), Some("[groups.db.protection] level must be basic, careful or custom"));
     assert!(app.dashboard().attention.iter().any(|i| i.subject == "config.toml" && i.what.ends_with("those hosts use the global settings")), "{:?}", app.dashboard().attention);
 }
+
+#[test]
+fn enter_on_the_data_safety_line_opens_the_graph_of_where_the_data_lives() {
+    let (mut app, dir) = dash_app();
+    std::mem::forget(dir);
+    let mut job = crate::jobs::Job::test_replicate("r", "tank/data", "rep", "fbsd16", "tank/copy");
+    job.host = "local".into();
+    app.jobs_view.jobs = vec![job];
+    app.jobs_view.loaded = true;
+    let d = app.dashboard();
+    assert!(d.safety.is_some());
+    for _ in 0..d.selectable() {
+        app.handle_key(KeyCode::Down);
+    }
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Show graph"));
+    app.handle_key(KeyCode::Enter);
+    match &app.modal {
+        Some(Modal::Info { title, body }) => {
+            assert_eq!(title, "Data safety");
+            assert!(body.contains("local:tank/data") && body.contains("fbsd16:tank/copy") && body.contains("never ran"), "{body}");
+        }
+        other => panic!("expected the graph, got {other:?}"),
+    }
+    assert_eq!(app.current_section(), Section::Dashboard, "it opens over the Dashboard");
+}

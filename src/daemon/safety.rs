@@ -3,8 +3,6 @@
 //! The protection check counts copies; this follows them. A body is an original dataset and every place its data was
 //! copied to, through replications, restic repositories and cloud remotes, with the edges (the copy jobs) that carry it.
 //! Everything here is pure: the jobs, their runs and the clock go in, the graph comes out.
-// The screen that shows it is the next slice; until then only the tests use it.
-#![allow(dead_code)]
 
 use crate::config::ProtectionSettings;
 use crate::daemon::history::Run;
