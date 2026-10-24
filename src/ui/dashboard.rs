@@ -101,6 +101,8 @@ pub struct HostInput<'a> {
     pub utc_offset_secs: Option<i32>,
     /// The short OS name read by the first probe (`Linux 6.8 (Ubuntu 24)`).
     pub os_name: Option<&'a str>,
+    /// The host's `tag` from `config.toml` (blank when it has none): the group it rolls up into.
+    pub tag: &'a str,
 }
 
 fn level_of(health: HealthLevel) -> Level {
@@ -254,6 +256,86 @@ pub fn host_row(input: &HostInput, t: &Thresholds, now: DateTime<Utc>) -> HostRo
     HostRow { name: input.name.to_string(), state, os: input.os_name.map_or_else(Cell::none, |n| Cell::new(n, Level::Fine)), pools, space, memory, cpu, load, scrub, errors, arc, l2arc, base }
 }
 
+/// One group of the Dashboard: a row that stands for every host with the same tag, and the hosts of it that need a look.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    pub row: HostRow,
+    /// Only the hosts whose state is not fine, in the order of the configuration.
+    pub members: Vec<HostRow>,
+}
+
+/// The name a group shows for hosts that have no tag.
+pub const NO_TAG: &str = "(no tag)";
+
+/// One row for a whole group: the state is the worst of its hosts and counts them (`1 issue, 2 to watch`), pools and errors add up,
+/// and every other reading is the worst reading of any host (the fullest pool, the biggest memory use, the oldest scrub).
+fn roll_up(name: String, members: &[&HostRow]) -> HostRow {
+    let worst = |pick: fn(&HostRow) -> &Cell| -> Cell {
+        let cell = members.iter().map(|m| pick(m)).max_by_key(|c| (c.level, c.gauge.unwrap_or(0)));
+        cell.cloned().map_or_else(Cell::none, |mut c| {
+            c.note = None;
+            c
+        })
+    };
+    let total = |pick: fn(&HostRow) -> &Cell| -> Cell {
+        let numbers: Option<Vec<u64>> = members.iter().map(|m| pick(m).text.split_whitespace().next().and_then(|t| t.parse().ok())).collect();
+        match numbers {
+            Some(n) => Cell::new(n.iter().sum::<u64>().to_string(), members.iter().map(|m| pick(m).level).max().unwrap_or(Level::Fine)),
+            None => worst(pick),
+        }
+    };
+    let count = |level: Level| members.iter().filter(|m| m.state.level == level).count();
+    let level = members.iter().map(|m| m.state.level).max().unwrap_or(Level::Fine);
+    let mut parts = Vec::new();
+    for (n, text) in [(count(Level::Issue), "issue"), (count(Level::Watch), "to watch"), (count(Level::Unknown), "unknown")] {
+        if n > 0 {
+            parts.push(if text == "issue" { plural(n, text) } else { format!("{n} {text}") });
+        }
+    }
+    let state = Cell::new(if parts.is_empty() { "ok".to_string() } else { parts.join(", ") }, level);
+    HostRow {
+        name,
+        state,
+        pools: total(|h| &h.pools),
+        space: worst(|h| &h.space),
+        memory: worst(|h| &h.memory),
+        cpu: worst(|h| &h.cpu),
+        load: Cell::none(),
+        scrub: worst(|h| &h.scrub),
+        errors: total(|h| &h.errors),
+        arc: Cell::none(),
+        l2arc: Cell::none(),
+        os: Cell::none(),
+        base: None,
+    }
+}
+
+/// The hosts rolled up by tag: `None` when no host has a tag (the Dashboard then shows every host, as it always did). Untagged
+/// hosts form the last group. A group with a problem comes first; inside a group only the hosts that are not fine are listed.
+fn groups_of(inputs: &[HostInput], rows: &[HostRow]) -> Option<Vec<Group>> {
+    if inputs.iter().all(|i| i.tag.trim().is_empty()) {
+        return None;
+    }
+    let mut tags: Vec<&str> = Vec::new();
+    for tag in inputs.iter().map(|i| i.tag.trim()) {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    let mut groups: Vec<(bool, Group)> = tags
+        .into_iter()
+        .map(|tag| {
+            let members: Vec<&HostRow> = inputs.iter().zip(rows).filter(|(i, _)| i.tag.trim() == tag).map(|(_, r)| r).collect();
+            let shown = if tag.is_empty() { NO_TAG } else { tag };
+            let row = roll_up(format!("{shown} ({})", members.len()), &members);
+            let listed = members.iter().filter(|m| m.state.level != Level::Fine).map(|m| (*m).clone()).collect();
+            (tag.is_empty(), Group { row, members: listed })
+        })
+        .collect();
+    groups.sort_by(|a, b| b.1.row.state.level.cmp(&a.1.row.state.level).then(a.0.cmp(&b.0)).then_with(|| a.1.row.name.cmp(&b.1.row.name)));
+    Some(groups.into_iter().map(|(_, g)| g).collect())
+}
+
 /// The ARC hit rate and the L2ARC's size and hit rate, since boot as the Hosts panel shows them; `-` where the host has no cache counters,
 /// no cache device, or nothing has been read yet.
 fn cache_cells(r: &Resources) -> (Cell, Cell) {
@@ -314,6 +396,8 @@ pub struct Dashboard {
     /// The line that stands for those past the first `PROTECTION_NAMED`, or `None` when all of them have a line.
     pub protection_more: Option<Item>,
     pub hosts: Vec<HostRow>,
+    /// The hosts rolled up by tag, when any host has one.
+    pub groups: Option<Vec<Group>>,
     pub daemon: Line,
     pub jobs: Line,
     /// Ids of the enabled jobs whose latest run failed.
@@ -629,6 +713,7 @@ fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
 pub fn build(inputs: &Inputs) -> Dashboard {
     let now = inputs.now;
     let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
+    let groups = groups_of(&inputs.hosts, &hosts);
     let daemon = daemon_line(inputs.jobs, now);
     let (jobs, failed_jobs) = jobs_line(inputs.jobs);
     let widths = CloudWidths {
@@ -733,7 +818,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, groups, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 

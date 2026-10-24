@@ -67,6 +67,8 @@ The colour is the worst level that applies; the text is the first reason at that
 
 ## The filter
 
+The tag is also how the Dashboard groups a long fleet: hosts with the same tag roll up into one row there (chapter 6), so tag by what you would want to look at together (`web`, `db`, `lab`).
+
 With a long list, press `/` and type part of a name, address, tag or type (`t1`, `172.16.10`, `backup`, `vm`): the list narrows as you type, and the title shows how many match.
 
 ```screen
