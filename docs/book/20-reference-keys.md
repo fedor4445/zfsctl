@@ -155,7 +155,8 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 |---|---|
 | `Up / Down` | select an rclone remote (the hub's, and those of hosts that have a cloud job) |
 | `s` | measure the bucket: the size of `current/` and `old/` of the remote's cloud mirror jobs (reads the file list, which a cloud account may count as requests) |
-| `F5` | check the remote of its cloud mirror job (read-only) |
+| `F5` | check the selected remote (read-only): the remote of its cloud mirror job, or, when no job uses it yet, its top level |
+| `n` | set up a provider: a list (Backblaze B2, Amazon S3, Google Drive, OneDrive, Dropbox, SFTP...) and the steps for the one you pick; nothing is created |
 | `C` | new cloud mirror job |
 | `r` | refresh the list of remotes and jobs |
 

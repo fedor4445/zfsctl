@@ -78,7 +78,14 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
         Modal::Info { .. } => vec![h("↑/↓", "Scroll", 0), h("any key", "Close", 0)],
-        Modal::Choose { .. } => vec![h("↑/↓", "Move", 0), h("Enter", "Fix", 0), h("Esc", "Close", 0)],
+        Modal::Choose { then, .. } => {
+            let what = match then {
+                crate::ui::modal::ChooseThen::Unprotected(_) => "Fix",
+                crate::ui::modal::ChooseThen::Copy { .. } => "Open form",
+                crate::ui::modal::ChooseThen::Provider => "Show steps",
+            };
+            vec![h("↑/↓", "Move", 0), h("Enter", what, 0), h("Esc", "Close", 0)]
+        }
         // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
         // it is only advertised once there is a selection for it to apply.
         Modal::Confirm { action, choice, .. } => match choice {
@@ -419,8 +426,11 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             if row.as_ref().is_some_and(|r| r.job_ids.iter().any(|id| app.jobs_view.jobs.iter().any(|j| &j.id == id && j.kind == crate::jobs::KIND_MIRROR))) {
                 v.push(h("s", "Bucket size", 1));
+            }
+            if row.as_ref().is_some_and(|r| crate::ui::cloud::check_target(r, &app.jobs_view.jobs).is_some()) {
                 v.push(h("F5", "Check", 2));
             }
+            v.push(h("n", "Set up a provider", 3));
             v.push(h("C", "New cloud mirror", 3));
             v.push(h("r", "Refresh", 4));
         }
@@ -760,15 +770,15 @@ mod tests {
     }
 
     #[test]
-    fn the_cloud_section_offers_size_and_check_only_for_a_remote_that_has_a_mirror_job() {
+    fn the_cloud_section_offers_size_only_for_a_remote_that_has_a_mirror_job_and_check_for_any_remote() {
         let with = cloud(true);
         let labels: Vec<(&str, &str)> = hints(&with).iter().map(|h| (h.key, h.label)).collect();
-        for want in [("↑↓", "Move"), ("s", "Bucket size"), ("F5", "Check"), ("C", "New cloud mirror"), ("r", "Refresh")] {
+        for want in [("↑↓", "Move"), ("s", "Bucket size"), ("F5", "Check"), ("n", "Set up a provider"), ("C", "New cloud mirror"), ("r", "Refresh")] {
             assert!(labels.contains(&want), "{labels:?}");
         }
         let without = cloud(false);
         let keys: Vec<&str> = hints(&without).iter().map(|h| h.key).collect();
-        assert!(!keys.contains(&"s") && !keys.contains(&"F5") && keys.contains(&"C"), "{keys:?}");
+        assert!(!keys.contains(&"s") && keys.contains(&"F5") && keys.contains(&"n") && keys.contains(&"C"), "a remote with no job is still checked, only not measured: {keys:?}");
     }
 
     #[test]
