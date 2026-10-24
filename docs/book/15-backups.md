@@ -381,7 +381,7 @@ The policy does not allow creating buckets, and zfsctl does not ask for it: the 
 
 > **Tip:** the key must be allowed to delete: moving a file into `old/` is a copy followed by a delete of the original. A key that cannot delete will make every run that replaces a file fail, which is annoying but safe.
 
-**Tell rclone.** On the host that runs the job, as root, run `rclone config`, choose *New remote*, give it a name (`aws` or `b2`), pick the provider (`s3` with provider *AWS*, or `b2`) and paste the key. The keys are saved in `/root/.config/rclone/rclone.conf`, which must be readable by root only (`chmod 600`; the `F5` check tells you if it is not). On a host other than the hub also run `zfsctl print-sudoers HOST --with rclone` and install the line it prints. Do not use an rclone `crypt` remote if you want to browse the files: it encrypts the names too.
+**Tell rclone.** (Not sure what to answer? Press `n` in the Cloud section for the steps for your provider, [below](#setting-up-a-provider-the-guide).) On the host that runs the job, as root, run `rclone config`, choose *New remote*, give it a name (`aws` or `b2`), pick the provider (`s3` with provider *AWS*, or `b2`) and paste the key. The keys are saved in `/root/.config/rclone/rclone.conf`, which must be readable by root only (`chmod 600`; the `F5` check tells you if it is not). On a host other than the hub also run `zfsctl print-sudoers HOST --with rclone` and install the line it prints. Do not use an rclone `crypt` remote if you want to browse the files: it encrypts the names too.
 
 ### Setting up a provider: the guide
 
