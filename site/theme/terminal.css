@@ -31,3 +31,6 @@ table { border-radius: 0; }
 a:hover { text-decoration: underline; }
 ::selection { background: #3b9eff; color: #fff; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+.home-link { display: inline-flex; align-items: center; gap: .4rem; width: auto; padding: 0 .6rem; text-decoration: none; }
+.home-link:hover { text-decoration: none; }
+.home-label { font-size: .85em; }
