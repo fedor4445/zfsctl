@@ -229,40 +229,69 @@ fn plan(hosts: &[HostRow], width: usize) -> Plan {
     plan
 }
 
+/// One row of the hosts or groups table. `name` is what the first column says (a group's has the host count; a host listed
+/// under its group is indented).
+fn host_row_line(row: &HostRow, name: &str, name_style: Style, plan: &Plan, all: &[HostRow], theme: &Theme) -> Line<'static> {
+    let (glyph, _) = glyph_word(row.state.level);
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(pad(name, plan.name_w), name_style),
+        Span::raw("  "),
+        Span::styled(pad(&format!("{glyph} {}", row.state.text), plan.state_w), level_style(theme, row.state.level)),
+    ];
+    for col in &plan.columns {
+        let cell = col.cell(row);
+        let w = plan.col_width(*col, all);
+        spans.push(Span::raw("  "));
+        match cell.gauge.filter(|_| plan.gauges && col.has_gauge()) {
+            Some(percent) => {
+                spans.push(Span::styled(gauge(percent, GAUGE_WIDTH), level_style(theme, cell.level)));
+                spans.push(Span::styled(pad(&format!(" {}", cell.text), w - usize::from(GAUGE_WIDTH)), cell_style(theme, cell.level)));
+            }
+            None => spans.push(Span::styled(pad(&cell.text, w), cell_style(theme, cell.level))),
+        }
+    }
+    Line::from(spans)
+}
+
+fn table_head(first: &str, plan: &Plan, all: &[HostRow], theme: &Theme) -> Line<'static> {
+    let mut head = vec![Span::raw("  "), Span::styled(pad(first, plan.name_w), theme.header()), Span::raw("  "), Span::styled(pad("State", plan.state_w), theme.header())];
+    for col in &plan.columns {
+        head.push(Span::styled(format!("  {}", pad(col.title(), plan.col_width(*col, all))), theme.header()));
+    }
+    Line::from(head)
+}
+
 fn host_lines(d: &Dashboard, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    if let Some(groups) = &d.groups {
+        return group_lines(groups, width, theme);
+    }
     let mut lines = vec![heading("HOSTS", width, theme)];
     if d.hosts.is_empty() {
         lines.push(Line::styled("   ○ no hosts configured", theme.dim()));
         return lines;
     }
     let plan = plan(&d.hosts, width);
-    let mut head = vec![Span::raw("  "), Span::styled(pad("Host", plan.name_w), theme.header()), Span::raw("  "), Span::styled(pad("State", plan.state_w), theme.header())];
-    for col in &plan.columns {
-        head.push(Span::styled(format!("  {}", pad(col.title(), plan.col_width(*col, &d.hosts))), theme.header()));
-    }
-    lines.push(Line::from(head));
+    lines.push(table_head("Host", &plan, &d.hosts, theme));
     for row in &d.hosts {
-        let (glyph, _) = glyph_word(row.state.level);
         let name_style = if row.state.level == Level::Unknown { theme.dim() } else { Style::default() };
-        let mut spans = vec![
-            Span::raw("  "),
-            Span::styled(pad(&row.name, plan.name_w), name_style),
-            Span::raw("  "),
-            Span::styled(pad(&format!("{glyph} {}", row.state.text), plan.state_w), level_style(theme, row.state.level)),
-        ];
-        for col in &plan.columns {
-            let cell = col.cell(row);
-            let w = plan.col_width(*col, &d.hosts);
-            spans.push(Span::raw("  "));
-            match cell.gauge.filter(|_| plan.gauges && col.has_gauge()) {
-                Some(percent) => {
-                    spans.push(Span::styled(gauge(percent, GAUGE_WIDTH), level_style(theme, cell.level)));
-                    spans.push(Span::styled(pad(&format!(" {}", cell.text), w - usize::from(GAUGE_WIDTH)), cell_style(theme, cell.level)));
-                }
-                None => spans.push(Span::styled(pad(&cell.text, w), cell_style(theme, cell.level))),
-            }
+        lines.push(host_row_line(row, &row.name, name_style, &plan, &d.hosts, theme));
+    }
+    lines
+}
+
+/// Hosts rolled up by tag: a row per group, and under it the hosts of that group that need a look, indented.
+fn group_lines(groups: &[crate::ui::dashboard::Group], width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![heading("GROUPS", width, theme)];
+    let all: Vec<HostRow> = groups.iter().flat_map(|g| std::iter::once(g.row.clone()).chain(g.members.iter().map(|m| HostRow { name: format!("  {}", m.name), ..m.clone() }))).collect();
+    let plan = plan(&all, width);
+    lines.push(table_head("Group", &plan, &all, theme));
+    for group in groups {
+        lines.push(host_row_line(&group.row, &group.row.name, Style::default().add_modifier(ratatui::style::Modifier::BOLD), &plan, &all, theme));
+        for member in &group.members {
+            let name_style = if member.state.level == Level::Unknown { theme.dim() } else { Style::default() };
+            lines.push(host_row_line(member, &format!("  {}", member.name), name_style, &plan, &all, theme));
         }
-        lines.push(Line::from(spans));
     }
     lines
 }
@@ -403,6 +432,27 @@ mod tests {
         assert_eq!(span_style("─", "HOSTS"), app.theme.dim(), "the rule stays dim");
         assert_eq!(span_style("Host", "Host   "), app.theme.header(), "table column title");
         assert_eq!(span_style("State", "Host   "), app.theme.header());
+    }
+
+    #[test]
+    fn tagged_hosts_are_shown_as_groups_with_only_the_hosts_that_need_a_look_listed_under_them() {
+        let mut app = mixed_app();
+        app.set_host_tags(vec![String::new(), "web".to_string(), "web".to_string()]);
+        let text = screen_lines(&app.dashboard(), None, 120, 40, "Sat", &app.theme).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("GROUPS") && !text.contains("HOSTS"), "{text}");
+        assert!(text.contains("Group") && text.contains("web (2)") && text.contains("(no tag) (1)"), "{text}");
+        let lines: Vec<&str> = text.lines().collect();
+        let at = |p: &str| lines.iter().position(|l| l.contains(p)).unwrap_or_else(|| panic!("{p:?} in\n{text}"));
+        assert!(at("web (2)") < at("    fbsd16 ") && at("    fbsd16 ") < at("    fbsd16t1"), "the hosts under their group, indented: {text}");
+        assert!(at("web (2)") < at("(no tag) (1)"), "the group with problems first");
+        assert!(!lines.iter().any(|l| l.contains("local")), "a healthy host is not listed on the Dashboard: {text}");
+    }
+
+    #[test]
+    fn without_tags_the_hosts_table_is_what_it_always_was() {
+        let app = mixed_app();
+        let text = screen_lines(&app.dashboard(), None, 120, 40, "Sat", &app.theme).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("HOSTS") && !text.contains("GROUPS") && text.contains("local") && text.contains("fbsd16t1"), "{text}");
     }
 
     #[test]

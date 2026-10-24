@@ -42,7 +42,7 @@ fn reading(free_gib: u64, arc_gib: u64, busy: u64, idle: u64) -> Resources {
 
 /// A host whose probe says `probe`, with the given resource readings (newest, previous), judged with the defaults.
 fn row(probe: &HostProbe, now_r: Option<&Resources>, before: Option<&Resources>, t: &Thresholds) -> HostRow {
-    let input = HostInput { name: "h", assessment: assess(Some(probe), false), probe: Some(probe), resources: now_r.map(|n| (n, before)), utc_offset_secs: Some(0), os_name: None };
+    let input = HostInput { name: "h", assessment: assess(Some(probe), false), probe: Some(probe), resources: now_r.map(|n| (n, before)), utc_offset_secs: Some(0), os_name: None, tag: "" };
     host_row(&input, t, now())
 }
 
@@ -140,7 +140,7 @@ fn a_running_or_paused_scan_is_not_judged_and_no_utc_offset_means_unknown_age() 
     let r = default_row(&reached(vec![running]), Some(&reading(10, 0, 0, 100))).scrub;
     assert_eq!((r.level, r.text.as_str()), (Level::Fine, "running 34%"));
     let probe = reached(vec![pool("tank", 10, 0, Some(when(50)))]);
-    let input = HostInput { name: "h", assessment: assess(Some(&probe), false), probe: Some(&probe), resources: None, utc_offset_secs: None, os_name: None };
+    let input = HostInput { name: "h", assessment: assess(Some(&probe), false), probe: Some(&probe), resources: None, utc_offset_secs: None, os_name: None, tag: "" };
     let no_offset = host_row(&input, &Thresholds::default(), now()).scrub;
     assert_eq!((no_offset.level, no_offset.text.as_str()), (Level::Unknown, "?"), "an age needs the host's UTC offset");
 }
@@ -182,7 +182,7 @@ fn a_host_that_cannot_be_reached_or_inspected_has_unknown_readings_never_fine_on
             assert_eq!((cell.level, cell.text.as_str()), (Level::Unknown, "?"), "{probe:?}");
         }
     }
-    let never_probed = host_row(&HostInput { name: "h", assessment: assess(None, false), probe: None, resources: None, utc_offset_secs: None, os_name: None }, &Thresholds::default(), now());
+    let never_probed = host_row(&HostInput { name: "h", assessment: assess(None, false), probe: None, resources: None, utc_offset_secs: None, os_name: None, tag: "" }, &Thresholds::default(), now());
     assert_eq!((never_probed.state.level, never_probed.state.text.as_str()), (Level::Unknown, "probing"));
 }
 
@@ -301,7 +301,7 @@ impl Fixture {
 }
 
 fn fine_host<'a>(name: &'a str, probe: &'a HostProbe, r: &'a Resources, before: &'a Resources) -> HostInput<'a> {
-    HostInput { name, assessment: assess(Some(probe), false), probe: Some(probe), resources: Some((r, Some(before))), utc_offset_secs: Some(0), os_name: None }
+    HostInput { name, assessment: assess(Some(probe), false), probe: Some(probe), resources: Some((r, Some(before))), utc_offset_secs: Some(0), os_name: None, tag: "" }
 }
 
 #[test]
@@ -663,7 +663,7 @@ fn no_protection_lines_while_the_daemon_is_down_or_stale_or_a_host_is_unreachabl
     }
     // A host that is listed but not reached says nothing.
     let off = HostProbe::Disconnected;
-    let host = HostInput { name: "local", assessment: assess(Some(&off), false), probe: Some(&off), resources: None, utc_offset_secs: Some(0), os_name: None };
+    let host = HostInput { name: "local", assessment: assess(Some(&off), false), probe: Some(&off), resources: None, utc_offset_secs: Some(0), os_name: None, tag: "" };
     assert_eq!(named(&fx.build(vec![host])), 0);
 }
 
@@ -913,7 +913,7 @@ fn the_last_good_share_result_stays_after_a_failed_check_with_its_real_age_and_a
     fx.shares.hosts.insert("h".into(), old);
     assert!(share_items(&fx, &["h"])[0].what.contains("checked 1d ago"));
     let down = HostProbe::Disconnected;
-    let input = HostInput { name: "h", assessment: assess(Some(&down), false), probe: Some(&down), resources: None, utc_offset_secs: Some(0), os_name: None };
+    let input = HostInput { name: "h", assessment: assess(Some(&down), false), probe: Some(&down), resources: None, utc_offset_secs: Some(0), os_name: None, tag: "" };
     assert!(fx.build(vec![input]).attention.iter().all(|i| i.goto != Section::Shares), "the Hosts row already says it is unreachable");
 }
 
@@ -952,7 +952,7 @@ fn an_unreachable_host_and_a_missing_file_show_no_disk_line_and_the_verdict_coun
     assert!(disk_items(&fx, &["h"]).is_empty(), "no smart.json");
     fx.smart = smart_file(&[("h", 3, &[("ada0", crate::smart::Severity::Issue, "SMART health FAILED")])]);
     let down = HostProbe::Disconnected;
-    let input = HostInput { name: "h", assessment: assess(Some(&down), false), probe: Some(&down), resources: None, utc_offset_secs: Some(0), os_name: None };
+    let input = HostInput { name: "h", assessment: assess(Some(&down), false), probe: Some(&down), resources: None, utc_offset_secs: Some(0), os_name: None, tag: "" };
     let d = fx.build(vec![input]);
     assert!(d.attention.iter().all(|i| i.goto != Section::Disks), "the Hosts row already says it is unreachable: {:?}", d.attention);
     let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
@@ -1006,7 +1006,7 @@ fn the_verdict_says_checking_until_every_host_has_answered_then_counts_issues_an
     let fx = Fixture::new(view(vec![scrub_job("s")], &[("s", RunResult::Ok, "ok")], beat(1)));
     let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
     let (r, before) = (reading(10, 0, 10, 1100), reading(10, 0, 0, 1000)); // about 9% busy
-    let unanswered = HostInput { name: "fbsd16", assessment: assess(None, false), probe: None, resources: None, utc_offset_secs: None, os_name: None };
+    let unanswered = HostInput { name: "fbsd16", assessment: assess(None, false), probe: None, resources: None, utc_offset_secs: None, os_name: None, tag: "" };
     let checking = fx.build(vec![fine_host("local", &probe, &r, &before), unanswered]).verdict;
     assert_eq!((checking.level, checking.text.as_str()), (Level::Unknown, "checking..."));
     let quiet = fx.build(vec![fine_host("local", &probe, &r, &before)]);
@@ -1025,7 +1025,7 @@ fn a_host_that_is_unreachable_is_an_issue_and_one_that_cannot_be_inspected_a_wat
     let fx = Fixture::new(view(vec![scrub_job("s")], &[("s", RunResult::Ok, "ok")], beat(1)));
     let down = HostProbe::Disconnected;
     let denied = HostProbe::Unavailable { reason: "sudo: a password is required".into() };
-    let input = |name, probe: &'static HostProbe| HostInput { name, assessment: assess(Some(probe), false), probe: Some(probe), resources: None, utc_offset_secs: None, os_name: None };
+    let input = |name, probe: &'static HostProbe| HostInput { name, assessment: assess(Some(probe), false), probe: Some(probe), resources: None, utc_offset_secs: None, os_name: None, tag: "" };
     let down: &'static HostProbe = Box::leak(Box::new(down));
     let denied: &'static HostProbe = Box::leak(Box::new(denied));
     let d = fx.build(vec![input("fbsd16", down), input("fbsd16t1", denied)]);
@@ -1082,4 +1082,71 @@ fn an_unreadable_status_a_resilver_and_scrub_errors_are_not_misreported() {
     let (level, _, _, note) = pool_scrub(&bad, Some(0), &t, now());
     assert_eq!(level, Level::Watch);
     assert_eq!(note.unwrap(), "c last scrub found 3 errors");
+}
+
+fn tagged<'a>(input: HostInput<'a>, tag: &'a str) -> HostInput<'a> {
+    HostInput { tag, ..input }
+}
+
+#[test]
+fn hosts_without_tags_are_not_grouped_and_the_screen_stays_as_it_was() {
+    let fx = Fixture::new(view(vec![], &[], beat(1)));
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let probe = reached(vec![]);
+    let d = fx.build(vec![fine_host("a", &probe, &r, &b), fine_host("b", &probe, &r, &b)]);
+    assert!(d.groups.is_none());
+    assert_eq!(d.hosts.len(), 2);
+}
+
+#[test]
+fn tagged_hosts_roll_up_into_one_row_per_tag_with_the_hosts_counted_and_the_untagged_last() {
+    let fx = Fixture::new(view(vec![], &[], beat(1)));
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
+    let d = fx.build(vec![tagged(fine_host("a", &probe, &r, &b), "web"), tagged(fine_host("b", &probe, &r, &b), "web"), tagged(fine_host("c", &probe, &r, &b), "db"), fine_host("d", &probe, &r, &b)]);
+    let groups = d.groups.expect("one host has a tag");
+    assert_eq!(groups.iter().map(|g| g.row.name.as_str()).collect::<Vec<_>>(), ["db (1)", "web (2)", "(no tag) (1)"]);
+    assert!(groups.iter().all(|g| g.row.state.text == "ok" && g.row.state.level == Level::Fine && g.members.is_empty()), "{groups:?}");
+    assert_eq!(groups[1].row.pools.text, "2", "the pools of both web hosts");
+    assert_eq!(d.hosts.len(), 4, "every host still has its own row, for the Hosts section and the attention list");
+}
+
+#[test]
+fn a_group_shows_its_worst_state_comes_first_and_lists_only_the_hosts_that_need_a_look() {
+    let fx = Fixture::new(view(vec![], &[], beat(1)));
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let fine = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
+    let degraded = reached(vec![PoolProbe { health: PoolHealth::Degraded, ..pool("tank", 10, 0, Some(when(1))) }]);
+    let d = fx.build(vec![tagged(fine_host("c", &fine, &r, &b), "db"), tagged(fine_host("a", &fine, &r, &b), "web"), tagged(fine_host("b", &degraded, &r, &b), "web")]);
+    let groups = d.groups.unwrap();
+    assert_eq!(groups.iter().map(|g| g.row.name.as_str()).collect::<Vec<_>>(), ["web (2)", "db (1)"], "the group with a problem first");
+    assert_eq!((groups[0].row.state.level, groups[0].row.state.text.as_str()), (Level::Issue, "1 issue"));
+    assert_eq!(groups[0].members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["b"], "only the host that needs a look");
+    assert!(groups[1].members.is_empty());
+}
+
+#[test]
+fn a_group_adds_up_its_pools_and_errors_and_takes_the_worst_reading_of_the_rest() {
+    let fx = Fixture::new(view(vec![], &[], beat(1)));
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let calm = reached(vec![pool("tank", 40, 0, Some(when(1)))]);
+    let busy = reached(vec![pool("tank", 85, 3, Some(when(1))), pool("data", 20, 1, Some(when(1)))]);
+    let d = fx.build(vec![tagged(fine_host("a", &calm, &r, &b), "web"), tagged(fine_host("b", &busy, &r, &b), "web")]);
+    let row = &d.groups.unwrap()[0].row;
+    assert_eq!(row.pools.text, "3");
+    assert_eq!((row.space.text.as_str(), row.space.level), ("85%", Level::Watch), "the fullest pool of the group");
+    assert_eq!(row.errors.text, "4", "errors add up");
+}
+
+#[test]
+fn a_host_that_has_not_answered_makes_its_group_unknown_not_fine() {
+    let fx = Fixture::new(view(vec![], &[], beat(1)));
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let fine = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
+    let silent = HostInput { name: "b", assessment: assess(None, false), probe: None, resources: None, utc_offset_secs: None, os_name: None, tag: "web" };
+    let d = fx.build(vec![tagged(fine_host("a", &fine, &r, &b), "web"), silent]);
+    let group = &d.groups.unwrap()[0];
+    assert_eq!(group.row.state.level, Level::Unknown);
+    assert_eq!(group.row.state.text, "1 unknown");
+    assert_eq!(group.members.len(), 1);
 }
