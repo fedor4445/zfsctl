@@ -145,8 +145,9 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 
 | Key | What it does |
 |---|---|
-| `Up / Down` | select a line of Needs attention |
-| `Enter` | go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job, or (on "and N more") the list of the unprotected datasets (the Dashboard itself changes nothing) |
+| `Up / Down` | select a line of Needs attention, then (with tags) a group row |
+| `Enter` | go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job, or (on "and N more") the list of the unprotected datasets ; on a group row, open the Hosts list narrowed to that tag (the Dashboard itself changes nothing) |
+| `e` | with tags: list every host under its group, or only the ones that need a look |
 | `r` | reload the jobs, alerts, cloud list and `[dashboard]` settings |
 
 ## Cloud

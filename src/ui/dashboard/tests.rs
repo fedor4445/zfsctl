@@ -288,15 +288,16 @@ struct Fixture {
     shares: crate::daemon::shares_check::SharesFile,
     storage: crate::daemon::storage_check::StorageFile,
     marker: Option<crate::daemon::checks::Marker>,
+    expand_groups: bool,
 }
 
 impl Fixture {
     fn new(view: JobsView) -> Fixture {
-        Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), protection: crate::config::ProtectionSettings::default(), protection_problem: None, smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
+        Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), protection: crate::config::ProtectionSettings::default(), protection_problem: None, smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None, expand_groups: false }
     }
 
     fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-        build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, protection: &self.protection, protection_problem: self.protection_problem.as_deref(), smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
+        build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, protection: &self.protection, protection_problem: self.protection_problem.as_deref(), smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), expand_groups: self.expand_groups, now: now() })
     }
 }
 
@@ -1149,4 +1150,33 @@ fn a_host_that_has_not_answered_makes_its_group_unknown_not_fine() {
     assert_eq!(group.row.state.level, Level::Unknown);
     assert_eq!(group.row.state.text, "1 unknown");
     assert_eq!(group.members.len(), 1);
+}
+
+#[test]
+fn expanded_groups_list_every_host_not_only_the_ones_that_need_a_look() {
+    let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
+    let hosts = || vec![tagged(fine_host("a", &probe, &r, &b), "web"), tagged(fine_host("b", &probe, &r, &b), "web")];
+    assert!(fx.build(hosts()).groups.unwrap()[0].members.is_empty(), "folded by default");
+    fx.expand_groups = true;
+    let groups = fx.build(hosts()).groups.unwrap();
+    assert_eq!(groups[0].members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(groups[0].row.name, "web (2)");
+}
+
+#[test]
+fn a_group_knows_its_tag_and_the_lines_to_move_through_are_the_attention_lines_then_the_groups() {
+    let fx = Fixture::new(view(vec![], &[], beat(1)));
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let probe = reached(vec![pool("tank", 10, 0, None)]);
+    let d = fx.build(vec![tagged(fine_host("a", &probe, &r, &b), "web"), fine_host("b", &probe, &r, &b)]);
+    let groups = d.groups.clone().unwrap();
+    assert_eq!((groups[0].tag.as_str(), groups[1].tag.as_str()), ("web", ""), "the untagged group has an empty tag");
+    let n = d.attention.len();
+    assert!(n >= 1, "never scrubbed gives each host a line");
+    assert_eq!(d.selectable(), n + 2);
+    assert!(d.group_at(n - 1).is_none() && d.group_at(n).map(|g| g.tag.as_str()) == Some("web") && d.group_at(n + 1).map(|g| g.tag.as_str()) == Some("") && d.group_at(n + 2).is_none());
+    let flat = fx.build(vec![fine_host("a", &probe, &r, &b)]);
+    assert_eq!(flat.selectable(), flat.attention.len(), "without tags only the attention lines");
 }

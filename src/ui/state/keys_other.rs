@@ -129,16 +129,27 @@ impl App {
                 }
             }
             KeyCode::Down if self.current_section() == Section::Dashboard => {
-                let lines = self.dashboard().attention.len();
+                let lines = self.dashboard().selectable();
                 move_table_selection(&mut self.dashboard_table, lines, true);
             }
             KeyCode::Up if self.current_section() == Section::Dashboard => {
-                let lines = self.dashboard().attention.len();
+                let lines = self.dashboard().selectable();
                 move_table_selection(&mut self.dashboard_table, lines, false);
+            }
+            // With tags the Hosts block is a list of groups: show every host under its group, or only the ones that need a look.
+            KeyCode::Char('e') if self.current_section() == Section::Dashboard && self.modal.is_none() && self.picker.is_none() && self.dashboard().groups.is_some() => {
+                self.dashboard_expanded = !self.dashboard_expanded;
+                self.status_message = Some(if self.dashboard_expanded { "Every host is listed under its group (e again folds them)".to_string() } else { "Only the hosts that need a look are listed under their group".to_string() });
             }
             // The Dashboard shows, the section that owns the problem fixes it; an unprotected-data line opens the form that makes the missing job.
             KeyCode::Enter if self.current_section() == Section::Dashboard => {
                 let dashboard = self.dashboard();
+                // A group row opens the Hosts list narrowed to that tag.
+                if let Some(group) = self.dashboard_table.selected().and_then(|i| dashboard.group_at(i)) {
+                    let tag = group.tag.clone();
+                    self.open_group(&tag);
+                    return true;
+                }
                 let item = self.dashboard_table.selected().and_then(|i| dashboard.attention.get(i).cloned());
                 // A named protection line goes straight to its fix; the "and N more" line opens the list (Jobs shows none of them).
                 if let Some(gap) = item.as_ref().and_then(|item| dashboard.protection_fix(item)).cloned() {

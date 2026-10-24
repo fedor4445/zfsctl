@@ -262,9 +262,9 @@ fn table_head(first: &str, plan: &Plan, all: &[HostRow], theme: &Theme) -> Line<
     Line::from(head)
 }
 
-fn host_lines(d: &Dashboard, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+fn host_lines(d: &Dashboard, selected_group: Option<usize>, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     if let Some(groups) = &d.groups {
-        return group_lines(groups, width, theme);
+        return group_lines(groups, selected_group, width, theme);
     }
     let mut lines = vec![heading("HOSTS", width, theme)];
     if d.hosts.is_empty() {
@@ -281,13 +281,14 @@ fn host_lines(d: &Dashboard, width: usize, theme: &Theme) -> Vec<Line<'static>> 
 }
 
 /// Hosts rolled up by tag: a row per group, and under it the hosts of that group that need a look, indented.
-fn group_lines(groups: &[crate::ui::dashboard::Group], width: usize, theme: &Theme) -> Vec<Line<'static>> {
+fn group_lines(groups: &[crate::ui::dashboard::Group], selected: Option<usize>, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![heading("GROUPS", width, theme)];
     let all: Vec<HostRow> = groups.iter().flat_map(|g| std::iter::once(g.row.clone()).chain(g.members.iter().map(|m| HostRow { name: format!("  {}", m.name), ..m.clone() }))).collect();
     let plan = plan(&all, width);
     lines.push(table_head("Group", &plan, &all, theme));
-    for group in groups {
-        lines.push(host_row_line(&group.row, &group.row.name, Style::default().add_modifier(ratatui::style::Modifier::BOLD), &plan, &all, theme));
+    for (index, group) in groups.iter().enumerate() {
+        let row = host_row_line(&group.row, &group.row.name, Style::default().add_modifier(ratatui::style::Modifier::BOLD), &plan, &all, theme);
+        lines.push(if selected == Some(index) { row.patch_style(theme.selected_row()) } else { row });
         for member in &group.members {
             let name_style = if member.state.level == Level::Unknown { theme.dim() } else { Style::default() };
             lines.push(host_row_line(member, &format!("  {}", member.name), name_style, &plan, &all, theme));
@@ -336,9 +337,9 @@ fn assemble(d: &Dashboard, selected: Option<usize>, width: usize, now: &str, the
     // The line under the header is blank, or the red notice that a check is running (the screen keeps its height).
     let notice = d.running.as_ref().map_or_else(|| Line::raw(""), |text| Line::styled(cut(&format!("  ▶ {text}"), width), theme.err));
     let mut lines = vec![header(d, width, now, theme), notice];
-    lines.extend(attention_lines(d, selected, width, cap, theme));
+    lines.extend(attention_lines(d, selected.filter(|s| *s < d.attention.len()), width, cap, theme));
     lines.push(Line::raw(""));
-    lines.extend(host_lines(d, width, theme));
+    lines.extend(host_lines(d, selected.and_then(|s| s.checked_sub(d.attention.len())), width, theme));
     lines.extend(component_lines(d, width, compact, theme));
     lines
 }
@@ -366,7 +367,7 @@ pub fn screen_lines(d: &Dashboard, selected: Option<usize>, width: usize, height
 /// Draws the Dashboard into `area`: no borders, nothing to type into, nothing it can change.
 pub fn draw_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
     let d = app.dashboard();
-    let selected = app.dashboard_table.selected().filter(|_| !d.attention.is_empty()).map(|s| s.min(d.attention.len() - 1));
+    let selected = app.dashboard_table.selected().filter(|_| d.selectable() > 0).map(|s| s.min(d.selectable() - 1));
     app.dashboard_table.select(selected);
     let now = chrono::Local::now().format("%a %d %b %H:%M").to_string();
     let lines = screen_lines(&d, selected, usize::from(area.width), usize::from(area.height), &now, &app.theme);
@@ -446,6 +447,23 @@ mod tests {
         assert!(at("web (2)") < at("    fbsd16 ") && at("    fbsd16 ") < at("    fbsd16t1"), "the hosts under their group, indented: {text}");
         assert!(at("web (2)") < at("(no tag) (1)"), "the group with problems first");
         assert!(!lines.iter().any(|l| l.contains("local")), "a healthy host is not listed on the Dashboard: {text}");
+    }
+
+    #[test]
+    fn the_selected_group_row_is_drawn_as_selected_and_an_attention_line_then_is_not() {
+        let mut app = mixed_app();
+        app.set_host_tags(vec![String::new(), "web".to_string(), "web".to_string()]);
+        let d = app.dashboard();
+        let n = d.attention.len();
+        let row_style = |selected: Option<usize>| {
+            let lines = screen_lines(&d, selected, 120, 40, "Sat", &app.theme);
+            let line = lines.iter().find(|l| l.to_string().contains("web (2)")).unwrap();
+            (line.style, line.spans.iter().map(|s| s.style).collect::<Vec<_>>())
+        };
+        assert_ne!(row_style(None), row_style(Some(n)), "the group row is highlighted when selected");
+        assert_eq!(row_style(None), row_style(Some(0)), "an attention line selected leaves the groups alone");
+        let marked = |selected: Option<usize>| screen_lines(&d, selected, 120, 40, "Sat", &app.theme).iter().any(|l| l.to_string().contains('▸'));
+        assert!(marked(Some(0)) && !marked(Some(n)), "the arrow marks attention lines only");
     }
 
     #[test]

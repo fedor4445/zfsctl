@@ -410,12 +410,20 @@ fn context_hints(app: &App) -> Vec<Hint> {
         }
         (Section::Dashboard, _) => {
             let dashboard = app.dashboard();
-            let has_lines = !dashboard.attention.is_empty();
+            let has_lines = dashboard.selectable() > 0;
             if has_lines {
                 v.push(h("↑↓", "Move", 1));
             }
-            if let Some(item) = app.dashboard_table.selected().and_then(|i| dashboard.attention.get(i)).filter(|_| has_lines) {
-                v.push(h("Enter", if dashboard.protection_fix(item).is_some() { "Fix" } else if dashboard.protection_popup(item).is_some() { "Show list" } else { "Go to section" }, 1));
+            let selected = app.dashboard_table.selected().filter(|_| has_lines);
+            if let Some(i) = selected {
+                if dashboard.group_at(i).is_some() {
+                    v.push(h("Enter", "Open group", 1));
+                } else if let Some(item) = dashboard.attention.get(i) {
+                    v.push(h("Enter", if dashboard.protection_fix(item).is_some() { "Fix" } else if dashboard.protection_popup(item).is_some() { "Show list" } else { "Go to section" }, 1));
+                }
+            }
+            if dashboard.groups.is_some() {
+                v.push(h("e", if app.dashboard_expanded { "Problem hosts only" } else { "All hosts" }, 3));
             }
             v.push(h("r", "Refresh", 4));
         }
