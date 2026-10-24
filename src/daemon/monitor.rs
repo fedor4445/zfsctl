@@ -159,7 +159,7 @@ pub trait Sink {
 /// The reminder interval of the dataset alerts: the configured one, but at most daily (the daily report lists them
 /// anyway); `None` (no reminders) stays `None`.
 fn protection_remind(remind: Option<Duration>) -> Option<Duration> {
-    remind.map(|d| d.max(Duration::from_secs(24 * 3600)))
+    remind.map(|d| d.max(Duration::from_hours(24)))
 }
 
 /// The dataset alerts of one host and one kind in one pass: (host, kind, [(dataset, alert)]).
@@ -887,11 +887,11 @@ mod tests {
     #[test]
     fn protection_reminders_are_at_most_daily() {
         let (mut m, dir) = guarding(EmailTiming::Immediate);
-        assert_eq!(m.settings().remind, Some(Duration::from_secs(6 * 3600)), "the host reminders stay at six hours");
+        assert_eq!(m.settings().remind, Some(Duration::from_hours(6)), "the host reminders stay at six hours");
         write_storage(&dir, &[("a", &["tank/x"])], week());
         let hosts = [host("a")];
         let mut sink = FakeSink::new();
-        let mut at = |min: i64, m: &mut Monitor, sink: &mut FakeSink| m.observe(t(min), local(min % 1440), &hosts, &[probed_ok("a")], &[], &[], sink);
+        let at = |min: i64, m: &mut Monitor, sink: &mut FakeSink| m.observe(t(min), local(min % 1440), &hosts, &[probed_ok("a")], &[], &[], sink);
         at(0, &mut m, &mut sink);
         at(5, &mut m, &mut sink);
         assert_eq!(protection_mail(&sink).len(), 1);
@@ -905,7 +905,7 @@ mod tests {
         assert!(mail[1].subject.starts_with("[zfsctl] a: 1 dataset still not protected"), "{}", mail[1].subject);
         // A longer configured interval is kept.
         let mut s = settings_with_report("off");
-        s.remind = Some(Duration::from_secs(48 * 3600));
+        s.remind = Some(Duration::from_hours(48));
         m.set_settings(s);
         at(49 * 60, &mut m, &mut sink);
         assert_eq!(protection_mail(&sink).len(), 2, "48 h asked: no reminder after 24 h");

@@ -614,7 +614,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
     // Within each level the protection lines come after the other items, so dozens of them never push a degraded pool or a
     // failed job out of sight; among themselves they keep the judging's order (data first, then host and dataset).
-    protection.sort_by(|a, b| b.level.cmp(&a.level));
+    protection.sort_by_key(|p| std::cmp::Reverse(p.level));
     let mut rest = protection.into_iter().peekable();
     let mut merged = Vec::with_capacity(attention.len() + rest.len());
     for item in attention {
