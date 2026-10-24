@@ -4,7 +4,7 @@
 use crate::config::ProtectionSettings;
 use crate::daemon::cron::schedule_gap;
 use crate::daemon::storage_check::StorageFile;
-use crate::daemon::history::{Run, RunResult, UP_TO_DATE};
+use crate::daemon::history::{Run, RunResult};
 use crate::jobs::{self, Job};
 use chrono::{DateTime, Utc};
 
@@ -23,9 +23,7 @@ pub(crate) fn job_state(job: &Job, runs: &[Run], tolerance: i32, now: DateTime<U
     if latest_finished.is_some_and(|r| r.result == Some(RunResult::Failed)) {
         return JobState::Failing;
     }
-    // A copy job with nothing new to send records an "up to date" skip: its copy is as current as after a success.
-    let succeeded = |r: &&Run| r.result == Some(RunResult::Ok) || (r.result == Some(RunResult::Skipped) && r.message.starts_with(UP_TO_DATE));
-    let last_ok = mine().filter(succeeded).map(|r| r.finished_at.unwrap_or(r.started_at)).max();
+    let last_ok = mine().filter(|r| r.result == Some(RunResult::Ok)).map(|r| r.finished_at.unwrap_or(r.started_at)).max();
     let Some(gap) = schedule_gap(&job.schedule, now) else {
         return JobState::Stopped { last_ok: last_ok.or(job.created_at).unwrap_or(now) };
     };
@@ -613,15 +611,24 @@ mod tests {
     }
 
     #[test]
-    fn an_up_to_date_skip_counts_as_a_success() {
+    fn an_up_to_date_skip_does_not_keep_a_job_current() {
         let with_msg = |ago: i64, result: RunResult, msg: &str| Run { message: msg.into(), ..run("snap", Duration::minutes(ago), Some(result)) };
         let up_to_date = format!("{} (auto-2026)", crate::daemon::history::UP_TO_DATE);
         let runs = vec![with_msg(300, RunResult::Ok, ""), with_msg(10, RunResult::Skipped, &up_to_date)];
-        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Current, "nothing new to copy is a success");
+        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - Duration::minutes(300) }, "only a real copy counts");
         let runs = vec![with_msg(300, RunResult::Ok, ""), with_msg(10, RunResult::Skipped, "skipped: no snapshots with prefix 'auto' on tank/data")];
         assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - Duration::minutes(300) });
         let runs = vec![with_msg(300, RunResult::Ok, ""), with_msg(20, RunResult::Skipped, &up_to_date), with_msg(10, RunResult::Failed, "boom")];
         assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Failing);
+    }
+
+    #[test]
+    fn a_frozen_copy_that_logs_up_to_date_every_run_goes_stopped() {
+        // A pinned source snapshot (or a prefix no job advances) is "up to date" on every run; that must never read as protected.
+        let up_to_date = format!("{} (pinned)", crate::daemon::history::UP_TO_DATE);
+        let skip = |ago: i64| Run { message: up_to_date.clone(), ..run("snap", Duration::minutes(ago), Some(RunResult::Skipped)) };
+        let runs = vec![run("snap", Duration::days(30), Some(RunResult::Ok)), skip(180), skip(120), skip(60), skip(5)];
+        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - Duration::days(30) });
     }
 
     fn backup(repo: &str) -> Job {
