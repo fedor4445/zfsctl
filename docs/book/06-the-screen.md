@@ -59,26 +59,26 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 12:45                                                                                                  ✖ 4 issues
+┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 13:40                                                                                                  ✖ 4 issues
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Pools                 │   ✖ issue fbsd16:zroot      no snapshots; no copy on another machine
-│Datasets              │   ✖ issue fbsd16:zroot/ho…  no snapshots; no copy on another machine
-│Snapshots             │   ✖ issue fbsd16:zroot/ho…  no snapshots; no copy on another machine
+│Pools                 │   ✖ issue fbsd16:zroot      no snapshot job; no copy job
+│Datasets              │   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
+│Snapshots             │   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
 │Disks                 │   ✖ issue protection        and 122 more not protected (65 of your data)
 │Shares                │
 │Boot Envs             │ HOSTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Jobs                  │  Host      State       Pools  Capacity             Memory             ARC     CPU              Load  Scrub     Errors
-│Cloud                 │  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 16%     100.0%  ?                0.03  15 d ago  0
-│Alerts                │  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.18  6 d ago   0
-│Settings              │  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.40  6 d ago   0
-│                      │  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.39  6 d ago   0
-│                      │  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.00  6 d ago   0
-│                      │  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     83.7%   ?                0.02  6 d ago   0
+│Cloud                 │  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 16%     100.0%  ?                2.65  15 d ago  0
+│Alerts                │  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.38  6 d ago   0
+│Settings              │  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.22  6 d ago   0
+│                      │  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.53  6 d ago   0
+│                      │  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.23  6 d ago   0
+│                      │  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     83.7%   ?                0.04  6 d ago   0
 │                      │
 │                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 9411), heartbeat 1s ago
-│                      │   ● jobs    scrub 2/2 ok
+│                      │   ● daemon  running (pid 13609), heartbeat 1s ago
+│                      │   ● jobs    scrub 2/2 ok  snapshot 3/3 ok
 │                      │
 │                      │ CLOUD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
@@ -87,7 +87,7 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 │                      │
 │                      │ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert ub24 2 datasets not protected (4m ago) · report 2026-10-24
+│                      │   ● monitor on · last alert ub24 2 datasets not protected (17m ago) · report 2026-10-24
 │                      │
 │                      │
 │                      │
@@ -105,7 +105,7 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 - **Jobs that stopped succeeding.** An enabled snapshot, replication, backup or cloud job whose last success is older than two of its schedule's intervals gets a yellow line, `snapshot tank/data: last ok 3h ago (Hourly)`, and a red one at four intervals. A job that has never succeeded is measured from the day you created it (`never succeeded (created 10h ago)`). One missed run is not flagged, because a run can start late or a long replication can overlap the next slot. A weekday-only job is not late over the weekend. Jobs that are disabled, running, failed (they have their own red line) or whose host is unsupported are left out, and nothing is listed while the daemon is down (its own red line says why). It reads only the job history, so it costs no call to any host. Enter goes to the job.
 - **Resilvering and disk health.** A pool that is resilvering (a replaced disk catching up) gets a yellow line, `tank resilvering 42%`, until it finishes, because its redundancy is reduced meanwhile. A host whose disks have a SMART problem gets one line with the disks and the age of the check, `da1 reallocated sectors 8; ada4 (cache of tank) SSD wear 87%   (checked 6h ago)`, where the bracket says what the disk is for (cache, log, special, dedup or spare) when the storage check knows it (a disk named by label or id is shown bare): red if a drive says its own health check FAILED, yellow for reallocated, pending or uncorrectable sectors, an SSD worn to 80% or more, a low spare, or 60 degrees and up. Healthy hosts add nothing. The daemon asks `smartctl` once a day (03:30 by default; `daily_check` in `[daemon]` changes or stops it), so these lines are as old as the last check; if the check stops happening for three days, one more line says so (it counts the newest answer of the disk and the shares checks together). A host without `smartctl`, without the `smart` sudoers entry, or with virtual disks that report nothing, is left out without a word. Enter on a resilver line goes to that host's Pools, on a disk line to its Disks, on a shares line to its Shares.
 - **File sharing.** The same daily pass asks each host whether its NFS server and Samba are running where it has shares for them. A host with NFS shares while `nfsd` is stopped, or with Samba shares while `smbd` is stopped, gets a red line (`NFS: 2 shares but nfsd is not running   (checked 3h ago)`); a Samba block that cannot be read is yellow. Hosts with healthy sharing, with no shares, or without the `shares`/`samba` sudoers entries add nothing. While a check runs (the daemon's, or one you started with `c` in Hosts) a red line under the header says so (`▶ checking: daily disk and shares check since 03:30`); it is a notice, not a problem, and it goes when the check is done. A check that crashed leaves it for at most three minutes.
-- **Unprotected data.** A dataset with no safety net gets a line of its own, `fbsd16:tank/vm   no snapshots; no copy on another machine`: red for your data, yellow for the operating system's. See [Is my data protected?](#is-my-data-protected) below. Enter on one of these lines fixes that dataset, and the fix starts with the snapshots: a dataset that no snapshot job covers opens the **New snapshot job** form with its host and name filled in; one that has snapshots but too few copies asks which kind of copy (replicate to another host, back up with restic, or mirror to the cloud) and opens that form, again with the host and dataset filled in; and one whose job exists but never ran, stopped or is failing goes to that job in Jobs, so a second job is never made on top of it. Nothing is created until you confirm the form, and the destination of a copy is always yours to type. A dataset stays unprotected until its new job has run and counts as current. These lines come after the other problems of the same colour, so a degraded pool or a failed job is never pushed below them.
+- **Unprotected data.** A dataset with no safety net gets a line of its own, `fbsd16:tank/vm   no snapshot job; no copy job`: red for your data, yellow for the operating system's. See [Is my data protected?](#is-my-data-protected) below. Enter on one of these lines fixes that dataset, and the fix starts with the snapshots: a dataset that no snapshot job covers opens the **New snapshot job** form with its host and name filled in; one that has snapshots but too few copies asks which kind of copy (replicate to another host, back up with restic, or mirror to the cloud) and opens that form, again with the host and dataset filled in; and one whose job exists but never ran, stopped or is failing goes to that job in Jobs, so a second job is never made on top of it. Nothing is created until you confirm the form, and the destination of a copy is always yours to type. A dataset stays unprotected until its new job has run and counts as current. These lines come after the other problems of the same colour, so a degraded pool or a failed job is never pushed below them.
 - **Unknown is never green.** A host that has not answered, or a reading that cannot be taken yet (the first CPU figure needs two probes), is shown as `?` in dim text. Every status has a glyph and a word as well as a colour, so the `mono` theme reads the same.
 
 | Reading | Yellow (watch) | Red (issue) |
@@ -156,11 +156,13 @@ A plain local path is not a copy on another machine. Two jobs that write to the 
 
 Some things are deliberately quiet. A dataset created in the last day is not judged yet. A host that did not answer, or whose stored dataset list is more than two days old, says nothing about its datasets (the host already shows its own state). And there is **no exclusion list**: a swap, scratch or test dataset is listed until you protect or remove it. That is on purpose.
 
+The check judges **jobs**, not the snapshots that happen to exist: snapshots you took by hand, or copies you made by hand, do not count, because nothing says more will come. So the words are about the job: `no snapshot job` means no enabled snapshot job covers the dataset, `snapshot job has not run yet` (or `copy job has not run yet`) means one does but has not succeeded yet (a job you have just made says this until its first run), `snapshots stopped 3 days ago` and `snapshot job failing` mean a job that stopped working, and `no copy job` means no replication, backup or cloud mirror covers it.
+
 ```text
  NEEDS ATTENTION
-   ✖ issue  tank/photos          no snapshots
-   ✖ issue  fbsd16:tank/vm       no copy on another machine
-   ▲ watch  fbsd16:zroot/var     no snapshots
+   ✖ issue  tank/photos          no snapshot job
+   ✖ issue  fbsd16:tank/vm       no copy job
+   ▲ watch  fbsd16:zroot/var     no snapshot job
 ```
 
 The same list reaches you by email (chapter 16). Set the level, how recent and the email timing in Settings, group **Data protection**.

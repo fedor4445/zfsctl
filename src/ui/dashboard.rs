@@ -1363,7 +1363,7 @@ mod tests {
         let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
         let probe = reached(vec![]);
         let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
-        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Jobs && i.what.contains("no snapshots")).collect()
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Jobs && i.what.contains("no snapshot job")).collect()
     }
 
     #[test]
@@ -1374,7 +1374,7 @@ mod tests {
         let by = |s: &str| items.iter().find(|i| i.subject == s).unwrap_or_else(|| panic!("{s} in {items:?}"));
         assert_eq!(items.len(), 3, "{items:?}");
         assert_eq!((by("tank/photos").level, by("zroot/var").level, by("nas:tank/media").level), (Level::Issue, Level::Watch, Level::Issue));
-        assert_eq!(by("tank/photos").what, "no snapshots; no copy on another machine");
+        assert_eq!(by("tank/photos").what, "no snapshot job; no copy job");
         assert_eq!((by("tank/photos").goto, by("tank/photos").target.clone()), (Section::Jobs, None));
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
     fn no_protection_lines_while_the_daemon_is_down_or_stale_or_a_host_is_unreachable() {
         let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
         let probe = reached(vec![]);
-        let named = |d: &Dashboard| d.attention.iter().filter(|i| i.what.contains("no snapshots")).count();
+        let named = |d: &Dashboard| d.attention.iter().filter(|i| i.what.contains("no snapshot job")).count();
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         with_datasets(&mut fx, &[("local", &["tank/photos"])]);
         assert_eq!(named(&fx.build(vec![fine_host("local", &probe, &r, &b)])), 1, "control: a running daemon shows the line");
@@ -1503,7 +1503,7 @@ mod tests {
         assert!(note[1].starts_with("Protected means snapshots plus a copy on another machine"), "{}", note[1]);
         assert_eq!(note[2], "Enter fixes the selected one.");
         assert_eq!(popup.rows.len(), 5);
-        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/a") && popup.rows[0].ends_with("no snapshots; no copy on another machine"), "{}", popup.rows[0]);
+        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/a") && popup.rows[0].ends_with("no snapshot job; no copy job"), "{}", popup.rows[0]);
         assert!(popup.rows[4].starts_with("watch") && popup.rows[4].contains("zroot/var"), "{}", popup.rows[4]);
         assert_eq!(popup.selected, 3, "the first dataset without a line of its own");
         assert_eq!(popup.gaps.iter().map(|g| g.dataset.as_str()).collect::<Vec<_>>(), ["tank/a", "tank/b", "tank/c", "tank/d", "zroot/var"], "what each row lacks, in the rows' order");
