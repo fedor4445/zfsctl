@@ -302,7 +302,7 @@ fn roll_up(name: String, members: &[&HostRow]) -> HostRow {
         space: worst(|h| &h.space),
         memory: worst(|h| &h.memory),
         cpu: worst(|h| &h.cpu),
-        load: Cell::none(),
+        load: members.iter().filter_map(|m| m.load.text.parse::<f64>().ok().map(|v| (v, &m.load))).max_by(|a, b| a.0.total_cmp(&b.0)).map_or_else(Cell::none, |(_, c)| c.clone()),
         scrub: worst(|h| &h.scrub),
         errors: total(|h| &h.errors),
         arc: Cell::none(),
