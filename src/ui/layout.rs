@@ -1039,7 +1039,7 @@ fn draw_cloud_panel(f: &mut Frame, app: &App, area: Rect) {
     if let Some(why) = app.cloud_errors.get(&row.host) {
         lines.push(Line::styled(format!("rclone on {}: {why}", row.host), theme.err));
     }
-    let mirror_remote = app.jobs_view.jobs.iter().find(|j| row.job_ids.contains(&j.id) && j.kind == crate::jobs::KIND_MIRROR).and_then(|j| j.remote.clone());
+    let mirror_remote = crate::ui::cloud::check_target(&row, &app.jobs_view.jobs);
     let check = app.backup_preflight.as_ref().filter(|c| c.password_file.is_empty() && app.hosts.get(c.host) == Some(&row.host) && Some(&c.repository) == mirror_remote.as_ref());
     if let Some(check) = check {
         lines.push(match &check.result {

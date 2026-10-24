@@ -2,6 +2,7 @@ pub mod alerts;
 pub mod browse;
 pub mod changes;
 pub mod cloud;
+pub mod cloud_guide;
 pub mod dashboard;
 pub mod dashboard_view;
 pub mod hints;

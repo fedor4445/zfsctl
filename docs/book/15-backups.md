@@ -305,6 +305,7 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 The form asks for the same things as the backup job (host, dataset, an optional path inside it, which snapshot to read, how many fresh snapshots to keep), plus:
 
 - **Remote:** where to send it, written `name:path`, such as `aws:mybucket/photos` or `b2:mybucket/photos`. The name is a remote you created with `rclone config`; the keys live in root's rclone config on that host, never in zfsctl. A text with keys in it is refused. The part after the colon must name the bucket (or a folder on the remote): a bare `aws:` is refused, and so is a `.` or `..` part.
+  Press `F2` on this field to pick from the remotes configured on the form's host, each shown with its provider (`b2:  (Backblaze B2)`). Picking replaces the remote's name and keeps what you had already typed after the colon, so `aws:mybucket/photos` becomes `b2:mybucket/photos`. The backup form's **Repository** field does the same for a restic repository on an rclone remote and writes `rclone:b2:`. If the host has no remotes yet, the picker says so and points to the guide below.
 - **Speed limit:** optional, in bytes per second, such as `5M`, so a nightly upload does not use your whole connection. Schedule the job for the night if the connection matters; there is no time-of-day setting.
 
 Press `F5` in the form to check the remote before you save. It lists the remote read-only and tells you in plain words if the remote name is not set up, the bucket is missing or the keys are refused.
@@ -380,7 +381,19 @@ The policy does not allow creating buckets, and zfsctl does not ask for it: the 
 
 > **Tip:** the key must be allowed to delete: moving a file into `old/` is a copy followed by a delete of the original. A key that cannot delete will make every run that replaces a file fail, which is annoying but safe.
 
-**Tell rclone.** On the host that runs the job, as root, run `rclone config`, choose *New remote*, give it a name (`aws` or `b2`), pick the provider (`s3` with provider *AWS*, or `b2`) and paste the key. The keys are saved in `/root/.config/rclone/rclone.conf`, which must be readable by root only (`chmod 600`; the `F5` check tells you if it is not). On a host other than the hub also run `zfsctl print-sudoers HOST --with rclone` and install the line it prints. Do not use an rclone `crypt` remote if you want to browse the files: it encrypts the names too.
+**Tell rclone.** (Not sure what to answer? Press `n` in the Cloud section for the steps for your provider, [below](#setting-up-a-provider-the-guide).) On the host that runs the job, as root, run `rclone config`, choose *New remote*, give it a name (`aws` or `b2`), pick the provider (`s3` with provider *AWS*, or `b2`) and paste the key. The keys are saved in `/root/.config/rclone/rclone.conf`, which must be readable by root only (`chmod 600`; the `F5` check tells you if it is not). On a host other than the hub also run `zfsctl print-sudoers HOST --with rclone` and install the line it prints. Do not use an rclone `crypt` remote if you want to browse the files: it encrypts the names too.
+
+### Setting up a provider: the guide
+
+Press `n` in the **Cloud** section for a list of common providers: Backblaze B2, Amazon S3, Cloudflare R2 / Wasabi / MinIO (S3-compatible), Google Drive, Microsoft OneDrive, Dropbox, Azure Blob Storage, Google Cloud Storage and SFTP. `Enter` on one shows, on one screen:
+
+- **Get this first:** what to make at the provider (an application key limited to one bucket, an IAM user, a service account...). The bucket or container must exist already: zfsctl never creates it.
+- **The commands:** `sudo rclone config` on the host that runs the job, then the answers to give: the storage type to type (`b2`, `s3`, `drive`, `onedrive`, `dropbox`, `azureblob`, `gcs`, `sftp`), which keys go where, and "every other question: press Enter".
+- **The browser login** (Google Drive, OneDrive, Dropbox only): the hub has no browser, so answer `n` to "Use web browser" and run `rclone authorize "drive"` (or `onedrive`, `dropbox`) on a computer that has one; paste the token it prints.
+- **How to write the remote** in a cloud mirror job and as a restic repository.
+- **How to check it:** back in Cloud, select the remote and press `F5`.
+
+zfsctl does not run `rclone config` for you or create the remote itself, on purpose: the keys would have to travel on a command line, where any user of the machine could read them, and a browser login has no place on a hub. Your keys stay in rclone's own config file, readable by root only, and zfsctl never reads or shows them.
 
 ### Seeing your cloud copies: the Cloud screen
 
@@ -416,13 +429,13 @@ You should not have to remember which buckets you have set up. The **Cloud** sec
 │                      ││                                                                          │
 │                      ││                                                                          │
 └──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  n Set up a provider  C New cloud mirror  r Refresh  Tab Section  ! Shell  ? Help  q Quit
 ```
 
 - **Provider, Remote, Host:** the provider behind the remote (`Backblaze B2`, `Amazon S3 (etc.)`, `Google Drive`, `SFTP`...), the name you gave in `rclone config`, and the host whose rclone config has it. rclone says only the *type* of a remote, so every `s3` remote reads `Amazon S3 (etc.)`, whether it is Amazon, Wasabi, Cloudflare R2 or your own MinIO, and a type zfsctl has no name for is shown as rclone calls it. Only names and types are read (`rclone listremotes --long`): no key is ever read into the screen.
 - **Jobs and Last:** how many cloud mirror jobs (and restic jobs that use an `rclone:` repository) write to the remote, and how the latest run of any of them ended. A remote whose latest run failed turns red, and the panel below says why. A remote nobody uses is dim: it is set up but unused.
 - **In bucket:** blank (`-`) until you press `s`. It then adds up what that remote's mirror jobs hold in the bucket, `current/` and `old/` together, because that is what a plan charges for. With a plan cap set (below) it also says how much of the cap that is.
-- **The panel:** the selected remote's jobs, and after `s` the size of `current/` and of `old/` for each, so you can see when `old/` is getting big. `F5` runs the same read-only check as in the form.
+- **The panel:** the selected remote's jobs, and after `s` the size of `current/` and of `old/` for each, so you can see when `old/` is getting big. `F5` runs the same read-only check as in the form; on a remote no job uses yet it lists the remote's top level, which is how you test a remote you have just set up.
 
 **Seeing how much of a free plan you have used.** Backblaze's free account gives 10 GB and AWS's free tier 5 GB. Tell zfsctl once, on the Settings screen or in `/usr/local/etc/zfsctl/config.toml`, by remote name:
 

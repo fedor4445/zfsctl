@@ -6056,6 +6056,53 @@ fn f2_on_the_snapshot_forms_dataset_field_queues_a_dataset_fetch_for_the_chosen_
 }
 
 #[test]
+fn f2_on_the_mirrors_remote_field_and_the_backups_repository_field_list_the_hosts_rclone_remotes() {
+    let mut app = mirror_form_app(MIRROR_GOOD);
+    app.handle_modal_key(KeyCode::F(2));
+    assert!(app.picker.as_ref().is_some_and(|p| p.pool_host == Some(0)));
+    assert_eq!(app.pending_pool_fetch, vec![(0, crate::ui::picker::LiveNames::Remotes { prefix: String::new() })]);
+    let mut app = backup_form_app(BACKUP_GOOD);
+    app.handle_modal_key(KeyCode::F(2));
+    assert_eq!(app.pending_pool_fetch, vec![(0, crate::ui::picker::LiveNames::Remotes { prefix: "rclone:".to_string() })], "restic reaches an rclone remote as rclone:name:path");
+}
+
+#[test]
+fn picking_a_remote_replaces_the_name_and_keeps_the_path_that_was_typed() {
+    let mut app = mirror_form_app(MIRROR_GOOD);
+    app.handle_modal_key(KeyCode::F(2));
+    app.tx.send(WorkerMsg::PoolNames(0, Ok(vec!["aws:  (Amazon S3 (etc.))".to_string(), "b2:  (Backblaze B2)".to_string()]))).unwrap();
+    app.drain_worker_messages();
+    app.handle_picker_key(KeyCode::Down);
+    app.handle_picker_key(KeyCode::Enter);
+    assert_eq!(form_values(&app)[5], "b2:bkt/photos", "the bucket and folder stay, the remote changes");
+    let mut blank = MIRROR_GOOD;
+    blank[5] = "";
+    let mut app = mirror_form_app(blank);
+    app.handle_modal_key(KeyCode::F(2));
+    app.tx.send(WorkerMsg::PoolNames(0, Ok(vec!["b2:  (Backblaze B2)".to_string()]))).unwrap();
+    app.drain_worker_messages();
+    app.handle_picker_key(KeyCode::Enter);
+    assert_eq!(form_values(&app)[5], "b2:", "nothing typed: just the remote, for the bucket to follow");
+    let mut backup = BACKUP_GOOD;
+    backup[5] = "rclone:aws:bkt/restic";
+    let mut app = backup_form_app(backup);
+    app.handle_modal_key(KeyCode::F(2));
+    app.tx.send(WorkerMsg::PoolNames(0, Ok(vec!["rclone:aws:  (Amazon S3 (etc.))".to_string(), "rclone:b2:  (Backblaze B2)".to_string()]))).unwrap();
+    app.drain_worker_messages();
+    app.handle_picker_key(KeyCode::Down);
+    app.handle_picker_key(KeyCode::Enter);
+    assert_eq!(form_values(&app)[5], "rclone:b2:bkt/restic");
+    let mut other = BACKUP_GOOD;
+    other[5] = "sftp:nas:/backups";
+    let mut app = backup_form_app(other);
+    app.handle_modal_key(KeyCode::F(2));
+    app.tx.send(WorkerMsg::PoolNames(0, Ok(vec!["rclone:b2:  (Backblaze B2)".to_string()]))).unwrap();
+    app.drain_worker_messages();
+    app.handle_picker_key(KeyCode::Enter);
+    assert_eq!(form_values(&app)[5], "rclone:b2:", "a repository of another kind is replaced, not merged");
+}
+
+#[test]
 fn f2_on_the_snapshot_forms_host_and_schedule_fields_opens_their_pickers_and_the_rest_do_nothing() {
     let (mut app, _dir) = app_with_jobs(&[]);
     app.handle_key(KeyCode::Char('N'));
@@ -8196,7 +8243,31 @@ fn f5_in_cloud_checks_the_remote_of_the_selected_remotes_mirror_job() {
     app.pending_preflight.clear();
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::F(5));
-    assert!(app.pending_preflight.is_empty() && app.status_message.as_deref().unwrap_or("").contains("Nothing to check"), "{:?}", app.status_message);
+    assert_eq!(app.pending_preflight, vec![PendingPreflight { host: 0, host_name: "local".into(), repository: "t1:".into(), password_file: String::new() }], "a remote no job uses yet is checked at its top level, which only lists it");
+}
+
+#[test]
+fn n_in_cloud_lists_the_providers_and_enter_shows_the_steps_for_the_one_picked() {
+    let (mut app, _dir) = cloud_app(&[]);
+    app.handle_key(KeyCode::Char('n'));
+    match &app.modal {
+        Some(Modal::Choose { title, rows, then, .. }) => {
+            assert_eq!(title, "Set up a cloud provider");
+            assert_eq!(rows.len(), crate::ui::cloud_guide::PROVIDERS.len());
+            assert!(rows[0].contains("Backblaze B2") && rows.iter().any(|r| r.contains("Google Drive")) && rows.iter().any(|r| r.contains("OneDrive")));
+            assert_eq!(*then, crate::ui::modal::ChooseThen::Provider);
+        }
+        other => panic!("expected the provider list, got {other:?}"),
+    }
+    app.handle_modal_key(KeyCode::Enter);
+    match &app.modal {
+        Some(Modal::Info { title, body }) => {
+            assert!(title.contains("Backblaze B2"), "{title}");
+            assert!(body.contains("sudo rclone config") && body.contains("b2:mybucket/photos"), "{body}");
+        }
+        other => panic!("expected the steps, got {other:?}"),
+    }
+    assert!(app.pending_mutations.is_empty() && app.pending_cloud.is_empty() && app.pending_preflight.is_empty(), "the guide runs nothing");
 }
 
 #[test]

@@ -27,4 +27,4 @@
 │                      ││                                                                          │
 │                      ││                                                                          │
 └──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  C New cloud mirror  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  n Set up a provider  C New cloud mirror  r Refresh  Tab Section  ! Shell  ? Help  q Quit

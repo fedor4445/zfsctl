@@ -4,7 +4,7 @@ use super::forms::{
     build_backup_job_action, build_bootenv_action, build_job_action, build_mirror_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
     build_create_encrypted, build_key_action, irreversible_prompt,
 };
-use super::{App, Instant, Modal, MutationCall, PaneFocus, PendingAction, Section};
+use super::{App, Instant, Modal, MutationCall, PaneFocus, PendingAction, Section, Wanted};
 use crate::ui::modal::{ChooseLook, ChooseThen, FormField, FormKind};
 use crate::ui::picker::build_picker_state;
 use crossterm::event::KeyCode;
@@ -126,6 +126,12 @@ impl App {
             ChooseThen::Unprotected(gaps) => {
                 if let Some(gap) = gaps.get(row) {
                     self.fix_unprotected(gap);
+                }
+            }
+            ChooseThen::Provider => {
+                if let Some(provider) = crate::ui::cloud_guide::PROVIDERS.get(row) {
+                    self.info_scroll = 0;
+                    self.modal = Some(Modal::Info { title: format!("Set up {}", provider.name), body: crate::ui::cloud_guide::guide_text(provider) });
                 }
             }
             ChooseThen::Copy { host, dataset } => {
@@ -255,8 +261,15 @@ impl App {
             // The destination dataset lists the *destination* host's datasets.
             let host_field = if matches!(kind, FormKind::ReplicateJob { .. }) && *focused == 4 { 3 } else { 0 };
             // The backup form's Source field lists the snapshots of the form's dataset.
-            let snapshots_of = (matches!(kind, FormKind::BackupJob { .. } | FormKind::MirrorJob { .. }) && *focused == 3).then(|| field_value(fields, 1).trim().to_string());
-            self.open_pool_picker(&mut picker, kind, field_value(fields, host_field), snapshots_of);
+            let backup_or_mirror = matches!(kind, FormKind::BackupJob { .. } | FormKind::MirrorJob { .. });
+            let wanted = if backup_or_mirror && *focused == 3 {
+                Wanted::Snapshots(field_value(fields, 1).trim().to_string())
+            } else if backup_or_mirror && *focused == 5 {
+                Wanted::Remotes(if matches!(kind, FormKind::BackupJob { .. }) { "rclone:" } else { "" })
+            } else {
+                Wanted::Names
+            };
+            self.open_pool_picker(&mut picker, kind, field_value(fields, host_field), wanted);
         }
         self.picker = Some(picker);
     }

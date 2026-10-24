@@ -499,6 +499,8 @@ pub enum ChooseThen {
     Unprotected(Vec<crate::daemon::protection::Unprotected>),
     /// The rows are the kinds of copy (replication, backup, cloud mirror) for this dataset.
     Copy { host: String, dataset: String },
+    /// The rows are the providers of `cloud_guide::PROVIDERS` (this order): show the steps for the chosen one.
+    Provider,
 }
 
 #[cfg(test)]

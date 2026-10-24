@@ -64,6 +64,16 @@ pub struct Size {
     pub problem: Option<String>,
 }
 
+/// What F5 checks for a row: the remote of its first cloud mirror job, else the remote's own top level (`name:`), which only
+/// lists it. `None` when the remote's name is not one a job could write.
+pub fn check_target(row: &Row, jobs: &[Job]) -> Option<String> {
+    let mirror = jobs.iter().find(|j| row.job_ids.contains(&j.id) && j.kind == crate::jobs::KIND_MIRROR).and_then(|j| j.remote.clone());
+    mirror.or_else(|| {
+        let name_ok = !row.name.is_empty() && !row.name.starts_with('-') && row.name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
+        name_ok.then(|| format!("{}:", row.name))
+    })
+}
+
 /// `rclone listremotes --long` on the host behind `runner`: the configured remotes and their types, or why not.
 pub fn list_remotes(runner: &dyn CommandRunner, host: &str) -> Result<Vec<(String, String)>, String> {
     let args = rclone::listremotes_args();
@@ -437,6 +447,18 @@ mod tests {
             history.append(&e).unwrap();
         }
         JobsView { jobs, runs: crate::daemon::history::runs(&history.read()), loaded: true, ..JobsView::default() }
+    }
+
+    #[test]
+    fn f5_checks_the_mirror_jobs_remote_or_else_the_remote_itself() {
+        let mirror = crate::jobs::Job { remote: Some("b2:bkt/photos".into()), ..crate::jobs::Job::test_snapshot("m1", "tank/x", "auto", 1) };
+        let mirror = crate::jobs::Job { kind: crate::jobs::KIND_MIRROR.into(), ..mirror };
+        let row = |name: &str, ids: &[&str]| Row { host: "local".into(), name: name.into(), kind: Some("b2".into()), job_ids: ids.iter().map(ToString::to_string).collect() };
+        let jobs = [mirror];
+        assert_eq!(check_target(&row("b2", &["m1"]), &jobs).as_deref(), Some("b2:bkt/photos"));
+        assert_eq!(check_target(&row("t1", &[]), &jobs).as_deref(), Some("t1:"));
+        assert_eq!(check_target(&row("-x", &[]), &[]), None);
+        assert_eq!(check_target(&row("a b", &[]), &[]), None);
     }
 
     #[test]
