@@ -6,6 +6,7 @@
 <title>zfsctl: ZFS management in your terminal</title>
 <meta name="description" content="zfsctl is a terminal UI and daemon for managing ZFS pools, datasets, snapshots, replication and backups on FreeBSD, Linux and illumos.">
 <meta name="color-scheme" content="dark light">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,40 +19,44 @@
 
 <h2 data-rule="──────────────────────────────">the dashboard</h2>
 <p class="dim">A real capture from a running zfsctl, not a mock-up.</p>
-<pre> Dashboard  ·  Sun 18 Oct 16:15                                                                                                    ✖ 1 issue
+<pre> Dashboard  ·  Sat 24 Oct 13:40                                                                                                  ✖ 4 issues
 
- NEEDS ATTENTION ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   ✖ issue omnios  tank 96% full
+ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ✖ issue fbsd16:zroot      no snapshot job; no copy job
+   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
+   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
+   ✖ issue protection        and 122 more not protected (65 of your data)
 
- HOSTS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Host      State            OS                      Pools  Capacity             Memory             CPU              Load  Scrub    Errors
-  local     ● ok             FreeBSD 15.1            3      ━━━━╌╌╌╌╌╌ 42%       ━━╌╌╌╌╌╌╌╌ 16%     ?                2.54  9 d ago  0
-  fbsd16    ● ok             FreeBSD 16.0            1      ━━━━━━╌╌╌╌ 61%       ━━╌╌╌╌╌╌╌╌ 18%     ?                0.07  today    0
-  fbsd16t1  ● ok             FreeBSD 15.1            2      ━━━━━╌╌╌╌╌ 53%       ━━━━━╌╌╌╌╌ 48%     ?                0.40  today    0
-  fbsd16t2  ● ok             FreeBSD 15.1            2      ━━━━━━━╌╌╌ 74%       ━━━━━╌╌╌╌╌ 48%     ?                0.43  today    0
-  ub24      ● ok             Linux 6.8 (Ubuntu 24)   1      ╌╌╌╌╌╌╌╌╌╌ 0%        ╌╌╌╌╌╌╌╌╌╌ 4%      ?                0.00  today    0
-  omnios    ✖ tank 96% full  illumos omnios-r151058  2      ━━━━━━━━━━ 96%       ━╌╌╌╌╌╌╌╌╌ 14%     ?                0.02  today    0
+ HOSTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Host      State       Pools  Capacity             Memory             ARC     CPU              Load  Scrub     Errors
+  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 16%     100.0%  ?                2.65  15 d ago  0
+  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.38  6 d ago   0
+  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.22  6 d ago   0
+  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.53  6 d ago   0
+  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.23  6 d ago   0
+  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     83.7%   ?                0.04  6 d ago   0
 
- DAEMON AND JOBS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   ● daemon  running (pid 70948), heartbeat 0s ago
-   ● jobs    scrub 2/2 ok
+ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ● daemon  running (pid 13609), heartbeat 1s ago
+   ● jobs    scrub 2/2 ok  snapshot 3/3 ok
 
- CLOUD ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-     Provider          Remote      Jobs     Last run  Next run         In bucket
-   ○ Backblaze B2      b2          no jobs  -         -                -
-   ○ SFTP              t1          no jobs  -         -                -
-   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -
+ CLOUD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
+   ○ Backblaze B2      b2          no jobs  -         -                -        -
+   ○ SFTP              t1          no jobs  -         -                -        -
+   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 
- ALERTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   ● monitor on · last alert omnios tank 96% full (51m ago) · report 2026-10-18
+ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ● monitor on · last alert ub24 2 datasets not protected (17m ago) · report 2026-10-24
 </pre>
 
 <h2 data-rule="──────────────────────────────">what it does</h2>
 <ul>
 <li>Pools, vdevs, datasets, properties, quotas, snapshots, disks and SMART, NFS and SMB shares, boot environments.</li>
-<li>Scheduled jobs: snapshots with retention, host-to-host and stream-file replication (raw sends for encrypted datasets), restic backups, rclone cloud mirrors.</li>
+<li>Scheduled jobs: snapshots with retention, host-to-host and stream-file replication (raw sends for encrypted datasets), restic backups, rclone cloud mirrors, with a guide to setting up Backblaze B2, S3, Google Drive, OneDrive, Dropbox and more.</li>
 <li>Native encryption: create encrypted datasets, load, unload and change keys. Passphrases never appear in an argument, a log or a file.</li>
 <li>Alerts and a daily report by mail or hook, and a Dashboard that shows what needs attention first.</li>
+<li>A protection check: every dataset needs snapshots and a copy on another machine, or it is flagged on the Dashboard and by mail, with the form that fixes it one keystroke away.</li>
 <li>Every change asks twice (<code>y</code>, then <code>Enter</code>); what cannot be undone makes you type the name.</li>
 <li>Hosts run FreeBSD, Linux or illumos. Root only through a sudoers file you read first (<code>zfsctl print-sudoers</code>).</li>
 </ul>

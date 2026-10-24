@@ -8,7 +8,7 @@ Build into `site/public/` (not tracked):
 
 ```sh
 mdbook build site
-cp site/index.html site/style.css site/public/
+cp site/index.html site/style.css site/favicon.svg site/public/
 ```
 
 `site/public/` is the whole site: upload it as it is (Cloudflare Pages: Direct Upload, or connect the repository with the
