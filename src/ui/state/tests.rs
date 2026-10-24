@@ -8393,7 +8393,7 @@ fn unprotected_app(names: &[&str]) -> App {
 fn enter_on_a_named_protection_line_goes_straight_to_its_fix() {
     let mut app = unprotected_app(&["tank/docs", "tank/photos"]);
     let items = app.dashboard().attention;
-    assert_eq!(items.iter().filter(|i| i.what.contains("no snapshots")).count(), 2, "{items:?}");
+    assert_eq!(items.iter().filter(|i| i.what.contains("no snapshot job")).count(), 2, "{items:?}");
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Down);
     assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Fix"), "the hint says what Enter does here");

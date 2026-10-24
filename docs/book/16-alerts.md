@@ -24,9 +24,9 @@ The monitor also judges every dataset on every host: is it protected, that is, c
 
 ```text
 UNPROTECTED DATA
-  local:tank/photos (your data): no snapshots (for 3d)
-  fbsd16:tank/vm (your data): no copy on another machine (for 1d)
-  fbsd16:zroot/var (OS data): no snapshots
+  local:tank/photos (your data): no snapshot job (for 3d)
+  fbsd16:tank/vm (your data): no copy job (for 1d)
+  fbsd16:zroot/var (OS data): no snapshot job
 ```
 
 When all is well the section says `All datasets are protected.`, but only when every configured host was checked. A host that is unreachable, or whose dataset list is missing or more than two days old, is named instead: `All datasets on 2 hosts are protected; not checked: t2 (unreachable), omnios (no dataset list for 3d)` (or, under a list of datasets, `Not checked: ...`). Nothing is ever called protected on a host zfsctl could not see. The `zfsctl report` preview says the same. The setting **Email** (Settings, group Data protection, or `email` in `[protection]`) picks the timing: `immediate` (the default: the emails above plus the report section), `report` (only the report section, still with how long each dataset has been unprotected; the `zfsctl report` preview has no such memory and leaves the "for 3d" out) or `off` (the Dashboard only; no email at all about this check).

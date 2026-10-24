@@ -165,7 +165,7 @@ mod tests {
         let now = Utc::now();
         with_unprotected_dataset(dir.path(), now);
         let text = report_text_with(&Config::default(), dir.path(), now, &fake_probe);
-        assert!(text.contains("\nUNPROTECTED DATA\n  local:tank/photos (your data): no snapshots"), "{text}");
+        assert!(text.contains("\nUNPROTECTED DATA\n  local:tank/photos (your data): no snapshot job"), "{text}");
         assert!(!text.contains("(for "), "the preview has no duration: {text}");
         let none = tempfile::tempdir().unwrap();
         let text = report_text_with(&Config::default(), none.path(), now, &fake_probe);
