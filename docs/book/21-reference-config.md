@@ -9,7 +9,7 @@ This chapter is checked against the program's own list of settings by the book's
 
 ## config.toml
 
-The file is `/usr/local/etc/zfsctl/config.toml`. It has up to seven parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[ssh]`, `[daemon]`, `[notify]`, `[cloud]` and `[dashboard]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is; the Settings screen does the same for `theme` and `auto_refresh_secs` in `[ui]`, for `[dashboard]` and for `[cloud.caps]`.
+The file is `/usr/local/etc/zfsctl/config.toml`. It has up to eight parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[ssh]`, `[daemon]`, `[notify]`, `[cloud]`, `[dashboard]` and `[protection]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is; the Settings screen does the same for `theme` and `auto_refresh_secs` in `[ui]`, for `[dashboard]`, for `[protection]` and for `[cloud.caps]`.
 
 ### `[[hosts]]`: one table per remote host
 
