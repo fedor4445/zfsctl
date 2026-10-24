@@ -156,6 +156,12 @@ pub trait Sink {
     fn send(&mut self, msg: &Message) -> bool;
 }
 
+/// The reminder interval of the dataset alerts: the configured one, but at most daily (the daily report lists them
+/// anyway); `None` (no reminders) stays `None`.
+fn protection_remind(remind: Option<Duration>) -> Option<Duration> {
+    remind.map(|d| d.max(Duration::from_secs(24 * 3600)))
+}
+
 /// The dataset alerts of one host and one kind in one pass: (host, kind, [(dataset, alert)]).
 type ProtectionGroup = (String, AlertKind, Vec<(String, Alert)>);
 
@@ -178,7 +184,8 @@ pub struct Monitor {
     kinds: HashMap<String, HostKind>,
     events: EventLog,
     protection_settings: ProtectionSettings,
-    /// The alert state of each unprotected dataset, keyed `host\tdataset`, fed only when the email timing is immediate.
+    /// The alert state of each unprotected dataset of the operator's data (not OS data), keyed `host\tdataset`, fed only
+    /// when the email timing is immediate.
     protection: Tracker,
     /// The keys `protection` was fed last pass and still has to follow (to a recovery, or to forget them).
     protection_keys: HashSet<String>,
@@ -199,7 +206,7 @@ impl Monitor {
         let events = EventLog::new(state_dir.join("health-events.jsonl"));
         let _ = events.append(&HealthEvent { at: now, host: hub.clone(), kind: "daemon-started".to_string(), text: "zfsctl daemon started".to_string() });
         let tracker = Tracker::new(CONFIRM, settings.remind);
-        let protection = Tracker::new(CONFIRM, settings.remind);
+        let protection = Tracker::new(CONFIRM, protection_remind(settings.remind));
         Monitor {
             settings,
             hub,
@@ -234,7 +241,7 @@ impl Monitor {
     /// stay (only the reminder interval of the tracker changes).
     pub fn set_settings(&mut self, settings: NotifySettings) {
         self.tracker.set_remind(settings.remind);
-        self.protection.set_remind(settings.remind);
+        self.protection.set_remind(protection_remind(settings.remind));
         self.settings = settings;
     }
 
@@ -331,7 +338,7 @@ impl Monitor {
     /// Drops every dataset alert and the messages still queued for them: the email timing is no longer immediate.
     fn stop_protection_alerts(&mut self) {
         if !self.protection_keys.is_empty() {
-            self.protection = Tracker::new(CONFIRM, self.settings.remind);
+            self.protection = Tracker::new(CONFIRM, protection_remind(self.settings.remind));
             self.protection_keys.clear();
         }
         self.pending.retain(|p| p.keys.is_empty());
@@ -359,13 +366,10 @@ impl Monitor {
         // (host, dataset, alert) in the order they arise: data first, as `judge` sorts, then the recoveries.
         let mut alerts: Vec<(String, String, Alert)> = Vec::new();
         let mut keys: HashSet<String> = HashSet::with_capacity(found.len());
-        for u in &found {
+        // OS data is not mailed one by one: it stays on the Dashboard and in the daily report.
+        for u in found.iter().filter(|u| u.tier == Tier::Data) {
             let key = format!("{}\t{}", u.host, u.dataset);
-            let level = match u.tier {
-                Tier::Data => Level::Critical,
-                Tier::Os => Level::Warning,
-            };
-            if let Some(alert) = self.protection.observe(&key, level, &u.describe(&|t| ago(now, t)), now) {
+            if let Some(alert) = self.protection.observe(&key, Level::Critical, &u.describe(&|t| ago(now, t)), now) {
                 alerts.push((u.host.clone(), u.dataset.clone(), alert));
             }
             keys.insert(key);
@@ -816,7 +820,7 @@ mod tests {
     #[test]
     fn six_new_unprotected_datasets_on_one_host_send_one_message() {
         let (mut m, dir) = guarding(EmailTiming::Immediate);
-        let names = ["tank/a", "tank/b", "tank/c", "tank/d", "tank/e", "zroot/var/log"];
+        let names = ["tank/a", "tank/b", "tank/c", "tank/d", "tank/e", "tank/f"];
         write_storage(&dir, &[("a", &names)], week());
         let hosts = [host("a")];
         let mut sink = FakeSink::new();
@@ -834,6 +838,57 @@ mod tests {
         assert_eq!(sink.sent.len(), 1, "the healthy host itself sends nothing");
         let events = EventLog::new(dir.join("health-events.jsonl")).read();
         assert_eq!(events.iter().filter(|e| e.kind == "alert" && e.host == "a").count(), 1, "one event for the message, not six: {events:?}");
+    }
+
+    #[test]
+    fn os_data_is_not_mailed_but_stays_in_the_report_list() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["zroot/var/log", "zroot/tmp"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        for i in 0..4 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert!(protection_mail(&sink).is_empty(), "{:?}", sink.sent);
+        assert_eq!(m.unprotected.len(), 2, "still judged, for the report");
+
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/photos", "zroot/var/log"])], week());
+        let mut sink = FakeSink::new();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        let mail = protection_mail(&sink);
+        assert_eq!(mail.len(), 1);
+        assert_eq!(mail[0].subject, "[zfsctl] a: 1 dataset not protected");
+        assert!(!mail[0].body.contains("zroot/var/log"), "{}", mail[0].body);
+    }
+
+    #[test]
+    fn protection_reminders_are_at_most_daily() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        assert_eq!(m.settings().remind, Some(Duration::from_secs(6 * 3600)), "the host reminders stay at six hours");
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        let mut at = |min: i64, m: &mut Monitor, sink: &mut FakeSink| m.observe(t(min), local(min % 1440), &hosts, &[probed_ok("a")], &[], &[], sink);
+        at(0, &mut m, &mut sink);
+        at(5, &mut m, &mut sink);
+        assert_eq!(protection_mail(&sink).len(), 1);
+        for h in [7, 13, 19, 23] {
+            at(h * 60, &mut m, &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1, "no six-hourly reminder: {:?}", sink.sent);
+        at(24 * 60 + 10, &mut m, &mut sink);
+        let mail = protection_mail(&sink);
+        assert_eq!(mail.len(), 2);
+        assert!(mail[1].subject.starts_with("[zfsctl] a: 1 dataset still not protected"), "{}", mail[1].subject);
+        // A longer configured interval is kept.
+        let mut s = settings_with_report("off");
+        s.remind = Some(Duration::from_secs(48 * 3600));
+        m.set_settings(s);
+        at(49 * 60, &mut m, &mut sink);
+        assert_eq!(protection_mail(&sink).len(), 2, "48 h asked: no reminder after 24 h");
     }
 
     #[test]

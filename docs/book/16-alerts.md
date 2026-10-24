@@ -20,7 +20,7 @@ Failed scheduled jobs also reach you, through the same channels.
 
 ### Unprotected data
 
-The monitor also judges every dataset on every host: is it protected, that is, covered by current snapshot and copy jobs (chapter 6 explains the rules and the three levels)? When a dataset becomes unprotected you get one email **per host**, listing every new dataset (a new pool with six datasets gives one email, not six), and when it is protected again a recovery email. A reminder follows the usual schedule. A daemon restart sends the alerts again for datasets that are still unprotected, again one email per host. The daily report has a section for it:
+The monitor also judges every dataset on every host: is it protected, that is, covered by current snapshot and copy jobs (chapter 6 explains the rules and the three levels)? When a dataset becomes unprotected you get one email **per host**, listing every new dataset (a new pool with six datasets gives one email, not six), and when it is protected again a recovery email. These emails are about your data only: the operating system's datasets (OS data) stay on the Dashboard and in the daily report, and get no email of their own. A reminder comes at most once a day (the larger of the Remind every setting and 24 hours), since the daily report lists them anyway. A daemon restart sends the alerts again for datasets that are still unprotected, again one email per host. The daily report has a section for it:
 
 ```text
 UNPROTECTED DATA
