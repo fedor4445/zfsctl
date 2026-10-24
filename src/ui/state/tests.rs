@@ -8376,6 +8376,35 @@ fn up_down_and_enter_on_the_dashboard_only_navigate() {
 }
 
 #[test]
+fn enter_on_a_protection_line_opens_the_list_of_unprotected_datasets_and_stays_on_the_dashboard() {
+    let (mut app, _dir) = dash_app();
+    app.jobs_view.loaded = true;
+    app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now() - chrono::Duration::days(1), last_tick: chrono::Utc::now() });
+    app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
+    let created = Some((chrono::Utc::now() - chrono::Duration::days(7)).timestamp());
+    let seen = ["tank/docs", "tank/photos"].iter().map(|n| crate::daemon::storage_check::SeenDataset { name: (*n).into(), volume: false, created }).collect();
+    let entry = crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+    app.storage_check.hosts.insert("local".into(), entry);
+    let items = app.dashboard().attention;
+    assert_eq!(items.iter().filter(|i| i.what.contains("no snapshots")).count(), 2, "{items:?}");
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::Down);
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Show list"), "the hint says what Enter does here");
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Dashboard, "the list opens over the Dashboard");
+    match &app.modal {
+        Some(Modal::Info { title, body }) => {
+            assert_eq!(title, "Unprotected data");
+            assert!(body.contains("tank/docs") && body.contains("tank/photos"), "{body}");
+        }
+        other => panic!("expected the list, got {other:?}"),
+    }
+    assert_eq!(app.info_scroll, 4, "the second line was selected: its row is the second of the list");
+    app.handle_modal_key(KeyCode::Esc);
+    assert!(app.modal.is_none());
+}
+
+#[test]
 fn enter_on_a_host_line_selects_that_host_in_hosts() {
     let (mut app, _dir) = dash_app();
     app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(95)), ..HostProbeState::default() });

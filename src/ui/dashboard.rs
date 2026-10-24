@@ -1,6 +1,7 @@
 //! The Dashboard's rules: facts the app already holds go in, rows and levels come out. Nothing here draws, reads a file or
 //! runs a command, so every rule and every boundary is a plain unit test.
 
+use std::fmt::Write as _;
 use crate::config::Thresholds;
 use crate::daemon::history::RunResult;
 use crate::jobs;
@@ -307,6 +308,10 @@ pub struct Item {
 pub struct Dashboard {
     pub verdict: Line,
     pub attention: Vec<Item>,
+    /// Every unprotected dataset as its own line, whatever `[protection] dashboard` shows (the pop-up lists these).
+    pub unprotected: Vec<Item>,
+    /// The one line that stands for them all (`dashboard = "summary"`), or `None` in the list view.
+    pub protection_summary: Option<Item>,
     pub hosts: Vec<HostRow>,
     pub daemon: Line,
     pub jobs: Line,
@@ -552,6 +557,27 @@ fn protection_summary(lines: &[Item]) -> Option<Item> {
     Some(Item { level: if data > 0 { Level::Issue } else { Level::Watch }, subject: "protection".to_string(), what, goto: Section::Jobs, target: None })
 }
 
+/// The title of the pop-up that lists the unprotected datasets.
+pub const PROTECTION_POPUP_TITLE: &str = "Unprotected data";
+
+impl Dashboard {
+    /// The pop-up for a protection line: every unprotected dataset (your data first) and the row to scroll to, which is the
+    /// line's own row, or the top for the summary line. `None` for any other line.
+    pub fn protection_popup(&self, item: &Item) -> Option<(String, u16)> {
+        let scroll = if self.protection_summary.as_ref() == Some(item) { 0 } else { PROTECTION_POPUP_HEAD + self.unprotected.iter().position(|u| u == item)? };
+        let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
+        let width = self.unprotected.iter().map(|u| u.subject.chars().count()).max().unwrap_or(0);
+        let mut body = format!("{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine.\n", if self.unprotected.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", self.unprotected.len()) });
+        for u in &self.unprotected {
+            let _ = write!(body, "\n{:<5}  {:<width$}  {}", if u.level == Level::Issue { "issue" } else { "watch" }, u.subject, u.what);
+        }
+        Some((body, u16::try_from(scroll).unwrap_or(u16::MAX)))
+    }
+}
+
+/// Rows above the first dataset in the pop-up: the count, the definition and a blank.
+const PROTECTION_POPUP_HEAD: usize = 3;
+
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
     let since = marker.since.with_timezone(&chrono::Local).format("%H:%M");
@@ -602,13 +628,17 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs, target: Some(job.id.clone()) });
     }
     let mut protection = Vec::new();
+    let mut unprotected = Vec::new();
+    let mut summary = None;
     if daemon.level == Level::Fine {
         for late in crate::ui::overdue::overdue(inputs.jobs, now) {
             attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
         }
         protection = protection_items(inputs);
+        unprotected.clone_from(&protection);
         if inputs.protection.view == crate::config::ProtectionView::Summary {
-            protection = protection_summary(&protection).into_iter().collect();
+            summary = protection_summary(&protection);
+            protection = summary.iter().cloned().collect();
         }
     }
     for row in &inputs.cloud_rows {
@@ -662,7 +692,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, unprotected, protection_summary: summary, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 
@@ -1404,6 +1434,36 @@ mod tests {
         fx.protection.view = crate::config::ProtectionView::Summary;
         with_datasets(&mut fx, &[("local", &["tank/photos"])]);
         assert!(fx.build(vec![fine_host("local", &probe, &r, &b)]).attention.is_empty());
+    }
+
+    #[test]
+    fn the_popup_lists_every_unprotected_dataset_and_a_line_scrolls_to_its_own_row() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"]), ("nas", &["tank/media"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let (probe, probe2) = (reached(vec![]), reached(vec![]));
+        let hosts = || vec![fine_host("local", &probe, &r, &b), fine_host("nas", &probe2, &r, &b)];
+        let d = fx.build(hosts());
+        assert!(d.protection_summary.is_none());
+        let line = |name: &str| d.attention.iter().find(|i| i.subject.ends_with(name)).unwrap().clone();
+        let (body, scroll) = d.protection_popup(&line("tank/photos")).expect("a protection line has a popup");
+        let rows: Vec<&str> = body.lines().collect();
+        assert_eq!(rows[0], "3 datasets are not protected (2 of your data)");
+        assert!(rows[1].starts_with("Protected means snapshots plus a copy on another machine"), "{}", rows[1]);
+        assert_eq!(rows[2], "");
+        assert!(rows[3].starts_with("issue") && rows[3].contains("tank/photos") && rows[3].ends_with("no snapshots; no copy on another machine"), "data first: {}", rows[3]);
+        assert!(rows[4].starts_with("issue") && rows[4].contains("nas:tank/media"), "{}", rows[4]);
+        assert!(rows[5].starts_with("watch") && rows[5].contains("zroot/var"), "{}", rows[5]);
+        assert_eq!(rows.len(), 6);
+        assert_eq!(usize::from(scroll), 3, "tank/photos is the first row of the list");
+        assert_eq!(d.protection_popup(&line("zroot/var")).unwrap().1, 5);
+        assert!(d.protection_popup(&Item { level: Level::Issue, subject: "daemon".into(), what: "x".into(), goto: Section::Jobs, target: None }).is_none());
+        fx.protection.view = crate::config::ProtectionView::Summary;
+        let d = fx.build(hosts());
+        let summary = d.protection_summary.clone().expect("summary mode keeps its line");
+        assert_eq!(d.attention, vec![summary.clone()]);
+        let (body2, scroll) = d.protection_popup(&summary).unwrap();
+        assert_eq!((body2, scroll), (body, 0), "the same list, from the top");
     }
 
     #[test]
