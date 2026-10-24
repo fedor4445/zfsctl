@@ -25,6 +25,7 @@ pub mod storage_check;
 pub mod smart_check;
 pub mod snapshot;
 pub mod transfer;
+pub mod workers;
 
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;

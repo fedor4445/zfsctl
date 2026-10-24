@@ -121,6 +121,9 @@ impl App {
     /// Hosts whose probe is due: never probed (host `i` becomes due `i` seconds after start, so the hosts are
     /// not all probed in the same second) or last finished at least the interval ago; never while one is running.
     pub fn due_host_probes(&self, now: Instant) -> Vec<usize> {
+        // A big fleet is asked a few hosts at a time: the places not taken by probes still running.
+        let running = self.host_probes.values().filter(|s| s.in_flight).count();
+        let room = crate::daemon::workers::PARALLEL.saturating_sub(running);
         self.hosts
             .iter()
             .enumerate()
@@ -135,6 +138,7 @@ impl App {
                 }
             })
             .map(|(i, _)| i)
+            .take(room)
             .collect()
     }
 

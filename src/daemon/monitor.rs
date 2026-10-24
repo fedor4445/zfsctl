@@ -24,6 +24,8 @@ pub const MAX_ATTEMPTS: u32 = 6;
 /// How long a host may take to answer a probe.
 pub const PROBE_DEADLINE: Duration = Duration::from_mins(1);
 
+pub use super::workers::PARALLEL as PROBE_PARALLEL;
+
 pub struct HostInfo {
     pub name: String,
     pub address: String,
@@ -90,19 +92,30 @@ pub type Busy = Arc<Mutex<HashSet<String>>>;
 /// (also as `None`) until it has. `detect` says whether to read a host's type (done once per host).
 pub fn probe_all(hosts: &[HostInfo], detect: &dyn Fn(&str) -> bool, deadline: Duration, busy: &Busy) -> Vec<Probed> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut asked = 0;
+    // The hosts to ask now, in order. A host whose last probe is still running is left out, and a host that waits its turn
+    // here is marked busy too, so the next pass does not queue it a second time.
+    let mut queue: std::collections::VecDeque<(String, Arc<dyn CommandRunner>, bool)> = std::collections::VecDeque::new();
     for host in hosts {
-        if !busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(host.name.clone()) {
-            continue;
+        if busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(host.name.clone()) {
+            queue.push_back((host.name.clone(), Arc::clone(&host.runner), detect(&host.name)));
         }
-        asked += 1;
-        let (tx, runner, name, kind, busy) = (tx.clone(), Arc::clone(&host.runner), host.name.clone(), detect(&host.name), Arc::clone(busy));
-        std::thread::spawn(move || {
-            let probe = probe_host_guarded(runner.as_ref(), kind);
-            busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&name);
-            let _ = tx.send((name, probe));
-        });
     }
+    let asked = queue.len();
+    // At most `PROBE_PARALLEL` run at once: a few hundred hosts must not open a few hundred ssh connections in the same second.
+    let tasks: Vec<super::workers::Task> = queue
+        .into_iter()
+        .map(|(name, runner, kind)| {
+            let (tx, busy) = (tx.clone(), Arc::clone(busy));
+            Box::new(move || {
+                let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_host_guarded(runner.as_ref(), kind)));
+                busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&name);
+                if let Ok(probe) = probe {
+                    let _ = tx.send((name, probe));
+                }
+            }) as super::workers::Task
+        })
+        .collect();
+    super::workers::run_limited(PROBE_PARALLEL, tasks);
     drop(tx);
     let started = Instant::now();
     let mut answers: HashMap<String, HostProbe> = HashMap::new();

@@ -358,6 +358,7 @@ fn in_flight() -> &'static std::sync::Mutex<std::collections::BTreeSet<String>> 
 pub fn run_pass(dir: &Path, hosts: &[(String, std::sync::Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: std::time::Duration) -> usize {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut asked = Vec::new();
+    let mut tasks: Vec<crate::daemon::workers::Task> = Vec::new();
     for (name, runner) in hosts {
         // Keyed by state directory too: the guard is per daemon, and tests (one process, many directories) must not meet.
         let key = format!("{}\0{name}", dir.display());
@@ -366,13 +367,15 @@ pub fn run_pass(dir: &Path, hosts: &[(String, std::sync::Arc<dyn CommandRunner>)
         }
         asked.push(name.clone());
         let (tx, name, runner) = (tx.clone(), name.clone(), std::sync::Arc::clone(runner));
-        std::thread::spawn(move || {
-            let outcome = check_host(runner.as_ref(), now);
+        tasks.push(Box::new(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_host(runner.as_ref(), now))).unwrap_or_else(|_| Outcome::Failed("the check stopped unexpectedly".to_string()));
             in_flight().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
             let _ = tx.send((name, outcome));
-        });
+        }));
     }
     drop(tx);
+    // A few hosts at a time: a big fleet is not read in one burst.
+    crate::daemon::workers::run_limited(crate::daemon::workers::PARALLEL, tasks);
     let end = std::time::Instant::now() + deadline;
     let path = dir.join(FILE);
     let merge = |name: &str, outcome: Outcome| {
