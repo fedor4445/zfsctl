@@ -480,7 +480,16 @@ pub enum Modal {
     /// and About. Dismissed by any key.
     Info { title: String, body: String },
     /// A list to choose a row from: Up and Down move, Enter acts on the row, Esc closes. `note` is shown above the rows.
-    Choose { title: String, note: String, rows: Vec<String>, selected: usize, then: ChooseThen },
+    Choose { title: String, note: String, rows: Vec<String>, selected: usize, then: ChooseThen, look: ChooseLook },
+}
+
+/// How a `Modal::Choose` is drawn beyond its rows: headings between groups of rows, and a colour per row.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChooseLook {
+    /// `(row, text)`: a heading line before that row (a blank line separates it from the group above).
+    pub heads: Vec<(usize, String)>,
+    /// One level per row (red, amber...), or empty for plain rows.
+    pub levels: Vec<crate::ui::dashboard::Level>,
 }
 
 /// What Enter does with the chosen row of a `Modal::Choose`.

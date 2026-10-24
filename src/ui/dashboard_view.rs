@@ -35,7 +35,7 @@ pub fn gauge(percent: u8, width: u16) -> String {
     format!("{}{}", "━".repeat(filled), "╌".repeat(width - filled))
 }
 
-fn level_style(theme: &Theme, level: Level) -> Style {
+pub fn level_style(theme: &Theme, level: Level) -> Style {
     match level {
         Level::Fine => theme.ok,
         Level::Watch => theme.warn,

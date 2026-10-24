@@ -2551,7 +2551,7 @@ impl App {
                 if let Some(gap) = item.as_ref().and_then(|item| dashboard.protection_fix(item)).cloned() {
                     self.fix_unprotected(&gap);
                 } else if let Some(popup) = item.as_ref().and_then(|item| dashboard.protection_popup(item)) {
-                    self.modal = Some(Modal::Choose { title: crate::ui::dashboard::PROTECTION_POPUP_TITLE.to_string(), note: popup.note, rows: popup.rows, selected: popup.selected, then: crate::ui::modal::ChooseThen::Unprotected(popup.gaps) });
+                    self.modal = Some(Modal::Choose { title: crate::ui::dashboard::PROTECTION_POPUP_TITLE.to_string(), note: popup.note, rows: popup.rows, selected: popup.selected, then: crate::ui::modal::ChooseThen::Unprotected(popup.gaps), look: popup.look });
                 } else if let Some(item) = item {
                     if let Some(position) = self.sections.iter().position(|s| *s == item.goto) {
                         self.selected_section = position;

@@ -1430,7 +1430,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
             }
         }
         Modal::Info { body, .. } => wrapped_line_count(body, inner_width),
-        Modal::Choose { note, rows, .. } => u16::try_from(note.lines().count() + 1 + rows.len()).unwrap_or(u16::MAX),
+        Modal::Choose { note, rows, look, .. } => u16::try_from(note.lines().count() + 1 + rows.len() + (look.heads.len() * 2).saturating_sub(1)).unwrap_or(u16::MAX),
     };
     // +2 for the top/bottom border; floor of 5 so a one-line prompt
     // doesn't render a cramped, near-invisible box.
@@ -1521,14 +1521,29 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
                 .block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
-        Modal::Choose { title, note, rows, selected, .. } => {
-            let head = note.lines().count() + 1;
+        Modal::Choose { title, note, rows, selected, look, .. } => {
             let mut lines: Vec<Line> = note.lines().map(|l| Line::raw(l.to_string())).collect();
             lines.push(Line::raw(""));
-            lines.extend(rows.iter().enumerate().map(|(i, row)| if i == *selected { Line::styled(row.clone(), theme.selected_row()) } else { Line::raw(row.clone()) }));
+            let mut chosen_at = lines.len();
+            for (i, row) in rows.iter().enumerate() {
+                if let Some((_, head)) = look.heads.iter().find(|(at, _)| *at == i) {
+                    if i > 0 {
+                        lines.push(Line::raw(""));
+                    }
+                    lines.push(Line::styled(head.clone(), theme.header()));
+                }
+                let base = look.levels.get(i).map_or_else(Style::default, |level| crate::ui::dashboard_view::level_style(theme, *level));
+                let text = if look.heads.is_empty() { row.clone() } else { format!("  {row}") };
+                if i == *selected {
+                    chosen_at = lines.len();
+                    lines.push(Line::styled(text, base.patch(theme.selected_row())));
+                } else {
+                    lines.push(Line::styled(text, base));
+                }
+            }
             // Keep the chosen row in view: scroll just far enough that it is the last line shown.
             let visible = usize::from(popup_area.height.saturating_sub(2));
-            let scroll = u16::try_from((head + selected + 1).saturating_sub(visible)).unwrap_or(u16::MAX);
+            let scroll = u16::try_from((chosen_at + 1).saturating_sub(visible)).unwrap_or(u16::MAX);
             let p = Paragraph::new(lines).scroll((scroll, 0)).block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
@@ -3326,7 +3341,7 @@ mod tests {
     fn a_choose_list_scrolls_to_keep_the_chosen_row_on_screen_and_marks_it() {
         let mut app = App::new(vec!["local".to_string()]);
         let rows: Vec<String> = (0..40).map(|i| format!("dataset-{i:02} lacks something")).collect();
-        app.modal = Some(Modal::Choose { title: "Unprotected data".into(), note: "40 datasets\nsecond line".into(), rows, selected: 35, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() } });
+        app.modal = Some(Modal::Choose { title: "Unprotected data".into(), note: "40 datasets\nsecond line".into(), rows, selected: 35, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() }, look: crate::ui::modal::ChooseLook::default() });
         let buf = render_buffer(&mut app, 100, 20);
         let text: String = (0..20).map(|y| (0..100).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
         assert!(text.contains("dataset-35") && !text.contains("dataset-00"), "the chosen row is shown, the top is scrolled off:\n{text}");
@@ -3340,6 +3355,24 @@ mod tests {
         let (cx, cy) = find("dataset-35");
         let (ox, oy) = find("dataset-34");
         assert!(buf[(cx, cy)].style() != buf[(ox, oy)].style(), "the chosen row is drawn differently from its neighbour");
+    }
+
+    #[test]
+    fn a_choose_list_draws_host_headings_in_the_header_style_and_rows_in_their_level_colour() {
+        use crate::ui::dashboard::Level;
+        let mut app = App::new(vec!["local".to_string()]);
+        let look = crate::ui::modal::ChooseLook { heads: vec![(0, "alphahost  (2 datasets)".into()), (2, "betahost  (1 dataset)".into())], levels: vec![Level::Issue, Level::Watch, Level::Issue] };
+        let rows = vec!["issue  tank/one  no snapshots".to_string(), "watch  zroot/var  no copy".to_string(), "issue  tank/two  no snapshots".to_string()];
+        app.modal = Some(Modal::Choose { title: "Unprotected data".into(), note: "3 datasets".into(), rows, selected: 2, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() }, look });
+        let buf = render_buffer(&mut app, 100, 24);
+        let header = app.theme.header();
+        assert_eq!(style_of(&buf, 100, 24, "alphahost"), (header.fg.unwrap(), true));
+        assert_eq!(style_of(&buf, 100, 24, "betahost"), (header.fg.unwrap(), true));
+        assert_eq!(style_of(&buf, 100, 24, "tank/one").0, app.theme.err.fg.unwrap(), "a red row");
+        assert_eq!(style_of(&buf, 100, 24, "zroot/var").0, app.theme.warn.fg.unwrap(), "an amber row");
+        let lines: Vec<String> = (0..24u16).map(|y| (0..100u16).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+        let at = |w: &str| lines.iter().position(|l| l.contains(w)).unwrap();
+        assert!(at("betahost") > at("zroot/var") + 1, "a blank line before the next host: {lines:#?}");
     }
 
     #[test]

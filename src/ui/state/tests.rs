@@ -8432,7 +8432,7 @@ fn unprotected(snapshots: Option<crate::daemon::protection::Gap>, copies: Option
 }
 
 fn list_of(gaps: Vec<crate::daemon::protection::Unprotected>) -> Modal {
-    Modal::Choose { title: "Unprotected data".into(), note: "n".into(), rows: gaps.iter().map(|g| g.dataset.clone()).collect(), selected: 0, then: crate::ui::modal::ChooseThen::Unprotected(gaps) }
+    Modal::Choose { title: "Unprotected data".into(), note: "n".into(), rows: gaps.iter().map(|g| g.dataset.clone()).collect(), selected: 0, then: crate::ui::modal::ChooseThen::Unprotected(gaps), look: crate::ui::modal::ChooseLook::default() }
 }
 
 fn field(modal: Option<&Modal>, n: usize) -> (String, String) {
