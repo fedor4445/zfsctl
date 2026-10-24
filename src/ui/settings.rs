@@ -41,6 +41,8 @@ pub struct SettingsView {
     /// Why nothing can be edited: `config.toml` could not be read or parsed.
     pub problem: Option<String>,
     pub rows: Vec<Row>,
+    /// Why `[protection]` is wrong (`resolve`'s words), shown under its group; the rows stay editable.
+    pub protection_problem: Option<String>,
 }
 
 const DISPLAY: &str = "Display";
@@ -58,7 +60,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
     use crate::config::{Config, Thresholds, DEFAULT_AUTO_REFRESH_SECS};
     let cfg = match Config::load(config_path) {
         Ok(c) => c,
-        Err(e) => return SettingsView { loaded: true, problem: Some(e.to_string()), rows: Vec::new() },
+        Err(e) => return SettingsView { loaded: true, problem: Some(e.to_string()), rows: Vec::new(), protection_problem: None },
     };
     let d = Thresholds::default();
     let t = cfg.dashboard.resolve();
@@ -105,7 +107,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
         let cap = cfg.cloud.caps.get(name);
         rows.push(row(CAPS, Setting::Cap(name.clone()), name, cap.cloned().unwrap_or_else(|| "(no cap)".to_string()), cap.is_none(), vec![cap.cloned().unwrap_or_default()]));
     }
-    SettingsView { loaded: true, problem: None, rows }
+    SettingsView { loaded: true, problem: None, rows, protection_problem: cfg.protection.resolve().err() }
 }
 
 /// `(label, current text)` for each field of the form of `row`; the text is empty where the setting is on its default.
@@ -427,6 +429,24 @@ mod tests {
         let v = view("[protection]\nlevel = \"careful\"\nrecent = \"strict\"\n", &[], false);
         assert_eq!(row(&v, "Level").value, "careful");
         assert!(!row(&v, "How recent (strict, normal, relaxed)").is_default);
+    }
+
+    #[test]
+    fn a_wrong_protection_value_is_shown_as_written_with_the_problem() {
+        let v = view("[protection]\nlevel = \"Careful\"\n", &[], false);
+        assert_eq!(v.protection_problem.as_deref(), Some("[protection] level must be basic, careful or custom"));
+        assert!(v.problem.is_none(), "the other settings stay editable");
+        let level = row(&v, "Level");
+        assert_eq!((level.value.as_str(), level.is_default), ("Careful", false));
+        let v = view("[protection]\nemail = \"of\"\n", &[], false);
+        assert_eq!(v.protection_problem.as_deref(), Some("[protection] email must be immediate, report or off"));
+        assert_eq!(row(&v, "Email (immediate, report, off)").value, "of");
+        let v = view("[protection]\nlevel = \"custom\"\ncopies = \"2\"\n", &[], false);
+        assert_eq!(v.protection_problem.as_deref(), Some("[protection] copies must be 1, 2 or 3"));
+        assert_eq!(row(&v, "Copies on other machines (1 to 3)").value, "2", "a string shown as its text");
+        assert!(view("[protection]\nlevel = \"careful\"\n", &[], false).protection_problem.is_none());
+        // A wrong-case Custom still shows the two rows it is about.
+        assert!(view("[protection]\nlevel = \"Custom\"\n", &[], false).rows.iter().any(|r| r.label.starts_with("Copies")));
     }
 
     #[test]

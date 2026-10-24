@@ -1090,6 +1090,9 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         if *g != group {
             group = g;
             title(&mut lines, g);
+            if let (Setting::ProtLevel, Some(problem)) = (setting, &v.protection_problem) {
+                lines.push(Line::styled(truncate_with_ellipsis(&format!("  {}", crate::config::protection_problem_line(problem)), width), theme.err));
+            }
         }
         let label = if matches!(setting, Setting::Cap(_)) { format!("Cap of {label}") } else { label.clone() };
         let text = format!("  {label:<24} {value}");
@@ -3280,6 +3283,16 @@ mod tests {
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("config.toml") && text.contains("by hand"), "{text}");
         assert!(!text.contains("Memory warn"), "{text}");
+    }
+
+    #[test]
+    fn a_wrong_protection_value_is_shown_in_red_under_its_group() {
+        let (mut app, _dir) = settings_render_app("[protection]\nemail = \"of\"\n");
+        let text = render(&mut app, 140, 40).join("\n");
+        assert!(text.contains("[protection]: email must be immediate, report or off; judging at Basic"), "{text}");
+        assert!(text.contains("Memory warn"), "the rest is still shown: {text}");
+        let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s} in {text}"));
+        assert!(at("Data protection") < at("judging at Basic") && at("judging at Basic") < at("Level"), "{text}");
     }
 
     #[test]

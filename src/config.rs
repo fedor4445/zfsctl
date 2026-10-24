@@ -164,6 +164,19 @@ impl ProtectionConfig {
         };
         Ok(ProtectionSettings { copies, online, tolerance, email })
     }
+
+    /// The settings to judge with on a screen: `resolve`, or Basic's defaults with the problem in words.
+    pub fn resolve_or_basic(&self) -> (ProtectionSettings, Option<String>) {
+        match self.resolve() {
+            Ok(settings) => (settings, None),
+            Err(problem) => (ProtectionSettings::default(), Some(problem)),
+        }
+    }
+}
+
+/// How a screen states a wrong `[protection]`: `[protection]: email must be immediate, report or off; judging at Basic`.
+pub fn protection_problem_line(problem: &str) -> String {
+    format!("[protection]: {}; judging at Basic", problem.strip_prefix("[protection] ").unwrap_or(problem))
 }
 
 /// When the Dashboard turns a reading yellow (watch) and red (issue) (`[dashboard]`). Unset keys take the defaults of
@@ -1141,6 +1154,17 @@ mod tests {
         assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, recent, email)");
         assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate });
         assert_eq!(resolved("[protection]\nlevel = \"careful\"\ncopies = \"x\"\n").unwrap().copies, 3, "copies only counts under custom");
+    }
+
+    #[test]
+    fn resolve_or_basic_gives_the_defaults_and_the_problem_in_words() {
+        let ok = prot(Some("careful"), None, None, None, Some("report")).resolve_or_basic();
+        assert_eq!((ok.0.copies, ok.0.email, ok.1), (3, EmailTiming::Report, None));
+        let (s, problem) = prot(Some("Careful"), None, None, None, None).resolve_or_basic();
+        assert_eq!((s, problem.as_deref()), (ProtectionSettings::default(), Some("[protection] level must be basic, careful or custom")));
+        let (s, problem) = prot(None, None, None, None, Some("of")).resolve_or_basic();
+        assert_eq!((s, problem.as_deref()), (ProtectionSettings::default(), Some("[protection] email must be immediate, report or off")));
+        assert_eq!(protection_problem_line("[protection] email must be immediate, report or off"), "[protection]: email must be immediate, report or off; judging at Basic");
     }
 
     #[test]

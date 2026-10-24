@@ -381,6 +381,8 @@ pub struct App {
     pub dashboard_thresholds: crate::config::Thresholds,
     /// `[protection]` (an unreadable or invalid one means the defaults; the daemon's check reports the problem).
     pub dashboard_protection: crate::config::ProtectionSettings,
+    /// Why `[protection]` is wrong, when it is (the Dashboard then judges at Basic and says so).
+    pub dashboard_protection_problem: Option<String>,
     /// The selected line of the Dashboard's Needs attention list.
     pub dashboard_table: TableState,
     pub pending_cloud: Vec<PendingCloud>,
@@ -620,6 +622,7 @@ impl App {
             cloud_caps: HashMap::new(),
             dashboard_thresholds: crate::config::Thresholds::default(),
             dashboard_protection: crate::config::ProtectionSettings::default(),
+            dashboard_protection_problem: None,
             dashboard_table: TableState::default(),
             pending_cloud: Vec::new(),
             changes_view: None,
@@ -1182,7 +1185,7 @@ impl App {
     pub fn refresh_dashboard(&mut self) {
         let config = crate::config::Config::load(&self.config_path);
         self.dashboard_thresholds = config.as_ref().map(|c| c.dashboard.resolve()).unwrap_or_default();
-        self.dashboard_protection = config.ok().and_then(|c| c.protection.resolve().ok()).unwrap_or_default();
+        (self.dashboard_protection, self.dashboard_protection_problem) = config.map(|c| c.protection.resolve_or_basic()).unwrap_or_default();
         self.reload_check_files();
         self.refresh_alerts();
         self.refresh_cloud();
@@ -1217,6 +1220,7 @@ impl App {
             alerts: &self.alerts_view,
             thresholds: &self.dashboard_thresholds,
             protection: &self.dashboard_protection,
+            protection_problem: self.dashboard_protection_problem.as_deref(),
             smart: &self.smart,
             shares: &self.shares_check,
             storage: &self.storage_check,
@@ -2903,7 +2907,7 @@ impl App {
         }
         self.auto_refresh_interval = config.ui.auto_refresh_interval();
         self.dashboard_thresholds = config.dashboard.resolve();
-        self.dashboard_protection = config.protection.resolve().unwrap_or_default();
+        (self.dashboard_protection, self.dashboard_protection_problem) = config.protection.resolve_or_basic();
         self.reload_cloud_caps();
     }
 

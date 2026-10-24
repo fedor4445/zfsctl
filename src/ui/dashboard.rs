@@ -331,6 +331,8 @@ pub struct Inputs<'a> {
     pub thresholds: &'a Thresholds,
     /// How well protected a dataset must be (`[protection]`).
     pub protection: &'a crate::config::ProtectionSettings,
+    /// Why `[protection]` is wrong (then `protection` is Basic's defaults), for a line of its own.
+    pub protection_problem: Option<&'a str>,
     /// What the daemon's daily `smartctl` check found (`smart.json`).
     pub smart: &'a crate::daemon::smart_check::SmartFile,
     /// What the daily check found about file sharing (`shares.json`).
@@ -604,6 +606,9 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     }
     if let Some(problem) = &inputs.alerts.problem {
         attention.push(Item { level: Level::Watch, subject: "alerts".to_string(), what: problem.clone(), goto: Section::Alerts, target: None });
+    }
+    if let Some(problem) = inputs.protection_problem {
+        attention.push(Item { level: Level::Watch, subject: "config.toml".to_string(), what: crate::config::protection_problem_line(problem), goto: Section::Settings, target: None });
     }
     attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
 
@@ -919,6 +924,7 @@ mod tests {
         caps: crate::ui::cloud::Caps,
         thresholds: Thresholds,
         protection: crate::config::ProtectionSettings,
+        protection_problem: Option<String>,
         smart: crate::daemon::smart_check::SmartFile,
         shares: crate::daemon::shares_check::SharesFile,
         storage: crate::daemon::storage_check::StorageFile,
@@ -927,11 +933,11 @@ mod tests {
 
     impl Fixture {
         fn new(view: JobsView) -> Fixture {
-            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), protection: crate::config::ProtectionSettings::default(), smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), protection: crate::config::ProtectionSettings::default(), protection_problem: None, smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
         }
 
         fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, protection: &self.protection, smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, protection: &self.protection, protection_problem: self.protection_problem.as_deref(), smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
         }
     }
 
@@ -1519,6 +1525,21 @@ mod tests {
         let bad = off.build(vec![]).alerts;
         assert_eq!(bad.level, Level::Watch);
         assert!(bad.text.contains("check_interval_minutes"), "{}", bad.text);
+    }
+
+    #[test]
+    fn a_wrong_protection_section_is_a_watch_line_naming_config_toml() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        assert!(fx.build(vec![]).attention.iter().all(|i| i.subject != "config.toml"));
+        fx.protection_problem = Some("[protection] level must be basic, careful or custom".into());
+        let d = fx.build(vec![]);
+        let item = d.attention.iter().find(|i| i.subject == "config.toml").expect("a line for the wrong section");
+        assert_eq!((item.level, item.what.as_str(), item.goto), (Level::Watch, "[protection]: level must be basic, careful or custom; judging at Basic", Section::Settings));
+        assert_eq!(d.verdict.text, "1 to watch", "the header counts it");
+        // Also while the daemon is down (it is about the file, not the judging).
+        let mut down = Fixture::new(view(vec![], &[], None));
+        down.protection_problem = fx.protection_problem.clone();
+        assert!(down.build(vec![]).attention.iter().any(|i| i.subject == "config.toml"));
     }
 
     #[test]

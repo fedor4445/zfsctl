@@ -78,7 +78,7 @@ When the Dashboard turns a reading yellow ("to watch") and red ("issue"). All ke
 
 ### `[protection]`
 
-What counts as a protected dataset. All keys are optional, and the words are lower case. A wrong value, including one of the wrong type (`copies = "2"`, `copies = 300`, `level = 5`), never stops the daemon or the rest of the file from loading: zfsctl names the key and the values it takes (`[protection] copies must be 1, 2 or 3`) in the daemon's log (`config.toml [protection] problem ...`); fix the file.
+What counts as a protected dataset. All keys are optional, and the words are lower case. A wrong value, including one of the wrong type (`copies = "2"`, `copies = 300`, `level = 5`), never stops the daemon or the rest of the file from loading: zfsctl names the key and the values it takes (`[protection] copies must be 1, 2 or 3`) in the daemon's log (`config.toml [protection] problem ...`), on the Settings screen under Data protection, and as a yellow `config.toml` line in the Dashboard's Needs attention (`[protection]: email must be immediate, report or off; judging at Basic`). While it is wrong, the Dashboard and the `zfsctl report` preview judge at Basic; the running daemon keeps the settings it had before the change (it uses Basic only when it starts with a wrong section). Fix the file, or the row on the Settings screen.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

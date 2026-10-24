@@ -77,10 +77,14 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
     let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
     let local = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
     // The same judgment the daemon makes; the alert tracker lives only in the daemon, so the preview has no "(for 3d)".
-    let settings = config.protection.resolve().unwrap_or_default();
+    let (settings, problem) = config.protection.resolve_or_basic();
     let protection = (settings.email != EmailTiming::Off).then(|| judge_reachable(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), &probed, &rows, &jobs, &runs, &settings, now).section(&|_| None, now));
     let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::check_lines(state_dir), protection.as_ref());
-    format!("Subject: {}\n\n{}", msg.subject, msg.body)
+    let mut text = format!("Subject: {}\n\n{}", msg.subject, msg.body);
+    if let Some(problem) = problem {
+        let _ = writeln!(text, "\nNote: config.toml {}", crate::config::protection_problem_line(&problem));
+    }
+    text
 }
 
 pub fn report_command(config: &Config, state_dir: &Path) -> Result<i32> {
@@ -167,6 +171,20 @@ mod tests {
         let text = report_text_with(&Config::default(), none.path(), now, &fake_probe);
         assert!(text.contains("UNPROTECTED DATA\n  No host was checked: local (no dataset list yet)\n"), "nothing judged is not all protected: {text}");
         assert!(!text.contains("All datasets are protected"), "{text}");
+    }
+
+    #[test]
+    fn the_report_preview_says_when_protection_is_wrong() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        with_unprotected_dataset(dir.path(), now);
+        let mut config = Config::default();
+        config.protection.email = Some("of".into());
+        let text = report_text_with(&config, dir.path(), now, &fake_probe);
+        assert!(text.starts_with("Subject: "), "{text}");
+        assert!(text.ends_with("\nNote: config.toml [protection]: email must be immediate, report or off; judging at Basic\n"), "{text}");
+        assert!(text.contains("UNPROTECTED DATA"), "judged at Basic: {text}");
+        assert!(!report_text_with(&Config::default(), dir.path(), now, &fake_probe).contains("Note: config.toml"));
     }
 
     #[test]
