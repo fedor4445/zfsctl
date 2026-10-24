@@ -3,7 +3,7 @@
 
 use super::deliver::Message;
 use super::health::{Alert, AlertKind, Tracker};
-use super::health_text::{ago, alert_message, protection_lines, protection_message, report_message, EventLog, HealthEvent, HostRow};
+use super::health_text::{ago, alert_message, dur, protection_lines, protection_message, report_message, EventLog, HealthEvent, HostRow, ProtectionSection};
 use super::history::{Run, RunResult};
 use super::protection::{judge, Tier, Unprotected, STALE_AFTER};
 use super::storage_check::{self, StorageFile};
@@ -31,20 +31,48 @@ pub struct HostInfo {
     pub runner: Arc<dyn CommandRunner>,
 }
 
+/// What `judge_reachable` found: the unprotected datasets of the judged hosts, those hosts' names, and each configured
+/// host that was not judged with why (`t2 (unreachable)`), in the order of the hosts.
+pub struct Judged<'a> {
+    pub found: Vec<Unprotected>,
+    pub known: HashSet<&'a str>,
+    pub unchecked: Vec<String>,
+}
+
+impl Judged<'_> {
+    /// The daily report's section; `bad_since` gives the `(for ...)` of a dataset key (`host\tdataset`) when known.
+    pub fn section(&self, bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, now: DateTime<Utc>) -> ProtectionSection {
+        ProtectionSection { lines: protection_lines(&self.found, bad_since, now), judged: self.known.len(), unchecked: self.unchecked.clone() }
+    }
+}
+
 /// The datasets judged unprotected, only for configured hosts that answered this pass and have a fresh dataset list
-/// (unknown is not a verdict), and those hosts' names. Shared by the monitor and the report preview so the two cannot
-/// drift apart.
-pub fn judge_reachable<'a>(file: &StorageFile, probed: &[Probed], rows: &'a [HostRow], jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> (Vec<Unprotected>, HashSet<&'a str>) {
+/// (unknown is not a verdict), those hosts' names, and the hosts left out with why. Shared by the monitor and the
+/// report preview so the two cannot drift apart.
+pub fn judge_reachable<'a>(file: &StorageFile, probed: &[Probed], rows: &'a [HostRow], jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Judged<'a> {
     let answered = |name: &str| probed.iter().any(|p| p.name == name && p.probe.is_some());
-    let known: HashSet<&str> = rows
-        .iter()
-        .filter(|r| !matches!(r.level, Level::Disconnected | Level::Probing) && answered(&r.name))
-        .filter(|r| file.hosts.get(&r.name).is_some_and(|h| now - h.checked_at <= STALE_AFTER))
-        .map(|r| r.name.as_str())
-        .collect();
+    let mut known: HashSet<&str> = HashSet::new();
+    let mut unchecked = Vec::new();
+    for r in rows {
+        let why = if matches!(r.level, Level::Disconnected | Level::Probing) || !answered(&r.name) {
+            Some("unreachable".to_string())
+        } else {
+            match file.hosts.get(&r.name) {
+                None => Some("no dataset list yet".to_string()),
+                Some(h) if now - h.checked_at > STALE_AFTER => Some(format!("no dataset list for {}", dur((now - h.checked_at).to_std().unwrap_or_default()))),
+                Some(_) => None,
+            }
+        };
+        match why {
+            Some(why) => unchecked.push(format!("{} ({why})", r.name)),
+            None => {
+                known.insert(r.name.as_str());
+            }
+        }
+    }
     let mut found = judge(file, jobs, runs, settings, now);
     found.retain(|u| known.contains(u.host.as_str()));
-    (found, known)
+    Judged { found, known, unchecked }
 }
 
 /// One host's probe; `None` means it did not answer before the deadline.
@@ -156,6 +184,9 @@ pub struct Monitor {
     protection_keys: HashSet<String>,
     /// The datasets judged unprotected on the last pass (configured, reachable hosts only), for the daily report.
     unprotected: Vec<Unprotected>,
+    /// How many configured hosts the last pass judged, and the ones it could not with why, for the daily report.
+    judged_hosts: usize,
+    unchecked: Vec<String>,
 }
 
 impl Monitor {
@@ -184,6 +215,8 @@ impl Monitor {
             protection,
             protection_keys: HashSet::new(),
             unprotected: Vec::new(),
+            judged_hosts: 0,
+            unchecked: Vec::new(),
         }
     }
 
@@ -280,8 +313,8 @@ impl Monitor {
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
             let since = self.last_report_at.unwrap_or(now - chrono::Duration::hours(24));
-            let protection = (self.protection_settings.email != EmailTiming::Off).then(|| protection_lines(&self.unprotected, &|k| self.protection.bad_since(k), now));
-            let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_deref());
+            let protection = (self.protection_settings.email != EmailTiming::Off).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.protection.bad_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone() });
+            let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_ref());
             if sink.send(&msg) {
                 self.last_report_at = Some(now);
                 self.mark_report_sent(local.date(), true);
@@ -314,7 +347,9 @@ impl Monitor {
             return;
         }
         let file = StorageFile::load(&self.state_dir.join(storage_check::FILE));
-        let (found, known) = judge_reachable(&file, probed, rows, jobs, runs, &self.protection_settings, now);
+        let Judged { found, known, unchecked } = judge_reachable(&file, probed, rows, jobs, runs, &self.protection_settings, now);
+        self.judged_hosts = known.len();
+        self.unchecked = unchecked;
         if self.protection_settings.email != EmailTiming::Immediate {
             self.unprotected = found;
             self.stop_protection_alerts();
@@ -932,6 +967,42 @@ mod tests {
         let mail = protection_mail(&sink);
         assert_eq!(mail.len(), 2);
         assert_eq!(mail[1].subject, "[zfsctl] a: 1 dataset not protected");
+    }
+
+    #[test]
+    fn judge_reachable_says_which_hosts_were_not_checked_and_why() {
+        let dir = tempfile::tempdir().unwrap();
+        write_storage(dir.path(), &[("a", &["tank/x"]), ("down", &["tank/y"]), ("old", &["tank/z"])], week());
+        let mut file = StorageFile::load(&dir.path().join(storage_check::FILE));
+        file.hosts.get_mut("old").unwrap().checked_at = t(0) - chrono::Duration::days(3);
+        let hosts = [host("a"), host("down"), host("new"), host("old")];
+        let probed = [probed_ok("a"), probed_bad("down"), probed_ok("new"), probed_ok("old")];
+        let rows = build_rows(&hosts, &probed, &HashMap::new(), &[], &[]);
+        let judged = judge_reachable(&file, &probed, &rows, &[], &[], &ProtectionSettings::default(), t(0));
+        assert_eq!(judged.found.iter().map(|u| (u.host.as_str(), u.dataset.as_str())).collect::<Vec<_>>(), [("a", "tank/x")]);
+        assert_eq!(judged.known, HashSet::from(["a"]));
+        assert_eq!(judged.unchecked, ["down (unreachable)", "new (no dataset list yet)", "old (no dataset list for 3d)"]);
+        let section = judged.section(&|_| None, t(0));
+        assert_eq!((section.judged, section.unchecked.len(), section.lines.len()), (1, 3, 1));
+        // A probe that never answered is unreachable too.
+        let probed = [probed_ok("a"), Probed { name: "down".into(), probe: None }, probed_ok("new"), probed_ok("old")];
+        let rows = build_rows(&hosts, &probed, &HashMap::new(), &[], &[]);
+        assert_eq!(judge_reachable(&file, &probed, &rows, &[], &[], &ProtectionSettings::default(), t(0)).unchecked[0], "down (unreachable)");
+    }
+
+    #[test]
+    fn the_daily_report_names_the_hosts_it_could_not_check() {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.clone(), t(0));
+        m.set_protection(ProtectionSettings { email: EmailTiming::Report, ..ProtectionSettings::default() });
+        let (jobs, runs) = protecting("a", &["tank/x"]);
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        let hosts = [host("a"), host("b")];
+        let mut sink = FakeSink::new();
+        m.observe(t(0), at_local(7, 1), &hosts, &[probed_ok("a"), probed_bad("b")], &jobs, &runs, &mut sink);
+        let report = sink.sent.iter().find(|s| s.kind == "health-report").unwrap();
+        assert!(report.body.contains("UNPROTECTED DATA\n  All datasets on 1 host are protected; not checked: b (unreachable)\n"), "{}", report.body);
+        assert!(!report.body.contains("All datasets are protected."), "{}", report.body);
     }
 
     #[test]

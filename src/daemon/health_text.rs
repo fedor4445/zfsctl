@@ -51,7 +51,7 @@ fn severity_word(severity: Severity) -> &'static str {
 }
 
 /// `6h 2m`, `1h 30m`, `45m`, `3d 2h`; a zero part is dropped.
-fn dur(d: Duration) -> String {
+pub fn dur(d: Duration) -> String {
     let minutes = d.as_secs() / 60;
     let (days, hours, mins) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
     match (days, hours, mins) {
@@ -268,8 +268,37 @@ pub fn protection_lines(items: &[Unprotected], bad_since: &dyn Fn(&str) -> Optio
         .collect()
 }
 
+/// The report's "Unprotected data" section: the lines, how many configured hosts were judged, and each one that was
+/// not, with why (`t2 (unreachable)`). "All datasets are protected." is said only when every host was judged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProtectionSection {
+    pub lines: Vec<String>,
+    pub judged: usize,
+    pub unchecked: Vec<String>,
+}
+
+impl ProtectionSection {
+    fn text(&self) -> Vec<String> {
+        let unchecked = self.unchecked.join(", ");
+        if !self.lines.is_empty() {
+            let mut out = cut_list(self.lines.clone());
+            if !self.unchecked.is_empty() {
+                out.push(format!("  Not checked: {unchecked}"));
+            }
+            return out;
+        }
+        let line = match (self.judged, self.unchecked.is_empty()) {
+            (0, true) => "No host was checked.".to_string(),
+            (0, false) => format!("No host was checked: {unchecked}"),
+            (_, true) => "All datasets are protected.".to_string(),
+            (n, false) => format!("All datasets on {n} host{} are protected; not checked: {unchecked}", if n == 1 { "" } else { "s" }),
+        };
+        vec![format!("  {line}")]
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String], unprotected: Option<&[String]>) -> Message {
+pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String], unprotected: Option<&ProtectionSection>) -> Message {
     let count = |want: &[Level]| rows.iter().filter(|r| want.contains(&r.level)).count();
     let (ok, warning, critical) = (count(&[Level::Ok]), count(&[Level::Warning]), count(&[Level::Critical, Level::Disconnected]));
     let mut parts = vec![format!("{ok} ok")];
@@ -306,15 +335,11 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
         }
     }
 
-    if let Some(lines) = unprotected {
+    if let Some(section) = unprotected {
         body.push_str("\nUNPROTECTED DATA\n");
-        if lines.is_empty() {
-            body.push_str("  All datasets are protected.\n");
-        } else {
-            for line in cut_list(lines.to_vec()) {
-                body.push_str(&line);
-                body.push('\n');
-            }
+        for line in section.text() {
+            body.push_str(&line);
+            body.push('\n');
         }
     }
 
@@ -492,17 +517,30 @@ mod tests {
         let lines = protection_lines(&items, &|k| (k == "fbsd16\ttank/photos").then_some(since), t(0));
         assert_eq!(lines[0], "  fbsd16:tank/photos (your data): no snapshots (for 3d)");
         assert_eq!(lines[1], "  fbsd16:zroot/var/log (OS data): no snapshots");
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&lines));
+        let section = ProtectionSection { lines: lines.clone(), judged: 1, unchecked: vec![] };
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&section));
         let (a, u) = (m.body.find("NEEDS ATTENTION").unwrap(), m.body.find("\nUNPROTECTED DATA\n").unwrap());
         assert!(a < u && u < m.body.find("EVENTS since").unwrap(), "{}", m.body);
         assert!(m.body.contains("  fbsd16:tank/photos (your data): no snapshots (for 3d)\n"), "{}", m.body);
         assert_eq!(m.subject, "[zfsctl] daily report: all 1 hosts ok");
     }
 
+    fn section_of(lines: &[&str], judged: usize, unchecked: &[&str]) -> String {
+        let section = ProtectionSection { lines: lines.iter().map(|l| (*l).to_string()).collect(), judged, unchecked: unchecked.iter().map(|u| (*u).to_string()).collect() };
+        let body = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&section)).body;
+        let start = body.find("UNPROTECTED DATA\n").unwrap();
+        body[start..body.find("\nEVENTS since").unwrap()].to_string()
+    }
+
     #[test]
-    fn the_report_says_all_protected_when_none() {
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&[]));
-        assert!(m.body.contains("UNPROTECTED DATA\n  All datasets are protected.\n"), "{}", m.body);
+    fn the_report_says_all_protected_only_when_every_host_was_judged() {
+        assert_eq!(section_of(&[], 2, &[]), "UNPROTECTED DATA\n  All datasets are protected.\n");
+        assert_eq!(section_of(&[], 0, &["t2 (unreachable)", "omnios (no dataset list yet)"]), "UNPROTECTED DATA\n  No host was checked: t2 (unreachable), omnios (no dataset list yet)\n");
+        assert_eq!(section_of(&[], 0, &[]), "UNPROTECTED DATA\n  No host was checked.\n");
+        assert_eq!(section_of(&[], 1, &["t2 (unreachable)"]), "UNPROTECTED DATA\n  All datasets on 1 host are protected; not checked: t2 (unreachable)\n");
+        assert_eq!(section_of(&[], 2, &["t2 (unreachable)", "omnios (no dataset list for 3d)"]), "UNPROTECTED DATA\n  All datasets on 2 hosts are protected; not checked: t2 (unreachable), omnios (no dataset list for 3d)\n");
+        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshots"], 1, &["t2 (unreachable)"]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshots\n  Not checked: t2 (unreachable)\n");
+        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshots"], 1, &[]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshots\n");
     }
 
     #[test]
