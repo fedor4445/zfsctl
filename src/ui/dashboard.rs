@@ -1147,7 +1147,7 @@ mod tests {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         fx.smart = smart_file(&[("h", 3, &[("ada4", Watch, "SSD wear 87%"), ("ada0", Watch, "pending sectors 8")])]);
         let pools = vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: "cache".into(), device: "ada4p1".into() }, DeviceRole { role: "log".into(), device: "gpt/slog0".into() }], ..PoolClasses::default() }];
-        let result = crate::daemon::storage_check::StorageResult { checked_at: now(), datasets: vec![], pools, zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+        let result = crate::daemon::storage_check::StorageResult { checked_at: now(), datasets: vec![], seen: vec![], pools, zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
         fx.storage.hosts.insert("h".into(), result);
         let items = disk_items(&fx, &["h"]);
         assert!(items[0].what.contains("ada4 (cache of tank) SSD wear 87%; ada0 pending sectors 8"), "the partition ada4p1 is the disk ada4, and a disk with no known role keeps its bare name: {}", items[0].what);
@@ -1203,7 +1203,7 @@ mod tests {
 
     fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
         use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
     }
 
     #[test]

@@ -331,7 +331,7 @@ mod tests {
         use crate::daemon::storage_check::{LimitedDataset, StorageFile, StorageResult};
         let mut file = StorageFile::default();
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
-        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         let lines = storage_lines(&file, (90, 98), 110, &[]);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/home 94% of its 100 quota (checked "), "{}", lines[0]);
@@ -343,7 +343,7 @@ mod tests {
         use crate::daemon::storage_check::{LockedDataset, StorageFile, StorageResult};
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
         let mut file = StorageFile::default();
-        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![], pools: vec![], zfs_version: None, locked: vec![LockedDataset { name: "tank/secure".into(), shared: true }], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![], seen: vec![], pools: vec![], zfs_version: None, locked: vec![LockedDataset { name: "tank/secure".into(), shared: true }], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         let lines = storage_lines(&file, (90, 98), 110, &[]);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/secure is locked (shared) (checked "), "{}", lines[0]);
@@ -403,7 +403,7 @@ mod tests {
         let mut smart = crate::daemon::smart_check::SmartFile::default();
         smart.hosts.insert("ub24".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("nvme0n1"), disk("sdb")], error: None });
         smart.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("ada4")], error: None });
-        let result = |device: &str, role: &str| StorageResult { checked_at: t(0), datasets: vec![], pools: vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: role.into(), device: device.into() }, DeviceRole { role: "cache".into(), device: "sdb1".into() }], ..PoolClasses::default() }], zfs_version: None, locked: vec![], integrity: Integrity::default(), integrity_stale: false, error: None };
+        let result = |device: &str, role: &str| StorageResult { checked_at: t(0), datasets: vec![], seen: vec![], pools: vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: role.into(), device: device.into() }, DeviceRole { role: "cache".into(), device: "sdb1".into() }], ..PoolClasses::default() }], zfs_version: None, locked: vec![], integrity: Integrity::default(), integrity_stale: false, error: None };
         let mut storage = StorageFile::default();
         storage.hosts.insert("ub24".into(), result("nvme0n1p1", "log"));
         storage.hosts.insert("fbsd16".into(), result("ada4p1", "cache"));
