@@ -1282,6 +1282,27 @@ mod tests {
     }
 
     #[test]
+    fn no_protection_lines_while_the_daemon_is_down_or_stale_or_a_host_is_unreachable() {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let named = |d: &Dashboard| d.attention.iter().filter(|i| i.what.contains("no snapshots")).count();
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        assert_eq!(named(&fx.build(vec![fine_host("local", &probe, &r, &b)])), 1, "control: a running daemon shows the line");
+        for heartbeat in [None, beat(600)] {
+            let mut down = Fixture::new(view(vec![], &[], heartbeat));
+            with_datasets(&mut down, &[("local", &["tank/photos"])]);
+            let d = down.build(vec![fine_host("local", &probe, &r, &b)]);
+            assert_ne!(d.daemon.level, Level::Fine);
+            assert_eq!(named(&d), 0, "{:?}", d.attention);
+        }
+        // A host that is listed but not reached says nothing.
+        let off = HostProbe::Disconnected;
+        let host = HostInput { name: "local", assessment: assess(Some(&off), false), probe: Some(&off), resources: None, utc_offset_secs: Some(0), os_name: None };
+        assert_eq!(named(&fx.build(vec![host])), 0);
+    }
+
+    #[test]
     fn the_verdict_counts_the_protection_lines() {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"])]);
