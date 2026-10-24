@@ -2543,7 +2543,7 @@ impl App {
                 let lines = self.dashboard().attention.len();
                 move_table_selection(&mut self.dashboard_table, lines, false);
             }
-            // Navigation only: the Dashboard shows, the section that owns the problem fixes.
+            // The Dashboard shows, the section that owns the problem fixes it; an unprotected-data line opens the form that makes the missing job.
             KeyCode::Enter if self.current_section() == Section::Dashboard => {
                 let dashboard = self.dashboard();
                 let item = self.dashboard_table.selected().and_then(|i| dashboard.attention.get(i).cloned());
@@ -3897,7 +3897,8 @@ Jobs
 
 Dashboard
   Up / Down        select a line of Needs attention
-  Enter            go to the section that owns that line (the Dashboard itself changes nothing)
+  Enter            go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job
+                   (the Dashboard itself changes nothing)
   r                reload the jobs, alerts, cloud list and [dashboard] settings
 
 Cloud
