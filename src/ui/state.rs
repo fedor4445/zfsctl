@@ -2597,7 +2597,7 @@ impl App {
             KeyCode::Char('s') if self.current_section() == Section::Cloud => self.request_cloud_sizes(),
             KeyCode::Char('n') if self.current_section() == Section::Cloud && self.modal.is_none() && self.picker.is_none() => {
                 let rows = crate::ui::cloud_guide::PROVIDERS.iter().map(|p| p.name.to_string()).collect();
-                let note = "Which provider do you want to use? Enter shows what to get and what to answer in rclone config.\nzfsctl never creates the remote or sees its keys.".to_string();
+                let note = "Pick a provider: Enter shows the steps.\nzfsctl never creates the remote or sees its keys.".to_string();
                 self.modal = Some(Modal::Choose { title: "Set up a cloud provider".to_string(), note, rows, selected: 0, then: crate::ui::modal::ChooseThen::Provider, look: crate::ui::modal::ChooseLook::default() });
             }
             KeyCode::F(5) if self.current_section() == Section::Cloud => self.request_cloud_check(),
