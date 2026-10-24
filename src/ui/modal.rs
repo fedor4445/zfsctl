@@ -479,6 +479,17 @@ pub enum Modal {
     /// A read-only overlay with no action to confirm or submit — Help
     /// and About. Dismissed by any key.
     Info { title: String, body: String },
+    /// A list to choose a row from: Up and Down move, Enter acts on the row, Esc closes. `note` is shown above the rows.
+    Choose { title: String, note: String, rows: Vec<String>, selected: usize, then: ChooseThen },
+}
+
+/// What Enter does with the chosen row of a `Modal::Choose`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChooseThen {
+    /// The rows are unprotected datasets (this list, same order): open the fix for the chosen one.
+    Unprotected(Vec<crate::daemon::protection::Unprotected>),
+    /// The rows are the kinds of copy (replication, backup, cloud mirror) for this dataset.
+    Copy { host: String, dataset: String },
 }
 
 #[cfg(test)]

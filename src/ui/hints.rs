@@ -78,6 +78,7 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
         Modal::Info { .. } => vec![h("↑/↓", "Scroll", 0), h("any key", "Close", 0)],
+        Modal::Choose { .. } => vec![h("↑/↓", "Move", 0), h("Enter", "Fix", 0), h("Esc", "Close", 0)],
         // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
         // it is only advertised once there is a selection for it to apply.
         Modal::Confirm { action, choice, .. } => match choice {

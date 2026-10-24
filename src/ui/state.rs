@@ -2547,10 +2547,9 @@ impl App {
             KeyCode::Enter if self.current_section() == Section::Dashboard => {
                 let dashboard = self.dashboard();
                 let item = self.dashboard_table.selected().and_then(|i| dashboard.attention.get(i).cloned());
-                // A protection line opens the list of unprotected datasets (Jobs shows none of them), scrolled to its row.
-                if let Some((body, scroll)) = item.as_ref().and_then(|item| dashboard.protection_popup(item)) {
-                    self.info_scroll = scroll;
-                    self.modal = Some(Modal::Info { title: crate::ui::dashboard::PROTECTION_POPUP_TITLE.to_string(), body });
+                // A protection line opens the list of unprotected datasets (Jobs shows none of them), on its row.
+                if let Some(popup) = item.as_ref().and_then(|item| dashboard.protection_popup(item)) {
+                    self.modal = Some(Modal::Choose { title: crate::ui::dashboard::PROTECTION_POPUP_TITLE.to_string(), note: popup.note, rows: popup.rows, selected: popup.selected, then: crate::ui::modal::ChooseThen::Unprotected(popup.gaps) });
                 } else if let Some(item) = item {
                     if let Some(position) = self.sections.iter().position(|s| *s == item.goto) {
                         self.selected_section = position;

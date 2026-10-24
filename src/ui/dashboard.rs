@@ -1,7 +1,6 @@
 //! The Dashboard's rules: facts the app already holds go in, rows and levels come out. Nothing here draws, reads a file or
 //! runs a command, so every rule and every boundary is a plain unit test.
 
-use std::fmt::Write as _;
 use crate::config::Thresholds;
 use crate::daemon::history::RunResult;
 use crate::jobs;
@@ -310,6 +309,8 @@ pub struct Dashboard {
     pub attention: Vec<Item>,
     /// Every unprotected dataset as its own line, whatever `[protection] dashboard` shows (the pop-up lists these).
     pub unprotected: Vec<Item>,
+    /// What each of `unprotected` lacks (the same order), for the pop-up's fixes.
+    pub gaps: Vec<crate::daemon::protection::Unprotected>,
     /// The one line that stands for them all (`dashboard = "summary"`), or `None` in the list view.
     pub protection_summary: Option<Item>,
     pub hosts: Vec<HostRow>,
@@ -530,18 +531,21 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
 
 /// One line per unprotected dataset of a reached host: red for the operator's data, amber for the operating system's.
 /// Always shown whatever the email timing is (that setting is about email only).
-fn protection_items(inputs: &Inputs) -> Vec<Item> {
+fn protection_items(inputs: &Inputs) -> Vec<(Item, crate::daemon::protection::Unprotected)> {
     use crate::daemon::protection::{judge, Tier};
     let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
     judge(inputs.storage, &inputs.jobs.jobs, &inputs.jobs.runs, inputs.protection, inputs.now)
         .into_iter()
         .filter(|u| reached(&u.host))
-        .map(|u| Item {
-            level: if u.tier == Tier::Data { Level::Issue } else { Level::Watch },
-            subject: if u.host == "local" { u.dataset.clone() } else { format!("{}:{}", u.host, u.dataset) },
-            what: u.describe(&|t| age_text(inputs.now, t)),
-            goto: Section::Jobs,
-            target: None,
+        .map(|u| {
+            let item = Item {
+                level: if u.tier == Tier::Data { Level::Issue } else { Level::Watch },
+                subject: if u.host == "local" { u.dataset.clone() } else { format!("{}:{}", u.host, u.dataset) },
+                what: u.describe(&|t| age_text(inputs.now, t)),
+                goto: Section::Jobs,
+                target: None,
+            };
+            (item, u)
         })
         .collect()
 }
@@ -560,23 +564,30 @@ fn protection_summary(lines: &[Item]) -> Option<Item> {
 /// The title of the pop-up that lists the unprotected datasets.
 pub const PROTECTION_POPUP_TITLE: &str = "Unprotected data";
 
-impl Dashboard {
-    /// The pop-up for a protection line: every unprotected dataset (your data first) and the row to scroll to, which is the
-    /// line's own row, or the top for the summary line. `None` for any other line.
-    pub fn protection_popup(&self, item: &Item) -> Option<(String, u16)> {
-        let scroll = if self.protection_summary.as_ref() == Some(item) { 0 } else { PROTECTION_POPUP_HEAD + self.unprotected.iter().position(|u| u == item)? };
-        let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
-        let width = self.unprotected.iter().map(|u| u.subject.chars().count()).max().unwrap_or(0);
-        let mut body = format!("{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine.\n", if self.unprotected.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", self.unprotected.len()) });
-        for u in &self.unprotected {
-            let _ = write!(body, "\n{:<5}  {:<width$}  {}", if u.level == Level::Issue { "issue" } else { "watch" }, u.subject, u.what);
-        }
-        Some((body, u16::try_from(scroll).unwrap_or(u16::MAX)))
-    }
+/// The pop-up behind a protection line: what to say above the list, one row per dataset (your data first), what each
+/// lacks (the same order) and the row the chosen line stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtectionPopup {
+    pub note: String,
+    pub rows: Vec<String>,
+    pub gaps: Vec<crate::daemon::protection::Unprotected>,
+    pub selected: usize,
 }
 
-/// Rows above the first dataset in the pop-up: the count, the definition and a blank.
-const PROTECTION_POPUP_HEAD: usize = 3;
+impl Dashboard {
+    /// The pop-up for a protection line, with its own row selected (the first for the summary line). `None` for any other line.
+    pub fn protection_popup(&self, item: &Item) -> Option<ProtectionPopup> {
+        let selected = if self.protection_summary.as_ref() == Some(item) { 0 } else { self.unprotected.iter().position(|u| u == item)? };
+        let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
+        let width = self.unprotected.iter().map(|u| u.subject.chars().count()).max().unwrap_or(0);
+        let note = format!(
+            "{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine. A new job counts once it has run.\nEnter fixes the selected one.",
+            if self.unprotected.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", self.unprotected.len()) }
+        );
+        let rows = self.unprotected.iter().map(|u| format!("{:<5}  {:<width$}  {}", if u.level == Level::Issue { "issue" } else { "watch" }, u.subject, u.what)).collect();
+        Some(ProtectionPopup { note, rows, gaps: self.gaps.clone(), selected })
+    }
+}
 
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
@@ -629,12 +640,15 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     }
     let mut protection = Vec::new();
     let mut unprotected = Vec::new();
+    let mut gaps = Vec::new();
     let mut summary = None;
     if daemon.level == Level::Fine {
         for late in crate::ui::overdue::overdue(inputs.jobs, now) {
             attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
         }
-        protection = protection_items(inputs);
+        let (items, found): (Vec<Item>, Vec<_>) = protection_items(inputs).into_iter().unzip();
+        protection = items;
+        gaps = found;
         unprotected.clone_from(&protection);
         if inputs.protection.view == crate::config::ProtectionView::Summary {
             summary = protection_summary(&protection);
@@ -692,7 +706,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, unprotected, protection_summary: summary, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, unprotected, gaps, protection_summary: summary, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 
@@ -1446,24 +1460,25 @@ mod tests {
         let d = fx.build(hosts());
         assert!(d.protection_summary.is_none());
         let line = |name: &str| d.attention.iter().find(|i| i.subject.ends_with(name)).unwrap().clone();
-        let (body, scroll) = d.protection_popup(&line("tank/photos")).expect("a protection line has a popup");
-        let rows: Vec<&str> = body.lines().collect();
-        assert_eq!(rows[0], "3 datasets are not protected (2 of your data)");
-        assert!(rows[1].starts_with("Protected means snapshots plus a copy on another machine"), "{}", rows[1]);
-        assert_eq!(rows[2], "");
-        assert!(rows[3].starts_with("issue") && rows[3].contains("tank/photos") && rows[3].ends_with("no snapshots; no copy on another machine"), "data first: {}", rows[3]);
-        assert!(rows[4].starts_with("issue") && rows[4].contains("nas:tank/media"), "{}", rows[4]);
-        assert!(rows[5].starts_with("watch") && rows[5].contains("zroot/var"), "{}", rows[5]);
-        assert_eq!(rows.len(), 6);
-        assert_eq!(usize::from(scroll), 3, "tank/photos is the first row of the list");
-        assert_eq!(d.protection_popup(&line("zroot/var")).unwrap().1, 5);
+        let popup = d.protection_popup(&line("tank/photos")).expect("a protection line has a popup");
+        let note: Vec<&str> = popup.note.lines().collect();
+        assert_eq!(note[0], "3 datasets are not protected (2 of your data)");
+        assert!(note[1].starts_with("Protected means snapshots plus a copy on another machine"), "{}", note[1]);
+        assert_eq!(note[2], "Enter fixes the selected one.");
+        assert_eq!(popup.rows.len(), 3);
+        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/photos") && popup.rows[0].ends_with("no snapshots; no copy on another machine"), "data first: {}", popup.rows[0]);
+        assert!(popup.rows[1].starts_with("issue") && popup.rows[1].contains("nas:tank/media"), "{}", popup.rows[1]);
+        assert!(popup.rows[2].starts_with("watch") && popup.rows[2].contains("zroot/var"), "{}", popup.rows[2]);
+        assert_eq!(popup.selected, 0, "tank/photos is the first row");
+        assert_eq!(popup.gaps.iter().map(|g| g.dataset.as_str()).collect::<Vec<_>>(), ["tank/photos", "tank/media", "zroot/var"], "what each row lacks, in the rows' order");
+        assert_eq!(d.protection_popup(&line("zroot/var")).unwrap().selected, 2);
         assert!(d.protection_popup(&Item { level: Level::Issue, subject: "daemon".into(), what: "x".into(), goto: Section::Jobs, target: None }).is_none());
         fx.protection.view = crate::config::ProtectionView::Summary;
         let d = fx.build(hosts());
         let summary = d.protection_summary.clone().expect("summary mode keeps its line");
         assert_eq!(d.attention, vec![summary.clone()]);
-        let (body2, scroll) = d.protection_popup(&summary).unwrap();
-        assert_eq!((body2, scroll), (body, 0), "the same list, from the top");
+        let from_summary = d.protection_popup(&summary).unwrap();
+        assert_eq!((from_summary.rows, from_summary.selected), (popup.rows, 0), "the same list, from the top");
     }
 
     #[test]

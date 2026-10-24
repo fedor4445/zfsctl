@@ -154,6 +154,30 @@ pub struct Unprotected {
     pub copies: Option<CopyGap>,
 }
 
+/// What to do about an unprotected dataset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fix {
+    /// No snapshot job covers it: make one.
+    NewSnapshotJob,
+    /// It needs another copy: ask which kind.
+    ChooseCopy,
+    /// A job that should be helping exists but is not (never ran, stopped, failing): look at it in Jobs.
+    GoToJob(String),
+}
+
+/// The fix for one dataset: the snapshot half first (nothing can be copied without snapshots), then the copies. A job
+/// that already covers the dataset is gone to, never made again; a copy that is merely too few asks for another.
+pub fn fix_for(gap: &Unprotected, jobs: &[Job]) -> Fix {
+    let first = |wanted: &dyn Fn(&Job) -> bool| jobs.iter().find(|j| covers(j, &gap.host, &gap.dataset) && wanted(j)).map(|j| j.id.clone());
+    if gap.snapshots.is_some() {
+        return first(&gives_snapshots).map_or(Fix::NewSnapshotJob, Fix::GoToJob);
+    }
+    match (&gap.copies, first(&|j| copy_of(j).is_some())) {
+        (Some(c), Some(id)) if c.have == 0 => Fix::GoToJob(id),
+        _ => Fix::ChooseCopy,
+    }
+}
+
 /// Every dataset of every host with a fresh list, past its grace, that lacks a current snapshot job or enough current
 /// copies on other machines; sorted data first, then by host and dataset.
 pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Vec<Unprotected> {
@@ -683,6 +707,43 @@ mod tests {
         assert_eq!(copy_of(&mirror), None, "a mirror of one folder");
         mirror.path = Some(String::new());
         assert!(copy_of(&mirror).is_some(), "an empty path is the whole dataset");
+    }
+
+    fn gap(snapshots: Option<Gap>, copies: Option<CopyGap>) -> Unprotected {
+        Unprotected { host: "local".into(), dataset: "tank/data".into(), tier: Tier::Data, snapshots, copies }
+    }
+
+    fn no_copy(worst: Gap) -> CopyGap {
+        CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, worst }
+    }
+
+    #[test]
+    fn the_fix_for_a_dataset_with_no_snapshot_job_is_a_new_snapshot_job_whatever_else_is_missing() {
+        let both = gap(Some(Gap::Missing), Some(no_copy(Gap::Missing)));
+        assert_eq!(fix_for(&both, &[]), Fix::NewSnapshotJob);
+        let other = vec![Job::test_snapshot("s", "tank/other", "auto", 24)];
+        assert_eq!(fix_for(&both, &other), Fix::NewSnapshotJob, "a job on another dataset does not cover this one");
+    }
+
+    #[test]
+    fn a_job_that_exists_is_gone_to_not_made_again() {
+        let jobs = vec![Job::test_snapshot("s", "tank/data", "auto", 24)];
+        assert_eq!(fix_for(&gap(Some(Gap::Missing), None), &jobs), Fix::GoToJob("s".into()), "it has not run yet");
+        assert_eq!(fix_for(&gap(Some(Gap::Failing), None), &jobs), Fix::GoToJob("s".into()));
+        let mut off = jobs.clone();
+        off[0].enabled = false;
+        assert_eq!(fix_for(&gap(Some(Gap::Missing), None), &off), Fix::NewSnapshotJob, "a disabled job gives nothing");
+        let copies = vec![Job::test_replicate("r", "tank/data", "auto", "nas", "tank/copy")];
+        assert_eq!(fix_for(&gap(None, Some(no_copy(Gap::Failing))), &copies), Fix::GoToJob("r".into()));
+        assert_eq!(fix_for(&gap(None, Some(no_copy(Gap::Missing))), &copies), Fix::GoToJob("r".into()), "never ran");
+    }
+
+    #[test]
+    fn a_dataset_that_needs_a_copy_is_asked_which_kind_unless_a_copy_job_is_already_its_problem() {
+        assert_eq!(fix_for(&gap(None, Some(no_copy(Gap::Missing))), &[]), Fix::ChooseCopy);
+        let some = Some(CopyGap { have: 1, need: 3, online_have: 0, online_need: 1, worst: Gap::Missing });
+        let copies = vec![Job::test_replicate("r", "tank/data", "auto", "nas", "tank/copy")];
+        assert_eq!(fix_for(&gap(None, some), &copies), Fix::ChooseCopy, "one copy is current: another is needed, not a repair");
     }
 
     #[test]
