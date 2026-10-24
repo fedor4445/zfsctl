@@ -181,14 +181,12 @@ mod tests {
             Change::set(&["protection", "online"], 1),
             Change::set(&["protection", "recent"], "strict"),
             Change::set(&["protection", "email"], "report"),
-            Change::set(&["protection", "dashboard"], "summary"),
         ];
         let new = apply(FILE, &all).unwrap();
         assert!(new.starts_with(FILE), "{new}");
         let settings = parsed(&new).protection.resolve().unwrap();
         assert_eq!((settings.copies, settings.online, settings.tolerance), (2, 1, 1));
         assert_eq!(settings.email, crate::config::EmailTiming::Report);
-        assert_eq!(settings.view, crate::config::ProtectionView::Summary);
         let back = apply(&new, &all.iter().map(|c| match c { Change::Set(p, _) => Change::Remove(p.clone()), c => c.clone() }).collect::<Vec<_>>()).unwrap();
         assert_eq!(back.trim_end(), FILE.trim_end(), "removing every key takes the table with it");
     }

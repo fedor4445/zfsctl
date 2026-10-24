@@ -4,8 +4,8 @@ use super::forms::{
     build_backup_job_action, build_bootenv_action, build_job_action, build_mirror_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
     build_create_encrypted, build_key_action, irreversible_prompt,
 };
-use super::{App, Instant, Modal, MutationCall, PendingAction};
-use crate::ui::modal::{FormField, FormKind};
+use super::{App, Instant, Modal, MutationCall, PaneFocus, PendingAction, Section};
+use crate::ui::modal::{ChooseThen, FormField, FormKind};
 use crate::ui::picker::build_picker_state;
 use crossterm::event::KeyCode;
 
@@ -39,6 +39,7 @@ impl App {
             Modal::ConfirmTyped { prompt, expected, input, action } => self.confirm_typed_key(key, prompt, expected, input, action),
             Modal::Form { title, fields, focused, description, kind } => self.form_key(key, FormParts { title, fields, focused, description, kind }),
             Modal::Info { title, body } => self.info_key(key, title, body),
+            Modal::Choose { title, note, rows, selected, then } => self.choose_key(key, title, note, rows, selected, then),
         }
     }
 
@@ -61,6 +62,70 @@ impl App {
         self.info_scroll = scroll.min(last);
         self.modal = Some(Modal::Info { title, body });
         None
+    }
+
+    /// A list to choose from: the arrows move, Esc closes, Enter acts on the row, and every other key does nothing.
+    fn choose_key(&mut self, key: KeyCode, title: String, note: String, rows: Vec<String>, selected: usize, then: ChooseThen) -> Option<PendingAction> {
+        const PAGE: usize = 10;
+        let last = rows.len().saturating_sub(1);
+        let selected = match key {
+            KeyCode::Esc => return None,
+            KeyCode::Enter => {
+                self.choose_row(selected, then);
+                return None;
+            }
+            KeyCode::Down => (selected + 1).min(last),
+            KeyCode::Up => selected.saturating_sub(1),
+            KeyCode::PageDown => (selected + PAGE).min(last),
+            KeyCode::PageUp => selected.saturating_sub(PAGE),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            _ => selected,
+        };
+        self.modal = Some(Modal::Choose { title, note, rows, selected, then });
+        None
+    }
+
+    /// The fix for one unprotected dataset: open the form that makes the missing job, ask which kind of copy, or go to the
+    /// job that should be helping.
+    pub(super) fn fix_unprotected(&mut self, gap: &crate::daemon::protection::Unprotected) {
+        use crate::daemon::protection::{fix_for, Fix};
+        match fix_for(gap, &self.jobs_view.jobs) {
+            Fix::NewSnapshotJob => self.modal = Some(prefilled(self.snapshot_job_form(None, &gap.dataset), &gap.host, &gap.dataset)),
+            Fix::ChooseCopy => {
+                let rows = vec!["Replicate to another host".to_string(), "Back up with restic".to_string(), "Mirror to the cloud (rclone)".to_string()];
+                let note = format!("{}:{} needs a copy on another machine.\nEnter opens the form for the kind you pick.", gap.host, gap.dataset);
+                self.modal = Some(Modal::Choose { title: "Which copy?".to_string(), note, rows, selected: 0, then: ChooseThen::Copy { host: gap.host.clone(), dataset: gap.dataset.clone() } });
+            }
+            Fix::GoToJob(id) => {
+                if let Some(position) = self.sections.iter().position(|s| *s == Section::Jobs) {
+                    self.selected_section = position;
+                    self.pane_focus = PaneFocus::Middle;
+                }
+                if let Some(index) = self.jobs_view.jobs.iter().position(|j| j.id == id) {
+                    self.jobs_table.select(Some(index));
+                }
+            }
+        }
+    }
+
+    /// What Enter does on a row: open the form that fixes the dataset, ask which kind of copy, or go to the job that should be helping.
+    fn choose_row(&mut self, row: usize, then: ChooseThen) {
+        match then {
+            ChooseThen::Unprotected(gaps) => {
+                if let Some(gap) = gaps.get(row) {
+                    self.fix_unprotected(gap);
+                }
+            }
+            ChooseThen::Copy { host, dataset } => {
+                let form = match row {
+                    0 => self.replicate_job_form(None),
+                    1 => self.backup_job_form(None),
+                    _ => self.mirror_job_form(None),
+                };
+                self.modal = Some(prefilled(form, &host, &dataset));
+            }
+        }
     }
 
     // Two steps for both outcomes: `y` / `n` / Esc only select, Enter applies the selection.
@@ -494,4 +559,15 @@ impl App {
         }
         Some(action)
     }
+}
+
+/// A new-job form with its first two fields (the host and the dataset the job is for) filled in.
+fn prefilled(mut form: Modal, host: &str, dataset: &str) -> Modal {
+    if let Modal::Form { fields, .. } = &mut form {
+        if let [first, second, ..] = fields.as_mut_slice() {
+            first.value = host.to_string();
+            second.value = dataset.to_string();
+        }
+    }
+    form
 }

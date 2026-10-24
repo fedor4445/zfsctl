@@ -1430,6 +1430,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
             }
         }
         Modal::Info { body, .. } => wrapped_line_count(body, inner_width),
+        Modal::Choose { note, rows, .. } => u16::try_from(note.lines().count() + 1 + rows.len()).unwrap_or(u16::MAX),
     };
     // +2 for the top/bottom border; floor of 5 so a one-line prompt
     // doesn't render a cramped, near-invisible box.
@@ -1518,6 +1519,17 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
                 .wrap(Wrap { trim: false })
                 .scroll((info_scroll, 0))
                 .block(Block::default().borders(Borders::ALL).title(title.as_str()));
+            f.render_widget(p, popup_area);
+        }
+        Modal::Choose { title, note, rows, selected, .. } => {
+            let head = note.lines().count() + 1;
+            let mut lines: Vec<Line> = note.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.push(Line::raw(""));
+            lines.extend(rows.iter().enumerate().map(|(i, row)| if i == *selected { Line::styled(row.clone(), theme.selected_row()) } else { Line::raw(row.clone()) }));
+            // Keep the chosen row in view: scroll just far enough that it is the last line shown.
+            let visible = usize::from(popup_area.height.saturating_sub(2));
+            let scroll = u16::try_from((head + selected + 1).saturating_sub(visible)).unwrap_or(u16::MAX);
+            let p = Paragraph::new(lines).scroll((scroll, 0)).block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
     }
@@ -3308,6 +3320,26 @@ mod tests {
         assert_eq!(style_of(&buf, 140, 50, "Global"), (app.theme.header().fg.unwrap(), true), "section title");
         let (fg, bold) = style_of(&buf, 140, 50, "switch sections");
         assert!(fg != app.theme.header().fg.unwrap() && !bold, "a key line stays body-coloured");
+    }
+
+    #[test]
+    fn a_choose_list_scrolls_to_keep_the_chosen_row_on_screen_and_marks_it() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let rows: Vec<String> = (0..40).map(|i| format!("dataset-{i:02} lacks something")).collect();
+        app.modal = Some(Modal::Choose { title: "Unprotected data".into(), note: "40 datasets\nsecond line".into(), rows, selected: 35, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() } });
+        let buf = render_buffer(&mut app, 100, 20);
+        let text: String = (0..20).map(|y| (0..100).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
+        assert!(text.contains("dataset-35") && !text.contains("dataset-00"), "the chosen row is shown, the top is scrolled off:\n{text}");
+        let find = |word: &str| {
+            (0..20u16).find_map(|y| {
+                let row: String = (0..100u16).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                row.find(word).map(|at| (u16::try_from(row[..at].chars().count()).unwrap(), y))
+            })
+            .unwrap()
+        };
+        let (cx, cy) = find("dataset-35");
+        let (ox, oy) = find("dataset-34");
+        assert!(buf[(cx, cy)].style() != buf[(ox, oy)].style(), "the chosen row is drawn differently from its neighbour");
     }
 
     #[test]

@@ -8375,33 +8375,148 @@ fn up_down_and_enter_on_the_dashboard_only_navigate() {
     assert!(app.pending_mutations.is_empty() && app.modal.is_none() && app.picker.is_none(), "Enter changed nothing but the section");
 }
 
-#[test]
-fn enter_on_a_protection_line_opens_the_list_of_unprotected_datasets_and_stays_on_the_dashboard() {
-    let (mut app, _dir) = dash_app();
+/// A Dashboard app whose daemon is up and whose `local` host has these datasets, a week old and unprotected.
+fn unprotected_app(names: &[&str]) -> App {
+    let (mut app, dir) = dash_app();
+    std::mem::forget(dir);
     app.jobs_view.loaded = true;
     app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now() - chrono::Duration::days(1), last_tick: chrono::Utc::now() });
     app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
     let created = Some((chrono::Utc::now() - chrono::Duration::days(7)).timestamp());
-    let seen = ["tank/docs", "tank/photos"].iter().map(|n| crate::daemon::storage_check::SeenDataset { name: (*n).into(), volume: false, created }).collect();
+    let seen = names.iter().map(|n| crate::daemon::storage_check::SeenDataset { name: (*n).into(), volume: false, created }).collect();
     let entry = crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
     app.storage_check.hosts.insert("local".into(), entry);
+    app
+}
+
+#[test]
+fn enter_on_a_named_protection_line_goes_straight_to_its_fix() {
+    let mut app = unprotected_app(&["tank/docs", "tank/photos"]);
     let items = app.dashboard().attention;
     assert_eq!(items.iter().filter(|i| i.what.contains("no snapshots")).count(), 2, "{items:?}");
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Down);
-    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Show list"), "the hint says what Enter does here");
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Fix"), "the hint says what Enter does here");
     app.handle_key(KeyCode::Enter);
-    assert_eq!(app.current_section(), Section::Dashboard, "the list opens over the Dashboard");
+    assert_eq!(app.current_section(), Section::Dashboard);
+    assert!(matches!(&app.modal, Some(Modal::Form { title, .. }) if title == "New snapshot job"), "no list in between: {:?}", app.modal);
+    assert_eq!(field(app.modal.as_ref(), 1), ("Dataset".to_string(), "tank/photos".to_string()), "the line that was selected");
+    assert_eq!(field(app.modal.as_ref(), 0).1, "local");
+}
+
+#[test]
+fn enter_on_the_and_more_line_opens_the_list_at_the_first_dataset_without_a_line() {
+    let mut app = unprotected_app(&["tank/a", "tank/b", "tank/c", "tank/d", "tank/e"]);
+    let items = app.dashboard().attention;
+    let more = items.iter().position(|i| i.subject == "protection").expect("the folded line");
+    for _ in 0..=more {
+        app.handle_key(KeyCode::Down);
+    }
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Show list"));
+    app.handle_key(KeyCode::Enter);
     match &app.modal {
-        Some(Modal::Info { title, body }) => {
+        Some(Modal::Choose { title, rows, selected, .. }) => {
             assert_eq!(title, "Unprotected data");
-            assert!(body.contains("tank/docs") && body.contains("tank/photos"), "{body}");
+            assert_eq!(rows.len(), 5);
+            assert_eq!(*selected, 3);
+            assert!(rows[3].contains("tank/d"), "{rows:?}");
         }
         other => panic!("expected the list, got {other:?}"),
     }
-    assert_eq!(app.info_scroll, 4, "the second line was selected: its row is the second of the list");
     app.handle_modal_key(KeyCode::Esc);
     assert!(app.modal.is_none());
+}
+
+fn unprotected(snapshots: Option<crate::daemon::protection::Gap>, copies: Option<crate::daemon::protection::CopyGap>, dataset: &str) -> crate::daemon::protection::Unprotected {
+    crate::daemon::protection::Unprotected { host: "fbsd16".into(), dataset: dataset.into(), tier: crate::daemon::protection::Tier::Data, snapshots, copies }
+}
+
+fn list_of(gaps: Vec<crate::daemon::protection::Unprotected>) -> Modal {
+    Modal::Choose { title: "Unprotected data".into(), note: "n".into(), rows: gaps.iter().map(|g| g.dataset.clone()).collect(), selected: 0, then: crate::ui::modal::ChooseThen::Unprotected(gaps) }
+}
+
+fn field(modal: Option<&Modal>, n: usize) -> (String, String) {
+    match modal {
+        Some(Modal::Form { fields, .. }) => (fields[n].label.clone(), fields[n].value.clone()),
+        other => panic!("expected a form, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_list_moves_with_the_arrows_stays_in_range_and_ignores_other_keys() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Missing), None, "tank/a"), unprotected(Some(Gap::Missing), None, "tank/b")]));
+    let selected = |app: &App| match &app.modal {
+        Some(Modal::Choose { selected, .. }) => *selected,
+        other => panic!("{other:?}"),
+    };
+    app.handle_modal_key(KeyCode::Up);
+    assert_eq!(selected(&app), 0);
+    app.handle_modal_key(KeyCode::Down);
+    app.handle_modal_key(KeyCode::Down);
+    assert_eq!(selected(&app), 1, "not past the last row");
+    app.handle_modal_key(KeyCode::Char('x'));
+    app.handle_modal_key(KeyCode::Char('q'));
+    assert_eq!(selected(&app), 1, "a stray key neither closes it nor acts");
+    app.handle_modal_key(KeyCode::Home);
+    assert_eq!(selected(&app), 0);
+    app.handle_modal_key(KeyCode::End);
+    assert_eq!(selected(&app), 1);
+}
+
+#[test]
+fn enter_on_a_dataset_with_no_snapshots_opens_a_new_snapshot_job_for_it_on_its_host() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Missing), None, "tank/photos")]));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Form { title, .. }) if title == "New snapshot job"), "{:?}", app.modal);
+    assert_eq!(field(app.modal.as_ref(), 0), ("Host".to_string(), "fbsd16".to_string()));
+    assert_eq!(field(app.modal.as_ref(), 1), ("Dataset".to_string(), "tank/photos".to_string()));
+}
+
+#[test]
+fn a_dataset_that_needs_a_copy_asks_which_kind_and_opens_that_form_filled_in() {
+    use crate::daemon::protection::{CopyGap, Gap};
+    let copies = Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, worst: Gap::Missing });
+    for (row, title, host_label, dataset_label) in [(0, "New replication job", "Source host", "Source dataset"), (1, "New backup job", "Host (where restic runs)", "Dataset"), (2, "New cloud mirror job", "Host (where rclone runs)", "Dataset")] {
+        let (mut app, _dir) = dash_app();
+        app.modal = Some(list_of(vec![unprotected(None, copies, "tank/photos")]));
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Choose { title, rows, .. }) if title == "Which copy?" && rows.len() == 3), "{:?}", app.modal);
+        for _ in 0..row {
+            app.handle_modal_key(KeyCode::Down);
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Form { title: t, .. }) if t == title), "{:?}", app.modal);
+        assert_eq!(field(app.modal.as_ref(), 0), (host_label.to_string(), "fbsd16".to_string()));
+        assert_eq!(field(app.modal.as_ref(), 1), (dataset_label.to_string(), "tank/photos".to_string()));
+    }
+}
+
+#[test]
+fn a_dataset_whose_job_exists_goes_to_that_job_in_jobs() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    let mut job = crate::jobs::Job::test_snapshot("snap-photos", "tank/photos", "auto", 24);
+    job.host = "fbsd16".into();
+    app.jobs_view.jobs = vec![crate::jobs::Job::test_snapshot("other", "tank/x", "auto", 24), job];
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Failing), None, "tank/photos")]));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert_eq!(app.current_section(), Section::Jobs);
+    assert_eq!(app.jobs_table.selected(), Some(1), "the job that covers it, not the first one");
+}
+
+#[test]
+fn escape_closes_the_list_without_doing_anything() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Missing), None, "tank/photos")]));
+    app.handle_modal_key(KeyCode::Esc);
+    assert!(app.modal.is_none() && app.pending_mutations.is_empty());
+    assert_eq!(app.current_section(), Section::Dashboard);
 }
 
 #[test]

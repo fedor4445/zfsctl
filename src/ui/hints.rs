@@ -78,6 +78,7 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
         Modal::Info { .. } => vec![h("↑/↓", "Scroll", 0), h("any key", "Close", 0)],
+        Modal::Choose { .. } => vec![h("↑/↓", "Move", 0), h("Enter", "Fix", 0), h("Esc", "Close", 0)],
         // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
         // it is only advertised once there is a selection for it to apply.
         Modal::Confirm { action, choice, .. } => match choice {
@@ -407,7 +408,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
                 v.push(h("↑↓", "Move", 1));
             }
             if let Some(item) = app.dashboard_table.selected().and_then(|i| dashboard.attention.get(i)).filter(|_| has_lines) {
-                v.push(h("Enter", if dashboard.protection_popup(item).is_some() { "Show list" } else { "Go to section" }, 1));
+                v.push(h("Enter", if dashboard.protection_fix(item).is_some() { "Fix" } else if dashboard.protection_popup(item).is_some() { "Show list" } else { "Go to section" }, 1));
             }
             v.push(h("r", "Refresh", 4));
         }

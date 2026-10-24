@@ -21,7 +21,6 @@ pub enum Setting {
     ProtOnline,
     ProtRecent,
     ProtEmail,
-    ProtDashboard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +53,6 @@ const PROT_COPIES: &str = "Copies on other machines (1 to 3)";
 const PROT_ONLINE: &str = "Online copies (0 to 2)";
 const PROT_RECENT: &str = "How recent (strict, normal, relaxed)";
 const PROT_EMAIL: &str = "Email (immediate, report, off)";
-const PROT_DASHBOARD: &str = "Dashboard (list, summary)";
 
 /// The rows for the file at `config_path`. `remotes` are the rclone remotes the Cloud screen knows; any remote that
 /// already has a cap in the file is listed too.
@@ -102,7 +100,6 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
     }
     rows.push(row(PROTECTION, Setting::ProtRecent, PROT_RECENT, shown(&p.recent, "normal"), p.recent.is_none(), vec![raw(&p.recent).unwrap_or_default()]));
     rows.push(row(PROTECTION, Setting::ProtEmail, PROT_EMAIL, shown(&p.email, "immediate"), p.email.is_none(), vec![raw(&p.email).unwrap_or_default()]));
-    rows.push(row(PROTECTION, Setting::ProtDashboard, PROT_DASHBOARD, shown(&p.dashboard, "list"), p.dashboard.is_none(), vec![raw(&p.dashboard).unwrap_or_default()]));
     let mut names: Vec<&String> = remotes.iter().chain(cfg.cloud.caps.keys()).collect();
     names.sort();
     names.dedup();
@@ -129,7 +126,6 @@ pub fn form_fields(row: &Row) -> Vec<(String, String)> {
         Setting::ProtOnline => vec![PROT_ONLINE.to_string()],
         Setting::ProtRecent => vec![PROT_RECENT.to_string()],
         Setting::ProtEmail => vec![PROT_EMAIL.to_string()],
-        Setting::ProtDashboard => vec![PROT_DASHBOARD.to_string()],
     };
     labels.into_iter().zip(row.raw.iter().cloned().chain(std::iter::repeat(String::new()))).collect()
 }
@@ -170,7 +166,6 @@ fn protection_change(setting: &Setting, value: &str, current: &crate::config::Pr
         Setting::ProtCopies => ("copies", "1"),
         Setting::ProtOnline => ("online", "0"),
         Setting::ProtRecent => ("recent", "normal"),
-        Setting::ProtDashboard => ("dashboard", "list"),
         _ => ("email", "immediate"),
     };
     let path = ["protection", key];
@@ -184,7 +179,6 @@ fn protection_change(setting: &Setting, value: &str, current: &crate::config::Pr
         Setting::ProtCopies => cfg.copies = number,
         Setting::ProtOnline => cfg.online = number,
         Setting::ProtRecent => cfg.recent = text,
-        Setting::ProtDashboard => cfg.dashboard = text,
         _ => cfg.email = text,
     }
     if matches!(setting, Setting::ProtCopies | Setting::ProtOnline) {
@@ -254,7 +248,7 @@ fn build_changes_with(setting: &Setting, values: &[String], current: &crate::con
             }
             vec![Change::set(&["cloud", "caps", name], first)]
         }
-        Setting::ProtLevel | Setting::ProtCopies | Setting::ProtOnline | Setting::ProtRecent | Setting::ProtEmail | Setting::ProtDashboard => protection_change(setting, first, current)?,
+        Setting::ProtLevel | Setting::ProtCopies | Setting::ProtOnline | Setting::ProtRecent | Setting::ProtEmail => protection_change(setting, first, current)?,
     })
 }
 
@@ -276,7 +270,6 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
         Setting::ProtOnline => ("Online copies", ""),
         Setting::ProtRecent => ("How recent", ""),
         Setting::ProtEmail => ("Email", ""),
-        Setting::ProtDashboard => ("Dashboard", ""),
         Setting::Cap(name) => return format!("Cap of {name}: {}", if v(0).is_empty() { "none" } else { v(0) }),
     };
     // `1.25x` is accepted when typed; the unit is added once.
@@ -311,7 +304,7 @@ mod tests {
     fn load_lists_the_groups_in_order_with_defaults_marked() {
         let v = view("", &[], false);
         let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)", "Dashboard (list, summary)"]);
+        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
         assert!(v.loaded && v.problem.is_none() && v.rows.iter().all(|r| r.is_default), "{v:?}");
         assert_eq!(row(&v, "Theme").value, "ansi");
         assert_eq!(row(&v, "Auto-refresh").value, "10 s");
@@ -431,7 +424,7 @@ mod tests {
     fn the_protection_rows_show_the_effective_values() {
         let v = view("", &[], false);
         let prot: Vec<(&str, &str, bool)> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| (r.label.as_str(), r.value.as_str(), r.is_default)).collect();
-        assert_eq!(prot, [("Level", "basic", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true), ("Dashboard (list, summary)", "list", true)]);
+        assert_eq!(prot, [("Level", "basic", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true)]);
         assert!(v.rows.iter().all(|r| !r.label.starts_with("Copies") && !r.label.starts_with("Online")));
         let v = view("[protection]\nlevel = \"careful\"\nrecent = \"strict\"\n", &[], false);
         assert_eq!(row(&v, "Level").value, "careful");
@@ -460,7 +453,7 @@ mod tests {
     fn custom_adds_its_two_rows() {
         let v = view("[protection]\nlevel = \"custom\"\ncopies = 2\n", &[], false);
         let labels: Vec<&str> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)", "Dashboard (list, summary)"]);
+        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
         let copies = row(&v, "Copies on other machines (1 to 3)");
         assert_eq!((copies.value.as_str(), copies.is_default, copies.raw.as_slice()), ("2", false, &["2".to_string()][..]));
         let online = row(&v, "Online copies (0 to 2)");
@@ -480,9 +473,6 @@ mod tests {
         assert_eq!(sets(&build_changes(&Setting::ProtRecent, &values(&["normal"])).unwrap()), ["remove protection.recent"]);
         assert_eq!(sets(&build_changes(&Setting::ProtEmail, &values(&["report"])).unwrap()), ["set protection.email \"report\""]);
         assert_eq!(sets(&build_changes(&Setting::ProtEmail, &values(&["immediate"])).unwrap()), ["remove protection.email"]);
-        assert_eq!(sets(&build_changes(&Setting::ProtDashboard, &values(&["summary"])).unwrap()), ["set protection.dashboard \"summary\""]);
-        assert_eq!(sets(&build_changes(&Setting::ProtDashboard, &values(&["list"])).unwrap()), ["remove protection.dashboard"]);
-        assert_eq!(build_changes(&Setting::ProtDashboard, &values(&["short"])).unwrap_err(), "[protection] dashboard must be list or summary");
     }
 
     #[test]
@@ -490,7 +480,7 @@ mod tests {
         // The changes a row produces must survive the config writer's own checks (editable tables, parse, "says what was asked").
         let file = "[ui]\ntheme = \"mono\"\n";
         let current = crate::config::ProtectionConfig { level: Some("custom".into()), copies: Some(3.into()), ..Default::default() };
-        let rows = [(Setting::ProtLevel, "custom"), (Setting::ProtCopies, "2"), (Setting::ProtOnline, "1"), (Setting::ProtRecent, "strict"), (Setting::ProtEmail, "report"), (Setting::ProtDashboard, "summary")];
+        let rows = [(Setting::ProtLevel, "custom"), (Setting::ProtCopies, "2"), (Setting::ProtOnline, "1"), (Setting::ProtRecent, "strict"), (Setting::ProtEmail, "report")];
         for (setting, value) in rows {
             let changes = build_changes_with(&setting, &values(&[value]), &current).unwrap();
             let written = crate::config_edit::apply(file, &changes).unwrap_or_else(|e| panic!("{setting:?} = {value}: {e}"));
