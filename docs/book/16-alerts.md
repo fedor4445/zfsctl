@@ -26,7 +26,7 @@ The monitor also judges every dataset on every host: is it protected, that is, c
 UNPROTECTED DATA
   local:tank/photos (your data): no snapshots (for 3d)
   fbsd16:tank/vm (your data): no copy on another machine (for 1d)
-  fbsd16:zroot/var (OS data): 1 of 3 copies on other machines
+  fbsd16:zroot/var (OS data): no snapshots
 ```
 
 When all is well the section says `All datasets are protected.` The setting **Email** (Settings, group Data protection, or `email` in `[protection]`) picks the timing: `immediate` (the default: the emails above plus the report section), `report` (only the report section, whose lines then carry no "for 3d") or `off` (the Dashboard only; no email at all about this check).

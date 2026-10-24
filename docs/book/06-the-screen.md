@@ -161,7 +161,7 @@ Some things are deliberately quiet. A dataset created in the last day is not jud
  NEEDS ATTENTION
    ✖ issue  tank/photos          no snapshots
    ✖ issue  fbsd16:tank/vm       no copy on another machine
-   ▲ watch  fbsd16:zroot/var     1 of 3 copies on other machines
+   ▲ watch  fbsd16:zroot/var     no snapshots
 ```
 
 The same list reaches you by email (chapter 16). Set the level, how recent and the email timing in Settings, group **Data protection**.
