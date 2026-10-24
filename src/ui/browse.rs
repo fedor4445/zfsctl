@@ -449,7 +449,7 @@ pub fn draw(f: &mut Frame, view: &BrowseView, theme: &Theme, host: &str, area: R
                 })
                 .collect();
             let widths = [Constraint::Length(8), Constraint::Length(12), Constraint::Length(16), Constraint::Length(11), Constraint::Length(12), Constraint::Min(10)];
-            let table = Table::new(rows, widths).header(Row::new(vec!["Type", "Size", "Modified", "Mode", "Owner", "Name"])).row_highlight_style(theme.selected_row());
+            let table = Table::new(rows, widths).header(theme.header_row(vec!["Type", "Size", "Modified", "Mode", "Owner", "Name"])).row_highlight_style(theme.selected_row());
             let mut state = TableState::default();
             state.select(Some(view.selected.saturating_sub(start)));
             f.render_stateful_widget(table, list, &mut state);

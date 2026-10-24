@@ -175,6 +175,20 @@ impl Theme {
         self.muted
     }
 
+    /// Section headings and table column headers: the accent colour in bold (bold alone in mono, which has no colours).
+    pub fn header(&self) -> Style {
+        self.accent.add_modifier(Modifier::BOLD)
+    }
+
+    /// A table's column header row, in the header style.
+    pub fn header_row<'a, T>(&self, cells: T) -> ratatui::widgets::Row<'a>
+    where
+        T: IntoIterator,
+        T::Item: Into<ratatui::widgets::Cell<'a>>,
+    {
+        ratatui::widgets::Row::new(cells).style(self.header())
+    }
+
     pub fn health_style(&self, h: &PoolHealth) -> Style {
         match h {
             PoolHealth::Online => self.ok,
@@ -492,6 +506,44 @@ mod tests {
         let fallback = resolve(Some("solarized-dark"), &env(None, None)).unwrap();
         assert!(matches!(fallback.theme.ok.fg, Some(Color::Indexed(_))));
         assert!(fallback.note.unwrap().contains("256-color"));
+    }
+
+    #[test]
+    fn headers_are_bold_in_the_accent_colour_and_only_bold_in_mono() {
+        assert_eq!(Theme::ansi().header(), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        assert_eq!(Theme::solarized(true, true).header(), Style::new().fg(Color::Rgb(38, 139, 210)).add_modifier(Modifier::BOLD));
+        assert_eq!(Theme::solarized(false, true).header(), Style::new().fg(Color::Rgb(38, 139, 210)).add_modifier(Modifier::BOLD));
+        assert_eq!(Theme::mono().header(), Style::new().add_modifier(Modifier::BOLD), "no colour in mono: bold carries it");
+        // The bright variant only swaps health and muted colours: the header stays the accent.
+        assert_eq!(Theme::solarized(true, true).bright().header(), Theme::solarized(true, true).header());
+    }
+
+    #[test]
+    fn a_header_row_carries_the_header_style() {
+        let theme = Theme::solarized(true, true);
+        assert_eq!(theme.header_row(vec!["Name", "Size"]), ratatui::widgets::Row::new(vec!["Name", "Size"]).style(theme.header()));
+    }
+
+    #[test]
+    fn every_table_header_goes_through_header_row() {
+        // A table whose header is built with a bare `Row::new` would show plain body-coloured column titles.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+        let mut bad = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "rs") || path.file_name().is_some_and(|f| f == "theme.rs") {
+                continue;
+            }
+            for (n, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                // `.header()` with nothing inside is a method call; `.header(<something>)` is a table's header row.
+                let table_header = code.match_indices(".header(").any(|(i, m)| !code[i + m.len()..].starts_with(')') && !code[i + m.len()..].trim_start().starts_with("theme.header_row("));
+                if table_header {
+                    bad.push(format!("{}:{}: {}", path.file_name().unwrap().to_string_lossy(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "table headers not styled:\n{}", bad.join("\n"));
     }
 
     #[test]
