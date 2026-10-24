@@ -145,7 +145,7 @@ How many copies are needed is your choice, the **level**:
 | **Careful** | 3 | at least 1 (the "2 on-premises plus 1 online" rule) |
 | **Custom** | 1 to 3, as you pick | 0 to 2, as you pick |
 
-Snapshots are always required. The operating system's own datasets (boot environments, `tmp`, `var`, `usr/ports`, `usr/src`, `usr/obj`, swap and dump) only ever need Basic's single copy and are listed in yellow; everything else is your data and is listed in red.
+Snapshots are always required. The operating system's own datasets (boot environments under `ROOT` and Ubuntu's `BOOT`, `tmp`, `var`, `usr/ports`, `usr/src`, `usr/obj`, swap and dump) only ever need Basic's single copy and are listed in yellow; everything else is your data and is listed in red.
 
 What counts as a copy:
 

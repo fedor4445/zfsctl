@@ -112,14 +112,14 @@ pub enum Tier {
     Os,
 }
 
-/// OS data: the boot environments (`<pool>/ROOT` and below), `<pool>/tmp`, `<pool>/var` and below, `<pool>/usr/ports`,
+/// OS data: the boot environments (`<pool>/ROOT` and below, and Ubuntu's `<pool>/BOOT` and below), `<pool>/tmp`, `<pool>/var` and below, `<pool>/usr/ports`,
 /// `<pool>/usr/src`, `<pool>/usr/obj` (and below), and volumes named `swap` or `dump`. Everything else is data
 /// (`<pool>/usr/home` too).
 pub fn tier_of(dataset: &str, volume: bool) -> Tier {
     let below = dataset.split_once('/').map_or("", |(_, rest)| rest);
     let at_or_under = |base: &str| below == base || below.strip_prefix(base).is_some_and(|rest| rest.starts_with('/'));
     let last = dataset.rsplit('/').next().unwrap_or(dataset);
-    let os = at_or_under("ROOT") || below == "tmp" || ["var", "usr/ports", "usr/src", "usr/obj"].into_iter().any(at_or_under) || (volume && (last == "swap" || last == "dump"));
+    let os = at_or_under("ROOT") || at_or_under("BOOT") || below == "tmp" || ["var", "usr/ports", "usr/src", "usr/obj"].into_iter().any(at_or_under) || (volume && (last == "swap" || last == "dump"));
     if os { Tier::Os } else { Tier::Data }
 }
 
@@ -266,7 +266,7 @@ fn small(n: usize) -> u8 {
 impl Unprotected {
     /// What is missing, in a short phrase (`no snapshots; no copy on another machine`). `age` words a past time
     /// (`3 days ago`).
-        pub fn describe(&self, age: &dyn Fn(DateTime<Utc>) -> String) -> String {
+    pub fn describe(&self, age: &dyn Fn(DateTime<Utc>) -> String) -> String {
         let mut parts: Vec<String> = Vec::new();
         match self.snapshots {
             Some(Gap::Missing) => parts.push("no snapshots".into()),
@@ -348,6 +348,10 @@ mod tests {
             assert_eq!(tier_of(os, false), Tier::Os, "{os}");
         }
         assert_eq!(tier_of("rpool/swap", true), Tier::Os);
+        for boot in ["bpool/BOOT", "bpool/BOOT/ubuntu_abc123"] {
+            assert_eq!(tier_of(boot, false), Tier::Os, "{boot}: Ubuntu's boot pool is like ROOT");
+        }
+        assert_eq!(tier_of("tank/photos/BOOT", false), Tier::Data);
         assert_eq!(tier_of("rpool/dump", true), Tier::Os);
         for data in ["zroot/usr/home", "zroot/usr/home/me", "tank/photos", "tank/var2", "tank/tmpfiles", "zroot", "zroot/usr", "tank/photos/ROOT", "zroot/usr/portsx"] {
             assert_eq!(tier_of(data, false), Tier::Data, "{data}");
