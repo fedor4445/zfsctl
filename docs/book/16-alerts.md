@@ -14,9 +14,22 @@ When the daemon is running and at least one way of reaching you is configured, i
 - **An escalation** if it gets worse (yellow to red).
 - **A reminder** every six hours while it stays bad.
 - **A recovery** when the host is fine again on two checks.
-- **A daily report** at 07:00: a table of all hosts, what needs attention, and what happened since yesterday (jobs run and failed, scrubs finished, alerts and recoveries). The disks that have a SMART problem and the hosts whose NFS or Samba is stopped while they have shares are listed under what needs attention (see chapter 6); there are no separate alerts for them. It is sent even on a perfect day, so that silence means the sender is broken, not the hosts.
+- **A daily report** at 07:00: a table of all hosts, what needs attention, and what happened since yesterday (jobs run and failed, scrubs finished, alerts and recoveries). The disks that have a SMART problem (each with what it is for when that is known: `ada4 (cache of tank) SSD wear 87%`) and the hosts whose NFS or Samba is stopped while they have shares are listed under what needs attention (see chapter 6); there are no separate alerts for them. It is sent even on a perfect day, so that silence means the sender is broken, not the hosts.
 
 Failed scheduled jobs also reach you, through the same channels.
+
+### Unprotected data
+
+The monitor also judges every dataset on every host: is it protected, that is, covered by current snapshot and copy jobs (chapter 6 explains the rules and the three levels)? When a dataset becomes unprotected you get one email **per host**, listing every new dataset (a new pool with six datasets gives one email, not six), and when it is protected again a recovery email. These emails are about your data only: the operating system's datasets (OS data) stay on the Dashboard and in the daily report, and get no email of their own. A reminder comes at most once a day (the larger of the Remind every setting and 24 hours), since the daily report lists them anyway. A daemon restart sends the alerts again for datasets that are still unprotected, again one email per host. The daily report has a section for it:
+
+```text
+UNPROTECTED DATA
+  local:tank/photos (your data): no snapshots (for 3d)
+  fbsd16:tank/vm (your data): no copy on another machine (for 1d)
+  fbsd16:zroot/var (OS data): no snapshots
+```
+
+When all is well the section says `All datasets are protected.`, but only when every configured host was checked. A host that is unreachable, or whose dataset list is missing or more than two days old, is named instead: `All datasets on 2 hosts are protected; not checked: t2 (unreachable), omnios (no dataset list for 3d)` (or, under a list of datasets, `Not checked: ...`). Nothing is ever called protected on a host zfsctl could not see. The `zfsctl report` preview says the same. The setting **Email** (Settings, group Data protection, or `email` in `[protection]`) picks the timing: `immediate` (the default: the emails above plus the report section), `report` (only the report section, still with how long each dataset has been unprotected; the `zfsctl report` preview has no such memory and leaves the "for 3d" out) or `off` (the Dashboard only; no email at all about this check).
 
 ## The Alerts screen
 

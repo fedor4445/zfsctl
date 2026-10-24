@@ -77,7 +77,8 @@ fn picker_hints(picker: &PickerState) -> Vec<Hint> {
 
 fn modal_hints(modal: &Modal) -> Vec<Hint> {
     match modal {
-        Modal::Info { .. } => vec![h("any key", "Close", 0)],
+        Modal::Info { .. } => vec![h("↑/↓", "Scroll", 0), h("any key", "Close", 0)],
+        Modal::Choose { .. } => vec![h("↑/↓", "Move", 0), h("Enter", "Fix", 0), h("Esc", "Close", 0)],
         // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
         // it is only advertised once there is a selection for it to apply.
         Modal::Confirm { action, choice, .. } => match choice {
@@ -252,6 +253,62 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("←", "Back", 1));
             v.push(h("r", "Refresh", 4));
         }
+        (Section::Snapshots, _) if app.browse_view_active() => {
+            if let Some(view) = app.browse_view.as_ref() {
+                if view.input.is_some() {
+                    v.push(h("Enter", "Keep", 1));
+                    v.push(h("Esc", "Cancel", 1));
+                } else if matches!(view.phase, crate::ui::browse::Phase::Ready) {
+                    if !view.rows.is_empty() {
+                        v.push(h("↑↓", "Move", 1));
+                    }
+                    if view.rows.get(view.selected).is_some_and(|r| r.entry.kind == crate::zfs::snapshot_browse::EntryKind::Directory && !r.entry.ambiguous && crate::zfs::snapshot_browse::valid_component(&r.entry.name)) {
+                        v.push(h("Enter", "Open", 1));
+                    }
+                    if !view.path.is_empty() {
+                        v.push(h("←", "Up", 1));
+                    }
+                    v.push(h("/", "Name", 2));
+                    v.push(h("m", "Modified", 3));
+                    v.push(h("s", "Size", 3));
+                    v.push(h("t", "Type", 3));
+                    if view.can_restore() {
+                        v.push(h("R", "Restore", 2));
+                    }
+                    if !view.filter.is_empty() {
+                        v.push(h("x", "Clear", 2));
+                    }
+                    v.push(h("Esc", "Close", 1));
+                } else {
+                    if !view.path.is_empty() && !matches!(view.phase, crate::ui::browse::Phase::Reading) {
+                        v.push(h("←", "Up", 1));
+                    }
+                    v.push(h("Esc", "Close", 1));
+                }
+            }
+        }
+        (Section::Snapshots, _) if app.changes_view_active() => {
+            let ready = app.changes_view.as_ref().is_some_and(|view| matches!(view.phase, crate::ui::changes::Phase::Ready { .. }));
+            let typing = app.changes_view.as_ref().is_some_and(|view| view.name_input.is_some());
+            let in_folder = app.changes_view.as_ref().is_some_and(|view| view.open_group.is_some());
+            if ready && typing {
+                v.push(h("Enter", "Keep", 1));
+                v.push(h("Esc", "Cancel", 1));
+            } else if ready {
+                v.push(h("↑↓", "Move", 1));
+                if !in_folder {
+                    v.push(h("Enter", "Open", 2));
+                }
+                v.push(h("[ ]", "Depth", 2));
+                if in_folder {
+                    v.push(h("/", "Filter", 2));
+                }
+                v.push(h("H", "Hold older", 2));
+                v.push(h("Esc", "Back", 1));
+            } else {
+                v.push(h("Esc", "Close", 1));
+            }
+        }
         (Section::Snapshots, _) => {
             if !app.snapshots.is_empty() {
                 v.push(h("↑↓", "Move", 1));
@@ -259,6 +316,10 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if app.snapshots_table.selected().is_some() {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("b", "Rollback", 2).tone(Tone::Danger));
+                v.push(h("H", "Hold", 2));
+                v.push(h("c", "Changes", 2));
+                v.push(h("C", "Since", 3));
+                v.push(h("f", "Browse", 2));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -341,12 +402,13 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("r", "Refresh", 4));
         }
         (Section::Dashboard, _) => {
-            let has_lines = !app.dashboard().attention.is_empty();
+            let dashboard = app.dashboard();
+            let has_lines = !dashboard.attention.is_empty();
             if has_lines {
                 v.push(h("↑↓", "Move", 1));
             }
-            if has_lines && app.dashboard_table.selected().is_some() {
-                v.push(h("Enter", "Go to section", 1));
+            if let Some(item) = app.dashboard_table.selected().and_then(|i| dashboard.attention.get(i)).filter(|_| has_lines) {
+                v.push(h("Enter", if dashboard.protection_fix(item).is_some() { "Fix" } else if dashboard.protection_popup(item).is_some() { "Show list" } else { "Go to section" }, 1));
             }
             v.push(h("r", "Refresh", 4));
         }
@@ -565,8 +627,8 @@ mod tests {
         let mut a = base();
         go(&mut a, Section::Snapshots);
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0, written: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0, written: 0 },
         ];
         a.snapshots_table.select(Some(0));
         a
@@ -640,7 +702,7 @@ mod tests {
         let mut a = base();
         go(&mut a, Section::Settings);
         let row = |n: usize| crate::ui::settings::Row { group: "Display", setting: crate::ui::settings::Setting::Cpu, label: format!("row{n}"), value: "1".into(), is_default: true, raw: vec![String::new()] };
-        a.settings_view = crate::ui::settings::SettingsView { loaded: true, problem: None, rows: (0..rows).map(row).collect() };
+        a.settings_view = crate::ui::settings::SettingsView { loaded: true, problem: None, rows: (0..rows).map(row).collect(), protection_problem: None };
         a.settings_table.select((rows > 0).then_some(0));
         a
     }
@@ -793,6 +855,8 @@ mod tests {
         focus: PaneFocus,
         tab: DatasetDetailTab,
         drilled: Option<String>,
+        changes_view: Option<(bool, usize, usize, String, bool)>,
+        browse_view: Option<(bool, usize, usize, bool)>,
         host: usize,
         host_filter: (String, bool),
         alerts_scroll: usize,
@@ -812,6 +876,8 @@ mod tests {
             focus: a.pane_focus,
             tab: a.dataset_detail_tab,
             drilled: a.drilled_pool.clone(),
+            changes_view: a.changes_view.as_ref().map(|v| (matches!(v.phase, crate::ui::changes::Phase::Ready { .. }), v.depth, v.selected, v.name_filter.text().to_string(), v.name_input.is_some())),
+            browse_view: a.browse_view.as_ref().map(|v| (matches!(v.phase, crate::ui::browse::Phase::Ready), v.path.len(), v.selected, v.input.is_some())),
             host: a.selected_host,
             host_filter: (a.host_filter.clone(), a.host_filter_editing),
             alerts_scroll: a.alerts_view.scroll,
@@ -885,7 +951,7 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_advertised_are_no_ops() {
-        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D', 'B'];
+        let probes = ['s', 'R', 'd', 'n', 'N', 'M', 'b', 'a', 'x', 'o', 'O', 'c', ' ', '[', ']', 't', 'T', 'm', 'u', 'D', 'B', 'H'];
         for (name, app) in scenarios() {
             let advertised: Vec<KeyCode> = hints(&app).iter().filter_map(|h| key_code(h.key)).collect();
             for ch in probes {
@@ -1073,6 +1139,210 @@ mod tests {
     }
 
     #[test]
+    fn hints_offer_the_hold_key_when_a_snapshot_is_selected() {
+        let a = snapshots();
+        let hold = hints(&a).into_iter().find(|h| h.key == "H").expect("H is offered");
+        assert_eq!(hold.label, "Hold");
+        assert_eq!(hold.tone, Tone::Neutral);
+        let mut none = snapshots();
+        none.snapshots_table.select(None);
+        assert!(!keys(&none).contains(&"H"));
+    }
+
+    #[test]
+    fn hints_offer_the_changes_keys_when_a_snapshot_is_selected() {
+        let a = snapshots();
+        let ks = keys(&a);
+        assert!(ks.contains(&"c") && ks.contains(&"C"), "{ks:?}");
+        let mut none = snapshots();
+        none.snapshots_table.select(None);
+        let ks = keys(&none);
+        assert!(!ks.contains(&"c") && !ks.contains(&"C"), "{ks:?}");
+    }
+
+    #[test]
+    fn hints_in_the_changes_view_offer_what_works_in_each_phase() {
+        use crate::ui::changes::{Against, ChangesView, PendingChanges, Phase};
+        use crate::zfs::snapshot_changes::{ChangeSummary, Limits};
+        let pending = PendingChanges { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), against: Against::Previous, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        let mut a = snapshots();
+        a.changes_view = Some(ChangesView::new(&pending));
+        let reading = keys(&a);
+        assert!(reading.contains(&"Esc") && !reading.contains(&"Enter") && !reading.contains(&"d"), "{reading:?}");
+        let mut view = ChangesView::new(&pending);
+        view.phase = Phase::Ready { older: "tank/a@o".to_string(), newer: "tank/a@s".to_string(), summary: ChangeSummary::new(&Limits::default(), None) };
+        a.changes_view = Some(view);
+        let ready = keys(&a);
+        for want in ["↑↓", "Enter", "[ ]", "H", "Esc"] {
+            assert!(ready.contains(&want), "{want} in {ready:?}");
+        }
+        assert!(!ready.contains(&"d"), "the snapshot list's own keys are not offered inside the view: {ready:?}");
+    }
+
+    fn browsing(rows: &[(&str, crate::zfs::snapshot_browse::EntryKind)], path: &[&str]) -> App {
+        use crate::ui::browse::{BrowseOutcome, BrowseView, PendingBrowse};
+        use crate::zfs::snapshot_browse::{ListEntry, Listing, Row};
+        let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s1".to_string(), path: path.iter().map(|s| (*s).to_string()).collect(), mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::FreeBsd, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        let mut view = BrowseView::new(&pending, Some(0));
+        let entries = rows
+            .iter()
+            .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "o".to_string(), group: "g".to_string(), size: 5, time: Some(1), link_target: None, ambiguous: false }, changed: None, created: None })
+            .collect();
+        view.apply("h", Ok(BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/m".to_string(), zone: None }));
+        let mut a = snapshots();
+        a.browse_view = Some(view);
+        a
+    }
+
+    #[test]
+    fn hints_offer_browse_when_a_snapshot_is_selected() {
+        assert!(keys(&snapshots()).contains(&"f"));
+        let mut none = snapshots();
+        none.snapshots_table.select(None);
+        assert!(!keys(&none).contains(&"f"));
+    }
+
+    #[test]
+    fn hints_in_the_browser_offer_what_works_in_each_state() {
+        use crate::zfs::snapshot_browse::EntryKind::{Directory, File};
+        let keys = |a: &App| -> Vec<&'static str> { keys(a).into_iter().filter(|k| !["Tab", "!", "A", "?", "q"].contains(k)).collect() };
+        let mut reading = snapshots();
+        let pending = crate::ui::browse::PendingBrowse { host: 0, request: 1, dataset: "d".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::Other, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        reading.browse_view = Some(crate::ui::browse::BrowseView::new(&pending, Some(0)));
+        assert_eq!(keys(&reading), ["Esc"]);
+        let top = browsing(&[("pics", Directory), ("a", File)], &[]);
+        let ks = keys(&top);
+        for want in ["↑↓", "Enter", "/", "m", "s", "t", "Esc"] {
+            assert!(ks.contains(&want), "{want} in {ks:?}");
+        }
+        assert!(!ks.contains(&"←") && !ks.contains(&"x") && !ks.contains(&"d"), "no Up at the top, no Clear without a filter, none of the list's keys: {ks:?}");
+        let mut file_selected = browsing(&[("a", File)], &["pics"]);
+        let ks = keys(&file_selected);
+        assert!(ks.contains(&"←") && !ks.contains(&"Enter"), "Up inside a folder; Enter only on a folder: {ks:?}");
+        file_selected.browse_view.as_mut().unwrap().cycle_kind();
+        assert!(keys(&file_selected).contains(&"x"));
+        let mut typing = browsing(&[("a", File)], &[]);
+        typing.browse_view.as_mut().unwrap().start_input(crate::ui::browse::InputKind::Name);
+        assert_eq!(keys(&typing), ["Enter", "Esc"]);
+    }
+
+    #[test]
+    fn restore_is_offered_only_on_a_regular_file_that_can_be_restored() {
+        use crate::zfs::snapshot_browse::EntryKind::{Directory, File, Symlink};
+        assert!(keys(&browsing(&[("a", File)], &[])).contains(&"R"));
+        assert!(!keys(&browsing(&[("d", Directory)], &[])).contains(&"R"));
+        assert!(!keys(&browsing(&[("l", Symlink)], &[])).contains(&"R"));
+        let mut odd = browsing(&[("a\nb", File)], &[]);
+        assert!(!keys(&odd).contains(&"R"), "a name that cannot be sent");
+        odd.browse_view.as_mut().unwrap().rows[0].entry.name = "a".to_string();
+        odd.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
+        assert!(!keys(&odd).contains(&"R"));
+        let mut zoned = browsing(&[("a", File)], &[]);
+        zoned.browse_view.as_mut().unwrap().zone = Some("z".to_string());
+        assert!(!keys(&zoned).contains(&"R"), "refused inside a zone, so not offered");
+        let mut typing = browsing(&[("a", File)], &[]);
+        typing.browse_view.as_mut().unwrap().start_input(crate::ui::browse::InputKind::Name);
+        assert!(!keys(&typing).contains(&"R"));
+    }
+
+    #[test]
+    fn open_is_not_offered_on_a_folder_whose_name_will_be_refused() {
+        use crate::zfs::snapshot_browse::EntryKind::Directory;
+        let odd = browsing(&[("dir\nnewline", Directory)], &[]);
+        assert!(!keys(&odd).contains(&"Enter"), "{:?}", keys(&odd));
+        let plain = browsing(&[("dir", Directory)], &[]);
+        assert!(keys(&plain).contains(&"Enter"));
+    }
+
+    #[test]
+    fn open_is_not_offered_on_an_ambiguous_name() {
+        use crate::zfs::snapshot_browse::EntryKind::Directory;
+        let mut a = browsing(&[("back\\slash", Directory)], &[]);
+        a.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
+        assert!(!keys(&a).contains(&"Enter"), "{:?}", keys(&a));
+    }
+
+    #[test]
+    fn every_key_the_browser_advertises_does_something_and_unadvertised_ones_do_nothing() {
+        type Scenario = (&'static str, Box<dyn Fn() -> App>);
+        use crate::zfs::snapshot_browse::EntryKind::{Directory, File};
+        use crossterm::event::KeyCode;
+        let code = |k: &str| match k {
+            "↑↓" => KeyCode::Down,
+            "←" => KeyCode::Left,
+            "Enter" => KeyCode::Enter,
+            "Esc" => KeyCode::Esc,
+            other => KeyCode::Char(other.chars().next().unwrap()),
+        };
+        let fp = |a: &App| a.browse_view.as_ref().map(|v| (v.selected, v.path.clone(), v.rows.len(), v.input.is_some(), v.filter.clone(), matches!(v.phase, crate::ui::browse::Phase::Reading)));
+        let modal_open = |a: &App| a.modal.is_some();
+        let scenarios: Vec<Scenario> = vec![
+            ("top", Box::new(|| browsing(&[("pics", Directory), ("a", File), ("b", File)], &[]))),
+            ("inside", Box::new(|| browsing(&[("pics", Directory), ("a", File)], &["x"]))),
+            ("file selected", Box::new(|| {
+                let mut a = browsing(&[("pics", Directory), ("a", File)], &[]);
+                a.browse_view.as_mut().unwrap().selected = 1;
+                a
+            })),
+            ("symlink selected, not a file", Box::new(|| {
+                let mut a = browsing(&[("l", crate::zfs::snapshot_browse::EntryKind::Symlink)], &[]);
+                a.browse_view.as_mut().unwrap().selected = 0;
+                a
+            })),
+            ("ambiguous file selected", Box::new(|| {
+                let mut a = browsing(&[("a\\b", File)], &[]);
+                a.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
+                a
+            })),
+            ("zoned file selected", Box::new(|| {
+                let mut a = browsing(&[("a", File)], &[]);
+                a.browse_view.as_mut().unwrap().zone = Some("z1".to_string());
+                a
+            })),
+        ];
+        for (name, make) in &scenarios {
+            let advertised: Vec<&'static str> = hints(&make()).iter().map(|h| h.key).filter(|k| !["Tab", "!", "A", "?", "q"].contains(k)).collect();
+            for key in &advertised {
+                let mut a = make();
+                let before = fp(&a);
+                a.handle_key(code(key));
+                assert!(*key == "↑↓" && name.contains("file") || fp(&a) != before || a.browse_view.is_none() || modal_open(&a), "scenario '{name}' advertises {key} but it changes nothing");
+            }
+            for key in ["Enter", "←", "x", "f", "d", "b", "H", "c", "C", "R"] {
+                if advertised.contains(&key) {
+                    continue;
+                }
+                let mut a = make();
+                let before = fp(&a);
+                a.handle_key(code(key));
+                assert_eq!(fp(&a), before, "scenario '{name}' does not advertise {key} yet it changes state");
+                assert!(a.modal.is_none(), "{key} opened a confirm behind the browser");
+                assert!(a.status_message.is_none() || key == "R" && name.contains("zoned"), "{key} said something in '{name}'");
+            }
+        }
+    }
+
+    #[test]
+    fn the_changes_view_offers_a_filter_only_inside_a_folder_and_while_typing_only_enter_and_esc() {
+        use crate::ui::changes::{Against, ChangesOutcome, ChangesView, PendingChanges};
+        use crate::zfs::snapshot_changes::{ChangeSummary, Limits};
+        use crate::zfs::snapshot_diff::{Change, DiffEntry, FileKind};
+        let pending = PendingChanges { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), against: Against::Previous, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        let mut summary = ChangeSummary::new(&Limits::default(), Some("/ds".to_string()));
+        summary.add(DiffEntry { changed_at: 1_788_654_605, change: Change::Added, kind: FileKind::File, path: "/ds/a/f.jpg".to_string(), renamed_to: None });
+        let mut view = ChangesView::new(&pending);
+        view.apply(Ok(ChangesOutcome::Done { older: "tank/a@o".to_string(), newer: "tank/a@s".to_string(), summary }));
+        let mut a = snapshots();
+        a.changes_view = Some(view);
+        assert!(!keys(&a).contains(&"/"), "no filter at the folder list: {:?}", keys(&a));
+        a.changes_view.as_mut().unwrap().open_selected();
+        assert!(keys(&a).contains(&"/"), "{:?}", keys(&a));
+        a.changes_view.as_mut().unwrap().start_filter();
+        let own: Vec<&str> = keys(&a).into_iter().filter(|k| !["Tab", "!", "A", "?", "q"].contains(k)).collect();
+        assert_eq!(own, ["Enter", "Esc"]);
+    }
+
+    #[test]
     fn hints_for_the_hosts_screen_do_not_include_refresh() {
         // `r` is a no-op in the Hosts section (see event_loop's refresh match).
         assert!(!keys(&hosts()).contains(&"r"));
@@ -1083,8 +1353,7 @@ mod tests {
         let mut app = pools_middle();
         app.modal = Some(Modal::Info { title: "Help".to_string(), body: String::new() });
         let hs = hints(&app);
-        assert_eq!(hs.len(), 1);
-        assert_eq!(hs[0].key, "any key");
+        assert_eq!(hs.iter().map(|h| h.key).collect::<Vec<_>>(), ["↑/↓", "any key"]);
         assert!(!hs.iter().any(|h| h.pinned));
     }
 
@@ -1297,8 +1566,8 @@ mod tests {
         a.pools = vec![pool("tank"), pool("scratch")];
         a.datasets = vec![dataset("tank/a"), dataset("tank/b")];
         a.snapshots = vec![
-            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1 },
-            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s1".to_string(), used: 1, holds: 0, written: 0 },
+            Snapshot { dataset: "tank/a".to_string(), name: "s2".to_string(), used: 1, holds: 0, written: 0 },
         ];
         a.disks = vec![
             DiskInfo { name: "da0".to_string(), size: 1, membership: DiskMembership::Available, ..Default::default() },

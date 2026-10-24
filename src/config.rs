@@ -2,7 +2,7 @@ use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Every key a user can write in `config.toml` (`[[hosts]]`, `[ui]`, `[daemon]`, `[notify]`) and in `jobs.toml`
+/// Every key a user can write in `config.toml` (`[[hosts]]`, `[ui]`, `[daemon]`, `[notify]`, `[ssh]`) and in `jobs.toml`
 /// (`[[jobs]]`), as written in TOML. The book's reference chapter is checked against this list, and
 /// `documented_keys_match_the_serialised_fields` checks the list against the structs themselves.
 #[cfg(test)]
@@ -10,10 +10,12 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
     vec![
         "name", "ssh_target", "tag",
         "theme", "auto_refresh_secs",
+        "multiplex",
         "notify_command", "daily_check",
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
         "memory_warn", "memory_crit", "swap_warn", "swap_crit", "quota_warn", "quota_crit", "dedup_min_ratio", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
+        "level", "copies", "online", "recent", "email",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -31,10 +33,150 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default, skip_serializing_if = "NotifyConfig::is_default")]
     pub notify: NotifyConfig,
+    #[serde(default, skip_serializing_if = "SshConfig::is_default")]
+    pub ssh: SshConfig,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "CloudConfig::is_default")]
     pub cloud: CloudConfig,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "DashboardConfig::is_default")]
     pub dashboard: DashboardConfig,
+    #[serde(default, deserialize_with = "lenient_protection", skip_serializing_if = "ProtectionConfig::is_default")]
+    pub protection: ProtectionConfig,
+}
+
+/// What counts as protected (`[protection]`): how many copies of a dataset, how many of them online, how recent, and when to
+/// email. Wrong values are not defaulted: `resolve` names the key and the allowed values. Each key is kept as the TOML value
+/// the file has, so a value of the wrong type (`copies = "2"`, `level = 5`) still loads (the daemon must never stay down over
+/// it) and `resolve` reports it like any other wrong value.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ProtectionConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub level: Option<toml::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub copies: Option<toml::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub online: Option<toml::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub recent: Option<toml::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub email: Option<toml::Value>,
+    /// `protection = 5`: the section is not a table at all.
+    #[serde(skip)]
+    pub not_a_table: bool,
+}
+
+/// `[protection]` as a table of any values (see `ProtectionConfig`); anything else is kept as `not_a_table`, for `resolve`.
+fn lenient_protection<'de, D>(deserializer: D) -> std::result::Result<ProtectionConfig, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(match value {
+        toml::Value::Table(_) => value.try_into().unwrap_or(ProtectionConfig { not_a_table: true, ..ProtectionConfig::default() }),
+        _ => ProtectionConfig { not_a_table: true, ..ProtectionConfig::default() },
+    })
+}
+
+/// How a `[protection]` value reads on the screen: a string as it is, anything else as its TOML text (`5`, `true`).
+pub fn protection_text(value: Option<&toml::Value>) -> Option<String> {
+    value.map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+}
+
+/// When the unprotected-datasets alert is emailed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmailTiming {
+    #[default]
+    Immediate,
+    Report,
+    Off,
+}
+
+/// `ProtectionConfig` validated, with the defaults filled in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtectionSettings {
+    /// Copies a dataset needs (1 to 3).
+    pub copies: u8,
+    /// Of those, copies that must be online (0 to `copies`).
+    pub online: u8,
+    /// How many intervals old a copy may be and still count as recent.
+    pub tolerance: i32,
+    pub email: EmailTiming,
+}
+
+impl Default for ProtectionSettings {
+    fn default() -> Self {
+        ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate }
+    }
+}
+
+impl ProtectionConfig {
+    fn is_default(&self) -> bool {
+        // A section that is not a table has nothing to write back.
+        ProtectionConfig { not_a_table: false, ..self.clone() } == ProtectionConfig::default()
+    }
+
+    pub fn resolve(&self) -> std::result::Result<ProtectionSettings, String> {
+        if self.not_a_table {
+            return Err("[protection] must be a table of keys (level, copies, online, recent, email)".into());
+        }
+        // A word key: absent is the default, a string is checked by the caller, any other type is wrong.
+        let word = |v: &Option<toml::Value>, default: &'static str, wrong: &str| -> std::result::Result<String, String> {
+            match v {
+                None => Ok(default.to_string()),
+                Some(toml::Value::String(s)) => Ok(s.clone()),
+                Some(_) => Err(wrong.to_string()),
+            }
+        };
+        // A number key: absent is the default, else a whole number in `range`.
+        let count = |v: &Option<toml::Value>, default: u8, range: std::ops::RangeInclusive<u8>, wrong: &str| -> std::result::Result<u8, String> {
+            match v {
+                None => Ok(default),
+                Some(toml::Value::Integer(n)) => u8::try_from(*n).ok().filter(|n| range.contains(n)).ok_or_else(|| wrong.to_string()),
+                Some(_) => Err(wrong.to_string()),
+            }
+        };
+        let level_wrong = "[protection] level must be basic, careful or custom";
+        let (copies, online) = match word(&self.level, "basic", level_wrong)?.as_str() {
+            "basic" => (1, 0),
+            "careful" => (3, 1),
+            "custom" => {
+                let copies = count(&self.copies, 1, 1..=3, "[protection] copies must be 1, 2 or 3")?;
+                let online = count(&self.online, 0, 0..=2, "[protection] online must be 0, 1 or 2")?;
+                if online > copies {
+                    return Err("[protection] online must not be more than copies".into());
+                }
+                (copies, online)
+            }
+            _ => return Err(level_wrong.into()),
+        };
+        let recent_wrong = "[protection] recent must be strict, normal or relaxed";
+        let tolerance = match word(&self.recent, "normal", recent_wrong)?.as_str() {
+            "strict" => 1,
+            "normal" => 2,
+            "relaxed" => 4,
+            _ => return Err(recent_wrong.into()),
+        };
+        let email_wrong = "[protection] email must be immediate, report or off";
+        let email = match word(&self.email, "immediate", email_wrong)?.as_str() {
+            "immediate" => EmailTiming::Immediate,
+            "report" => EmailTiming::Report,
+            "off" => EmailTiming::Off,
+            _ => return Err(email_wrong.into()),
+        };
+        Ok(ProtectionSettings { copies, online, tolerance, email })
+    }
+
+    /// The settings to judge with on a screen: `resolve`, or Basic's defaults with the problem in words.
+    pub fn resolve_or_basic(&self) -> (ProtectionSettings, Option<String>) {
+        match self.resolve() {
+            Ok(settings) => (settings, None),
+            Err(problem) => (ProtectionSettings::default(), Some(problem)),
+        }
+    }
+}
+
+/// How a screen states a wrong `[protection]`: `[protection]: email must be immediate, report or off; judging at Basic`.
+pub fn protection_problem_line(problem: &str) -> String {
+    format!("[protection]: {}; judging at Basic", problem.strip_prefix("[protection] ").unwrap_or(problem))
 }
 
 /// When the Dashboard turns a reading yellow (watch) and red (issue) (`[dashboard]`). Unset keys take the defaults of
@@ -168,6 +310,26 @@ pub fn parse_cap(text: &str) -> Option<u64> {
     }
     let bytes = number.parse::<f64>().ok()? * unit;
     (bytes >= 1.0 && bytes < 1e18).then(|| bytes.round() as u64)
+}
+
+/// How zfsctl talks to the other hosts (`[ssh]`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SshConfig {
+    /// `true` makes the short commands to one host share a single ssh connection instead of opening one each, which
+    /// is about four times faster per command. Unset means `false`. Read when zfsctl or the daemon starts.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub multiplex: Option<bool>,
+}
+
+impl SshConfig {
+    fn is_default(&self) -> bool {
+        self.multiplex.is_none()
+    }
+
+    /// Where the shared connections' sockets live, when sharing is on.
+    pub fn mux_dir(&self) -> Option<std::path::PathBuf> {
+        self.multiplex.unwrap_or(false).then(|| std::path::Path::new(crate::daemon::engine::DEFAULT_STATE_DIR).join("ssh"))
+    }
 }
 
 /// Settings for `zfsctl daemon`.
@@ -674,6 +836,7 @@ mod tests {
         let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
         let daemon = DaemonConfig { notify_command: Some("true".into()), daily_check: Some("03:30".into()), smart_check: None };
         let cloud = CloudConfig { caps: [("b2".to_string(), "10G".to_string())].into() };
+        let ssh = SshConfig { multiplex: Some(true) };
         let dashboard = DashboardConfig {
             memory_warn: Some(90),
             memory_crit: Some(97),
@@ -687,6 +850,7 @@ mod tests {
             scrub_crit_days: Some(90),
             scrub_ignore: vec!["scratch".into()],
         };
+        let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), recent: Some("normal".into()), email: Some("report".into()), not_a_table: false };
         let notify = NotifyConfig {
             mail_to: Some("a@b".into()),
             mail_command: Some("c".into()),
@@ -702,7 +866,7 @@ mod tests {
             catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
         };
         let mut found: Vec<String> = Vec::new();
-        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&job).unwrap()] {
+        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&ssh).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&protection).unwrap(), toml::Value::try_from(&job).unwrap()] {
             found.extend(value.as_table().unwrap().keys().cloned());
         }
         found.sort();
@@ -714,6 +878,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn connection_sharing_is_off_unless_the_ssh_section_turns_it_on() {
+        assert_eq!(Config::default().ssh.mux_dir(), None);
+        let on: Config = toml::from_str("[ssh]\nmultiplex = true\n").unwrap();
+        assert_eq!(on.ssh.mux_dir(), Some(std::path::PathBuf::from("/var/db/zfsctl/ssh")));
+        let off: Config = toml::from_str("[ssh]\nmultiplex = false\n").unwrap();
+        assert_eq!(off.ssh.mux_dir(), None);
+        assert!(!toml::to_string(&Config::default()).unwrap().contains("ssh"), "an unset [ssh] is not written");
+    }
 
     #[test]
     fn the_dashboard_defaults_are_the_specs_numbers() {
@@ -905,6 +1079,101 @@ mod tests {
         assert_eq!(s.report_time, Some(chrono::NaiveTime::from_hms_opt(6, 30, 0).unwrap()));
         assert_eq!(s.remind, None, "0 hours means never");
         assert_eq!(toml::from_str::<Config>(&toml::to_string_pretty(&config).unwrap()).unwrap(), config);
+    }
+
+    fn prot(level: Option<&str>, copies: Option<u8>, online: Option<u8>, recent: Option<&str>, email: Option<&str>) -> ProtectionConfig {
+        ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), recent: recent.map(Into::into), email: email.map(Into::into), not_a_table: false }
+    }
+
+    #[test]
+    fn protection_defaults_are_basic_normal_immediate() {
+        let s = ProtectionConfig::default().resolve().unwrap();
+        assert_eq!(s, ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate });
+        assert_eq!(s, ProtectionSettings::default());
+        assert_eq!(Config::default().protection.resolve().unwrap(), s);
+    }
+
+    #[test]
+    fn careful_means_three_copies_one_online() {
+        let s = prot(Some("careful"), None, None, None, None).resolve().unwrap();
+        assert_eq!((s.copies, s.online), (3, 1));
+    }
+
+    #[test]
+    fn custom_reads_copies_and_online_and_ignores_them_for_other_levels() {
+        let s = prot(Some("custom"), Some(2), Some(1), None, None).resolve().unwrap();
+        assert_eq!((s.copies, s.online), (2, 1));
+        let d = prot(Some("custom"), None, None, None, None).resolve().unwrap();
+        assert_eq!((d.copies, d.online), (1, 0));
+        let b = prot(Some("basic"), Some(3), Some(2), None, None).resolve().unwrap();
+        assert_eq!((b.copies, b.online), (1, 0));
+        let c = prot(Some("careful"), Some(9), Some(9), None, None).resolve().unwrap();
+        assert_eq!((c.copies, c.online), (3, 1), "bad numbers are ignored, not errors, outside custom");
+    }
+
+    #[test]
+    fn recent_steps_are_one_two_and_four_intervals() {
+        let t = |r| prot(None, None, None, Some(r), None).resolve().unwrap().tolerance;
+        assert_eq!((t("strict"), t("normal"), t("relaxed")), (1, 2, 4));
+        let e = |m| prot(None, None, None, None, Some(m)).resolve().unwrap().email;
+        assert_eq!((e("immediate"), e("report"), e("off")), (EmailTiming::Immediate, EmailTiming::Report, EmailTiming::Off));
+    }
+
+    #[test]
+    fn a_wrong_value_names_the_key() {
+        let err = |c: ProtectionConfig| c.resolve().unwrap_err();
+        assert_eq!(err(prot(Some("paranoid"), None, None, None, None)), "[protection] level must be basic, careful or custom");
+        assert!(err(prot(Some("custom"), Some(4), None, None, None)).contains("copies"));
+        assert!(err(prot(Some("custom"), Some(0), None, None, None)).contains("copies"));
+        assert!(err(prot(Some("custom"), Some(3), Some(3), None, None)).contains("online"));
+        assert!(err(prot(Some("custom"), Some(1), Some(2), None, None)).contains("online"));
+        assert!(err(prot(None, None, None, Some("fast"), None)).contains("recent must be strict, normal or relaxed"));
+        assert!(err(prot(None, None, None, None, Some("daily"))).contains("email must be immediate, report or off"));
+    }
+
+    #[test]
+    fn a_wrong_type_in_protection_loads_and_resolve_names_the_key() {
+        let resolved = |body: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, format!("{body}\n[[hosts]]\nname = \"t2\"\nssh = \"fb@t2\"\n")).unwrap();
+            let config = Config::load(&path).unwrap_or_else(|e| panic!("{body}: the file must still load: {e}"));
+            assert_eq!(config.hosts.len(), 1, "{body}: the rest of the file is read");
+            config.protection.resolve()
+        };
+        let level = "[protection] level must be basic, careful or custom";
+        assert_eq!(resolved("[protection]\nlevel = 5\n").unwrap_err(), level);
+        assert_eq!(resolved("[protection]\nlevel = \"Careful\"\n").unwrap_err(), level, "the words are lower case");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = \"2\"\n").unwrap_err(), "[protection] copies must be 1, 2 or 3");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 300\n").unwrap_err(), "[protection] copies must be 1, 2 or 3");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = -1\n").unwrap_err(), "[protection] copies must be 1, 2 or 3");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 3\nonline = 1.5\n").unwrap_err(), "[protection] online must be 0, 1 or 2");
+        assert_eq!(resolved("[protection]\nrecent = true\n").unwrap_err(), "[protection] recent must be strict, normal or relaxed");
+        assert_eq!(resolved("[protection]\nemail = \"of\"\n").unwrap_err(), "[protection] email must be immediate, report or off");
+        assert_eq!(resolved("[protection]\nemail = [\"off\"]\n").unwrap_err(), "[protection] email must be immediate, report or off");
+        assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, recent, email)");
+        assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate });
+        assert_eq!(resolved("[protection]\nlevel = \"careful\"\ncopies = \"x\"\n").unwrap().copies, 3, "copies only counts under custom");
+    }
+
+    #[test]
+    fn resolve_or_basic_gives_the_defaults_and_the_problem_in_words() {
+        let ok = prot(Some("careful"), None, None, None, Some("report")).resolve_or_basic();
+        assert_eq!((ok.0.copies, ok.0.email, ok.1), (3, EmailTiming::Report, None));
+        let (s, problem) = prot(Some("Careful"), None, None, None, None).resolve_or_basic();
+        assert_eq!((s, problem.as_deref()), (ProtectionSettings::default(), Some("[protection] level must be basic, careful or custom")));
+        let (s, problem) = prot(None, None, None, None, Some("of")).resolve_or_basic();
+        assert_eq!((s, problem.as_deref()), (ProtectionSettings::default(), Some("[protection] email must be immediate, report or off")));
+        assert_eq!(protection_problem_line("[protection] email must be immediate, report or off"), "[protection]: email must be immediate, report or off; judging at Basic");
+    }
+
+    #[test]
+    fn an_empty_section_is_not_written_back() {
+        let c: Config = toml::from_str("[protection]\n").unwrap();
+        assert_eq!(c.protection, ProtectionConfig::default());
+        assert!(!toml::to_string(&c).unwrap().contains("protection"));
+        let set: Config = toml::from_str("[protection]\nlevel = \"careful\"\nemail = \"off\"\n").unwrap();
+        assert_eq!(toml::from_str::<Config>(&toml::to_string(&set).unwrap()).unwrap(), set);
     }
 
     #[test]

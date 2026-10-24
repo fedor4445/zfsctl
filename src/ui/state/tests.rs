@@ -571,6 +571,8 @@ fn handle_key_capital_a_opens_about_info_modal() {
             assert_eq!(title, "About");
             assert!(body.contains("zfsctl"));
             assert!(body.contains("Claude"));
+            assert!(body.contains("FreeBSD, Linux and illumos"), "{body}");
+            assert!(crate::ui::logo::wordmark().iter().all(|line| body.contains(line.as_str())), "the wordmark is on the About screen: {body}");
         }
         other => panic!("expected Info modal, got {other:?}"),
     }
@@ -713,7 +715,7 @@ fn switching_selected_host_clears_pane_data() {
         referenced: 1,
         mountpoint: None, quota: 0, refquota: 0,
     }];
-    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "snap1".to_string(), used: 1 }];
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "snap1".to_string(), used: 1, holds: 0, written: 0 }];
     app.pools_table.select(Some(0));
     app.datasets_table.select(Some(0));
     app.snapshots_table.select(Some(0));
@@ -813,8 +815,8 @@ fn drain_worker_messages_clamps_selected_dataset_row_when_list_shrinks() {
 fn handle_key_navigates_snapshot_rows_and_wraps() {
     let mut app = App::new(vec!["local".to_string()]);
     app.snapshots = vec![
-        Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0 },
-        Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0 },
+        Snapshot { dataset: "tank/data".to_string(), name: "a".to_string(), used: 0, holds: 0, written: 0 },
+        Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 0, holds: 0, written: 0 },
     ];
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     assert_eq!(app.current_section(), Section::Snapshots);
@@ -834,6 +836,8 @@ fn drain_worker_messages_clamps_selected_snapshot_row_when_list_shrinks() {
             dataset: "tank/data".to_string(),
             name: "only".to_string(),
             used: 0,
+            holds: 0,
+            written: 0,
         }])))
         .unwrap();
     app.drain_worker_messages();
@@ -1345,7 +1349,7 @@ fn handle_modal_key_create_snapshot_form_submits_with_implied_dataset() {
 #[test]
 fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0 }];
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "old-1".to_string(), used: 0, holds: 0, written: 0 }];
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     app.snapshots_table.select(Some(0));
     app.handle_key(KeyCode::Char('d'));
@@ -1364,7 +1368,7 @@ fn handle_key_d_on_snapshots_opens_destroy_confirm_typed_modal() {
 #[test]
 fn handle_key_b_on_snapshots_opens_rollback_confirm_typed_modal() {
     let mut app = App::new(vec!["local".to_string()]);
-    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0 }];
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "2026-09-01".to_string(), used: 0, holds: 0, written: 0 }];
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     app.snapshots_table.select(Some(0));
     app.handle_key(KeyCode::Char('b'));
@@ -4957,7 +4961,7 @@ fn refreshing_datasets_also_reads_which_are_encrypted_and_locked() {
 #[test]
 fn refresh_snapshots_populates_snapshots_from_fake_runner() {
     let mut app = App::new(vec!["local".to_string()]);
-    let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data@s1\t10\n"));
+    let runner: Arc<dyn CommandRunner> = Arc::new(FakeRunner::new("tank/data@s1\t10\t0\t0\n"));
     app.refresh_snapshots(runner);
     wait_until(&mut app, |a| !a.snapshots.is_empty());
     assert_eq!(app.snapshots.len(), 1);
@@ -5686,7 +5690,7 @@ fn up_and_down_move_the_row_list_of_the_active_dataset_detail_tab() {
 #[test]
 fn up_and_down_move_the_snapshot_disk_and_share_rows() {
     let mut app = in_section(Section::Snapshots);
-    let snap = |n: &str| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: n.to_string(), used: 1 };
+    let snap = |n: &str| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: n.to_string(), used: 1, holds: 0, written: 0 };
     app.snapshots = vec![snap("s1"), snap("s2")];
     up_moves(&mut app, |a| &mut a.snapshots_table, &[|a| &mut a.disks_table, |a| &mut a.shares_table]);
     down_moves(&mut app, |a| &mut a.snapshots_table);
@@ -5824,7 +5828,7 @@ fn auto_refresh_tracks_each_section_and_host_separately() {
     wait_until(&mut app, |a| !a.pools.is_empty());
     // Switching to Snapshots right after must not be held back by Pools' timer.
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-    app.auto_refresh(runner("tank/a@s1\t10\n"), t0 + Duration::from_secs(1), TEN);
+    app.auto_refresh(runner("tank/a@s1\t10\t0\t0\n"), t0 + Duration::from_secs(1), TEN);
     wait_until(&mut app, |a| !a.snapshots.is_empty());
     assert_eq!(app.snapshots.len(), 1);
 }
@@ -5858,6 +5862,7 @@ fn a_quiet_refresh_keeps_an_informational_status_but_a_manual_one_clears_it() {
 fn a_quiet_refresh_clears_a_stale_error_once_the_host_answers() {
     let mut app = in_section(Section::Pools);
     app.set_error("connection refused".to_string());
+    app.status_error_at = Instant::now().checked_sub(Duration::from_secs(9));
     app.auto_refresh(runner("tank\t100\t10\t90\tONLINE\n"), Instant::now(), TEN);
     wait_until(&mut app, |a| !a.pools.is_empty());
     assert!(app.status_message.is_none());
@@ -5895,7 +5900,7 @@ fn selection_is_pinned_by_identity_in_datasets_snapshots_and_disks_too() {
     app.drain_worker_messages();
     assert_eq!(app.selected_dataset_name().as_deref(), Some("tank/b"));
 
-    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 1 };
+    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 1, holds: 0, written: 0 };
     app.snapshots = vec![snap("tank/a", "s1"), snap("tank/b", "s1")];
     app.snapshots_table.select(Some(1)); // tank/b@s1: same snapshot name as another dataset's
     app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![snap("tank/b", "s1"), snap("tank/a", "s1")]))).unwrap();
@@ -6791,7 +6796,7 @@ fn destroy_app() -> App {
     let ds = |name: &str| crate::zfs::dataset::Dataset { name: name.to_string(), kind: crate::zfs::dataset::DatasetKind::Filesystem, used: 0, available: 0, referenced: 0, mountpoint: None, quota: 0, refquota: 0 };
     app.datasets = vec![ds("tank/data"), ds("tank/data/a"), ds("tank/data/b"), ds("tank/data2"), ds("tank/other")];
     app.datasets_table.select(Some(0));
-    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 0 };
+    let snap = |d: &str, n: &str| crate::zfs::snapshot::Snapshot { dataset: d.to_string(), name: n.to_string(), used: 0, holds: 0, written: 0 };
     app.snapshots = vec![snap("tank/data", "s1"), snap("tank/data", "s2"), snap("tank/data/a", "s1"), snap("tank/data2", "x"), snap("tank/other", "x")];
     app.snapshots_loaded = true;
     app
@@ -7491,7 +7496,7 @@ fn backup_job(retention: Option<&str>) -> crate::jobs::Job {
 }
 
 fn snaps(dataset: &str, names: &[&str]) -> Vec<crate::zfs::snapshot::Snapshot> {
-    names.iter().map(|n| crate::zfs::snapshot::Snapshot { dataset: dataset.into(), name: (*n).into(), used: 0 }).collect()
+    names.iter().map(|n| crate::zfs::snapshot::Snapshot { dataset: dataset.into(), name: (*n).into(), used: 0, holds: 0, written: 0 }).collect()
 }
 
 #[test]
@@ -8238,7 +8243,7 @@ fn the_plan_caps_are_read_from_config_toml_each_time_the_remotes_are_asked() {
 // ---- host resources (Dashboard) ----
 
 fn reading(free_gib: u64) -> crate::zfs::host_resources::Resources {
-    crate::zfs::host_resources::Resources { cores: 4, physical: 20 << 30, free: free_gib << 30, inactive: 0, arc: 0, load: None, cpu_ticks: None, swap: None }
+    crate::zfs::host_resources::Resources { cores: 4, physical: 20 << 30, free: free_gib << 30, inactive: 0, arc: 0, load: None, cpu_ticks: None, swap: None, cache: None }
 }
 
 #[test]
@@ -8284,7 +8289,7 @@ fn a_probe_that_did_not_reach_the_host_clears_its_readings_so_stale_numbers_do_n
 #[test]
 fn a_probe_reads_the_resources_and_asks_for_the_utc_offset_only_until_it_is_known() {
     const STATUS: &str = "  pool: scratch\n state: ONLINE\nconfig:\n\n\tNAME  STATE  READ WRITE CKSUM\n\tscratch  ONLINE  0  0  0\n";
-    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n";
+    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n9990\n10\n0\n0\n0\n";
     let runner = std::sync::Arc::new(
         FakeRunner::new("").route("zpool", "list", "scratch\t100\t10\t90\t1\tONLINE\n").route("zpool", "status", STATUS).route("sysctl", "-n", SYSCTL).route("date", "+%z", "+0200\n"),
     );
@@ -8368,6 +8373,150 @@ fn up_down_and_enter_on_the_dashboard_only_navigate() {
     app.handle_key(KeyCode::Enter);
     assert_eq!(app.current_section(), Section::Jobs, "the daemon line belongs to Jobs");
     assert!(app.pending_mutations.is_empty() && app.modal.is_none() && app.picker.is_none(), "Enter changed nothing but the section");
+}
+
+/// A Dashboard app whose daemon is up and whose `local` host has these datasets, a week old and unprotected.
+fn unprotected_app(names: &[&str]) -> App {
+    let (mut app, dir) = dash_app();
+    std::mem::forget(dir);
+    app.jobs_view.loaded = true;
+    app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now() - chrono::Duration::days(1), last_tick: chrono::Utc::now() });
+    app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
+    let created = Some((chrono::Utc::now() - chrono::Duration::days(7)).timestamp());
+    let seen = names.iter().map(|n| crate::daemon::storage_check::SeenDataset { name: (*n).into(), volume: false, created }).collect();
+    let entry = crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+    app.storage_check.hosts.insert("local".into(), entry);
+    app
+}
+
+#[test]
+fn enter_on_a_named_protection_line_goes_straight_to_its_fix() {
+    let mut app = unprotected_app(&["tank/docs", "tank/photos"]);
+    let items = app.dashboard().attention;
+    assert_eq!(items.iter().filter(|i| i.what.contains("no snapshots")).count(), 2, "{items:?}");
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::Down);
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Fix"), "the hint says what Enter does here");
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.current_section(), Section::Dashboard);
+    assert!(matches!(&app.modal, Some(Modal::Form { title, .. }) if title == "New snapshot job"), "no list in between: {:?}", app.modal);
+    assert_eq!(field(app.modal.as_ref(), 1), ("Dataset".to_string(), "tank/photos".to_string()), "the line that was selected");
+    assert_eq!(field(app.modal.as_ref(), 0).1, "local");
+}
+
+#[test]
+fn enter_on_the_and_more_line_opens_the_list_at_the_first_dataset_without_a_line() {
+    let mut app = unprotected_app(&["tank/a", "tank/b", "tank/c", "tank/d", "tank/e"]);
+    let items = app.dashboard().attention;
+    let more = items.iter().position(|i| i.subject == "protection").expect("the folded line");
+    for _ in 0..=more {
+        app.handle_key(KeyCode::Down);
+    }
+    assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "Enter" && h.label == "Show list"));
+    app.handle_key(KeyCode::Enter);
+    match &app.modal {
+        Some(Modal::Choose { title, rows, selected, .. }) => {
+            assert_eq!(title, "Unprotected data");
+            assert_eq!(rows.len(), 5);
+            assert_eq!(*selected, 3);
+            assert!(rows[3].contains("tank/d"), "{rows:?}");
+        }
+        other => panic!("expected the list, got {other:?}"),
+    }
+    app.handle_modal_key(KeyCode::Esc);
+    assert!(app.modal.is_none());
+}
+
+fn unprotected(snapshots: Option<crate::daemon::protection::Gap>, copies: Option<crate::daemon::protection::CopyGap>, dataset: &str) -> crate::daemon::protection::Unprotected {
+    crate::daemon::protection::Unprotected { host: "fbsd16".into(), dataset: dataset.into(), tier: crate::daemon::protection::Tier::Data, snapshots, copies }
+}
+
+fn list_of(gaps: Vec<crate::daemon::protection::Unprotected>) -> Modal {
+    Modal::Choose { title: "Unprotected data".into(), note: "n".into(), rows: gaps.iter().map(|g| g.dataset.clone()).collect(), selected: 0, then: crate::ui::modal::ChooseThen::Unprotected(gaps), look: crate::ui::modal::ChooseLook::default() }
+}
+
+fn field(modal: Option<&Modal>, n: usize) -> (String, String) {
+    match modal {
+        Some(Modal::Form { fields, .. }) => (fields[n].label.clone(), fields[n].value.clone()),
+        other => panic!("expected a form, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_list_moves_with_the_arrows_stays_in_range_and_ignores_other_keys() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Missing), None, "tank/a"), unprotected(Some(Gap::Missing), None, "tank/b")]));
+    let selected = |app: &App| match &app.modal {
+        Some(Modal::Choose { selected, .. }) => *selected,
+        other => panic!("{other:?}"),
+    };
+    app.handle_modal_key(KeyCode::Up);
+    assert_eq!(selected(&app), 0);
+    app.handle_modal_key(KeyCode::Down);
+    app.handle_modal_key(KeyCode::Down);
+    assert_eq!(selected(&app), 1, "not past the last row");
+    app.handle_modal_key(KeyCode::Char('x'));
+    app.handle_modal_key(KeyCode::Char('q'));
+    assert_eq!(selected(&app), 1, "a stray key neither closes it nor acts");
+    app.handle_modal_key(KeyCode::Home);
+    assert_eq!(selected(&app), 0);
+    app.handle_modal_key(KeyCode::End);
+    assert_eq!(selected(&app), 1);
+}
+
+#[test]
+fn enter_on_a_dataset_with_no_snapshots_opens_a_new_snapshot_job_for_it_on_its_host() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Missing), None, "tank/photos")]));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Form { title, .. }) if title == "New snapshot job"), "{:?}", app.modal);
+    assert_eq!(field(app.modal.as_ref(), 0), ("Host".to_string(), "fbsd16".to_string()));
+    assert_eq!(field(app.modal.as_ref(), 1), ("Dataset".to_string(), "tank/photos".to_string()));
+}
+
+#[test]
+fn a_dataset_that_needs_a_copy_asks_which_kind_and_opens_that_form_filled_in() {
+    use crate::daemon::protection::{CopyGap, Gap};
+    let copies = Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, worst: Gap::Missing });
+    for (row, title, host_label, dataset_label) in [(0, "New replication job", "Source host", "Source dataset"), (1, "New backup job", "Host (where restic runs)", "Dataset"), (2, "New cloud mirror job", "Host (where rclone runs)", "Dataset")] {
+        let (mut app, _dir) = dash_app();
+        app.modal = Some(list_of(vec![unprotected(None, copies, "tank/photos")]));
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Choose { title, rows, .. }) if title == "Which copy?" && rows.len() == 3), "{:?}", app.modal);
+        for _ in 0..row {
+            app.handle_modal_key(KeyCode::Down);
+        }
+        app.handle_modal_key(KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Form { title: t, .. }) if t == title), "{:?}", app.modal);
+        assert_eq!(field(app.modal.as_ref(), 0), (host_label.to_string(), "fbsd16".to_string()));
+        assert_eq!(field(app.modal.as_ref(), 1), (dataset_label.to_string(), "tank/photos".to_string()));
+    }
+}
+
+#[test]
+fn a_dataset_whose_job_exists_goes_to_that_job_in_jobs() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    let mut job = crate::jobs::Job::test_snapshot("snap-photos", "tank/photos", "auto", 24);
+    job.host = "fbsd16".into();
+    app.jobs_view.jobs = vec![crate::jobs::Job::test_snapshot("other", "tank/x", "auto", 24), job];
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Failing), None, "tank/photos")]));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert_eq!(app.current_section(), Section::Jobs);
+    assert_eq!(app.jobs_table.selected(), Some(1), "the job that covers it, not the first one");
+}
+
+#[test]
+fn escape_closes_the_list_without_doing_anything() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(list_of(vec![unprotected(Some(Gap::Missing), None, "tank/photos")]));
+    app.handle_modal_key(KeyCode::Esc);
+    assert!(app.modal.is_none() && app.pending_mutations.is_empty());
+    assert_eq!(app.current_section(), Section::Dashboard);
 }
 
 #[test]
@@ -8604,6 +8753,22 @@ fn saving_the_auto_refresh_changes_the_interval_and_zero_turns_it_off() {
     assert_eq!(app.auto_refresh_interval, None);
     saved_settings(&mut app, &dir, "");
     assert_eq!(app.auto_refresh_interval, Some(Duration::from_secs(crate::config::DEFAULT_AUTO_REFRESH_SECS)));
+}
+
+#[test]
+fn a_wrong_protection_value_reaches_the_dashboard_as_a_watch_line() {
+    let (mut app, dir) = settings_app("");
+    saved_settings(&mut app, &dir, "[protection]\nlevel = \"Careful\"\n");
+    assert_eq!(app.dashboard_protection_problem.as_deref(), Some("[protection] level must be basic, careful or custom"));
+    assert_eq!(app.dashboard_protection, crate::config::ProtectionSettings::default());
+    std::fs::write(dir.path().join("config.toml"), "[protection]\nemail = \"of\"\n").unwrap();
+    app.refresh_dashboard();
+    assert_eq!(app.dashboard_protection_problem.as_deref(), Some("[protection] email must be immediate, report or off"));
+    assert!(app.dashboard().attention.iter().any(|i| i.subject == "config.toml" && i.what.ends_with("judging at Basic")));
+    std::fs::write(dir.path().join("config.toml"), "[protection]\nemail = \"off\"\n").unwrap();
+    app.refresh_dashboard();
+    assert!(app.dashboard_protection_problem.is_none());
+    assert!(app.dashboard().attention.iter().all(|i| i.subject != "config.toml"));
 }
 
 #[test]
@@ -9429,7 +9594,7 @@ fn integrity_app(checksum: &str, dedup: &str) -> App {
 }
 
 fn version_of(app: &mut App, version: &str) {
-    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
 }
 
 #[test]
@@ -9868,4 +10033,1049 @@ fn a_failed_measurement_keeps_the_last_good_numbers_and_says_why() {
     fresh.tx.send(WorkerMsg::CloudSize("m".into(), failed.clone())).unwrap();
     fresh.drain_worker_messages();
     assert_eq!(fresh.cloud_sizes["m"], failed);
+}
+
+#[test]
+fn help_has_a_blank_line_between_key_lines() {
+    let text = help_text();
+    let lines: Vec<&str> = text.lines().collect();
+    for pair in lines.windows(2) {
+        assert!(!(pair[0].starts_with("  ") && pair[1].starts_with("  ")), "no blank line between {:?} and {:?}", pair[0], pair[1]);
+    }
+    assert!(text.contains("switch sections\n\n  Up / Down"), "{text}");
+    assert!(!text.contains("Global\n\n"), "a heading is followed directly by its first key");
+}
+
+#[test]
+fn an_info_popup_scrolls_with_the_navigation_keys_and_any_other_key_closes_it() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.modal = Some(Modal::Info { title: "Help".to_string(), body: "a\nb\nc".to_string() });
+    app.handle_modal_key(KeyCode::Down);
+    assert_eq!(app.info_scroll, 1);
+    assert!(app.modal.is_some());
+    app.handle_modal_key(KeyCode::PageDown);
+    assert_eq!(app.info_scroll, 2, "never past the last line");
+    app.handle_modal_key(KeyCode::Up);
+    assert_eq!(app.info_scroll, 1);
+    app.handle_modal_key(KeyCode::Home);
+    assert_eq!(app.info_scroll, 0);
+    app.handle_modal_key(KeyCode::End);
+    assert_eq!(app.info_scroll, 2);
+    app.handle_modal_key(KeyCode::Char('x'));
+    assert!(app.modal.is_none());
+    assert_eq!(app.info_scroll, 0, "the next pop-up starts at the top");
+}
+
+fn hold_app(holds: u64, tags: Option<&[&str]>) -> App {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds, written: 0 }];
+    if let Some(tags) = tags {
+        app.snapshot_tags.insert("tank/data@s1".to_string(), tags.iter().map(|t| (*t).to_string()).collect());
+    }
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app
+}
+
+#[test]
+fn capital_h_on_an_unheld_snapshot_opens_a_y_n_confirm_for_a_hold() {
+    let mut app = hold_app(0, None);
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+            assert_eq!(action.call, crate::ui::modal::MutationCall::HoldSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() });
+        }
+        other => panic!("expected Confirm modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn capital_h_on_a_held_snapshot_opens_a_typed_confirm_for_a_release() {
+    let mut app = hold_app(2, Some(&["keepme", "zfsctl"]));
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::ConfirmTyped { expected, action, .. }) => {
+            assert_eq!(expected, "tank/data@s1");
+            assert_eq!(action.call, crate::ui::modal::MutationCall::ReleaseSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() });
+        }
+        other => panic!("expected ConfirmTyped modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn capital_h_with_nothing_selected_does_nothing() {
+    let mut app = hold_app(0, None);
+    app.snapshots_table.select(None);
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none());
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn capital_h_on_a_snapshot_held_only_by_another_tag_opens_no_modal_and_says_why() {
+    let mut app = hold_app(1, Some(&["backup-keep"]));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none());
+    assert_eq!(app.status_message.as_deref(), Some("held by another tag: backup-keep; zfsctl will not release it"));
+}
+
+#[test]
+fn capital_h_on_a_held_snapshot_with_unknown_tags_opens_no_modal_and_says_to_refresh() {
+    let mut app = hold_app(1, None);
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none());
+    assert_eq!(app.status_message.as_deref(), Some("hold tags not loaded yet; press r"));
+}
+
+#[test]
+fn capital_h_message_cleans_foreign_tags_and_drops_ones_that_are_empty_after_cleaning() {
+    let mut app = hold_app(2, Some(&["a\u{1b}[31mb\u{202e}", "\u{1b}\u{7}", "keep"]));
+    app.handle_key(KeyCode::Char('H'));
+    assert_eq!(app.status_message.as_deref(), Some("held by another tag: a [31mb, keep; zfsctl will not release it"));
+}
+
+#[test]
+fn the_release_prompt_says_what_becomes_possible() {
+    let mut app = hold_app(1, Some(&["zfsctl"]));
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::ConfirmTyped { prompt, expected, .. }) => {
+            assert!(prompt.contains("'tank/data@s1' — it can then be destroyed and pruned again"), "{prompt}");
+            assert_eq!(expected, "tank/data@s1");
+        }
+        other => panic!("expected ConfirmTyped modal, got {other:?}"),
+    }
+}
+
+fn wait_for_snapshots(app: &mut App) {
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if app.snapshots_loaded && !app.is_refreshing(Section::Snapshots, 0) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.snapshots_loaded);
+}
+
+#[test]
+fn a_refresh_with_51_held_snapshots_asks_for_tags_in_two_calls() {
+    let list = (0..51).map(|i| format!("tank/data@s{i}\t10\t1\t0\n")).collect::<Vec<_>>().concat();
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", &list).route("zfs", "holds", "tank/data@s0\tzfsctl\tx\n"));
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(dynrunner);
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if !app.snapshot_tags.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let calls = runner.calls.lock().unwrap();
+    let holds: Vec<_> = calls.iter().filter(|c| c.1[0] == "holds").collect();
+    assert_eq!(holds.len(), 2);
+    assert_eq!(&holds[0].1[..3], ["holds", "-H", "--"]);
+    assert_eq!(holds[0].1.len(), 3 + 50);
+    assert_eq!(holds[1].1.len(), 3 + 1);
+}
+
+#[test]
+fn a_refresh_while_a_tag_fetch_runs_starts_no_second_fetch() {
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\t0\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.tags_running.lock().unwrap().insert(0);
+    app.refresh_snapshots(dynrunner);
+    wait_for_snapshots(&mut app);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    app.drain_worker_messages();
+    assert_eq!(runner.calls.lock().unwrap().iter().filter(|c| c.1[0] == "holds").count(), 0);
+    assert!(app.snapshot_tags.is_empty());
+    assert!(app.tags_running.lock().unwrap().contains(&0), "the running fetch's mark is not cleared by the skipped one");
+}
+
+#[test]
+fn the_tag_fetch_mark_is_cleared_when_the_tags_arrive() {
+    let runner = Arc::new(FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t1\t0\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tx\n"));
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(dynrunner);
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if !app.snapshot_tags.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!app.snapshot_tags.is_empty());
+    assert!(app.tags_running.lock().unwrap().is_empty());
+}
+
+#[test]
+fn tags_of_an_older_snapshot_list_are_ignored_and_ask_for_a_new_refresh() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.snapshot_gen.insert(0, 2);
+    app.tags_running.lock().unwrap().insert(0);
+    let tags = std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]);
+    app.tx.send(WorkerMsg::SnapshotTags(0, 1, tags.clone())).unwrap();
+    let needed = app.drain_worker_messages();
+    assert!(app.snapshot_tags.is_empty());
+    assert!(needed.contains(&Section::Snapshots));
+    assert!(app.tags_running.lock().unwrap().is_empty());
+    app.tx.send(WorkerMsg::SnapshotTags(0, 2, tags.clone())).unwrap();
+    let needed = app.drain_worker_messages();
+    assert_eq!(app.snapshot_tags, tags);
+    assert!(!needed.contains(&Section::Snapshots));
+}
+
+#[test]
+fn a_snapshot_refresh_fetches_tags_for_the_held_snapshots_only() {
+    let runner = Arc::new(
+        FakeRunner::new("").route("zfs", "list", "tank/data@s1\t10\t0\t0\ntank/data@s2\t10\t2\t0\n").route("zfs", "holds", "tank/data@s2\tzfsctl\tThu Oct 1 00:00 2026\ntank/data@s2\tother\tThu Oct 1 00:00 2026\n"),
+    );
+    let dynrunner: Arc<dyn CommandRunner> = runner.clone();
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(dynrunner);
+    for _ in 0..200 {
+        app.drain_worker_messages();
+        if !app.snapshot_tags.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(app.snapshot_tags.get("tank/data@s2"), Some(&vec!["zfsctl".to_string(), "other".to_string()]));
+    assert!(!app.snapshot_tags.contains_key("tank/data@s1"));
+    let calls = runner.calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|c| c.1[0] == "holds").count(), 1);
+}
+
+#[test]
+fn a_snapshot_refresh_clears_the_old_tags() {
+    let mut app = hold_app(1, Some(&["zfsctl"]));
+    app.begin_refresh(Section::Snapshots, 0);
+    app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }]))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.snapshot_tags.is_empty());
+}
+
+#[test]
+fn tags_from_another_host_are_ignored() {
+    let mut app = App::new(vec!["local".to_string(), "other".to_string()]);
+    app.tx.send(WorkerMsg::SnapshotTags(1, 0, std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.snapshot_tags.is_empty());
+}
+
+#[test]
+fn stale_tags_while_a_snapshot_refresh_is_in_flight_or_pending_push_no_refresh() {
+    let tags = std::collections::HashMap::from([("tank/data@s1".to_string(), vec!["zfsctl".to_string()])]);
+    let mut app = App::new(vec!["local".to_string()]);
+    app.snapshot_gen.insert(0, 2);
+    app.begin_refresh(Section::Snapshots, 0);
+    app.tx.send(WorkerMsg::SnapshotTags(0, 1, tags.clone())).unwrap();
+    assert!(!app.drain_worker_messages().contains(&Section::Snapshots), "an in-flight refresh fetches its own tags");
+    app.end_refresh(Section::Snapshots, 0);
+    app.pending_refresh.insert((Section::Snapshots, 0));
+    app.tx.send(WorkerMsg::SnapshotTags(0, 1, tags)).unwrap();
+    assert!(!app.drain_worker_messages().contains(&Section::Snapshots));
+}
+
+#[test]
+fn capital_h_with_only_unprintable_foreign_tags_still_says_it_is_held() {
+    let mut app = hold_app(1, Some(&["\u{1b}\u{7}"]));
+    app.handle_key(KeyCode::Char('H'));
+    assert_eq!(app.status_message.as_deref(), Some("held by another tag (name not printable); zfsctl will not release it"));
+}
+
+struct PanickingList;
+impl CommandRunner for PanickingList {
+    fn run(&self, _: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        assert_ne!(args[0], "holds", "boom");
+        Ok(crate::exec::CommandOutput { stdout: "tank/data@s1\t10\t1\t0\n".into(), stderr: String::new(), status: 0 })
+    }
+    fn run_with_stdin(&self, cmd: &str, args: &[&str], _: &str) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, args)
+    }
+    fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> crate::error::Result<crate::exec::CommandOutput> {
+        self.run(cmd, args)
+    }
+}
+
+#[test]
+fn a_panicking_tag_fetch_still_clears_the_per_host_mark() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.refresh_snapshots(Arc::new(PanickingList));
+    for _ in 0..300 {
+        app.drain_worker_messages();
+        if app.snapshots_loaded && app.tags_running.lock().unwrap().is_empty() && !app.is_refreshing(Section::Snapshots, 0) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            app.drain_worker_messages();
+            if app.tags_running.lock().unwrap().is_empty() {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.snapshots_loaded);
+    assert!(app.tags_running.lock().unwrap().is_empty());
+    assert!(app.snapshot_tags.is_empty());
+}
+
+#[test]
+fn an_error_status_survives_a_quiet_refresh_for_eight_seconds_only() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.set_error("protected: x".to_string());
+    app.clear_status_after_refresh(true);
+    assert_eq!(app.status_message.as_deref(), Some("protected: x"));
+    app.status_error_at = Instant::now().checked_sub(Duration::from_secs(9));
+    app.clear_status_after_refresh(true);
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn a_non_quiet_refresh_clears_a_young_error_at_once() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.set_error("protected: x".to_string());
+    app.clear_status_after_refresh(false);
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn d_on_a_held_snapshot_shows_the_refusal_and_runs_no_destroy() {
+    let mut app = hold_app(1, Some(&["zfsctl"]));
+    app.handle_key(KeyCode::Char('d'));
+    for c in "tank/data@s1".chars() {
+        assert_eq!(app.handle_modal_key(KeyCode::Char(c)), None);
+    }
+    let action = app.handle_modal_key(KeyCode::Enter).expect("the typed name confirms");
+    let fake = Arc::new(FakeRunner::new("").route("zfs", "get", "tank/data@s1\t1\n").route("zfs", "holds", "tank/data@s1\tzfsctl\tThu Oct 1 00:00 2026\n"));
+    let runner: Arc<dyn CommandRunner> = fake.clone();
+    app.dispatch_mutation(action, runner);
+    for _ in 0..200 {
+        app.drain_worker_messages();
+        if app.status_message.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let status = app.status_message.clone().unwrap_or_default();
+    assert!(status.starts_with("protected:"), "{status}");
+    assert!(app.status_is_error());
+    assert!(!fake.calls.lock().unwrap().iter().any(|c| c.1[0] == "destroy"));
+}
+
+#[test]
+fn help_lists_the_hold_key() {
+    assert!(help_text().contains("  H                hold the selected snapshot"), "{}", help_text());
+}
+
+#[test]
+fn a_foreign_tag_with_control_characters_is_shown_readably_in_the_status() {
+    let mut app = hold_app(1, Some(&["a\u{1b}[31mb\u{202e}c"]));
+    app.handle_key(KeyCode::Char('H'));
+    let msg = app.status_message.clone().unwrap();
+    assert!(!msg.chars().any(|c| c.is_control() || c == '\u{202e}'), "{msg:?}");
+    assert_eq!(msg, "held by another tag: a [31mb c; zfsctl will not release it");
+}
+
+#[test]
+fn a_very_long_foreign_tag_is_truncated_in_the_status() {
+    let long = "x".repeat(200);
+    let mut app = hold_app(1, Some(&[long.as_str()]));
+    app.handle_key(KeyCode::Char('H'));
+    let msg = app.status_message.clone().unwrap();
+    assert!(msg.contains(&format!("{}…", "x".repeat(39))), "{msg:?}");
+    assert!(msg.chars().count() < 100, "{msg:?}");
+}
+
+// ---- the changes view (c and C in Snapshots) ----
+
+fn changes_app() -> App {
+    let mut app = hold_app(0, None);
+    let host = app.hosts[0].clone();
+    app.host_probes.insert(host, HostProbeState { os: Some(crate::zfs::host_health::HostOs::FreeBsd), ..HostProbeState::default() });
+    app.snapshots.push(Snapshot { dataset: "tank/data".to_string(), name: "s2".to_string(), used: 0, holds: 0, written: 0 });
+    app.snapshots_table.select(Some(1));
+    app
+}
+
+fn ready_outcome(entries: &[(&str, crate::zfs::snapshot_diff::Change)]) -> crate::ui::changes::ChangesOutcome {
+    use crate::zfs::snapshot_changes::{ChangeSummary, Limits};
+    use crate::zfs::snapshot_diff::{DiffEntry, FileKind};
+    let mut summary = ChangeSummary::new(&Limits::default(), Some("/ds".to_string()));
+    for (path, change) in entries {
+        summary.add(DiffEntry { changed_at: 1_788_654_605, change: *change, kind: FileKind::File, path: (*path).to_string(), renamed_to: None });
+    }
+    crate::ui::changes::ChangesOutcome::Done { older: "tank/data@s1".to_string(), newer: "tank/data@s2".to_string(), summary }
+}
+
+fn deliver(app: &mut App, host: usize, request: u64, outcome: crate::error::Result<crate::ui::changes::ChangesOutcome>) {
+    app.tx.send(WorkerMsg::Changes(host, request, outcome)).unwrap();
+    app.drain_worker_messages();
+}
+
+fn ready_app() -> App {
+    use crate::zfs::snapshot_diff::Change;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request, Ok(ready_outcome(&[("/ds/a/f1", Change::Added), ("/ds/a/f2", Change::Added), ("/ds/b/g", Change::Removed)])));
+    app
+}
+
+#[test]
+fn c_on_a_snapshot_opens_a_reading_view_and_queues_one_read() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let view = app.changes_view.as_ref().expect("a view");
+    assert!(matches!(view.phase, crate::ui::changes::Phase::Reading));
+    assert_eq!(app.pending_changes.len(), 1);
+    let p = &app.pending_changes[0];
+    assert_eq!((p.host, p.dataset.as_str(), p.name.as_str(), p.against), (0, "tank/data", "s2", crate::ui::changes::Against::Previous));
+    assert_eq!(p.request, view.request);
+}
+
+#[test]
+fn capital_c_compares_with_the_live_dataset() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(app.pending_changes[0].against, crate::ui::changes::Against::Live);
+    assert_eq!(app.changes_view.as_ref().unwrap().against, crate::ui::changes::Against::Live);
+}
+
+#[test]
+fn c_with_nothing_selected_does_nothing() {
+    let mut app = changes_app();
+    app.snapshots_table.select(None);
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('C'));
+    assert!(app.changes_view.is_none() && app.pending_changes.is_empty());
+}
+
+#[test]
+fn c_while_a_read_is_running_starts_no_second_one() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('C'));
+    assert_eq!(app.pending_changes.len(), 1);
+}
+
+#[test]
+fn a_result_for_an_older_request_or_another_host_is_ignored() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request + 99, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::Reading));
+    deliver(&mut app, 5, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::Reading));
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(matches!(app.changes_view.as_ref().unwrap().phase, crate::ui::changes::Phase::NoPrevious));
+}
+
+#[test]
+fn esc_while_reading_sets_the_cancel_flag_and_closes_the_view() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let cancel = std::sync::Arc::clone(&app.pending_changes[0].cancel);
+    assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.is_none());
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn esc_in_an_open_group_returns_to_the_groups_and_then_closes_the_view() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Enter);
+    assert!(app.changes_view.as_ref().unwrap().open_group.is_some());
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.as_ref().is_some_and(|v| v.open_group.is_none()));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.is_none());
+}
+
+#[test]
+fn up_down_select_and_the_brackets_change_the_depth_inside_the_limits() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.changes_view.as_ref().unwrap().selected, 1);
+    app.handle_key(KeyCode::Up);
+    assert_eq!(app.changes_view.as_ref().unwrap().selected, 0);
+    app.handle_key(KeyCode::Char(']'));
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 3);
+    for _ in 0..5 {
+        app.handle_key(KeyCode::Char(']'));
+    }
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 4);
+    for _ in 0..9 {
+        app.handle_key(KeyCode::Char('['));
+    }
+    assert_eq!(app.changes_view.as_ref().unwrap().depth, 1);
+}
+
+#[test]
+fn capital_h_in_the_view_holds_the_older_snapshot_with_a_y_n_confirm() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('H'));
+    match app.modal {
+        Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+            assert_eq!(action.call, crate::ui::modal::MutationCall::HoldSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() });
+        }
+        other => panic!("expected Confirm modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn capital_h_in_the_view_does_nothing_without_an_older_snapshot() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none(), "still reading");
+    let request = app.changes_view.as_ref().unwrap().request;
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.modal.is_none(), "the oldest snapshot has no older one");
+}
+
+#[test]
+fn help_and_quit_keep_working_inside_the_view() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('?'));
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Info { .. })));
+    app.modal = None;
+    app.handle_key(KeyCode::Char('q'));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn a_view_of_another_host_is_dropped_on_the_next_key() {
+    let mut app = ready_app();
+    app.selected_host = 3;
+    app.handle_key(KeyCode::Down);
+    assert!(app.changes_view.is_none());
+}
+
+#[test]
+fn the_help_lists_the_changes_keys() {
+    let text = help_text_for_book();
+    assert!(text.contains("  c ") && text.contains("  C "), "{text}");
+}
+
+#[test]
+fn a_read_whose_runner_cannot_run_the_diff_ends_failed_not_stuck() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('c'));
+    let pending = app.pending_changes.remove(0);
+    let request = pending.request;
+    app.start_changes(std::sync::Arc::new(FakeRunner::new("")), pending);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while matches!(app.changes_view.as_ref().map(|v| &v.phase), Some(crate::ui::changes::Phase::Reading)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.drain_worker_messages();
+    }
+    let view = app.changes_view.as_ref().unwrap();
+    assert_eq!(view.request, request);
+    assert!(matches!(view.phase, crate::ui::changes::Phase::Failed(_)), "{:?}", view.phase);
+}
+
+#[test]
+fn a_changes_view_does_not_survive_a_host_switch_and_its_read_is_cancelled() {
+    let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }];
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app.handle_key(KeyCode::Char('c'));
+    let (request, cancel) = (app.pending_changes[0].request, std::sync::Arc::clone(&app.pending_changes[0].cancel));
+    app.selected_host = 1;
+    app.clear_host_data();
+    assert!(app.changes_view.is_none(), "the view belonged to the other host");
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst), "and its diff is cancelled, not left running");
+    // The answer arrives late, and the user comes back to the first host: no view is stuck on "reading".
+    app.selected_host = 0;
+    deliver(&mut app, 0, request, Ok(crate::ui::changes::ChangesOutcome::NoPrevious));
+    assert!(app.changes_view.is_none());
+}
+
+fn browse_outcome(names: &[(&str, crate::zfs::snapshot_browse::EntryKind)]) -> crate::ui::browse::BrowseOutcome {
+    use crate::zfs::snapshot_browse::{ListEntry, Listing, Row};
+    let entries = names
+        .iter()
+        .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "root".to_string(), group: "wheel".to_string(), size: 5, time: Some(1_700_000_000), link_target: None, ambiguous: false }, changed: None, created: None })
+        .collect();
+    crate::ui::browse::BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/tank/data".to_string(), zone: None }
+}
+
+fn deliver_browse(app: &mut App, host: usize, request: u64, outcome: crate::error::Result<crate::ui::browse::BrowseOutcome>) {
+    app.tx.send(WorkerMsg::Browse(host, request, outcome)).unwrap();
+    app.drain_worker_messages();
+}
+
+fn browsing_app() -> App {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let request = app.browse_view.as_ref().unwrap().request;
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[("pics", EntryKind::Directory), ("a.txt", EntryKind::File)])));
+    app
+}
+
+#[test]
+fn f_starts_a_read_of_the_snapshot_top_and_shows_the_view() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let view = app.browse_view.as_ref().expect("f opens the browser");
+    assert!(matches!(view.phase, crate::ui::browse::Phase::Reading));
+    assert_eq!(app.pending_browse.len(), 1);
+    let p = &app.pending_browse[0];
+    assert_eq!((p.dataset.as_str(), p.name.as_str(), p.path.len(), p.mountpoint.clone()), ("tank/data", "s2", 0, None));
+    assert!(app.browse_view_active());
+}
+
+#[test]
+fn keys_that_act_on_the_hidden_list_do_nothing_inside_the_browser() {
+    let mut app = browsing_app();
+    for key in ['d', 'b', 'c', 'C', 'H', 'f'] {
+        app.handle_key(KeyCode::Char(key));
+        assert!(app.modal.is_none(), "{key} must not open a confirm behind the browser");
+    }
+    assert_eq!(app.pending_browse.len(), 1, "f inside the browser starts nothing");
+    assert!(app.changes_view.is_none() && app.pending_changes.is_empty(), "c does not start a diff either");
+}
+
+#[test]
+fn the_changes_view_swallows_d_b_and_f_too() {
+    let mut app = ready_app();
+    for key in ['d', 'b', 'f'] {
+        app.handle_key(KeyCode::Char(key));
+        assert!(app.modal.is_none() && app.browse_view.is_none(), "{key}");
+    }
+}
+
+#[test]
+fn enter_opens_a_folder_and_left_goes_back() {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = browsing_app();
+    app.pending_browse.clear();
+    app.handle_key(KeyCode::Enter);
+    assert_eq!(app.pending_browse.len(), 1);
+    assert_eq!(app.pending_browse[0].path, ["pics"]);
+    assert_eq!(app.pending_browse[0].mountpoint.as_deref(), Some("/tank/data"));
+    let request = app.browse_view.as_ref().unwrap().request;
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[("x", EntryKind::File)])));
+    app.pending_browse.clear();
+    app.handle_key(KeyCode::Left);
+    assert_eq!(app.pending_browse.len(), 1);
+    assert!(app.pending_browse[0].path.is_empty());
+}
+
+#[test]
+fn a_late_answer_for_another_request_is_dropped() {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let request = app.browse_view.as_ref().unwrap().request;
+    deliver_browse(&mut app, 0, request + 7, Ok(browse_outcome(&[("x", EntryKind::File)])));
+    assert!(matches!(app.browse_view.as_ref().unwrap().phase, crate::ui::browse::Phase::Reading));
+    deliver_browse(&mut app, 3, request, Ok(browse_outcome(&[("x", EntryKind::File)])));
+    assert!(matches!(app.browse_view.as_ref().unwrap().phase, crate::ui::browse::Phase::Reading), "another host's answer is dropped");
+}
+
+#[test]
+fn a_browse_view_does_not_survive_a_host_switch_and_its_read_is_cancelled() {
+    let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.host_probes.insert("a".to_string(), HostProbeState { os: Some(crate::zfs::host_health::HostOs::FreeBsd), ..HostProbeState::default() });
+    app.snapshots = vec![Snapshot { dataset: "tank/data".to_string(), name: "s1".to_string(), used: 0, holds: 0, written: 0 }];
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app.handle_key(KeyCode::Char('f'));
+    let (request, cancel) = (app.pending_browse[0].request, std::sync::Arc::clone(&app.pending_browse[0].cancel));
+    app.selected_host = 1;
+    app.clear_host_data();
+    assert!(app.browse_view.is_none());
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst), "the read is cancelled, not left running");
+    app.selected_host = 0;
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[])));
+    assert!(app.browse_view.is_none());
+}
+
+#[test]
+fn esc_cancels_a_running_read_and_closes_the_view() {
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let cancel = std::sync::Arc::clone(&app.pending_browse[0].cancel);
+    app.handle_key(KeyCode::Esc);
+    assert!(app.browse_view.is_none());
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn typing_in_the_filter_prompt_is_not_taken_for_commands() {
+    let mut app = browsing_app();
+    app.handle_key(KeyCode::Char('/'));
+    for c in "qd?f".chars() {
+        app.handle_key(KeyCode::Char(c));
+    }
+    assert!(!app.should_quit && app.modal.is_none(), "letters typed into the prompt are text");
+    assert_eq!(app.browse_view.as_ref().unwrap().input.as_ref().map(|i| i.text.as_str()), Some("qd?f"));
+}
+
+#[test]
+fn leaving_the_snapshots_section_hides_the_browser_and_an_answer_that_arrives_meanwhile_is_there_on_return() {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut app = changes_app();
+    app.handle_key(KeyCode::Char('f'));
+    let request = app.browse_view.as_ref().unwrap().request;
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Pools).unwrap();
+    assert!(!app.browse_view_active(), "the browser is not shown on another section");
+    deliver_browse(&mut app, 0, request, Ok(browse_outcome(&[("pics", EntryKind::Directory)])));
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    assert!(app.browse_view_active());
+    assert!(matches!(app.browse_view.as_ref().unwrap().phase, crate::ui::browse::Phase::Ready), "the answer was kept for when the user comes back");
+}
+
+#[test]
+fn f_before_the_host_has_been_probed_asks_to_wait_instead_of_guessing_the_operating_system() {
+    let mut app = changes_app();
+    app.host_probes.clear();
+    app.handle_key(KeyCode::Char('f'));
+    assert!(app.browse_view.is_none() && app.pending_browse.is_empty(), "nothing is sent to a host of unknown type");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("not been probed")), "{:?}", app.status_message);
+}
+
+#[test]
+fn slash_inside_a_changes_folder_starts_a_filter_and_letters_typed_are_text() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Enter);
+    assert!(app.changes_view.as_ref().unwrap().open_group.is_some());
+    app.handle_key(KeyCode::Char('/'));
+    assert!(app.changes_view.as_ref().unwrap().name_input.is_some());
+    for c in "qd?f1".chars() {
+        app.handle_key(KeyCode::Char(c));
+    }
+    assert!(!app.should_quit && app.modal.is_none(), "letters typed into the filter are text");
+    let view = app.changes_view.as_ref().unwrap();
+    assert_eq!(view.name_input.as_deref(), Some("qd?f1"));
+    app.handle_key(KeyCode::Esc);
+    assert!(app.changes_view.as_ref().unwrap().name_input.is_none(), "Esc closes the prompt, not the view");
+    assert!(app.changes_view.as_ref().unwrap().open_group.is_some());
+}
+
+#[test]
+fn slash_at_the_folder_list_of_the_changes_view_does_nothing() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('/'));
+    assert!(app.changes_view.as_ref().unwrap().name_input.is_none());
+    assert!(app.host_filter.is_empty() && !app.host_filter_editing, "and it is not taken for the Hosts filter");
+}
+
+// ---- R: restore a file from the snapshot as a copy ----
+
+fn browsing_on_file() -> App {
+    let mut app = browsing_app();
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.browse_view.as_ref().unwrap().rows[app.browse_view.as_ref().unwrap().selected].entry.name, "a.txt");
+    app
+}
+
+fn restore_form_text(app: &App) -> String {
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Form { fields, .. }) => fields[0].value.clone(),
+        other => panic!("expected the restore form, got {other:?}"),
+    }
+}
+
+fn type_into_form(app: &mut App, text: &str) {
+    for _ in 0..restore_form_text(app).chars().count() {
+        app.handle_modal_key(KeyCode::Backspace);
+    }
+    for c in text.chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+}
+
+fn confirm_prompt(app: &App) -> String {
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { prompt, .. }) => prompt.clone(),
+        other => panic!("expected a Confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn r_on_a_regular_file_opens_the_destination_form_with_the_default_name() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Form { title, fields, kind, .. }) => {
+            assert_eq!(title, "Restore as a copy");
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].label, "Restore as");
+            assert_eq!(fields[0].value, "a.restored-s2.txt");
+            assert!(matches!(kind, crate::ui::modal::FormKind::RestoreFile { .. }));
+        }
+        other => panic!("expected the form, got {other:?}"),
+    }
+}
+
+#[test]
+fn r_on_a_folder_a_symlink_an_ambiguous_name_or_while_reading_does_nothing() {
+    use crate::zfs::snapshot_browse::EntryKind;
+    let mut folder = browsing_app();
+    folder.handle_key(KeyCode::Char('R'));
+    assert!(folder.modal.is_none() && folder.status_message.is_none(), "folder");
+    let mut link = browsing_on_file();
+    link.browse_view.as_mut().unwrap().rows[1].entry.kind = EntryKind::Symlink;
+    link.handle_key(KeyCode::Char('R'));
+    assert!(link.modal.is_none() && link.status_message.is_none(), "symlink");
+    let mut ambiguous = browsing_on_file();
+    ambiguous.browse_view.as_mut().unwrap().rows[1].entry.ambiguous = true;
+    ambiguous.handle_key(KeyCode::Char('R'));
+    assert!(ambiguous.modal.is_none() && ambiguous.status_message.is_none(), "ambiguous");
+    let mut odd = browsing_on_file();
+    odd.browse_view.as_mut().unwrap().rows[1].entry.name = "a\nb".to_string();
+    odd.handle_key(KeyCode::Char('R'));
+    assert!(odd.modal.is_none() && odd.status_message.is_none(), "unusual name");
+    let mut reading = changes_app();
+    reading.handle_key(KeyCode::Char('f'));
+    reading.handle_key(KeyCode::Char('R'));
+    assert!(reading.modal.is_none() && reading.status_message.is_none(), "still reading");
+}
+
+#[test]
+fn r_on_a_zoned_dataset_says_it_must_be_done_inside_the_zone_and_opens_nothing() {
+    let mut app = browsing_on_file();
+    app.browse_view.as_mut().unwrap().zone = Some("z1".to_string());
+    app.handle_key(KeyCode::Char('R'));
+    assert!(app.modal.is_none());
+    assert_eq!(app.status_message.as_deref(), Some("restore from a dataset given to a zone must be done inside the zone"));
+}
+
+#[test]
+fn a_name_the_engine_refuses_shows_its_sentence_and_opens_no_confirm() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    type_into_form(&mut app, "a.txt");
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert_eq!(app.status_message.as_deref(), Some("choose a different name: the restore never replaces the original"));
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "the form stays open with what was typed");
+    type_into_form(&mut app, "x/y");
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(app.status_message.as_deref().is_some_and(|m| m.starts_with("that name cannot be used")), "{:?}", app.status_message);
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })));
+}
+
+#[test]
+fn submitting_the_form_opens_a_confirm_that_shows_source_destination_and_command() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    let prompt = confirm_prompt(&app);
+    assert!(prompt.starts_with("Restore as a copy\n"), "{prompt}");
+    assert!(prompt.contains("From:  /tank/data/.zfs/snapshot/s2/a.txt"), "{prompt}");
+    assert!(prompt.contains("To:    /tank/data/a.restored-s2.txt"), "{prompt}");
+    assert!(prompt.contains("Command: cp -p -n -- /tank/data/.zfs/snapshot/s2/a.txt /tank/data/a.restored-s2.txt"), "{prompt}");
+    assert!(!prompt.contains("Note:"), "{prompt}");
+    assert!(prompt.contains("Size: 5   Mode: drwxr-xr-x"), "{prompt}");
+    assert!(prompt.contains("This creates one new file next to the original and never replaces anything."), "{prompt}");
+    assert!(prompt.contains("Existing files are never overwritten; if the name is taken nothing is copied."), "{prompt}");
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { action, .. }) => {
+            assert_eq!((action.host, action.section), (0, Section::Snapshots));
+            assert!(matches!(&action.call, crate::ui::modal::MutationCall::RestoreFile { host, .. } if host == &app.hosts[0]));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_name_with_spaces_is_kept_as_typed() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    type_into_form(&mut app, " my copy ");
+    app.handle_modal_key(KeyCode::Enter);
+    match &app.modal {
+        Some(crate::ui::modal::Modal::Confirm { action: PendingAction { call: crate::ui::modal::MutationCall::RestoreFile { plan, .. }, .. }, .. }) => assert_eq!(plan.dest_name, " my copy "),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_restore_prompt_shows_host_text_without_control_characters() {
+    // The engine refuses a path with a control character, so the prompt's own cleaning is tried on a hand-built plan.
+    let plan = crate::zfs::snapshot_restore::RestorePlan {
+        source: "/t/\u{1b}[31ma".to_string(),
+        destination: "/t/b\u{7}".to_string(),
+        dest_folder: "/t".to_string(),
+        dest_name: "b".to_string(),
+        command: vec!["-p".to_string(), "/t/\u{1b}[31ma".to_string()],
+        size: 5,
+        mode: "-rw\u{1b}".to_string(),
+    };
+    let prompt = super::restore_prompt(&plan);
+    assert!(!prompt.chars().any(|c| c.is_control() && c != '\n'), "{prompt:?}");
+    assert!(prompt.contains("From:") && prompt.contains("Command: cp -p"), "{prompt}");
+    // And a mountpoint with a control character is refused by the engine before any prompt exists.
+    let mut app = browsing_on_file();
+    app.browse_view.as_mut().unwrap().mountpoint = Some("/tank/\u{1b}[31mdata".to_string());
+    app.handle_key(KeyCode::Char('R'));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })));
+    assert_eq!(app.status_message.as_deref(), Some("the dataset's mountpoint is not a plain path, so it cannot be browsed"));
+}
+
+#[test]
+fn the_restore_confirm_needs_two_keys() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none(), "Enter alone does nothing");
+    assert!(app.modal.is_some());
+    assert!(app.handle_modal_key(KeyCode::Char('y')).is_none(), "y only selects");
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter runs it");
+    assert!(matches!(action.call, crate::ui::modal::MutationCall::RestoreFile { .. }));
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn declining_the_restore_confirm_hands_the_form_back() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    app.handle_modal_key(KeyCode::Enter);
+    app.handle_modal_key(KeyCode::Char('n'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert_eq!(restore_form_text(&app), "a.restored-s2.txt");
+}
+
+#[test]
+fn the_changes_view_has_no_r() {
+    let mut app = ready_app();
+    app.handle_key(KeyCode::Char('R'));
+    assert!(app.modal.is_none() && app.browse_view.is_none() && app.status_message.is_none());
+}
+
+#[test]
+fn after_a_restore_the_status_names_the_new_file_and_no_browse_read_is_queued_or_disturbed() {
+    let mut app = browsing_app();
+    app.handle_key(KeyCode::Enter);
+    let (request, cancel) = (app.browse_view.as_ref().unwrap().request, std::sync::Arc::clone(&app.browse_view.as_ref().unwrap().cancel));
+    app.pending_browse.clear();
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /tank/data/pics/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()), Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.pending_browse.is_empty(), "the snapshot folder cannot show the live file, so nothing is re-read");
+    assert_eq!(app.browse_view.as_ref().unwrap().request, request);
+    assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst), "a read in flight is not cancelled");
+    assert_eq!(app.status_message.as_deref(), Some("Restored /tank/data/pics/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)"));
+}
+
+#[test]
+fn a_failed_restore_shows_the_engines_sentence_without_the_error_prefix_and_no_restored_note() {
+    let mut app = browsing_on_file();
+    app.pending_browse.clear();
+    let sentence = "that name already exists in the folder: nothing was copied";
+    app.tx.send(WorkerMsg::RestoreDone(0, Err(sentence.to_string()), Err(crate::error::AppError::Config(sentence.into())))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.pending_browse.is_empty());
+    assert_eq!(app.status_message.as_deref(), Some(sentence));
+}
+
+#[test]
+fn a_restore_note_for_another_host_does_not_show_up_on_a_later_hold() {
+    let mut app = App::new(vec!["a".to_string(), "b".to_string()]);
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.selected_host = 1;
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /x (1 bytes, m, owner o)".to_string()), Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.status_message.as_deref().is_none_or(|m| !m.contains("Restored")), "a restore on another host says nothing here");
+    app.tx.send(WorkerMsg::MutationDone(1, Section::Snapshots, Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.status_message.as_deref().is_none_or(|m| !m.contains("Restored")), "{:?}", app.status_message);
+}
+
+#[test]
+fn a_finished_snapshot_mutation_without_a_browser_queues_no_read() {
+    let mut app = changes_app();
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert!(app.pending_browse.is_empty());
+}
+
+fn prompt_for_name(name: &str) -> String {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    type_into_form(&mut app, name);
+    app.handle_modal_key(KeyCode::Enter);
+    confirm_prompt(&app)
+}
+
+#[test]
+fn the_restore_command_and_destination_are_shown_quoted_so_spaces_are_visible() {
+    let p = prompt_for_name(" my copy ");
+    assert!(p.contains("To:    '/tank/data/ my copy '\n"), "{p}");
+    assert!(p.contains("Command: cp -p -n -- /tank/data/.zfs/snapshot/s2/a.txt '/tank/data/ my copy '\n"), "{p}");
+    let p = prompt_for_name("x -rf passwd");
+    assert!(p.contains("To:    '/tank/data/x -rf passwd'\n"), "{p}");
+    assert!(p.contains(" '/tank/data/x -rf passwd'\n"), "{p}");
+    let p = prompt_for_name("it's");
+    assert!(p.contains(r"'/tank/data/it'\''s'"), "{p}");
+}
+
+#[test]
+fn a_name_with_a_real_slash_is_refused_so_it_never_reaches_the_prompt() {
+    let mut app = browsing_on_file();
+    app.handle_key(KeyCode::Char('R'));
+    type_into_form(&mut app, "x /etc/passwd");
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })));
+}
+
+#[test]
+fn a_name_with_a_lookalike_slash_or_odd_whitespace_gets_a_check_it_note() {
+    let note = "Note: this name contains unusual characters; check it letter by letter.";
+    for name in ["a\u{2215}b", "a\u{2044}b", "a\u{29F8}b", "a\u{FF0F}b", "a\u{2571}b", "a\u{00A0}b", "a\u{200B}b"] {
+        assert!(prompt_for_name(name).contains(note), "{name:?}");
+    }
+    assert!(!prompt_for_name("plain name.txt").contains("Note:"));
+}
+
+#[test]
+fn a_restore_note_belongs_to_its_own_result_and_never_to_a_hold_that_finishes_first() {
+    let mut app = browsing_app();
+    // The hold finishes while the restore is still running: it must not show or take the restore's note.
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    assert!(app.drain_worker_messages().contains(&Section::Snapshots));
+    assert!(app.status_message.as_deref().is_none_or(|m| !m.contains("Restored")), "{:?}", app.status_message);
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /tank/data/x (5 bytes, m, owner o)".to_string()), Ok(()))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(app.status_message.as_deref(), Some("Restored /tank/data/x (5 bytes, m, owner o)"));
+}
+
+#[test]
+fn a_direction_mark_in_the_source_name_gets_the_check_it_note_too() {
+    let plan = |source: &str| crate::zfs::snapshot_restore::RestorePlan {
+        source: source.into(),
+        destination: "/tank/data/copy.txt".into(),
+        dest_folder: "/tank/data".into(),
+        dest_name: "copy.txt".into(),
+        command: vec!["-p".into(), "-n".into(), "--".into(), source.into(), "/tank/data/copy.txt".into()],
+        size: 5,
+        mode: "-rw-r--r--".into(),
+    };
+    assert!(!restore_prompt(&plan("/tank/data/.zfs/snapshot/s2/gpfdp.txt")).contains("Note:"));
+    assert!(restore_prompt(&plan("/tank/data/.zfs/snapshot/s2/gp\u{202E}fdp.txt")).contains("Note: this name contains unusual characters"));
+}
+
+#[test]
+fn a_successful_restore_does_not_refresh_the_snapshot_list_so_its_message_is_not_wiped() {
+    // Found on the hub: the refresh that follows a mutation is a manual one and clears the status line, so the
+    // "Restored ..." message vanished at once. A restore changes no snapshot, so nothing needs refreshing.
+    let mut app = browsing_app();
+    app.tx.send(WorkerMsg::RestoreDone(0, Ok("Restored /tank/data/x.restored-s2.txt (5 bytes, -rw-r--r--, owner root)".to_string()), Ok(()))).unwrap();
+    let refreshes = app.drain_worker_messages();
+    assert!(!refreshes.contains(&Section::Snapshots), "{refreshes:?}");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.starts_with("Restored ")));
+    // Any other Snapshots mutation (a hold, say) still refreshes the list.
+    app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
+    assert!(app.drain_worker_messages().contains(&Section::Snapshots));
 }

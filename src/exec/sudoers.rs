@@ -90,12 +90,14 @@ pub fn parse_resolution(host: &str, stdout: &str, wanted: &[&'static Entry]) -> 
 }
 
 /// One sudoers command spec per allowed form: the bare path for an open entry, `path args` for each pinned one.
-pub fn sudoers_items(resolved: &[Resolved]) -> Vec<String> {
+pub fn sudoers_items(resolved: &[Resolved], os: HostOs) -> Vec<String> {
     let mut items = Vec::new();
     for r in resolved {
-        match &r.entry.kind {
-            Kind::Privileged { pinned, .. } if !pinned.is_empty() => items.extend(pinned.iter().map(|args| format!("{} {}", r.path, args.join(" ")))),
-            _ => items.push(r.path.clone()),
+        let forms = privilege::pinned_forms(r.entry, os);
+        if forms.is_empty() {
+            items.push(r.path.clone());
+        } else {
+            items.extend(forms.iter().map(|args| format!("{} {}", r.path, args.join(" "))));
         }
     }
     items
@@ -121,7 +123,7 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
     let host: String = host.chars().map(|c| if c.is_control() { '?' } else { c }).collect();
     let mut text = format!("# zfsctl sudoers entry for host {host}, generated {generated}\n");
     let _ = writeln!(text, "# features: {}", features.iter().map(|f| f.name()).collect::<Vec<_>>().join(", "));
-    let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "beadm" | "restic")).collect();
+    let powerful: Vec<&str> = resolved.iter().map(|r| r.entry.name).filter(|name| matches!(*name, "zfs" | "bectl" | "beadm" | "restic" | "rclone" | "cp")).collect();
     if !powerful.is_empty() {
         let (verb, pronoun) = if powerful.len() == 1 { ("is", "it") } else { ("are", "them") };
         let _ = writeln!(text, "# {} {verb} as powerful as root: grant {pronoun} only to hosts you trust zfsctl with.", powerful.join(", "));
@@ -129,13 +131,20 @@ pub fn render(host: &str, user: &str, os: HostOs, features: &[Feature], resolved
     if resolved.iter().any(|r| r.entry.name == "smartctl") {
         text.push_str("# smartctl: the /dev/* form cannot stop an extra flag (sudo's * also matches spaces); zfsctl only ever sends read-only flags,\n# and this account already holds zfs and zpool, which are as powerful as root.\n");
     }
+    if resolved.iter().any(|r| r.entry.name == "ls") {
+        text.push_str("# ls: sudo matches the words as one string, so these forms cannot stop an extra path or an option slipped in by merging words\n# (sudo's * also matches spaces and /). ls has no option that writes or runs anything (the worst is a recursive listing), zfsctl only\n# reads .zfs/snapshot folders with them, and this account already holds zfs and zpool, which are as powerful as root.\n");
+    }
+    if resolved.iter().any(|r| r.entry.name == "cp") {
+        text.push_str("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths\n# (sudo's * also matches spaces and /). The form is -p -n -- SOURCE DESTINATION (-p -n -T -- SOURCE DESTINATION on Linux, where -T makes an existing directory at the destination an error instead of a copy into it), where -n never overwrites an existing file.\n");
+    }
     let path = install_path(os);
     let _ = write!(text, "# Install as {path} (owner root, mode 0440) after checking it:\n#   visudo -c -f {path}\n");
-    let unprivileged: Vec<&str> = privilege::unprivileged_for(features).iter().map(|e| e.name).collect();
+    // zoneadm and zonecfg exist on illumos only.
+    let unprivileged: Vec<&str> = privilege::unprivileged_for(features).iter().map(|e| e.name).filter(|n| os == HostOs::Illumos || !matches!(*n, "zoneadm" | "zonecfg")).collect();
     if !unprivileged.is_empty() {
         let _ = writeln!(text, "# These run without sudo (needed only if the ssh key is locked to a forced command): {}", unprivileged.join(", "));
     }
-    let _ = writeln!(text, "{user} ALL=(root) NOPASSWD: \\\n    {}", sudoers_items(resolved).join(", \\\n    "));
+    let _ = writeln!(text, "{user} ALL=(root) NOPASSWD: \\\n    {}", sudoers_items(resolved, os).join(", \\\n    "));
     text
 }
 
@@ -246,12 +255,12 @@ pub fn password_rules(listing: &str) -> usize {
 
 /// `check_host` for a configured host: the account in `ssh_target` is vetted first, exactly as `print_sudoers`
 /// does, so both commands agree on which targets they will work with.
-pub fn check_host_target(runner: &dyn CommandRunner, host: &str, ssh_target: &str, features: &[Feature]) -> Result<Report, Failure> {
+pub fn check_host_target(runner: &dyn CommandRunner, host: &str, ssh_target: &str, os: HostOs, features: &[Feature]) -> Result<Report, Failure> {
     user_of(ssh_target)?;
-    check_host(runner, host, features)
+    check_host(runner, host, os, features)
 }
 
-pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) -> Result<Report, Failure> {
+pub fn check_host(runner: &dyn CommandRunner, host: &str, os: HostOs, features: &[Feature]) -> Result<Report, Failure> {
     let entries = privilege::privileged_for(features);
     if entries.is_empty() {
         return Err(problem("the selected features need no privileged commands, so there is nothing to check"));
@@ -262,11 +271,11 @@ pub fn check_host(runner: &dyn CommandRunner, host: &str, features: &[Feature]) 
     for r in &resolved {
         // Each pinned form, with the extra arguments sudo must refuse after it: a different argument in its
         // place, and one appended (a wildcard such as `smb4.conf*` refuses the first and allows the second).
+        let pinned = privilege::pinned_forms(r.entry, os);
         let forms: Vec<(&[&str], Vec<Vec<&str>>)> = match &r.entry.kind {
-            Kind::Privileged { pinned, probe } if !pinned.is_empty() && probe.is_empty() => pinned.iter().map(|args| (*args, Vec::new())).collect(),
-            Kind::Privileged { pinned, probe } if !pinned.is_empty() => {
-                pinned.iter().map(|args| (*args, vec![vec![*probe], args.iter().copied().chain([*probe]).collect()])).collect()
-            }
+            Kind::Privileged { .. } if r.entry.name == "cp" => pinned.iter().map(|args| (*args, privilege::cp_refused_forms())).collect(),
+            Kind::Privileged { probe, .. } if !pinned.is_empty() && probe.is_empty() => pinned.iter().map(|args| (*args, Vec::new())).collect(),
+            Kind::Privileged { probe, .. } if !pinned.is_empty() => pinned.iter().map(|args| (*args, vec![vec![*probe], args.iter().copied().chain([*probe]).collect()])).collect(),
             _ => vec![(&[][..], Vec::new())],
         };
         for (args, probes) in forms {
@@ -351,10 +360,10 @@ mod tests {
     #[test]
     fn check_host_vets_the_user_like_print_sudoers_and_asks_nothing_when_it_is_refused() {
         let runner = sudo_host(EXACT, ALL_PATHS);
-        let err = check_host_target(&runner, "h", "ALL@h", &select(&[], &[]).unwrap()).unwrap_err();
+        let err = check_host_target(&runner, "h", "ALL@h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(runner.count(), 0);
-        assert!(check_host_target(&runner, "h", "fbsd@h", &select(&[], &[]).unwrap()).is_ok());
+        assert!(check_host_target(&runner, "h", "fbsd@h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).is_ok());
     }
 
     #[test]
@@ -369,7 +378,7 @@ mod tests {
             }
             _ => CommandOutput { stdout: String::new(), stderr: "sudo: a password is required\n".to_string(), status: 1 },
         });
-        let report = check_host(&runner, "h", &[Feature::Core]).unwrap();
+        let report = check_host(&runner, "h", HostOs::FreeBsd, &[Feature::Core]).unwrap();
         assert!(report.lines.iter().all(|l| l.status == Status::Missing));
         assert!(report.render().contains("sudo said: sudo: a password is required"), "{}", report.render());
         assert_eq!(report.exit_code(), 1);
@@ -429,7 +438,7 @@ mod tests {
     fn the_items_are_paths_with_the_pinned_arguments_written_out() {
         let resolved = resolution_for("h", DEFAULT_LINES, &select(&[], &[]).unwrap()).unwrap();
         assert_eq!(
-            sudoers_items(&resolved),
+            sudoers_items(&resolved, HostOs::FreeBsd),
             [
                 "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/geom", "/sbin/bectl", "/usr/sbin/service",
                 "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/usr/bin/tee /usr/local/etc/smb4.conf",
@@ -616,7 +625,7 @@ mod tests {
     #[test]
     fn a_host_with_exactly_the_right_entries_is_all_ok() {
         let runner = sudo_host(EXACT, ALL_PATHS);
-        let report = check_host(&runner, "fbsd16", &select(&[], &[]).unwrap()).unwrap();
+        let report = check_host(&runner, "fbsd16", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap();
         assert_eq!(report.lines.len(), 11);
         assert!(report.lines.iter().all(|l| l.status == Status::Ok), "{}", report.render());
         assert_eq!(report.exit_code(), 0);
@@ -628,7 +637,7 @@ mod tests {
             "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/bectl", "/usr/sbin/service",
             "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/usr/bin/tee /usr/local/etc/smb4.conf",
         ];
-        let report = check_host(&sudo_host(WITHOUT_GEOM, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        let report = check_host(&sudo_host(WITHOUT_GEOM, ALL_PATHS), "h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap();
         assert!(statuses(&report).contains(&("geom", Status::Missing)), "{}", report.render());
         assert_eq!(report.exit_code(), 1);
         assert!(report.render().contains("MISSING") && report.render().contains("1 missing"), "{}", report.render());
@@ -640,7 +649,7 @@ mod tests {
             "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/geom", "/sbin/bectl", "/usr/sbin/service",
             "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/bin/cat /etc/master.passwd", "/usr/bin/tee /usr/local/etc/smb4.conf",
         ];
-        let report = check_host(&sudo_host(BROAD_CAT, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        let report = check_host(&sudo_host(BROAD_CAT, ALL_PATHS), "h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap();
         assert!(statuses(&report).contains(&("cat", Status::TooBroad)), "{}", report.render());
         assert_eq!(report.exit_code(), 1);
         assert!(report.render().contains("TOO BROAD"), "{}", report.render());
@@ -649,14 +658,14 @@ mod tests {
     #[test]
     fn restic_is_checked_only_when_selected() {
         let runner = sudo_host(&["/usr/local/bin/restic", "/usr/bin/readlink"], ALL_PATHS);
-        let report = check_host(&runner, "h", &select(&["restic".to_string()], &["core", "acl", "disks", "bootenvs", "shares", "samba"].map(String::from)).unwrap()).unwrap();
+        let report = check_host(&runner, "h", HostOs::FreeBsd, &select(&["restic".to_string()], &["core", "acl", "disks", "bootenvs", "shares", "samba"].map(String::from)).unwrap()).unwrap();
         assert_eq!(statuses(&report), [("restic", Status::Ok), ("readlink", Status::Ok)]);
     }
 
     #[test]
     fn an_unreachable_host_is_exit_2_after_a_single_ssh_call() {
         let runner = Scripted::new(|_, _| CommandOutput { stdout: String::new(), stderr: "ssh: Could not resolve hostname".to_string(), status: 255 });
-        let err = check_host(&runner, "h", &select(&[], &[]).unwrap()).unwrap_err();
+        let err = check_host(&runner, "h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert_eq!(runner.count(), 1, "one timeout, not one per entry");
     }
@@ -674,7 +683,7 @@ mod tests {
             }
             if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 { out("", 0) } else { CommandOutput { stdout: String::new(), stderr: "gone".to_string(), status: 255 } }
         });
-        let err = check_host(&runner, "h", &[Feature::Core]).unwrap_err();
+        let err = check_host(&runner, "h", HostOs::FreeBsd, &[Feature::Core]).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert_eq!(runner.count(), 3, "lookup, one answered check, the one that failed");
     }
@@ -682,14 +691,14 @@ mod tests {
     #[test]
     fn a_missing_binary_on_the_host_is_a_problem_before_any_sudo_check() {
         let runner = sudo_host(EXACT, &[("zpool", "/sbin/zpool")]);
-        let err = check_host(&runner, "h", &[Feature::Core]).unwrap_err();
+        let err = check_host(&runner, "h", HostOs::FreeBsd, &[Feature::Core]).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(runner.count(), 1);
     }
 
     #[test]
     fn the_report_lists_one_line_per_entry_with_its_pinned_arguments() {
-        let report = check_host(&sudo_host(EXACT, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        let report = check_host(&sudo_host(EXACT, ALL_PATHS), "h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap();
         let text = report.render();
         assert!(text.contains("ok") && text.contains("/bin/cat /usr/local/etc/smb4.conf"), "{text}");
         assert!(text.trim_end().ends_with("11 ok, 0 missing, 0 too broad"), "{text}");
@@ -710,7 +719,7 @@ mod tests {
     #[test]
     fn a_password_rule_alongside_the_zfsctl_entry_makes_every_ok_unverified() {
         let runner = sudo_host_with(EXACT, ALL_PATHS, WHEEL_LISTING);
-        let report = check_host(&runner, "h", &select(&[], &[]).unwrap()).unwrap();
+        let report = check_host(&runner, "h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap();
         assert!(report.lines.iter().all(|l| l.status == Status::Ok));
         assert_eq!(report.notes.len(), 1, "{}", report.render());
         assert!(report.render().contains("ask for a password"), "{}", report.render());
@@ -719,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_clean_host_has_no_notes() {
-        let report = check_host(&sudo_host(EXACT, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        let report = check_host(&sudo_host(EXACT, ALL_PATHS), "h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap();
         assert!(report.notes.is_empty() && report.exit_code() == 0);
     }
 
@@ -736,7 +745,7 @@ mod tests {
             },
             other => panic!("unexpected {other}"),
         });
-        let report = check_host(&runner, "h", &[Feature::Core]).unwrap();
+        let report = check_host(&runner, "h", HostOs::FreeBsd, &[Feature::Core]).unwrap();
         assert_eq!(statuses(&report), [("zpool", Status::Ok), ("zfs", Status::Missing)]);
         assert!(report.lines[1].detail.contains("/sbin/zfs") && report.lines[1].detail.contains("/usr/local/sbin/zfs"), "{}", report.lines[1].detail);
     }
@@ -783,14 +792,67 @@ mod tests {
     }
 
     #[test]
+    fn print_sudoers_with_browse_lists_only_the_ls_forms_of_the_hosts_os_and_without_it_lists_none() {
+        const LS_PATHS: &[(&str, &str)] = &[("ls", "/bin/ls")];
+        let freebsd = print_sudoers(&host_with(LS_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Browse], "d").unwrap();
+        assert!(freebsd.contains("/bin/ls -lAb -D %s -- *") && freebsd.contains("/bin/ls -lAbU -D %s -- *"), "{freebsd}");
+        assert!(!freebsd.contains("--time-style") && !freebsd.contains("-lAbE"), "no Linux or illumos forms on FreeBSD: {freebsd}");
+        assert!(freebsd.contains("# ls: sudo matches the words as one string"), "{freebsd}");
+        let linux = print_sudoers(&host_with(LS_PATHS), "h", "ub@h", HostOs::Linux, &[Feature::Browse], "d").unwrap();
+        assert!(linux.contains("/bin/ls -lAQ --time-style +%s --time birth -- *") && !linux.contains("-D %s") && !linux.contains("-lAbE"), "{linux}");
+        let illumos = print_sudoers(&host_with(LS_PATHS), "h", "omni@h", HostOs::Illumos, &[Feature::Browse], "d").unwrap();
+        assert!(illumos.contains("/bin/ls -lAbE -- *") && illumos.contains("/bin/ls -lAbEc -- *") && !illumos.contains("-D %s") && !illumos.contains("--time-style"), "{illumos}");
+        let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
+        assert!(!without.contains("/bin/ls") && !without.contains("# ls:"), "{without}");
+    }
+
+    #[test]
+    fn print_sudoers_with_restore_lists_only_the_hosts_cp_form_and_says_what_it_allows() {
+        const CP_PATHS: &[(&str, &str)] = &[("cp", "/bin/cp")];
+        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos] {
+            let text = print_sudoers(&host_with(CP_PATHS), "h", "u@h", os, &[Feature::Restore], "d").unwrap();
+            let form = if os == HostOs::Linux { "/bin/cp -p -n -T -- * *" } else { "/bin/cp -p -n -- * *" };
+            assert!(text.contains(form), "{os:?}: {text}");
+            assert_eq!(text.matches("/bin/cp ").count(), 1, "{os:?}: {text}");
+            assert!(text.contains("# cp is as powerful as root: grant it only to hosts you trust zfsctl with."), "{os:?}: {text}");
+            assert!(text.contains("# cp as root: with this entry the account can copy any file the host can read to any new path, which zfs and zpool already allow; sudo cannot confine the paths"), "{text}");
+        }
+        let without = print_sudoers(&host_with(ALL_PATHS), "h", "fbsd@h", HostOs::FreeBsd, &[Feature::Core], "d").unwrap();
+        assert!(!without.contains("/bin/cp") && !without.contains("# cp") && !without.contains("cp is as powerful"), "{without}");
+    }
+
+    #[test]
+    fn check_host_flags_a_cp_entry_that_allows_overwriting() {
+        const CP_PATHS: &[(&str, &str)] = &[("cp", "/bin/cp")];
+        const EXACT_CP: &[&str] = &["/bin/cp -p -n -- * *"];
+        const BROAD_CP: &[&str] = &["/bin/cp -p -n -- * *", "/bin/cp -p -f -- /zfsctl-probe-a /zfsctl-probe-b"];
+        let ok = check_host(&sudo_host(EXACT_CP, CP_PATHS), "h", HostOs::FreeBsd, &[Feature::Restore]).unwrap();
+        assert_eq!(statuses(&ok), [("cp", Status::Ok)], "{}", ok.render());
+        let broad = check_host(&sudo_host(BROAD_CP, CP_PATHS), "h", HostOs::FreeBsd, &[Feature::Restore]).unwrap();
+        assert_eq!(statuses(&broad), [("cp", Status::TooBroad)], "{}", broad.render());
+        assert_eq!(broad.exit_code(), 1);
+    }
+
+    #[test]
+    fn the_no_sudo_comment_names_the_zone_tools_only_for_illumos() {
+        const LS_PATHS: &[(&str, &str)] = &[("ls", "/bin/ls")];
+        for os in [HostOs::FreeBsd, HostOs::Linux] {
+            let text = print_sudoers(&host_with(LS_PATHS), "h", "u@h", os, &[Feature::Browse], "d").unwrap();
+            assert!(!text.contains("zoneadm") && !text.contains("zonecfg"), "{os:?}: {text}");
+        }
+        let illumos = print_sudoers(&host_with(LS_PATHS), "h", "u@h", HostOs::Illumos, &[Feature::Browse], "d").unwrap();
+        assert!(illumos.contains("zoneadm") && illumos.contains("zonecfg"), "{illumos}");
+    }
+
+    #[test]
     fn check_host_does_not_flag_the_device_wildcard_as_too_broad() {
-        let report = check_host(&sudo_host(SMART_ALLOWED, SMART_PATHS), "h", &[Feature::Smart]).unwrap();
+        let report = check_host(&sudo_host(SMART_ALLOWED, SMART_PATHS), "h", HostOs::FreeBsd, &[Feature::Smart]).unwrap();
         assert_eq!(statuses(&report), [("smartctl", Status::Ok), ("smartctl", Status::Ok)], "{}", report.render());
     }
 
     #[test]
     fn check_host_reports_smartctl_missing_when_sudo_refuses_it() {
-        let report = check_host(&sudo_host(&[], SMART_PATHS), "h", &[Feature::Smart]).unwrap();
+        let report = check_host(&sudo_host(&[], SMART_PATHS), "h", HostOs::FreeBsd, &[Feature::Smart]).unwrap();
         assert_eq!(statuses(&report), [("smartctl", Status::Missing), ("smartctl", Status::Missing)], "{}", report.render());
         assert_eq!(report.exit_code(), 1);
     }
@@ -802,7 +864,7 @@ mod tests {
             "/sbin/zpool", "/sbin/zfs", "/bin/getfacl", "/bin/setfacl", "/sbin/geom", "/sbin/bectl", "/usr/sbin/service",
             "/usr/local/bin/smbpasswd", "/usr/local/bin/smbstatus -S", "/bin/cat /usr/local/etc/smb4.conf", "/bin/cat /usr/local/etc/smb4.conf /etc/master.passwd", "/usr/bin/tee /usr/local/etc/smb4.conf",
         ];
-        let report = check_host(&sudo_host(WILDCARD, ALL_PATHS), "h", &select(&[], &[]).unwrap()).unwrap();
+        let report = check_host(&sudo_host(WILDCARD, ALL_PATHS), "h", HostOs::FreeBsd, &select(&[], &[]).unwrap()).unwrap();
         assert!(statuses(&report).contains(&("cat", Status::TooBroad)), "{}", report.render());
     }
 

@@ -8,12 +8,12 @@ mod acl;
 mod config;
 mod config_edit;
 mod daemon;
+mod display_text;
 mod error;
 mod exec;
 mod help;
 mod hosts;
 mod jobs;
-mod migrate;
 mod notify_cli;
 mod ui;
 mod zfs;
@@ -93,7 +93,6 @@ fn run() -> error::Result<()> {
         print!("{}", help::text());
         return Ok(());
     }
-    migrate::from_zfsctl(&mut |note| eprintln!("zfsctl: {note}"));
     let config_path = PathBuf::from(config::DEFAULT_CONFIG_PATH);
     if let Command::Daemon { state_dir } = command {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -151,7 +150,7 @@ fn admin(command: &Command, config: &config::Config) -> error::Result<i32> {
     let os = exec::sudoers::detect_os(found.runner.as_ref());
     let features = exec::privilege::select_for_os(os, with, without)?;
     let result = if check {
-        exec::sudoers::check_host_target(found.runner.as_ref(), host, target, &features).map(|report| (report.render(), report.exit_code()))
+        exec::sudoers::check_host_target(found.runner.as_ref(), host, target, os, &features).map(|report| (report.render(), report.exit_code()))
     } else {
         let generated = chrono::Utc::now().format("%Y-%m-%d").to_string();
         exec::sudoers::print_sudoers(found.runner.as_ref(), host, target, os, &features, &generated).map(|text| (text, 0))

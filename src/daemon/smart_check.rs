@@ -130,12 +130,24 @@ pub struct HostProblems {
 
 /// The hosts that have at least one disk with a problem, by host name; a host with only healthy disks is left out.
 pub fn problems(file: &SmartFile) -> Vec<HostProblems> {
+    problems_with(file, &|_, _| None)
+}
+
+/// `problems`, with each disk's role from `role_of(host, dev)` (`cache of tank`) in brackets after its name.
+pub fn problems_with(file: &SmartFile, role_of: &dyn Fn(&str, &str) -> Option<String>) -> Vec<HostProblems> {
     file.hosts
         .iter()
         .filter_map(|(host, result)| {
             let bad: Vec<&Disk> = result.disks.iter().filter(|d| !d.problems.is_empty()).collect();
             let severity = bad.iter().flat_map(|d| &d.problems).map(|p| p.severity).max()?;
-            let disks = bad.iter().map(|d| format!("{} {}", d.dev, d.problems.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join("; ");
+            let disks = bad
+                .iter()
+                .map(|d| {
+                    let name = role_of(host, &d.dev).map_or_else(|| d.dev.clone(), |role| format!("{} ({role})", d.dev));
+                    format!("{name} {}", d.problems.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(", "))
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
             Some(HostProblems { host: host.clone(), severity, disks, checked_at: result.checked_at })
         })
         .collect()
@@ -154,7 +166,7 @@ mod tests {
     use super::*;
     use crate::error::{AppError, Result};
     use crate::exec::CommandOutput;
-    use crate::smart::Severity;
+    use crate::smart::{Problem, Severity};
 
     const SCAN: &str = include_str!("../smart_fixtures/scan.json");
     const HEALTHY: &str = include_str!("../smart_fixtures/hdd_ok.json");
@@ -310,5 +322,14 @@ mod tests {
         assert!(due(local("2026-10-17 03:30"), at_0330, Some(local("2026-10-16 03:31"))), "the time has come on a new day");
         assert!(!due(local("2026-10-17 15:00"), at_0330, Some(local("2026-10-17 03:31"))), "already done today");
         assert!(due(local("2026-10-17 01:00"), at_0330, Some(local("2026-10-15 20:00"))), "more than a day old: check at start");
+    }
+
+    #[test]
+    fn a_disks_role_goes_in_brackets_after_its_name_when_it_is_known() {
+        let mut file = SmartFile::default();
+        file.hosts.insert("h".into(), HostResult { checked_at: at("2026-10-17T03:30:00Z"), disks: vec![Disk { dev: "ada4".into(), problems: vec![Problem { severity: Severity::Watch, text: "SSD wear 87%".into() }] }, Disk { dev: "ada0".into(), problems: vec![Problem { severity: Severity::Watch, text: "pending sectors 8".into() }] }], error: None });
+        let role = |host: &str, dev: &str| (host == "h" && dev == "ada4").then(|| "cache of tank".to_string());
+        assert_eq!(problems_with(&file, &role)[0].disks, "ada4 (cache of tank) SSD wear 87%; ada0 pending sectors 8");
+        assert_eq!(problems(&file)[0].disks, "ada4 SSD wear 87%; ada0 pending sectors 8", "without roles nothing changes");
     }
 }

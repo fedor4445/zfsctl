@@ -6,7 +6,7 @@
 //! `a-b` and a step `*/n` or `a-b/n`. When both day fields are
 //! restricted a day matches if EITHER does (standard cron behavior).
 
-use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schedule {
@@ -215,10 +215,32 @@ fn first_of_next_month(t: NaiveDateTime) -> Option<NaiveDateTime> {
     NaiveDate::from_ymd_opt(year, month, 1).and_then(|d| d.and_hms_opt(0, 0, 0))
 }
 
+/// A job is current while its last success is at most this many schedule intervals old. One missed run is normal (a run can
+/// start late, a long replication can overlap the next slot); two is a whole cycle gone.
+pub const CURRENT_WITHIN_INTERVALS: i32 = 2;
+
+/// How many scheduled times ahead the gap is measured over: the longest gap among them counts, so a weekday-only job
+/// is not late over a weekend.
+const LOOKAHEAD: usize = 5;
+
+/// The longest gap between the next few scheduled times after `now`; `None` for a schedule that does not parse or never fires.
+pub fn schedule_gap(schedule: &str, now: DateTime<Utc>) -> Option<Duration> {
+    let schedule = Schedule::parse(schedule).ok()?;
+    let mut at = now.with_timezone(&Local);
+    let mut gaps = Vec::new();
+    for _ in 0..LOOKAHEAD {
+        let next = schedule.next_after(&at)?;
+        gaps.push(next - at);
+        at = next;
+    }
+    // the first "gap" is from `now`, not between two fires: leave it out
+    gaps.into_iter().skip(1).max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{FixedOffset, Utc};
+    use chrono::FixedOffset;
     use chrono_tz::America::New_York;
 
     fn utc(s: &str) -> DateTime<Utc> {
@@ -227,6 +249,14 @@ mod tests {
 
     fn next(expr: &str, after: &str) -> String {
         Schedule::parse(expr).unwrap().next_after(&utc(after)).unwrap().to_rfc3339()
+    }
+
+    #[test]
+    fn schedule_gap_is_the_longest_gap_among_the_next_fires() {
+        let now = utc("2026-10-22T12:00:00Z");
+        assert_eq!(schedule_gap("0 * * * *", now), Some(Duration::hours(1)));
+        assert!(schedule_gap("0 3 * * 1-5", now).unwrap() >= Duration::hours(24));
+        assert_eq!(schedule_gap("not a schedule", now), None);
     }
 
     #[test]

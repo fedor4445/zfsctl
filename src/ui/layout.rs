@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(hint_line), hint_area);
 
     if let Some(modal) = app.modal.clone() {
-        draw_modal(f, &modal, app.backup_preflight.as_ref(), &app.theme, area);
+        draw_modal(f, &modal, app.backup_preflight.as_ref(), app.info_scroll, &app.theme, area);
     }
     if let Some(picker) = app.picker.clone() {
         draw_picker(f, &picker, &app.theme, area);
@@ -489,7 +489,7 @@ fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
         format!("Hosts (filter: {}{} — {}/{})", app.host_filter, if app.host_filter_editing { "_" } else { "" }, visible.len(), app.hosts.len())
     };
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title));
     // The offset follows the selection, so the selected host stays on screen however many hosts there are.
     let mut state = TableState::default().with_selected(visible.iter().position(|i| *i == app.selected_host));
@@ -577,7 +577,7 @@ fn draw_pools(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let title = format!("Pools — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pools_table);
@@ -604,7 +604,7 @@ fn draw_pool_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let pool = app.selected_pool_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {pool} ('r' refresh, Enter to edit, ← back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Property", "Value", "Source"]))
+        .header(theme.header_row(vec!["Property", "Value", "Source"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.pool_properties_table);
@@ -620,7 +620,7 @@ fn draw_vdevs(f: &mut Frame, app: &mut App, area: Rect) {
     let pool = app.drilled_pool.as_deref().unwrap_or("?");
     let title = format!("Vdevs — {pool} ('r' refresh, Esc/Backspace back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Device", "Health"]))
+        .header(theme.header_row(vec!["Device", "Health"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.vdevs_table);
@@ -672,7 +672,7 @@ fn draw_datasets(f: &mut Frame, app: &mut App, area: Rect) {
     headers.push("Kind");
     let title = format!("Datasets — {} ('r' refresh, → for properties)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Middle)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.datasets_table);
@@ -698,7 +698,7 @@ fn draw_dataset_properties(f: &mut Frame, app: &mut App, area: Rect) {
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Properties — {dataset} ('r' refresh, Enter to edit, '['/']' tabs, * fixed at creation, ← back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Property", "Value", "Source"]))
+        .header(theme.header_row(vec!["Property", "Value", "Source"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.dataset_properties_table);
@@ -727,7 +727,7 @@ fn draw_dataset_permissions(f: &mut Frame, app: &mut App, area: Rect) {
     let dataset = app.selected_dataset_name().unwrap_or_else(|| "?".to_string());
     let title = format!("Permissions — {dataset} ('r' refresh, n/s/c grant, d/x revoke, '['/']' tabs, ← back)");
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Target", "Scope", "Permissions"]))
+        .header(theme.header_row(vec!["Target", "Scope", "Permissions"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.dataset_permissions_table);
@@ -760,7 +760,7 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
         None => format!("ACL — {dataset} ('r' refresh, 'n' add, 'd' remove, '['/']' tabs, ← back)"),
     };
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["#", "Target", "Permissions", "Flags", "Type"]))
+        .header(theme.header_row(vec!["#", "Target", "Permissions", "Flags", "Type"]))
         .block(Block::default().borders(Borders::ALL).border_style(pane_border_style(&theme, app.pane_focus, PaneFocus::Right)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.acl_entries_table);
@@ -768,14 +768,26 @@ fn draw_dataset_acl(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
+    if app.browse_view_active() {
+        if let Some(view) = &app.browse_view {
+            crate::ui::browse::draw(f, view, &theme, app.active_host_name(), area);
+        }
+        return;
+    }
+    if app.changes_view_active() {
+        if let Some(view) = &app.changes_view {
+            crate::ui::changes::draw(f, view, &theme, app.active_host_name(), area);
+        }
+        return;
+    }
     let rows = app
         .snapshots
         .iter()
-        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used)]));
-    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W)];
+        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used), crate::zfs::disk::human_size(s.written), app.hold_marker(s).to_string()]));
+    let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W), Constraint::Length(SIZE_COL_W), Constraint::Length(4)];
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Snapshot", "Used"]))
+        .header(theme.header_row(vec!["Snapshot", "Used", "Written", "Hold"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.snapshots_table);
@@ -870,7 +882,7 @@ fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
         app.active_host_name()
     );
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.disks_table);
@@ -900,7 +912,7 @@ fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
     };
     let [left, right] = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(55), Constraint::Min(0)]).areas(inner);
 
-    let mut runs = vec![Line::styled("Last runs", theme.dim())];
+    let mut runs = vec![Line::styled("Last runs", theme.header())];
     let history = app.jobs_view.runs_of(&job.id, 8);
     if history.is_empty() {
         runs.push(Line::from("No runs yet"));
@@ -993,7 +1005,7 @@ fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let widths = [Constraint::Length(16), Constraint::Length(14), Constraint::Length(8), Constraint::Length(4), Constraint::Length(12), Constraint::Min(10)];
-    let table = Table::new(table_rows, widths).header(Row::new(vec!["Provider", "Remote", "Host", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
+    let table = Table::new(table_rows, widths).header(theme.header_row(vec!["Provider", "Remote", "Host", "Jobs", "Last", "In bucket"])).block(block).row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.cloud_table);
 }
 
@@ -1071,13 +1083,16 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         if !lines.is_empty() {
             lines.push(Line::raw(String::new()));
         }
-        lines.push(Line::styled(name.to_string(), theme.dim()));
+        lines.push(Line::styled(name.to_string(), theme.header()));
     };
     for (i, row) in v.rows.iter().enumerate() {
         let Row { group: g, label, value, is_default, setting, .. } = row;
         if *g != group {
             group = g;
             title(&mut lines, g);
+            if let (Setting::ProtLevel, Some(problem)) = (setting, &v.protection_problem) {
+                lines.push(Line::styled(truncate_with_ellipsis(&format!("  {}", crate::config::protection_problem_line(problem)), width), theme.err));
+            }
         }
         let label = if matches!(setting, Setting::Cap(_)) { format!("Cap of {label}") } else { label.clone() };
         let text = format!("  {label:<24} {value}");
@@ -1114,7 +1129,7 @@ fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new("Loading…").style(theme.dim()).block(block), area);
         return;
     }
-    let mut lines: Vec<Line> = vec![Line::styled("Settings (config.toml)".to_string(), theme.dim())];
+    let mut lines: Vec<Line> = vec![Line::styled("Settings (config.toml)".to_string(), theme.header())];
     for (label, value, is_default) in v.setting_rows() {
         let text = format!("{label:<14} {value}");
         if is_default && label != "Hook command" {
@@ -1133,7 +1148,7 @@ fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
         None => "Last report: never".to_string(),
     }));
     lines.push(Line::raw(String::new()));
-    lines.push(Line::styled("Recent events".to_string(), theme.dim()));
+    lines.push(Line::styled("Recent events".to_string(), theme.header()));
     if v.events.is_empty() {
         lines.push(Line::styled("  (none yet)".to_string(), theme.dim()));
     } else {
@@ -1188,7 +1203,7 @@ fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
     let target_w = u16::try_from(longest).unwrap_or(u16::MAX).clamp(14, room);
     let widths = [Constraint::Length(22), Constraint::Length(8), Constraint::Length(target_w), Constraint::Length(20), Constraint::Length(15), Constraint::Min(10)];
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Job", "Host", "Target", "Schedule", "Next run", "Last"]))
+        .header(theme.header_row(vec!["Job", "Host", "Target", "Schedule", "Next run", "Last"]))
         .block(block)
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.jobs_table);
@@ -1230,7 +1245,7 @@ fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let title = format!("Shares — {} ({actions}){hint_suffix}", app.active_host_name());
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["Dataset", "Protocol", "Details"]))
+        .header(theme.header_row(vec!["Dataset", "Protocol", "Details"]))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.shares_table);
@@ -1293,7 +1308,7 @@ fn draw_bootenvs(f: &mut Frame, app: &mut App, area: Rect) {
         None => format!("Boot Environments — {host} ('r' to refresh){suffix}"),
     };
     let table = Table::new(rows, widths)
-        .header(Row::new(headers))
+        .header(theme.header_row(headers))
         .block(Block::default().borders(Borders::ALL).border_style(theme.pane_border(true)).title(title))
         .row_highlight_style(theme.selected_row());
     f.render_stateful_widget(table, area, &mut app.bootenvs_table);
@@ -1364,7 +1379,7 @@ const CONFIRM_NONE: &str = "Press y for yes or n for no, then Enter.";
 const CONFIRM_YES: &str = "▶ YES selected: press Enter to run it (n or Esc to change).";
 const CONFIRM_NO: &str = "▶ NO selected: press Enter to cancel (y to change).";
 
-fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, theme: &Theme, area: Rect) {
+fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, info_scroll: u16, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
     // percentage of the terminal's height let long prompts or the
@@ -1415,6 +1430,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
             }
         }
         Modal::Info { body, .. } => wrapped_line_count(body, inner_width),
+        Modal::Choose { note, rows, look, .. } => u16::try_from(note.lines().count() + 1 + rows.len() + (look.heads.len() * 2).saturating_sub(1)).unwrap_or(u16::MAX),
     };
     // +2 for the top/bottom border; floor of 5 so a one-line prompt
     // doesn't render a cramped, near-invisible box.
@@ -1481,9 +1497,54 @@ fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::Pre
             f.render_widget(p, popup_area);
         }
         Modal::Info { title, body } => {
-            let p = Paragraph::new(body.as_str())
+            // The wordmark (About) is drawn in the warn colour, and left out when the pop-up is too narrow for it: wrapped, it is garbage.
+            let fits = usize::from(popup_area.width.saturating_sub(2)) >= crate::ui::logo::WIDTH;
+            let lines: Vec<Line> = body
+                .lines()
+                .filter(|l| fits || !crate::ui::logo::is_wordmark_line(l))
+                .map(|l| {
+                    // Help's section titles ("Global", a section's name) are the lines that do not start with a space.
+                    let help_title = title == "Help" && !l.is_empty() && !l.starts_with(' ');
+                    let line = if crate::ui::logo::is_wordmark_line(l) {
+                        Line::styled(l.to_string(), theme.warn)
+                    } else if help_title {
+                        Line::styled(l.to_string(), theme.header())
+                    } else {
+                        Line::raw(l.to_string())
+                    };
+                    if crate::ui::logo::is_centred_line(l) { line.centered() } else { line }
+                })
+                .collect();
+            let p = Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
+                .scroll((info_scroll, 0))
                 .block(Block::default().borders(Borders::ALL).title(title.as_str()));
+            f.render_widget(p, popup_area);
+        }
+        Modal::Choose { title, note, rows, selected, look, .. } => {
+            let mut lines: Vec<Line> = note.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.push(Line::raw(""));
+            let mut chosen_at = lines.len();
+            for (i, row) in rows.iter().enumerate() {
+                if let Some((_, head)) = look.heads.iter().find(|(at, _)| *at == i) {
+                    if i > 0 {
+                        lines.push(Line::raw(""));
+                    }
+                    lines.push(Line::styled(head.clone(), theme.header()));
+                }
+                let base = look.levels.get(i).map_or_else(Style::default, |level| crate::ui::dashboard_view::level_style(theme, *level));
+                let text = if look.heads.is_empty() { row.clone() } else { format!("  {row}") };
+                if i == *selected {
+                    chosen_at = lines.len();
+                    lines.push(Line::styled(text, base.patch(theme.selected_row())));
+                } else {
+                    lines.push(Line::styled(text, base));
+                }
+            }
+            // Keep the chosen row in view: scroll just far enough that it is the last line shown.
+            let visible = usize::from(popup_area.height.saturating_sub(2));
+            let scroll = u16::try_from((chosen_at + 1).saturating_sub(visible)).unwrap_or(u16::MAX);
+            let p = Paragraph::new(lines).scroll((scroll, 0)).block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
     }
@@ -1568,30 +1629,7 @@ fn draw_picker(f: &mut Frame, picker: &crate::ui::picker::PickerState, theme: &T
     f.render_stateful_widget(list, popup_area, &mut list_state);
 }
 
-/// Replaces every control character (newline, tab, ESC, ...) with a space
-/// and collapses runs of whitespace, so text that may carry raw remote
-/// stderr renders on one line and cannot inject terminal escapes.
-pub(crate) fn sanitise_for_display(s: &str) -> String {
-    let spaced: String = s
-        .chars()
-        .map(|c| {
-            let bidi = matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
-            if c.is_control() || bidi { ' ' } else { c }
-        })
-        .collect();
-    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Truncates `s` to at most `max` characters, ending in "…" when cut.
-fn truncate_with_ellipsis(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let keep = max.saturating_sub(1);
-    let mut out: String = s.chars().take(keep).collect();
-    out.push('…');
-    out
-}
+pub(crate) use crate::display_text::{sanitise_for_display, truncate_with_ellipsis};
 
 /// Height of the Loading/Failed picker popup: the wrapped body plus two
 /// border rows, at least 5, never more than `max_height`. The body estimate
@@ -1646,25 +1684,6 @@ fn pane_border_style(theme: &Theme, current: PaneFocus, pane: PaneFocus) -> Styl
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn sanitise_for_display_strips_control_characters_and_collapses_lines() {
-        let out = super::sanitise_for_display("boom\n\u{1b}[31mred\u{1b}[0m\tbad\r\nend");
-        assert!(!out.chars().any(char::is_control), "{out:?}");
-        assert_eq!(out, "boom [31mred [0m bad end");
-    }
-
-    #[test]
-    fn sanitise_for_display_replaces_bidi_and_format_characters() {
-        let out = super::sanitise_for_display("a\u{202E}b\u{200F}c\u{2066}d\u{2069}e\u{200E}f\u{202A}g");
-        assert_eq!(out, "a b c d e f g");
-    }
-
-    #[test]
-    fn truncate_with_ellipsis_cuts_long_text_only() {
-        assert_eq!(super::truncate_with_ellipsis("abc", 3), "abc");
-        assert_eq!(super::truncate_with_ellipsis("abcdef", 4), "abc…");
-    }
-
     #[test]
     fn failed_popup_height_fits_body_within_bounds() {
         assert_eq!(super::failed_popup_height("Loading accounts…\n\nEsc to close", 40, 24), 6);
@@ -1738,6 +1757,76 @@ mod tests {
         terminal.draw(|f| draw(f, app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn the_hold_column_shows_a_capital_for_ours_and_a_small_h_for_others() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        let snap = |name: &str, holds| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: name.to_string(), used: 1, holds, written: 0 };
+        app.snapshots = vec![snap("free", 0), snap("ours", 1), snap("theirs", 1)];
+        app.snapshot_tags.insert("tank/a@ours".to_string(), vec!["zfsctl".to_string(), "x".to_string()]);
+        app.snapshot_tags.insert("tank/a@theirs".to_string(), vec!["x".to_string()]);
+        app.snapshots_table.select(Some(0));
+        let rows = render(&mut app, 100, 12);
+        let row = |name: &str| rows.iter().find(|r| r.contains(name)).unwrap_or_else(|| panic!("{rows:?}")).clone();
+        assert!(rows.iter().any(|r| r.contains("Hold")), "{rows:?}");
+        let hold_of = |name: &str| {
+            let r = row(name);
+            let after = &r[r.find(name).unwrap() + name.len()..];
+            after.split_whitespace().nth(2).filter(|t| *t != "│").map(str::to_string)
+        };
+        assert_eq!(hold_of("tank/a@free"), None, "{rows:?}");
+        assert_eq!(hold_of("tank/a@ours").as_deref(), Some("H"), "{rows:?}");
+        assert_eq!(hold_of("tank/a@theirs").as_deref(), Some("h"), "{rows:?}");
+    }
+
+    #[test]
+    fn the_snapshot_list_has_a_written_column() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: "s".to_string(), used: 1024, holds: 0, written: 2048 }];
+        app.snapshots_table.select(Some(0));
+        let rows = render(&mut app, 100, 12);
+        let header = rows.iter().find(|r| r.contains("Snapshot") && r.contains("Used")).unwrap_or_else(|| panic!("{rows:?}")).clone();
+        assert!(header.find("Used").unwrap() < header.find("Written").unwrap(), "Written comes after Used: {header:?}");
+        let row = rows.iter().find(|r| r.contains("tank/a@s")).unwrap_or_else(|| panic!("{rows:?}")).clone();
+        let after: Vec<&str> = row[row.find("tank/a@s").unwrap()..].split_whitespace().collect();
+        assert_eq!(&after[1..3], ["1.0K", "2.0K"], "{row:?}");
+    }
+
+    #[test]
+    fn the_snapshots_section_shows_the_changes_view_in_place_of_the_list_and_only_for_its_host() {
+        use crate::ui::changes::{Against, ChangesView, PendingChanges};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: "s".to_string(), used: 1, holds: 0, written: 0 }];
+        let pending = PendingChanges { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), against: Against::Previous, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        app.changes_view = Some(ChangesView::new(&pending));
+        let shown = render(&mut app, 100, 12).join("\n");
+        assert!(shown.contains("Changes —") && shown.contains("reading changes"), "{shown}");
+        assert!(!shown.contains("Snapshot  "), "the list is not drawn under the view: {shown}");
+        app.selected_host = 3;
+        let other = render(&mut app, 100, 12).join("\n");
+        assert!(!other.contains("Changes —"), "a view of another host is not shown: {other}");
+    }
+
+    #[test]
+    fn the_snapshots_section_shows_the_browser_in_place_of_the_list_and_only_for_its_host() {
+        use crate::ui::browse::{BrowseView, PendingBrowse};
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: "s".to_string(), used: 1, holds: 0, written: 0 }];
+        let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::FreeBsd, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        app.browse_view = Some(BrowseView::new(&pending, Some(0)));
+        for (w, h) in [(100, 12), (70, 8)] {
+            let shown = render(&mut app, w, h).join("\n");
+            assert!(shown.contains("Browse —") && shown.contains("reading the folder"), "{w}x{h}: {shown}");
+            assert!(!shown.contains("Snapshot  "), "the list is not drawn under the view: {shown}");
+        }
+        app.selected_host = 3;
+        let other = render(&mut app, 100, 12).join("\n");
+        assert!(!other.contains("Browse —"), "a view of another host is not shown: {other}");
     }
 
     fn identity_disk(name: &str, model: &str, serial: &str) -> crate::zfs::disk::DiskInfo {
@@ -2023,7 +2112,7 @@ mod tests {
     fn snapshots_list_shows_human_sizes_not_raw_bytes() {
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 2_096_734_848, holds: 0, written: 0 }];
         app.snapshots_table.select(Some(0));
         let text = render(&mut app, 110, 30).join("\n");
         assert!(text.contains("tank/data@b") && text.contains("2.0G"), "{text}");
@@ -2036,7 +2125,7 @@ mod tests {
         use crate::zfs::snapshot_detail::{SnapshotDetail, SnapshotEntry};
         let mut app = App::new(vec!["local".to_string()]);
         app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
-        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096 }];
+        app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/data".to_string(), name: "b".to_string(), used: 4096, holds: 0, written: 0 }];
         app.snapshots_table.select(Some(0));
         let target = MetricsTarget::Snapshot("tank/data@b".to_string());
         assert_eq!(app.metrics_target(), Some(target.clone()));
@@ -3072,6 +3161,45 @@ mod tests {
     }
 
     #[test]
+    fn the_about_screen_draws_the_wordmark_in_the_warn_colour_and_leaves_it_out_when_it_cannot_fit() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(crossterm::event::KeyCode::Char('A'));
+        let rows = render(&mut app, 120, 40);
+        let logo = crate::ui::logo::wordmark();
+        assert!(logo.iter().all(|line| rows.iter().any(|r| r.contains(line.as_str()))), "{rows:?}");
+        assert_eq!(fg_of(&mut app, "▀▀▀▀▀", 120, 40), Some(ratatui::style::Color::Yellow), "the theme's warn colour");
+        assert!(rows.iter().any(|r| r.contains("zfsctl v")), "the version stays");
+        // a pop-up too narrow for the drawing shows the text without it (a wrapped wordmark would be garbage)
+        let narrow = render(&mut app, 60, 40);
+        assert!(logo.iter().all(|line| narrow.iter().all(|r| !r.contains(line.as_str()))), "the big wordmark is left out: {narrow:?}");
+        assert!(narrow.iter().any(|r| r.contains("zfsctl v")), "{narrow:?}");
+    }
+
+    #[test]
+    fn the_about_wordmark_and_version_are_centred_in_the_pop_up() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.handle_key(crossterm::event::KeyCode::Char('A'));
+        let rows: Vec<Vec<char>> = render(&mut app, 120, 40).iter().map(|r| r.chars().collect()).collect();
+        let find = |needle: &str| -> (usize, usize) {
+            let n: Vec<char> = needle.chars().collect();
+            rows.iter().enumerate().find_map(|(y, r)| r.windows(n.len()).position(|w| w == n.as_slice()).map(|x| (y, x))).unwrap_or_else(|| panic!("{needle} not on screen"))
+        };
+        let (top, left) = find("┌About");
+        let right = left + rows[top][left..].iter().position(|c| *c == '┐').expect("the pop-up's corner");
+        let gaps = |x: usize, width: usize| ((x - (left + 1)) as i64, ((right - 1) - (x + width - 1)) as i64);
+        let last_line = crate::ui::logo::wordmark().pop().unwrap();
+        let (_, x) = find(&last_line);
+        let (l, r) = gaps(x, crate::ui::logo::WIDTH);
+        assert!((l - r).abs() <= 1 && l > 0, "the wordmark has {l} columns on its left and {r} on its right");
+        let version = format!("zfsctl v{}", env!("CARGO_PKG_VERSION"));
+        let (_, x) = find(&version);
+        let (l, r) = gaps(x, version.chars().count());
+        assert!((l - r).abs() <= 1 && l > 0, "the version line has {l} on its left and {r} on its right");
+        let (_, x) = find("A terminal UI for managing ZFS");
+        assert_eq!(x, left + 1, "the description stays flush left");
+    }
+
+    #[test]
     fn the_host_columns_drop_in_the_documented_order_and_the_required_three_stay() {
         // Array order is the drop order: the OS name first, Type last.
         let order = |c: &HostColumns| [c.os, c.rtt, c.jobs, c.scrub, c.pools, c.tag, c.used, c.type_];
@@ -3169,6 +3297,101 @@ mod tests {
         (app, dir)
     }
 
+    /// The foreground colour and boldness of the first cell of `word` on the first row that contains it.
+    fn style_of(buf: &ratatui::buffer::Buffer, w: u16, h: u16, word: &str) -> (ratatui::style::Color, bool) {
+        for y in 0..h {
+            let row: Vec<String> = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            let text = row.concat();
+            if let Some(at) = text.find(word) {
+                let x = u16::try_from(text[..at].chars().count()).unwrap();
+                let cell = &buf[(x, y)];
+                return (cell.fg, cell.modifier.contains(ratatui::style::Modifier::BOLD));
+            }
+        }
+        panic!("{word:?} not on screen");
+    }
+
+    fn render_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn settings_group_titles_use_the_header_style_and_their_rows_do_not() {
+        let (mut app, _dir) = settings_render_app("");
+        let buf = render_buffer(&mut app, 120, 30);
+        let header = app.theme.header();
+        assert_eq!(style_of(&buf, 120, 30, "Dashboard thresholds"), (header.fg.unwrap(), true), "group title");
+        let (row_fg, row_bold) = style_of(&buf, 120, 30, "Memory warn");
+        assert!(row_fg != header.fg.unwrap() && !row_bold, "a row stays body-coloured");
+    }
+
+    #[test]
+    fn the_help_screens_section_titles_use_the_header_style_and_its_keys_do_not() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Info { title: "Help".to_string(), body: crate::ui::state::help_text_for_book() });
+        let buf = render_buffer(&mut app, 140, 50);
+        assert_eq!(style_of(&buf, 140, 50, "Global"), (app.theme.header().fg.unwrap(), true), "section title");
+        let (fg, bold) = style_of(&buf, 140, 50, "switch sections");
+        assert!(fg != app.theme.header().fg.unwrap() && !bold, "a key line stays body-coloured");
+    }
+
+    #[test]
+    fn a_choose_list_scrolls_to_keep_the_chosen_row_on_screen_and_marks_it() {
+        let mut app = App::new(vec!["local".to_string()]);
+        let rows: Vec<String> = (0..40).map(|i| format!("dataset-{i:02} lacks something")).collect();
+        app.modal = Some(Modal::Choose { title: "Unprotected data".into(), note: "40 datasets\nsecond line".into(), rows, selected: 35, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() }, look: crate::ui::modal::ChooseLook::default() });
+        let buf = render_buffer(&mut app, 100, 20);
+        let text: String = (0..20).map(|y| (0..100).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
+        assert!(text.contains("dataset-35") && !text.contains("dataset-00"), "the chosen row is shown, the top is scrolled off:\n{text}");
+        let find = |word: &str| {
+            (0..20u16).find_map(|y| {
+                let row: String = (0..100u16).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                row.find(word).map(|at| (u16::try_from(row[..at].chars().count()).unwrap(), y))
+            })
+            .unwrap()
+        };
+        let (cx, cy) = find("dataset-35");
+        let (ox, oy) = find("dataset-34");
+        assert!(buf[(cx, cy)].style() != buf[(ox, oy)].style(), "the chosen row is drawn differently from its neighbour");
+    }
+
+    #[test]
+    fn a_choose_list_draws_host_headings_in_the_header_style_and_rows_in_their_level_colour() {
+        use crate::ui::dashboard::Level;
+        let mut app = App::new(vec!["local".to_string()]);
+        let look = crate::ui::modal::ChooseLook { heads: vec![(0, "alphahost  (2 datasets)".into()), (2, "betahost  (1 dataset)".into())], levels: vec![Level::Issue, Level::Watch, Level::Issue] };
+        let rows = vec!["issue  tank/one  no snapshots".to_string(), "watch  zroot/var  no copy".to_string(), "issue  tank/two  no snapshots".to_string()];
+        app.modal = Some(Modal::Choose { title: "Unprotected data".into(), note: "3 datasets".into(), rows, selected: 2, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() }, look });
+        let buf = render_buffer(&mut app, 100, 24);
+        let header = app.theme.header();
+        assert_eq!(style_of(&buf, 100, 24, "alphahost"), (header.fg.unwrap(), true));
+        assert_eq!(style_of(&buf, 100, 24, "betahost"), (header.fg.unwrap(), true));
+        assert_eq!(style_of(&buf, 100, 24, "tank/one").0, app.theme.err.fg.unwrap(), "a red row");
+        assert_eq!(style_of(&buf, 100, 24, "zroot/var").0, app.theme.warn.fg.unwrap(), "an amber row");
+        let lines: Vec<String> = (0..24u16).map(|y| (0..100u16).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+        let at = |w: &str| lines.iter().position(|l| l.contains(w)).unwrap();
+        assert!(at("betahost") > at("zroot/var") + 1, "a blank line before the next host: {lines:#?}");
+    }
+
+    #[test]
+    fn an_info_pop_up_other_than_help_keeps_its_plain_lines() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.modal = Some(Modal::Info { title: "Report preview (nothing sent)".to_string(), body: "NEEDS ATTENTION\n  nothing".to_string() });
+        let buf = render_buffer(&mut app, 100, 30);
+        let (fg, bold) = style_of(&buf, 100, 30, "NEEDS ATTENTION");
+        assert!(fg != app.theme.header().fg.unwrap() && !bold, "only Help styles its non-indented lines");
+    }
+
+    #[test]
+    fn a_table_screens_column_titles_use_the_header_style() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+        let buf = render_buffer(&mut app, 120, 30);
+        assert_eq!(style_of(&buf, 120, 30, "Written"), (app.theme.header().fg.unwrap(), true));
+    }
+
     #[test]
     fn the_settings_screen_shows_groups_rows_and_defaults() {
         let (mut app, _dir) = settings_render_app("[dashboard]\nmemory_warn = 80\n[cloud.caps]\nb2 = \"10G\"\n");
@@ -3190,6 +3413,16 @@ mod tests {
         let text = render(&mut app, 120, 30).join("\n");
         assert!(text.contains("config.toml") && text.contains("by hand"), "{text}");
         assert!(!text.contains("Memory warn"), "{text}");
+    }
+
+    #[test]
+    fn a_wrong_protection_value_is_shown_in_red_under_its_group() {
+        let (mut app, _dir) = settings_render_app("[protection]\nemail = \"of\"\n");
+        let text = render(&mut app, 140, 40).join("\n");
+        assert!(text.contains("[protection]: email must be immediate, report or off; judging at Basic"), "{text}");
+        assert!(text.contains("Memory warn"), "the rest is still shown: {text}");
+        let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s} in {text}"));
+        assert!(at("Data protection") < at("judging at Basic") && at("judging at Basic") < at("Level"), "{text}");
     }
 
     #[test]

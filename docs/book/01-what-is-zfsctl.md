@@ -133,10 +133,6 @@ On the left is the **sidebar** with the sections: Hosts, Pools, Datasets, Snapsh
 
 ## What it does not do
 
-- It does not manage virtual machines (bhyve) or jails yet.
-
-> **Not built yet:** bhyve virtual machines and jails. They are planned; nothing in this book relies on them.
-
 - It does not log in as root over ssh, ever, and it does not store your passwords. A restic repository password stays in a root-only file on the host; a Samba password is passed straight to Samba and not kept.
 - It is not a replacement for knowing what ZFS is. Chapter 2 is a short introduction, and the glossary at the end explains every term.
 

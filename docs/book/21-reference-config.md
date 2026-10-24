@@ -9,7 +9,7 @@ This chapter is checked against the program's own list of settings by the book's
 
 ## config.toml
 
-The file is `/usr/local/etc/zfsctl/config.toml`. It has up to six parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[daemon]`, `[notify]`, `[cloud]` and `[dashboard]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is; the Settings screen does the same for `theme` and `auto_refresh_secs` in `[ui]`, for `[dashboard]` and for `[cloud.caps]`.
+The file is `/usr/local/etc/zfsctl/config.toml`. It has up to eight parts: any number of `[[hosts]]` tables, and one each of `[ui]`, `[ssh]`, `[daemon]`, `[notify]`, `[cloud]`, `[dashboard]` and `[protection]`. The TUI's Add Host and the Alerts screen change only their own part and leave the rest of the file as it is; the Settings screen does the same for `theme` and `auto_refresh_secs` in `[ui]`, for `[dashboard]`, for `[protection]` and for `[cloud.caps]`.
 
 ### `[[hosts]]`: one table per remote host
 
@@ -25,6 +25,12 @@ The file is `/usr/local/etc/zfsctl/config.toml`. It has up to six parts: any num
 |---|---|---|---|
 | `theme` | text | `ansi` | `ansi`, `mono`, `solarized-dark` or `solarized-light`; `mono` is also chosen when `NO_COLOR` is set |
 | `auto_refresh_secs` | number | `10` | seconds between background refreshes of the list you are looking at; `0` turns them off |
+
+### `[ssh]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `multiplex` | `true` or `false` | `false` | `true` makes the short commands to one host share a single ssh connection, kept open for a minute after the last one, instead of opening a new connection for each. A command then takes about 55 ms instead of about 220 ms, and the host's `sshd` logs one login instead of dozens. At most 8 commands share a connection at once. Backups, cloud mirrors and replication always use a connection of their own, so a dropped shared connection cannot interrupt them. The sockets live in `/var/db/zfsctl/ssh`, readable by root only; if that directory cannot be made, zfsctl quietly goes back to one connection per command. Read when zfsctl or the daemon starts: restart the daemon after changing it |
 
 ### `[daemon]`
 
@@ -69,6 +75,18 @@ When the Dashboard turns a reading yellow ("to watch") and red ("issue"). All ke
 | `scrub_warn_days` | number | `35` | days since a pool's last finished scrub from which it turns yellow (a pool never scrubbed is yellow too) |
 | `scrub_crit_days` | number | `90` | days since the last scrub from which it turns red |
 | `scrub_ignore` | list of text | none | pool names the Dashboard does not judge by scrub age, such as `["scratch"]`; a resilver does not count as a scrub |
+
+### `[protection]`
+
+What counts as a protected dataset. All keys are optional, and the words are lower case. A wrong value, including one of the wrong type (`copies = "2"`, `copies = 300`, `level = 5`), never stops the daemon or the rest of the file from loading: zfsctl names the key and the values it takes (`[protection] copies must be 1, 2 or 3`) in the daemon's log (`config.toml [protection] problem ...`), on the Settings screen under Data protection, and as a yellow `config.toml` line in the Dashboard's Needs attention (`[protection]: email must be immediate, report or off; judging at Basic`). While it is wrong, the Dashboard and the `zfsctl report` preview judge at Basic; the running daemon keeps the settings it had before the change (it uses Basic only when it starts with a wrong section). Fix the file, or the row on the Settings screen.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `level` | text | `basic` | `basic` (one copy), `careful` (three copies, one of them online) or `custom` |
+| `copies` | number | `1` | with `level = "custom"`: how many copies a dataset needs, 1 to 3; ignored for the other levels |
+| `online` | number | `0` | with `level = "custom"`: how many of those copies must be online, 0 to 2 and never more than `copies`; ignored for the other levels |
+| `recent` | text | `normal` | how old a copy may be and still count: `strict` (one interval), `normal` (two) or `relaxed` (four) |
+| `email` | text | `immediate` | when an unprotected dataset is emailed: `immediate`, `report` (only in the daily report) or `off` |
 
 ## jobs.toml
 

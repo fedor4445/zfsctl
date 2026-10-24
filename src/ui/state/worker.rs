@@ -29,6 +29,20 @@ impl App {
                     }
                 }
                 WorkerMsg::Snapshots(host, result) => self.on_snapshots(host, result, &mut refreshes_needed),
+                WorkerMsg::Changes(host, request, result) => self.on_changes(host, request, result),
+                WorkerMsg::Browse(host, request, result) => self.on_browse(host, request, result),
+                WorkerMsg::SnapshotTags(host, generation, tags) => {
+                    self.tags_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&host);
+                    if host == self.selected_host {
+                        if generation == self.snapshot_gen.get(&host).copied().unwrap_or(0) {
+                            self.snapshot_tags = tags;
+                        } else if !self.is_refreshing(Section::Snapshots, host) && !self.pending_refresh.contains(&(Section::Snapshots, host)) {
+                            // fetched for an older list and nothing is on its way: the list on screen has no tags yet.
+                            // A refresh in flight or pending fetches its own tags, so pushing another would loop.
+                            refreshes_needed.push(Section::Snapshots);
+                        }
+                    }
+                }
                 WorkerMsg::Disks(host, result) => self.on_disks(host, result, &mut refreshes_needed),
                 WorkerMsg::Shares(host, result) => self.on_shares(host, result, &mut refreshes_needed),
                 WorkerMsg::BootEnvs(host, result) => self.on_boot_envs(host, result, &mut refreshes_needed),
@@ -54,7 +68,8 @@ impl App {
                     self.status_message = Some(line);
                     self.reload_check_files();
                 }
-                WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, &mut refreshes_needed),
+                WorkerMsg::RestoreDone(host, outcome, result) => self.on_mutation_done(host, Section::Snapshots, result, Some(outcome), &mut refreshes_needed),
+                WorkerMsg::MutationDone(host, section, result) => self.on_mutation_done(host, section, result, None, &mut refreshes_needed),
             }
         }
         refreshes_needed
@@ -166,6 +181,21 @@ impl App {
         }
     }
 
+    /// A changes read finished: it counts only for the view that asked, on the host still selected.
+    fn on_changes(&mut self, host: usize, request: u64, result: Result<crate::ui::changes::ChangesOutcome>) {
+        if let Some(view) = self.changes_view.as_mut().filter(|v| v.request == request && v.host == host) {
+            view.apply(result);
+        }
+    }
+
+    /// A folder listing finished: it counts only for the view that asked, on the host it was asked for.
+    fn on_browse(&mut self, host: usize, request: u64, result: Result<crate::ui::browse::BrowseOutcome>) {
+        let name = self.hosts.get(host).cloned().unwrap_or_default();
+        if let Some(view) = self.browse_view.as_mut().filter(|v| v.request == request && v.host == host) {
+            view.apply(&name, result);
+        }
+    }
+
     fn on_snapshots(&mut self, host: usize, result: Result<Vec<Snapshot>>, refreshes_needed: &mut Vec<Section>) {
         let quiet = self.end_refresh(Section::Snapshots, host);
         let had_pending = self.pending_refresh.remove(&(Section::Snapshots, host));
@@ -179,6 +209,7 @@ impl App {
             Ok(snapshots) => {
                 let previous = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)).map(|s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots = snapshots;
+                self.snapshot_tags.clear();
                 pin_selection(&mut self.snapshots_table, previous, &self.snapshots, |s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots_loaded = true;
                 self.clear_status_after_refresh(quiet);
@@ -580,7 +611,7 @@ impl App {
         }
     }
 
-    fn on_mutation_done(&mut self, host: usize, section: Section, result: Result<()>, refreshes_needed: &mut Vec<Section>) {
+    fn on_mutation_done(&mut self, host: usize, section: Section, result: Result<()>, restored: Option<std::result::Result<String, String>>, refreshes_needed: &mut Vec<Section>) {
         if section == Section::Alerts {
             self.alerts_test_busy = false;
         }
@@ -594,14 +625,24 @@ impl App {
                 self.bootenv_pin = None;
             }
         }
-        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { None };
+        let (restored_ok, restored_err) = match restored {
+            Some(Ok(text)) => (Some(text), None),
+            Some(Err(text)) => (None, Some(text)),
+            None => (None, None),
+        };
+        // A restore creates one live file and changes no snapshot: the list needs no refresh, and a manual refresh would
+        // clear the "Restored ..." message the moment it returned.
+        let restored_a_file = restored_ok.is_some();
+        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { restored_ok };
         match result {
             Ok(()) => {
                 self.status_message = note;
                 if section == Section::Settings {
                     self.apply_saved_settings();
                 }
-                refreshes_needed.push(section);
+                if !restored_a_file {
+                    refreshes_needed.push(section);
+                }
                 if section == Section::Vdevs {
                     // A disk going offline/online/being replaced
                     // changes the parent pool's health too —
@@ -620,7 +661,8 @@ impl App {
                 }
             }
             Err(e) => {
-                let text = e.to_string();
+                // A restore's refusal is a plain sentence: shown without the error type's prefix.
+                let text = restored_err.unwrap_or_else(|| e.to_string());
                 // A key that loaded but whose mount failed has changed what the list shows.
                 if section == Section::Datasets && text.contains("key IS loaded") {
                     refreshes_needed.push(section);

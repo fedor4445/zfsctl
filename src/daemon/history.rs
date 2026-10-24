@@ -29,6 +29,11 @@ pub enum RunResult {
     Cancelled,
 }
 
+/// How a copy job's `Skipped` message starts when there was nothing new to copy: the copy is current, so the
+/// unprotected-data check counts such a run as a success. The writers (replication, file replication, backup) and
+/// that reader share this one constant.
+pub const UP_TO_DATE: &str = "skipped: up to date";
+
 // The JSON key is `event` (see the spec), so the field keeps that name.
 #[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -16,6 +16,33 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Sends the `SnapshotTags` answer of a tag fetch exactly once: the real one, or an empty one when dropped
+/// before that (a panic), because the answer is what clears the host's "fetch running" mark.
+struct TagsReply {
+    tx: Sender<WorkerMsg>,
+    host: usize,
+    generation: u64,
+    sent: bool,
+}
+
+impl TagsReply {
+    fn send(&mut self, tags: HashMap<String, Vec<String>>) {
+        self.sent = true;
+        let _ = self.tx.send(WorkerMsg::SnapshotTags(self.host, self.generation, tags));
+    }
+}
+
+impl Drop for TagsReply {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self.tx.send(WorkerMsg::SnapshotTags(self.host, self.generation, HashMap::new()));
+        }
+    }
+}
+
+/// How long an error status is kept against quiet (auto) refreshes.
+const ERROR_STATUS_MIN_AGE: Duration = Duration::from_secs(8);
+
 mod forms;
 mod modal_keys;
 mod worker;
@@ -195,6 +222,13 @@ pub struct PendingPruneCheck {
 /// navigated away from can be told apart from a fresh one instead of
 /// silently overwriting the currently-selected host's pane.
 pub enum WorkerMsg {
+    /// A changes read finished: host, the request number it was started for, and what it found.
+    Changes(usize, u64, Result<crate::ui::changes::ChangesOutcome>),
+    /// A snapshot folder was listed: host, the request number it was started for, and what it found.
+    Browse(usize, u64, Result<crate::ui::browse::BrowseOutcome>),
+    /// The hold tags of the held snapshots of one host's list (key `dataset@name`), sent after `Snapshots`; the
+    /// number says which list refresh they were fetched for.
+    SnapshotTags(usize, u64, std::collections::HashMap<String, Vec<String>>),
     /// The dry run (`zpool add -n`) of a vdev add finished: the layout it would give, or the host's own refusal.
     AddChecked(AddCheck, std::result::Result<String, String>),
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
@@ -234,6 +268,9 @@ pub enum WorkerMsg {
     /// The target is what the sample was taken for; `MetricsView::apply` drops it if the panel has moved on.
     Metrics(usize, crate::zfs::metrics::MetricsTarget, Box<Result<crate::zfs::metrics::TargetSample>>),
     MutationDone(usize, Section, Result<()>),
+    /// A finished restore: what it verified (the status line) or the engine's refusal sentence, together with the plain result.
+    /// One message, so a note can never be read for another call's `MutationDone`.
+    RestoreDone(usize, std::result::Result<String, String>, Result<()>),
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
     HostProbe(String, String, Result<()>),
@@ -306,6 +343,13 @@ pub struct App {
     /// The host index `encryption` was read for (a job form may be for another host).
     pub encryption_for: usize,
     pub snapshots: Vec<Snapshot>,
+    /// The hold tags of the held snapshots of the selected host, keyed `dataset@name`. A held snapshot without an
+    /// entry has unknown tags.
+    pub snapshot_tags: std::collections::HashMap<String, Vec<String>>,
+    /// Per host, how many snapshot list refreshes have started: tags are applied only when they were fetched for the latest one.
+    snapshot_gen: HashMap<usize, u64>,
+    /// Hosts with a tag fetch running: a refresh that finds its host here skips its own fetch (tags stay unknown until the next refresh).
+    tags_running: Arc<std::sync::Mutex<HashSet<usize>>>,
     /// `true` once a snapshot list has arrived for this host (an empty list counts), so a prompt that counts
     /// snapshots can say "unknown" instead of a misleading 0.
     pub snapshots_loaded: bool,
@@ -335,9 +379,21 @@ pub struct App {
     pub cloud_caps: crate::ui::cloud::Caps,
     /// `[dashboard]` of `config.toml`, read each time the Dashboard refreshes.
     pub dashboard_thresholds: crate::config::Thresholds,
+    /// `[protection]` (an unreadable or invalid one means the defaults; the daemon's check reports the problem).
+    pub dashboard_protection: crate::config::ProtectionSettings,
+    /// Why `[protection]` is wrong, when it is (the Dashboard then judges at Basic and says so).
+    pub dashboard_protection_problem: Option<String>,
     /// The selected line of the Dashboard's Needs attention list.
     pub dashboard_table: TableState,
     pub pending_cloud: Vec<PendingCloud>,
+    /// The changes view of the Snapshots section (`c` / `C`), its latest request number, and the reads waiting for a runner.
+    pub changes_view: Option<crate::ui::changes::ChangesView>,
+    pub changes_request: u64,
+    pub pending_changes: Vec<crate::ui::changes::PendingChanges>,
+    /// The browse view of the Snapshots section (`f`), its latest request number, and the reads waiting for a runner.
+    pub browse_view: Option<crate::ui::browse::BrowseView>,
+    pub browse_request: u64,
+    pub pending_browse: Vec<crate::ui::browse::PendingBrowse>,
     /// Lookups that were started and have not answered: `remotes:<host>` or `size:<job id>`.
     cloud_busy: HashSet<String>,
     /// Where `jobs.toml`, `history.jsonl` and `daemon.json` live: the daemon's state directory.
@@ -347,6 +403,8 @@ pub struct App {
     /// `config.toml`, read and (for the alert settings) written by the Alerts screen.
     pub config_path: std::path::PathBuf,
     pub alerts_view: crate::ui::alerts::AlertsView,
+    /// First visible line of an open Info pop-up (Help, About, report preview); Up/Down/PageUp/PageDown/Home/End move it.
+    pub info_scroll: u16,
     /// The Settings section: the rest of `config.toml` that can be edited here.
     pub settings_view: crate::ui::settings::SettingsView,
     pub settings_table: TableState,
@@ -462,6 +520,8 @@ pub struct App {
     /// it invalidates itself the moment the message is replaced or
     /// cleared — a stale flag can never recolor an unrelated message.
     status_error: Option<String>,
+    /// When `status_error` was set: a quiet (auto) refresh leaves an error younger than `ERROR_STATUS_MIN_AGE` alone.
+    status_error_at: Option<Instant>,
     pub should_quit: bool,
     /// Appended by `drain_worker_messages` once a probed host is
     /// confirmed reachable; drained by the event loop (which owns the
@@ -532,6 +592,9 @@ impl App {
             encryption: std::collections::BTreeMap::new(),
             encryption_for: 0,
             snapshots: Vec::new(),
+            snapshot_tags: std::collections::HashMap::new(),
+            snapshot_gen: HashMap::new(),
+            tags_running: Arc::new(std::sync::Mutex::new(HashSet::new())),
             snapshots_loaded: false,
             pools_table: TableState::default(),
             datasets_table: TableState::default(),
@@ -558,14 +621,23 @@ impl App {
             cloud_sizes_loaded: false,
             cloud_caps: HashMap::new(),
             dashboard_thresholds: crate::config::Thresholds::default(),
+            dashboard_protection: crate::config::ProtectionSettings::default(),
+            dashboard_protection_problem: None,
             dashboard_table: TableState::default(),
             pending_cloud: Vec::new(),
+            changes_view: None,
+            changes_request: 0,
+            pending_changes: Vec::new(),
+            browse_view: None,
+            browse_request: 0,
+            pending_browse: Vec::new(),
             cloud_busy: HashSet::new(),
             state_dir: std::path::PathBuf::from(crate::daemon::engine::DEFAULT_STATE_DIR),
             last_jobs_refresh: None,
             last_cloud_refresh: None,
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
+            info_scroll: 0,
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
             smart: crate::daemon::smart_check::SmartFile::default(),
@@ -614,6 +686,7 @@ impl App {
             status_message: None,
             theme: crate::ui::theme::Theme::ansi(),
             status_error: None,
+            status_error_at: None,
             should_quit: false,
             pending_new_hosts: Vec::new(),
             pending_shell: false,
@@ -689,8 +762,11 @@ impl App {
     /// A manual refresh result clears whatever status message was showing; a quiet
     /// (auto) one only clears a stale error, so "scrub started" is not wiped every
     /// interval but a "host unreachable" error does go away once the host answers.
+    /// An error younger than `ERROR_STATUS_MIN_AGE` survives a quiet refresh, so a refusal is readable
+    /// even when an overdue auto-refresh fires the moment its modal closes.
     fn clear_status_after_refresh(&mut self, quiet: bool) {
-        if !quiet || self.status_is_error() {
+        let young = self.status_error_at.is_some_and(|at| at.elapsed() < ERROR_STATUS_MIN_AGE);
+        if !quiet || (self.status_is_error() && !young) {
             self.status_message = None;
         }
     }
@@ -1049,7 +1125,10 @@ impl App {
                 };
                 let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], chrono::Utc::now(), deadline);
                 let _ = storage.join();
-                done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe(&host, checks))
+                // Read after the storage pass has joined, so the roles are this check's.
+                let storage_file = crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE));
+                let role_of = |h: &str, dev: &str| crate::daemon::storage_check::role_of(&storage_file, h, dev, None);
+                done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe_with(&host, checks, &role_of))
             }))
             .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));
             let _ = tx.send(WorkerMsg::HostChecked(line));
@@ -1104,7 +1183,9 @@ impl App {
     /// Reloads everything the Dashboard shows that is not a host probe: the jobs, the alert settings, the cloud remotes and the
     /// `[dashboard]` thresholds (an unreadable `config.toml` means the defaults). Probes arrive on their own every 30 s.
     pub fn refresh_dashboard(&mut self) {
-        self.dashboard_thresholds = crate::config::Config::load(&self.config_path).map(|c| c.dashboard.resolve()).unwrap_or_default();
+        let config = crate::config::Config::load(&self.config_path);
+        self.dashboard_thresholds = config.as_ref().map(|c| c.dashboard.resolve()).unwrap_or_default();
+        (self.dashboard_protection, self.dashboard_protection_problem) = config.map(|c| c.protection.resolve_or_basic()).unwrap_or_default();
         self.reload_check_files();
         self.refresh_alerts();
         self.refresh_cloud();
@@ -1138,6 +1219,8 @@ impl App {
             cloud_caps: &self.cloud_caps,
             alerts: &self.alerts_view,
             thresholds: &self.dashboard_thresholds,
+            protection: &self.dashboard_protection,
+            protection_problem: self.dashboard_protection_problem.as_deref(),
             smart: &self.smart,
             shares: &self.shares_check,
             storage: &self.storage_check,
@@ -1319,7 +1402,22 @@ impl App {
     /// Sets a failure message (rendered with the theme's `err` style).
     pub fn set_error(&mut self, msg: String) {
         self.status_error = Some(msg.clone());
+        self.status_error_at = Some(Instant::now());
         self.status_message = Some(msg);
+    }
+
+    /// The Hold column: `H` when zfsctl's own tag is on the snapshot, `h` when it is held but not (known to be) by
+    /// zfsctl, blank when unheld.
+    pub fn hold_marker(&self, s: &Snapshot) -> &'static str {
+        if s.holds == 0 {
+            return "";
+        }
+        let ours = self.snapshot_tags.get(&format!("{}@{}", s.dataset, s.name)).is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG));
+        if ours {
+            "H"
+        } else {
+            "h"
+        }
     }
 
     pub fn status_is_error(&self) -> bool {
@@ -1442,11 +1540,20 @@ impl App {
     /// Clears data panes so a stale render from the previously-selected
     /// host is never left on screen looking current after switching hosts.
     fn clear_host_data(&mut self) {
+        // A changes view belongs to the host it was opened on: leaving it cancels its diff and drops it, so it can
+        // never be left saying "reading" for an answer that was thrown away.
+        if let Some(view) = self.changes_view.take() {
+            view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(view) = self.browse_view.take() {
+            view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         self.metrics = crate::ui::metrics::MetricsView::default();
         self.pools.clear();
         self.datasets.clear();
         self.encryption.clear();
         self.snapshots.clear();
+        self.snapshot_tags.clear();
         self.snapshots_loaded = false;
         self.pools_table.select(None);
         self.datasets_table.select(None);
@@ -1488,7 +1595,9 @@ impl App {
             self.handle_filter_key(key);
             return;
         }
-        let _handled = self.key_global(key)
+        let _handled = self.key_changes_view(key)
+            || self.key_browse_view(key)
+            || self.key_global(key)
             || self.key_navigation(key)
             // A section the host's OS has no equivalent for (see `ui::support`) is dimmed: its keys do nothing.
             || (self.current_section_supported()
@@ -2194,6 +2303,73 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char(which @ ('c' | 'C')) if self.current_section() == Section::Snapshots && self.changes_view.is_none() => {
+                if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
+                    use crate::ui::changes::{Against, ChangesView, PendingChanges};
+                    self.changes_request += 1;
+                    let pending = PendingChanges {
+                        host: self.selected_host,
+                        request: self.changes_request,
+                        dataset: snap.dataset.clone(),
+                        name: snap.name.clone(),
+                        against: if which == 'c' { Against::Previous } else { Against::Live },
+                        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    };
+                    self.changes_view = Some(ChangesView::new(&pending));
+                    self.pending_changes.push(pending);
+                }
+            }
+            KeyCode::Char('f') if self.current_section() == Section::Snapshots && self.changes_view.is_none() && self.browse_view.is_none() => {
+                if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
+                    use crate::ui::browse::{BrowseView, PendingBrowse};
+                    let probe = self.hosts.get(self.selected_host).and_then(|name| self.host_probes.get(name));
+                    let Some(os) = probe.and_then(|p| p.os) else {
+                        self.set_error("this host has not been probed yet, so its type is not known; try again in a moment".to_string());
+                        return true;
+                    };
+                    let utc_offset = probe.and_then(|p| p.utc_offset_secs);
+                    self.browse_request += 1;
+                    let pending = PendingBrowse {
+                        host: self.selected_host,
+                        request: self.browse_request,
+                        dataset: snap.dataset.clone(),
+                        name: snap.name.clone(),
+                        path: Vec::new(),
+                        mountpoint: None,
+                        zone: None,
+                        os,
+                        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    };
+                    self.browse_view = Some(BrowseView::new(&pending, utc_offset));
+                    self.pending_browse.push(pending);
+                }
+            }
+            KeyCode::Char('H') if self.current_section() == Section::Snapshots => {
+                if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
+                    let target = format!("{}@{}", snap.dataset, snap.name);
+                    let (dataset, name) = (snap.dataset.clone(), snap.name.clone());
+                    let tags = self.snapshot_tags.get(&target);
+                    let action = |call| PendingAction { host: self.selected_host, section: Section::Snapshots, call };
+                    if snap.holds == 0 {
+                        let prompt = hold_prompt(&target);
+                        self.modal = Some(Modal::Confirm { choice: None, prompt, action: action(MutationCall::HoldSnapshot { dataset, name }) });
+                    } else if tags.is_some_and(|t| t.iter().any(|t| t == crate::zfs::snapshot::HOLD_TAG)) {
+                        self.modal = Some(Modal::ConfirmTyped {
+                            prompt: format!("Type the snapshot name to release the zfsctl hold on '{target}' — it can then be destroyed and pruned again:"),
+                            expected: target,
+                            input: String::new(),
+                            action: action(MutationCall::ReleaseSnapshot { dataset, name }),
+                        });
+                    } else if let Some(t) = tags {
+                        self.status_message = Some(match crate::display_text::tag_list(t) {
+                            l if l.is_empty() => "held by another tag (name not printable); zfsctl will not release it".to_string(),
+                            l => format!("held by another tag: {l}; zfsctl will not release it"),
+                        });
+                    } else {
+                        self.status_message = Some("hold tags not loaded yet; press r".to_string());
+                    }
+                }
+            }
             KeyCode::Char('b') if self.current_section() == Section::Snapshots => {
                 if let Some(i) = self.snapshots_table.selected() {
                     if let Some(snap) = self.snapshots.get(i) {
@@ -2367,10 +2543,16 @@ impl App {
                 let lines = self.dashboard().attention.len();
                 move_table_selection(&mut self.dashboard_table, lines, false);
             }
-            // Navigation only: the Dashboard shows, the section that owns the problem fixes.
+            // The Dashboard shows, the section that owns the problem fixes it; an unprotected-data line opens the form that makes the missing job.
             KeyCode::Enter if self.current_section() == Section::Dashboard => {
-                let item = self.dashboard_table.selected().and_then(|i| self.dashboard().attention.get(i).cloned());
-                if let Some(item) = item {
+                let dashboard = self.dashboard();
+                let item = self.dashboard_table.selected().and_then(|i| dashboard.attention.get(i).cloned());
+                // A named protection line goes straight to its fix; the "and N more" line opens the list (Jobs shows none of them).
+                if let Some(gap) = item.as_ref().and_then(|item| dashboard.protection_fix(item)).cloned() {
+                    self.fix_unprotected(&gap);
+                } else if let Some(popup) = item.as_ref().and_then(|item| dashboard.protection_popup(item)) {
+                    self.modal = Some(Modal::Choose { title: crate::ui::dashboard::PROTECTION_POPUP_TITLE.to_string(), note: popup.note, rows: popup.rows, selected: popup.selected, then: crate::ui::modal::ChooseThen::Unprotected(popup.gaps), look: popup.look });
+                } else if let Some(item) = item {
                     if let Some(position) = self.sections.iter().position(|s| *s == item.goto) {
                         self.selected_section = position;
                         self.pane_focus = PaneFocus::Middle;
@@ -2731,6 +2913,7 @@ impl App {
         }
         self.auto_refresh_interval = config.ui.auto_refresh_interval();
         self.dashboard_thresholds = config.dashboard.resolve();
+        (self.dashboard_protection, self.dashboard_protection_problem) = config.protection.resolve_or_basic();
         self.reload_cloud_caps();
     }
 
@@ -3028,8 +3211,19 @@ impl App {
         }
         let (tx, os) = (self.tx.clone(), self.host_os(host));
         std::thread::spawn(move || {
-            let result = call.run_on(runner.as_ref(), os);
-            let _ = tx.send(WorkerMsg::MutationDone(host, section, result));
+            // A restore's success text carries what the engine verified, so it travels with the plain result.
+            let message = match call.restore_outcome(runner.as_ref()) {
+                Some(Ok(done)) => WorkerMsg::RestoreDone(host, Ok(crate::ui::modal::restored_note(&done)), Ok(())),
+                Some(Err(e)) => {
+                    let sentence = match &e {
+                        crate::error::AppError::Config(m) => m.clone(),
+                        other => other.to_string(),
+                    };
+                    WorkerMsg::RestoreDone(host, Err(sentence), Err(e))
+                }
+                None => WorkerMsg::MutationDone(host, section, call.run_on(runner.as_ref(), os)),
+            };
+            let _ = tx.send(message);
         });
     }
 
@@ -3078,6 +3272,168 @@ impl App {
 
     /// See `refresh_pools` for why this queues rather than drops a
     /// request while already in flight.
+    /// The changes view, when it belongs to the host and section on screen.
+    pub fn changes_view_active(&self) -> bool {
+        self.current_section() == Section::Snapshots && self.changes_view.as_ref().is_some_and(|v| v.host == self.selected_host)
+    }
+
+    /// Keys while the changes view is open: they move in it, open a folder, set the depth, hold the older snapshot
+    /// or close it; the snapshot list's own destructive keys do nothing behind it. Everything else (quit, Help, the
+    /// shell, Tab) works as everywhere. Returns whether the key was handled.
+    fn key_changes_view(&mut self, key: KeyCode) -> bool {
+        if self.changes_view.is_none() || self.modal.is_some() || self.picker.is_some() || self.current_section() != Section::Snapshots {
+            return false;
+        }
+        if !self.changes_view_active() {
+            if let Some(view) = self.changes_view.take() {
+                view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            return false;
+        }
+        let older = self.changes_view.as_ref().and_then(crate::ui::changes::ChangesView::older_snapshot);
+        let Some(view) = self.changes_view.as_mut() else { return false };
+        // While a name filter is being typed every key is text (Esc and Enter end it).
+        if view.filter_key(key) {
+            return true;
+        }
+        match key {
+            KeyCode::Char('/') => {
+                view.start_filter();
+            }
+            KeyCode::Esc | KeyCode::Backspace => {
+                if !view.back() {
+                    view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.changes_view = None;
+                }
+            }
+            KeyCode::Down => view.move_selection(true),
+            KeyCode::Up => view.move_selection(false),
+            KeyCode::Enter => view.open_selected(),
+            KeyCode::Char('[') => view.set_depth(view.depth.saturating_sub(1)),
+            KeyCode::Char(']') => view.set_depth(view.depth + 1),
+            KeyCode::Char('H') => {
+                if let Some((dataset, name)) = older {
+                    let prompt = hold_prompt(&format!("{dataset}@{name}"));
+                    let call = MutationCall::HoldSnapshot { dataset, name };
+                    self.modal = Some(Modal::Confirm { choice: None, prompt, action: PendingAction { host: self.selected_host, section: Section::Snapshots, call } });
+                }
+            }
+            KeyCode::Char('c' | 'C' | 'd' | 'b' | 'f' | 'R') => {}
+            _ => return false,
+        }
+        true
+    }
+
+    /// The browse view, when it belongs to the host and section on screen.
+    pub fn browse_view_active(&self) -> bool {
+        self.current_section() == Section::Snapshots && self.browse_view.as_ref().is_some_and(|v| v.host == self.selected_host)
+    }
+
+    /// Keys while the browser is open: they move in it, open a folder, go up, set the filters or close it; the snapshot
+    /// list's own destructive keys do nothing behind it. While a filter prompt is open every key is text. Everything else
+    /// (quit, Help, the shell, Tab) works as everywhere. Returns whether the key was handled.
+    fn key_browse_view(&mut self, key: KeyCode) -> bool {
+        use crate::ui::browse::InputKind;
+        if self.browse_view.is_none() || self.modal.is_some() || self.picker.is_some() || self.current_section() != Section::Snapshots {
+            return false;
+        }
+        if !self.browse_view_active() {
+            if let Some(view) = self.browse_view.take() {
+                view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            return false;
+        }
+        let request = self.browse_request + 1;
+        let Some(view) = self.browse_view.as_mut() else { return false };
+        if view.input_key(key) {
+            return true;
+        }
+        let mut next = None;
+        match key {
+            KeyCode::Esc => {
+                view.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.browse_view = None;
+            }
+            KeyCode::Down => view.move_selection(true),
+            KeyCode::Up => view.move_selection(false),
+            KeyCode::Enter | KeyCode::Right => next = view.enter_selected(request).unwrap_or(None),
+            KeyCode::Left | KeyCode::Backspace => next = view.go_up(request),
+            KeyCode::Char('/') => view.start_input(InputKind::Name),
+            KeyCode::Char('m') => view.start_input(InputKind::Modified),
+            KeyCode::Char('s') => view.start_input(InputKind::Size),
+            KeyCode::Char('t') => view.cycle_kind(),
+            KeyCode::Char('x') => view.clear_filters(),
+            KeyCode::Char('R') => {
+                if let Some(source) = view.restore_source() {
+                    let host = view.host;
+                    if source.zone.is_some() {
+                        // A zoned dataset: the engine's own sentence, nothing opens.
+                        let why = crate::zfs::snapshot_restore::plan_restore(&source, "restore").err().map_or_else(|| "restore from a dataset given to a zone must be done inside the zone".to_string(), refusal_text);
+                        self.set_error(why);
+                    } else {
+                        let value = crate::zfs::snapshot_restore::default_destination_name(&source.entry.name, &source.snapshot);
+                        self.modal = Some(Modal::Form {
+                            title: "Restore as a copy".to_string(),
+                            fields: vec![FormField { label: "Restore as".to_string(), value }],
+                            focused: 0,
+                            description: Some("A new file next to the original; nothing is replaced.".to_string()),
+                            kind: FormKind::RestoreFile { host, source: Box::new(source) },
+                        });
+                    }
+                }
+            }
+            KeyCode::Char('c' | 'C' | 'd' | 'b' | 'H' | 'f') => {}
+            _ => return false,
+        }
+        if let Some(pending) = next {
+            self.browse_request = request;
+            self.pending_browse.push(pending);
+        }
+        true
+    }
+
+    /// Ends a queued browse read that cannot run (its host is gone) as a failed one.
+    pub fn fail_browse(&mut self, pending: &crate::ui::browse::PendingBrowse, why: crate::error::AppError) {
+        let _ = self.tx.send(WorkerMsg::Browse(pending.host, pending.request, Err(why)));
+    }
+
+    /// Lists one snapshot folder on a worker thread and sends the outcome back (an error as an error).
+    pub fn start_browse(&mut self, runner: Arc<dyn CommandRunner>, pending: crate::ui::browse::PendingBrowse) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::ui::browse::read_pending(runner.as_ref(), &pending);
+            let _ = tx.send(WorkerMsg::Browse(pending.host, pending.request, result));
+        });
+    }
+
+    /// Ends a queued read that cannot run (its host is gone) as a failed one.
+    pub fn fail_changes(&mut self, pending: &crate::ui::changes::PendingChanges, why: crate::error::AppError) {
+        let _ = self.tx.send(WorkerMsg::Changes(pending.host, pending.request, Err(why)));
+    }
+
+    /// Reads one changes view's diff on a worker thread and sends the outcome back (an error as an error).
+    pub fn start_changes(&mut self, runner: Arc<dyn CommandRunner>, pending: crate::ui::changes::PendingChanges) {
+        use crate::ui::changes::{Against, ChangesOutcome};
+        use crate::zfs::snapshot_changes::{dataset_mountpoint, previous_snapshot, read_changes, Limits};
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<ChangesOutcome> {
+                let this = format!("{}@{}", pending.dataset, pending.name);
+                let (older, newer) = match pending.against {
+                    Against::Previous => match previous_snapshot(runner.as_ref(), &pending.dataset, &pending.name)? {
+                        Some(previous) => (previous, this),
+                        None => return Ok(ChangesOutcome::NoPrevious),
+                    },
+                    Against::Live => (this, pending.dataset.clone()),
+                };
+                let mount = dataset_mountpoint(runner.as_ref(), &pending.dataset)?;
+                let summary = read_changes(runner.as_ref(), &older, &newer, mount, &Limits::default(), &pending.cancel)?;
+                Ok(ChangesOutcome::Done { older, newer, summary })
+            })();
+            let _ = tx.send(WorkerMsg::Changes(pending.host, pending.request, result));
+        });
+    }
+
     pub fn refresh_snapshots(&mut self, runner: Arc<dyn CommandRunner>) {
         let host = self.selected_host;
         if self.is_refreshing(Section::Snapshots, host) {
@@ -3085,10 +3441,25 @@ impl App {
             return;
         }
         self.begin_refresh(Section::Snapshots, host);
-        let tx = self.tx.clone();
+        let generation = self.snapshot_gen.entry(host).and_modify(|g| *g += 1).or_insert(1);
+        let generation = *generation;
+        let (tx, running) = (self.tx.clone(), Arc::clone(&self.tags_running));
         std::thread::spawn(move || {
             let result = crate::zfs::snapshot::list_snapshots(runner.as_ref());
+            let held: Vec<String> = result.as_ref().map(|l| l.iter().filter(|s| s.holds > 0).map(|s| format!("{}@{}", s.dataset, s.name)).collect()).unwrap_or_default();
             let _ = tx.send(WorkerMsg::Snapshots(host, result));
+            if held.is_empty() {
+                return;
+            }
+            // One tag fetch per host at a time; a skipped one leaves the tags unknown until the next refresh.
+            if !running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(host) {
+                return;
+            }
+            // A failed chunk leaves its snapshots out: their tags stay unknown, and they cannot be released from here.
+            // The guard answers with an empty map if this thread panics, so the host's mark is always cleared.
+            let mut reply = TagsReply { tx, host, generation, sent: false };
+            let tags = crate::zfs::snapshot::hold_tags_for(runner.as_ref(), &held);
+            reply.send(tags);
         });
     }
 
@@ -3351,9 +3722,61 @@ fn clamp_table_selection(state: &mut TableState, len: usize) {
 
 fn about_text() -> String {
     format!(
-        "zfsctl v{}\n\nA terminal UI for managing ZFS storage on FreeBSD.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
+        "{}\n\nzfsctl v{}\n\nA terminal UI for managing ZFS storage: a FreeBSD hub that manages FreeBSD, Linux and illumos hosts over ssh.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
+        crate::ui::logo::wordmark().join("\n"),
         env!("CARGO_PKG_VERSION")
     )
+}
+
+/// The question the hold confirm asks, from the `H` key in the list and from the changes view.
+/// The engine's refusal as the plain sentence it is (without the error type's prefix).
+pub(super) fn refusal_text(e: crate::error::AppError) -> String {
+    match e {
+        crate::error::AppError::Config(sentence) => sentence,
+        other => other.to_string(),
+    }
+}
+
+/// The question the restore confirm asks: the source, the destination and the exact command that will run as root. Every
+/// piece of host text goes through `sanitise_for_display`.
+pub(super) fn restore_prompt(plan: &crate::zfs::snapshot_restore::RestorePlan) -> String {
+    // Cleaned first, then quoted the way the shell would need it: a space in a name (leading, trailing or in the middle)
+    // is then visible and cannot read as the start of another operand.
+    let shown = |text: &str| crate::exec::ssh::shell_quote(&visible(text));
+    let command = plan.command.iter().map(|a| shown(a.as_str())).collect::<Vec<_>>().join(" ");
+    let mut prompt = format!(
+        "Restore as a copy\nFrom:  {}\nTo:    {}\nCommand: cp {command}\nSize: {}   Mode: {}\nThis creates one new file next to the original and never replaces anything.\nExisting files are never overwritten; if the name is taken nothing is copied.",
+        shown(&plan.source),
+        shown(&plan.destination),
+        plan.size,
+        crate::display_text::sanitise_for_display(&plan.mode),
+    );
+    // The names the prompt shows with direction marks blanked out come from the host as well: the source's folders and name count too.
+    if looks_deceptive(&plan.dest_name) || looks_deceptive(&plan.source) || looks_deceptive(&plan.destination) {
+        prompt.push_str("\nNote: this name contains unusual characters; check it letter by letter.");
+    }
+    prompt.push_str(" (y/n)");
+    prompt
+}
+
+/// `sanitise_for_display`'s replacement of control and direction characters, but without its collapsing and trimming of
+/// spaces: in a file name every space counts, and the quoted display exists to show them.
+fn visible(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}') { ' ' } else { c }).collect()
+}
+
+/// A non-ASCII character that can pass for a slash, a space or nothing at all in a name.
+fn looks_deceptive(name: &str) -> bool {
+    name.chars().any(|c| {
+        !c.is_ascii()
+            && (matches!(c, '\u{2044}' | '\u{2215}' | '\u{29F8}' | '\u{FF0F}' | '\u{2571}' | '\u{00AD}' | '\u{061C}' | '\u{FEFF}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}')
+                || c.is_whitespace()
+                || c.is_control())
+    })
+}
+
+fn hold_prompt(target: &str) -> String {
+    format!("Protect {target} with a hold?\nIt cannot be destroyed, and retention, backups and replication will not prune it, until the hold is released. (y/n)")
 }
 
 /// The Help text, for the book's drift test.
@@ -3362,8 +3785,24 @@ pub(crate) fn help_text_for_book() -> String {
     help_text()
 }
 
+/// The Help text: one blank line between key lines, so a long description that wraps cannot run into the next key.
 fn help_text() -> String {
-    "\
+    let mut out = String::new();
+    let mut previous_was_key = false;
+    for line in HELP_SOURCE.lines() {
+        let is_key = line.starts_with("  ");
+        if is_key && previous_was_key {
+            out.push('\n');
+        }
+        out.push_str(line);
+        out.push('\n');
+        previous_was_key = is_key;
+    }
+    out.pop();
+    out
+}
+
+const HELP_SOURCE: &str = "\
 Global
   Tab / Shift+Tab  switch sections
   Up / Down        select a row (host/pool/dataset/snapshot/disk/share, or a property/permission/ACL row)
@@ -3421,6 +3860,11 @@ Datasets: ACL sub-tab
 Snapshots
   d                destroy (type dataset@name to confirm)
   b                roll back (type dataset@name to confirm)
+  H                hold the selected snapshot, or release zfsctl's hold on it (a hold protects it from destroy and pruning)
+  c                show what changed since the previous snapshot, by folder (read-only; Enter opens a folder, / filters its entries by name as you type (a|b for either, * ? wildcards), [ ] sets the depth, H holds the older snapshot, Esc closes)
+  C                show what has changed since this snapshot, compared with the live dataset
+  f                look inside the selected snapshot: its folders with type, size, dates, mode and owner (read-only, metadata only; needs the `browse` sudoers feature on other hosts). Enter opens a folder, ← goes up, / filters by name as you type (a|b for either, * ? wildcards), m s t by modified date, size and type, x clears, Esc closes
+  R                in the snapshot browser, on a regular file: copy it back next to the original under a new name (asks for the name, then shows the exact command; y then Enter runs it; never replaces a file; needs the `restore` sudoers feature on other hosts)
 
 Disks
   Space            toggle-select a disk
@@ -3453,7 +3897,8 @@ Jobs
 
 Dashboard
   Up / Down        select a line of Needs attention
-  Enter            go to the section that owns that line (the Dashboard itself changes nothing)
+  Enter            go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job
+                   (the Dashboard itself changes nothing)
   r                reload the jobs, alerts, cloud list and [dashboard] settings
 
 Cloud
@@ -3474,9 +3919,7 @@ Settings
   Enter            edit the setting in a form (blank = default; saved into config.toml after a y/n confirmation)
   r                reload the settings from config.toml
 
-Press any key to close."
-        .to_string()
-}
+Up / Down / PageUp / PageDown scroll; any other key closes.";
 
 /// The Add Host reachability check: plain `true` over ssh, deliberately WITHOUT sudo. The documented sudoers
 /// entry is path-pinned and has no `true`, so `sudo -n true` would reject every correctly set-up host. A

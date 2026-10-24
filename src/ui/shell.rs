@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 pub enum ShellOutcome {
     /// The shell ran and exited. Its own exit status is deliberately not an error.
     Finished,
-    /// `ssh` could not connect or authenticate (it exits 255 for that).
+    /// `ssh` could not connect or authenticate, or lost the connection (it exits 255 for all of these).
     ConnectFailed,
     /// The program could not be started at all.
     SpawnFailed(String),
@@ -22,13 +22,14 @@ pub enum ShellOutcome {
 /// The command for a shell on a host: `ssh -t -- <target>` for a remote one
 /// (an interactive login as that unprivileged user; no `BatchMode`, so a
 /// password or passphrase prompt works; `--` keeps a target that looks like
-/// an option from being read as one), or the user's `$SHELL` locally.
+/// an option from being read as one; keep-alive probes make `ssh` give up, and the screen come back, within about
+/// 15 seconds of a host that stopped answering, for instance one that rebooted), or the user's `$SHELL` locally.
 /// `shell_env` is the value of `$SHELL`, passed in so this stays pure.
 pub fn shell_command(ssh_target: Option<&str>, shell_env: Option<&str>) -> Command {
     match ssh_target {
         Some(target) => {
             let mut c = Command::new("ssh");
-            c.args(["-t", "--", target]);
+            c.args(["-t", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", target]);
             c
         }
         None => Command::new(shell_env.filter(|s| !s.is_empty()).unwrap_or("/bin/sh")),
@@ -132,7 +133,7 @@ mod tests {
     fn a_remote_shell_is_an_interactive_unprivileged_ssh_login() {
         let c = shell_command(Some("fbsd@fbsd16"), Some("/bin/zsh"));
         assert_eq!(c.get_program(), "ssh");
-        assert_eq!(args(&c), vec!["-t", "--", "fbsd@fbsd16"]);
+        assert_eq!(args(&c), vec!["-t", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "--", "fbsd@fbsd16"]);
         assert!(!args(&c).iter().any(|a| a.contains("BatchMode")), "a password or passphrase prompt must be possible");
         assert!(!args(&c).iter().any(|a| a == "sudo"), "never a root shell");
     }

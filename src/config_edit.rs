@@ -21,7 +21,7 @@ impl Change {
 }
 
 /// Tables of `config.toml` the Settings screen may change; every other part of the file must come out as it went in.
-const EDITABLE: [&str; 3] = ["ui", "dashboard", "cloud"];
+const EDITABLE: [&str; 4] = ["ui", "dashboard", "cloud", "protection"];
 
 /// The text of the file with `changes` applied, or why that was refused. Comments and layout survive; a table left
 /// empty by a removal goes away. The result is checked: it must parse as a `Config`, hold what was set, and differ
@@ -171,6 +171,24 @@ mod tests {
         assert!(!new.contains("cloud"), "{new}");
         let added = apply(FILE, &[Change::set(&["cloud", "caps", "b2"], "10G")]).unwrap();
         assert!(added.contains("[cloud.caps]"), "{added}");
+    }
+
+    #[test]
+    fn every_protection_key_can_be_set_and_removed() {
+        let all = [
+            Change::set(&["protection", "level"], "custom"),
+            Change::set(&["protection", "copies"], 2),
+            Change::set(&["protection", "online"], 1),
+            Change::set(&["protection", "recent"], "strict"),
+            Change::set(&["protection", "email"], "report"),
+        ];
+        let new = apply(FILE, &all).unwrap();
+        assert!(new.starts_with(FILE), "{new}");
+        let settings = parsed(&new).protection.resolve().unwrap();
+        assert_eq!((settings.copies, settings.online, settings.tolerance), (2, 1, 1));
+        assert_eq!(settings.email, crate::config::EmailTiming::Report);
+        let back = apply(&new, &all.iter().map(|c| match c { Change::Set(p, _) => Change::Remove(p.clone()), c => c.clone() }).collect::<Vec<_>>()).unwrap();
+        assert_eq!(back.trim_end(), FILE.trim_end(), "removing every key takes the table with it");
     }
 
     #[test]

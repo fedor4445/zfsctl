@@ -83,10 +83,13 @@ pub fn host_os_from_uname(out: &str) -> HostOs {
     }
 }
 
-/// What the first probe asks, in one round trip: the OS, then (FreeBSD only, errors silenced) the guest kind and whether
-/// this is a jail. The trailing `true` keeps the exit status for ssh failures only: a missing `sysctl` is an answer.
+/// What the first probe asks, in one round trip: the OS, then (errors silenced) the guest kind and whether this is a jail
+/// (FreeBSD `sysctl`), and the `@@c`/`@@z`/`@@m`/`@@s` tags that say the same on Linux (`systemd-detect-virt`, the DMI vendor)
+/// and illumos (`zonename`, `smbios`). The trailing `true` keeps the exit status for ssh failures only: a missing `sysctl` is an answer.
 pub const DETECT_SCRIPT: &str = "uname -s; sysctl -n kern.vm_guest security.jail.jailed 2>/dev/null; echo \"@@r $(uname -r)\"; echo \"@@v $(uname -v | cut -c1-60)\"; \
-[ -r /etc/os-release ] && . /etc/os-release && echo \"@@d $NAME $VERSION_ID\"; true";
+[ -r /etc/os-release ] && . /etc/os-release && echo \"@@d $NAME $VERSION_ID\"; \
+echo \"@@c $(systemd-detect-virt -c 2>/dev/null)\"; echo \"@@z $(zonename 2>/dev/null)\"; echo \"@@m $(systemd-detect-virt -v 2>/dev/null)\"; \
+echo \"@@s $( (cat /sys/class/dmi/id/sys_vendor || smbios -t SMB_TYPE_SYSTEM | sed -n 's/^ *Manufacturer: *//p') 2>/dev/null | head -1)\"; true";
 
 /// The short name the Hosts table shows, from the `@@` lines of `DETECT_SCRIPT`: `FreeBSD 16.0`, `Linux 6.8 (Ubuntu 24)`,
 /// `illumos omnios-r151058`. `None` when the host gave nothing to name it by (or the OS is not one we know).
@@ -115,11 +118,41 @@ pub fn os_name(os: HostOs, out: &str) -> Option<String> {
     }
 }
 
-/// The OS and, on FreeBSD, the host type from `DETECT_SCRIPT`'s output; Linux and illumos have no source for the type yet.
+/// The OS and the host type from `DETECT_SCRIPT`'s output: FreeBSD from `sysctl`, Linux and illumos from the `@@` tags.
 fn parse_detection(out: &str) -> (HostOs, HostKind) {
     let os = host_os_from_uname(out);
     let rest = out.split_once('\n').map_or("", |(_, rest)| rest);
-    (os, if os == HostOs::FreeBsd { host_kind_from_sysctl(rest) } else { HostKind::Unknown })
+    let kind = match os {
+        HostOs::FreeBsd => host_kind_from_sysctl(rest),
+        HostOs::Linux | HostOs::Illumos => host_kind_from_tags(rest),
+        HostOs::Other => HostKind::Unknown,
+    };
+    (os, kind)
+}
+
+/// System manufacturers (DMI/SMBIOS) that only ever name a virtual machine, matched case-insensitively as a substring.
+const VIRTUAL_VENDORS: [&str; 10] = ["qemu", "vmware", "innotek", "virtualbox", "xen", "bochs", "parallels", "bhyve", "amazon ec2", "google"];
+
+/// Reads the `@@c` (systemd container), `@@z` (illumos zone), `@@m` (systemd hypervisor) and `@@s` (system manufacturer)
+/// lines. A container or a non-global zone is a `Jail`; a hypervisor name is a `Vm`; otherwise the manufacturer decides
+/// (a virtual vendor is a `Vm`, any other name is `Metal`); nothing readable is `Unknown`.
+pub fn host_kind_from_tags(out: &str) -> HostKind {
+    let tag = |t: &str| out.lines().find_map(|l| l.strip_prefix(t)).map_or("", str::trim);
+    let (container, zone, vm, vendor) = (tag("@@c"), tag("@@z"), tag("@@m"), tag("@@s"));
+    if (!container.is_empty() && container != "none") || (!zone.is_empty() && zone != "global") {
+        return HostKind::Jail;
+    }
+    if !vm.is_empty() && vm != "none" {
+        return HostKind::Vm(vm.to_string());
+    }
+    let lower = vendor.to_lowercase();
+    if VIRTUAL_VENDORS.iter().any(|v| lower.contains(v)) {
+        HostKind::Vm(vendor.to_string())
+    } else if !vendor.is_empty() || vm == "none" {
+        HostKind::Metal
+    } else {
+        HostKind::Unknown
+    }
 }
 
 /// Reads `sysctl -n kern.vm_guest security.jail.jailed`: line 1 the guest kind, line 2 whether this is a jail.
@@ -619,6 +652,48 @@ mod tests {
     }
 
     #[test]
+    fn linux_and_illumos_say_metal_vm_or_container_from_the_probe_tags() {
+        // @@c systemd's container, @@z the illumos zone, @@m systemd's hypervisor, @@s the system manufacturer.
+        for (tags, want) in [
+            ("@@c none\n@@z \n@@m kvm\n@@s QEMU\n", HostKind::Vm("kvm".into())),
+            ("@@c none\n@@z \n@@m none\n@@s Dell Inc.\n", HostKind::Metal),
+            ("@@c lxc\n@@z \n@@m none\n@@s \n", HostKind::Jail),
+            ("@@c \n@@z sparse\n@@m \n@@s QEMU\n", HostKind::Jail),
+            ("@@c \n@@z global\n@@m \n@@s QEMU\n", HostKind::Vm("QEMU".into())),
+            ("@@c \n@@z global\n@@m \n@@s Supermicro\n", HostKind::Metal),
+            ("@@c \n@@z \n@@m \n@@s VMware, Inc.\n", HostKind::Vm("VMware, Inc.".into())),
+            ("@@c none\n@@z \n@@m none\n@@s \n", HostKind::Metal),
+            ("@@c \n@@z \n@@m \n@@s \n", HostKind::Unknown),
+            ("@@c\n@@z\n@@m\n@@s", HostKind::Unknown),
+            ("", HostKind::Unknown),
+        ] {
+            assert_eq!(host_kind_from_tags(tags), want, "{tags:?}");
+        }
+    }
+
+    #[test]
+    fn a_hypervisor_name_from_systemd_wins_over_the_manufacturer_and_a_container_over_both() {
+        assert_eq!(host_kind_from_tags("@@c docker\n@@m kvm\n@@s QEMU\n"), HostKind::Jail);
+        assert_eq!(host_kind_from_tags("@@c none\n@@m microsoft\n@@s Microsoft Corporation\n"), HostKind::Vm("microsoft".into()));
+        assert_eq!(host_kind_from_tags("@@m none\n@@s QEMU\n"), HostKind::Vm("QEMU".into()), "systemd says none but the board says QEMU");
+    }
+
+    #[test]
+    fn the_first_probe_names_a_linux_vm_and_an_illumos_zone() {
+        for (said, os, want) in [
+            ("Linux\n@@r 6.8.0\n@@c none\n@@z \n@@m kvm\n@@s QEMU\n", HostOs::Linux, HostKind::Vm("kvm".into())),
+            ("SunOS\n@@r 5.11\n@@c \n@@z sparse\n@@m \n@@s \n", HostOs::Illumos, HostKind::Jail),
+            ("FreeBSD\nbhyve\n0\n@@r 15.1\n@@c \n@@z \n@@m \n@@s \n", HostOs::FreeBsd, HostKind::Vm("bhyve".into())),
+        ] {
+            let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
+            runner.sysctl = out(said, "", 0);
+            let HostProbe::Reached { kind, os: found, .. } = probe_host(&runner, true) else { panic!() };
+            assert_eq!((kind, found), (Some(want), Some(os)), "{said:?}");
+        }
+        assert!(["systemd-detect-virt", "zonename", "smbios", "sys_vendor"].iter().all(|w| DETECT_SCRIPT.contains(w)), "{DETECT_SCRIPT}");
+    }
+
+    #[test]
     fn uname_output_maps_to_the_os() {
         for (text, os) in [("FreeBSD\n", HostOs::FreeBsd), ("Linux\n", HostOs::Linux), ("SunOS\n", HostOs::Illumos), ("Darwin\n", HostOs::Other), ("", HostOs::Other), ("what is this", HostOs::Other)] {
             assert_eq!(host_os_from_uname(text), os, "{text:?}");
@@ -641,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn on_linux_and_illumos_the_os_is_known_and_the_type_stays_unknown() {
+    fn on_linux_and_illumos_a_probe_without_the_tags_leaves_the_type_unknown() {
         for (said, os) in [("Linux\n", HostOs::Linux), ("SunOS\n", HostOs::Illumos)] {
             let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
             runner.sysctl = out(said, "", 0);

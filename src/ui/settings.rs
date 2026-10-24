@@ -16,6 +16,11 @@ pub enum Setting {
     Scrub,
     ScrubIgnore,
     Cap(String),
+    ProtLevel,
+    ProtCopies,
+    ProtOnline,
+    ProtRecent,
+    ProtEmail,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,11 +41,18 @@ pub struct SettingsView {
     /// Why nothing can be edited: `config.toml` could not be read or parsed.
     pub problem: Option<String>,
     pub rows: Vec<Row>,
+    /// Why `[protection]` is wrong (`resolve`'s words), shown under its group; the rows stay editable.
+    pub protection_problem: Option<String>,
 }
 
 const DISPLAY: &str = "Display";
 const THRESHOLDS: &str = "Dashboard thresholds";
 const CAPS: &str = "Cloud caps";
+const PROTECTION: &str = "Data protection";
+const PROT_COPIES: &str = "Copies on other machines (1 to 3)";
+const PROT_ONLINE: &str = "Online copies (0 to 2)";
+const PROT_RECENT: &str = "How recent (strict, normal, relaxed)";
+const PROT_EMAIL: &str = "Email (immediate, report, off)";
 
 /// The rows for the file at `config_path`. `remotes` are the rclone remotes the Cloud screen knows; any remote that
 /// already has a cap in the file is listed too.
@@ -48,7 +60,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
     use crate::config::{Config, Thresholds, DEFAULT_AUTO_REFRESH_SECS};
     let cfg = match Config::load(config_path) {
         Ok(c) => c,
-        Err(e) => return SettingsView { loaded: true, problem: Some(e.to_string()), rows: Vec::new() },
+        Err(e) => return SettingsView { loaded: true, problem: Some(e.to_string()), rows: Vec::new(), protection_problem: None },
     };
     let d = Thresholds::default();
     let t = cfg.dashboard.resolve();
@@ -76,6 +88,18 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
         row(THRESHOLDS, Setting::Scrub, "Scrub warn / crit", format!("{} / {} days", t.scrub_days.0, t.scrub_days.1), t.scrub_days == d.scrub_days, vec![text(dash.scrub_warn_days.map(u64::from)), text(dash.scrub_crit_days.map(u64::from))]),
         row(THRESHOLDS, Setting::ScrubIgnore, "Scrub ignore", if t.scrub_ignore.is_empty() { "(none)".to_string() } else { t.scrub_ignore.join(", ") }, t.scrub_ignore.is_empty(), vec![t.scrub_ignore.join(", ")]),
     ];
+    let p = &cfg.protection;
+    // What the file says (a wrong type as its TOML text), or the default; `protection_problem` says when it is wrong.
+    let raw = |v: &Option<toml::Value>| crate::config::protection_text(v.as_ref());
+    let shown = |v: &Option<toml::Value>, default: &str| raw(v).unwrap_or_else(|| default.to_string());
+    let level = shown(&p.level, "basic");
+    rows.push(row(PROTECTION, Setting::ProtLevel, "Level", level.clone(), p.level.is_none(), vec![raw(&p.level).unwrap_or_default()]));
+    if level.trim().eq_ignore_ascii_case("custom") {
+        rows.push(row(PROTECTION, Setting::ProtCopies, PROT_COPIES, shown(&p.copies, "1"), p.copies.is_none(), vec![raw(&p.copies).unwrap_or_default()]));
+        rows.push(row(PROTECTION, Setting::ProtOnline, PROT_ONLINE, shown(&p.online, "0"), p.online.is_none(), vec![raw(&p.online).unwrap_or_default()]));
+    }
+    rows.push(row(PROTECTION, Setting::ProtRecent, PROT_RECENT, shown(&p.recent, "normal"), p.recent.is_none(), vec![raw(&p.recent).unwrap_or_default()]));
+    rows.push(row(PROTECTION, Setting::ProtEmail, PROT_EMAIL, shown(&p.email, "immediate"), p.email.is_none(), vec![raw(&p.email).unwrap_or_default()]));
     let mut names: Vec<&String> = remotes.iter().chain(cfg.cloud.caps.keys()).collect();
     names.sort();
     names.dedup();
@@ -83,7 +107,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
         let cap = cfg.cloud.caps.get(name);
         rows.push(row(CAPS, Setting::Cap(name.clone()), name, cap.cloned().unwrap_or_else(|| "(no cap)".to_string()), cap.is_none(), vec![cap.cloned().unwrap_or_default()]));
     }
-    SettingsView { loaded: true, problem: None, rows }
+    SettingsView { loaded: true, problem: None, rows, protection_problem: cfg.protection.resolve().err() }
 }
 
 /// `(label, current text)` for each field of the form of `row`; the text is empty where the setting is on its default.
@@ -97,6 +121,11 @@ pub fn form_fields(row: &Row) -> Vec<(String, String)> {
         Setting::Scrub => vec!["Warn after (days)".to_string(), "Critical after (days)".to_string()],
         Setting::ScrubIgnore => vec!["Pools to skip (comma-separated)".to_string()],
         Setting::Cap(_) => vec!["Plan size (such as 10G or 5T)".to_string()],
+        Setting::ProtLevel => vec!["Level (basic, careful, custom)".to_string()],
+        Setting::ProtCopies => vec![PROT_COPIES.to_string()],
+        Setting::ProtOnline => vec![PROT_ONLINE.to_string()],
+        Setting::ProtRecent => vec![PROT_RECENT.to_string()],
+        Setting::ProtEmail => vec![PROT_EMAIL.to_string()],
     };
     labels.into_iter().zip(row.raw.iter().cloned().chain(std::iter::repeat(String::new()))).collect()
 }
@@ -128,7 +157,54 @@ fn pair_changes(values: &[String], keys: [&str; 2], max: u32, default: (u32, u32
     Ok(vec![Change::set(&dashboard(keys[0]), i64::from(w)), Change::set(&dashboard(keys[1]), i64::from(c))])
 }
 
-pub fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>, String> {
+/// One `[protection]` key: empty or the default removes it. The result is checked by `ProtectionConfig::resolve` on the
+/// file's current `[protection]` keys plus this edit, so the screen and the config agree and no combination that
+/// would make the section invalid can be saved.
+fn protection_change(setting: &Setting, value: &str, current: &crate::config::ProtectionConfig) -> Result<Vec<Change>, String> {
+    let (key, default) = match setting {
+        Setting::ProtLevel => ("level", "basic"),
+        Setting::ProtCopies => ("copies", "1"),
+        Setting::ProtOnline => ("online", "0"),
+        Setting::ProtRecent => ("recent", "normal"),
+        _ => ("email", "immediate"),
+    };
+    let path = ["protection", key];
+    let remove = value.is_empty() || value == default;
+    let count = if !remove && matches!(setting, Setting::ProtCopies | Setting::ProtOnline) { Some(value.parse::<u8>().map_err(|_| format!("'{value}' is not a whole number"))?) } else { None };
+    let text = (!remove).then(|| toml::Value::from(value));
+    let number = count.map(toml::Value::from);
+    let mut cfg = current.clone();
+    match setting {
+        Setting::ProtLevel => cfg.level = text,
+        Setting::ProtCopies => cfg.copies = number,
+        Setting::ProtOnline => cfg.online = number,
+        Setting::ProtRecent => cfg.recent = text,
+        _ => cfg.email = text,
+    }
+    if matches!(setting, Setting::ProtCopies | Setting::ProtOnline) {
+        // These keys only count under `custom`, so check them as the config will once they do.
+        cfg.level = Some("custom".into());
+    }
+    cfg.resolve()?;
+    Ok(vec![match (remove, count) {
+        (true, _) => Change::remove(&path),
+        (_, Some(n)) => Change::set(&path, i64::from(n)),
+        _ => Change::set(&path, value),
+    }])
+}
+
+/// `build_changes` against the `[protection]` keys the file at `config_path` has now.
+pub fn build_changes_for(config_path: &Path, setting: &Setting, values: &[String]) -> Result<Vec<Change>, String> {
+    let current = crate::config::Config::load(config_path).map(|c| c.protection).unwrap_or_default();
+    build_changes_with(setting, values, &current)
+}
+
+#[cfg(test)]
+fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>, String> {
+    build_changes_with(setting, values, &crate::config::ProtectionConfig::default())
+}
+
+fn build_changes_with(setting: &Setting, values: &[String], current: &crate::config::ProtectionConfig) -> Result<Vec<Change>, String> {
     let first = values.first().map_or("", |v| v.trim());
     let number = |max: u64, min: u64, what: &str| -> Result<u64, String> {
         first.parse::<u64>().ok().filter(|n| (min..=max).contains(n)).ok_or_else(|| format!("{what} must be a whole number from {min} to {max}"))
@@ -172,6 +248,7 @@ pub fn build_changes(setting: &Setting, values: &[String]) -> Result<Vec<Change>
             }
             vec![Change::set(&["cloud", "caps", name], first)]
         }
+        Setting::ProtLevel | Setting::ProtCopies | Setting::ProtOnline | Setting::ProtRecent | Setting::ProtEmail => protection_change(setting, first, current)?,
     })
 }
 
@@ -188,6 +265,11 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
         Setting::Cpu => ("CPU warn", " %"),
         Setting::Scrub => ("Scrub warn / crit", " days"),
         Setting::ScrubIgnore => ("Scrub ignore", ""),
+        Setting::ProtLevel => ("Level", ""),
+        Setting::ProtCopies => ("Copies on other machines", ""),
+        Setting::ProtOnline => ("Online copies", ""),
+        Setting::ProtRecent => ("How recent", ""),
+        Setting::ProtEmail => ("Email", ""),
         Setting::Cap(name) => return format!("Cap of {name}: {}", if v(0).is_empty() { "none" } else { v(0) }),
     };
     // `1.25x` is accepted when typed; the unit is added once.
@@ -222,7 +304,7 @@ mod tests {
     fn load_lists_the_groups_in_order_with_defaults_marked() {
         let v = view("", &[], false);
         let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore"]);
+        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
         assert!(v.loaded && v.problem.is_none() && v.rows.iter().all(|r| r.is_default), "{v:?}");
         assert_eq!(row(&v, "Theme").value, "ansi");
         assert_eq!(row(&v, "Auto-refresh").value, "10 s");
@@ -336,6 +418,99 @@ mod tests {
     fn scrub_ignore_is_split_on_commas_and_trimmed() {
         assert_eq!(sets(&build_changes(&Setting::ScrubIgnore, &values(&[" scratch, tmp ,,"])).unwrap()), ["set dashboard.scrub_ignore [\"scratch\", \"tmp\"]"]);
         assert_eq!(sets(&build_changes(&Setting::ScrubIgnore, &values(&[" , "])).unwrap()), ["remove dashboard.scrub_ignore"]);
+    }
+
+    #[test]
+    fn the_protection_rows_show_the_effective_values() {
+        let v = view("", &[], false);
+        let prot: Vec<(&str, &str, bool)> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| (r.label.as_str(), r.value.as_str(), r.is_default)).collect();
+        assert_eq!(prot, [("Level", "basic", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true)]);
+        assert!(v.rows.iter().all(|r| !r.label.starts_with("Copies") && !r.label.starts_with("Online")));
+        let v = view("[protection]\nlevel = \"careful\"\nrecent = \"strict\"\n", &[], false);
+        assert_eq!(row(&v, "Level").value, "careful");
+        assert!(!row(&v, "How recent (strict, normal, relaxed)").is_default);
+    }
+
+    #[test]
+    fn a_wrong_protection_value_is_shown_as_written_with_the_problem() {
+        let v = view("[protection]\nlevel = \"Careful\"\n", &[], false);
+        assert_eq!(v.protection_problem.as_deref(), Some("[protection] level must be basic, careful or custom"));
+        assert!(v.problem.is_none(), "the other settings stay editable");
+        let level = row(&v, "Level");
+        assert_eq!((level.value.as_str(), level.is_default), ("Careful", false));
+        let v = view("[protection]\nemail = \"of\"\n", &[], false);
+        assert_eq!(v.protection_problem.as_deref(), Some("[protection] email must be immediate, report or off"));
+        assert_eq!(row(&v, "Email (immediate, report, off)").value, "of");
+        let v = view("[protection]\nlevel = \"custom\"\ncopies = \"2\"\n", &[], false);
+        assert_eq!(v.protection_problem.as_deref(), Some("[protection] copies must be 1, 2 or 3"));
+        assert_eq!(row(&v, "Copies on other machines (1 to 3)").value, "2", "a string shown as its text");
+        assert!(view("[protection]\nlevel = \"careful\"\n", &[], false).protection_problem.is_none());
+        // A wrong-case Custom still shows the two rows it is about.
+        assert!(view("[protection]\nlevel = \"Custom\"\n", &[], false).rows.iter().any(|r| r.label.starts_with("Copies")));
+    }
+
+    #[test]
+    fn custom_adds_its_two_rows() {
+        let v = view("[protection]\nlevel = \"custom\"\ncopies = 2\n", &[], false);
+        let labels: Vec<&str> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
+        let copies = row(&v, "Copies on other machines (1 to 3)");
+        assert_eq!((copies.value.as_str(), copies.is_default, copies.raw.as_slice()), ("2", false, &["2".to_string()][..]));
+        let online = row(&v, "Online copies (0 to 2)");
+        assert_eq!((online.value.as_str(), online.is_default), ("0", true));
+    }
+
+    #[test]
+    fn saving_a_level_writes_protection_level_and_a_default_removes_it() {
+        assert_eq!(sets(&build_changes(&Setting::ProtLevel, &values(&["careful"])).unwrap()), ["set protection.level \"careful\""]);
+        assert_eq!(sets(&build_changes(&Setting::ProtLevel, &values(&["basic"])).unwrap()), ["remove protection.level"]);
+        assert_eq!(sets(&build_changes(&Setting::ProtLevel, &values(&[""])).unwrap()), ["remove protection.level"]);
+        assert_eq!(sets(&build_changes(&Setting::ProtCopies, &values(&["2"])).unwrap()), ["set protection.copies 2"]);
+        assert_eq!(sets(&build_changes(&Setting::ProtCopies, &values(&["1"])).unwrap()), ["remove protection.copies"]);
+        let with = |copies: Option<u8>, setting: &Setting, v: &str| build_changes_with(setting, &values(&[v]), &crate::config::ProtectionConfig { level: Some("custom".into()), copies: copies.map(Into::into), ..Default::default() });
+        assert_eq!(sets(&with(Some(3), &Setting::ProtOnline, "2").unwrap()), ["set protection.online 2"]);
+        assert_eq!(sets(&build_changes(&Setting::ProtRecent, &values(&["strict"])).unwrap()), ["set protection.recent \"strict\""]);
+        assert_eq!(sets(&build_changes(&Setting::ProtRecent, &values(&["normal"])).unwrap()), ["remove protection.recent"]);
+        assert_eq!(sets(&build_changes(&Setting::ProtEmail, &values(&["report"])).unwrap()), ["set protection.email \"report\""]);
+        assert_eq!(sets(&build_changes(&Setting::ProtEmail, &values(&["immediate"])).unwrap()), ["remove protection.email"]);
+    }
+
+    #[test]
+    fn every_data_protection_row_saves_into_a_real_config_file() {
+        // The changes a row produces must survive the config writer's own checks (editable tables, parse, "says what was asked").
+        let file = "[ui]\ntheme = \"mono\"\n";
+        let current = crate::config::ProtectionConfig { level: Some("custom".into()), copies: Some(3.into()), ..Default::default() };
+        let rows = [(Setting::ProtLevel, "custom"), (Setting::ProtCopies, "2"), (Setting::ProtOnline, "1"), (Setting::ProtRecent, "strict"), (Setting::ProtEmail, "report")];
+        for (setting, value) in rows {
+            let changes = build_changes_with(&setting, &values(&[value]), &current).unwrap();
+            let written = crate::config_edit::apply(file, &changes).unwrap_or_else(|e| panic!("{setting:?} = {value}: {e}"));
+            assert!(written.contains("[protection]"), "{setting:?}: {written}");
+        }
+    }
+
+    #[test]
+    fn online_and_copies_are_checked_against_each_other_and_the_file() {
+        let cur = |copies: Option<u8>, online: Option<u8>| crate::config::ProtectionConfig { level: Some("custom".into()), copies: copies.map(Into::into), online: online.map(Into::into), ..Default::default() };
+        let run = |setting: &Setting, v: &str, c: &crate::config::ProtectionConfig| build_changes_with(setting, &values(&[v]), c);
+        assert!(run(&Setting::ProtOnline, "2", &cur(None, None)).unwrap_err().contains("online must not be more than copies"));
+        assert!(run(&Setting::ProtOnline, "1", &cur(None, None)).is_ok(), "one online of one copy is fine");
+        assert!(run(&Setting::ProtCopies, "1", &cur(Some(2), Some(2))).is_err());
+        assert!(run(&Setting::ProtCopies, "", &cur(Some(2), Some(2))).is_err());
+        assert_eq!(sets(&run(&Setting::ProtOnline, "2", &cur(Some(3), None)).unwrap()), ["set protection.online 2"]);
+        assert_eq!(sets(&run(&Setting::ProtCopies, "3", &cur(Some(2), Some(2))).unwrap()), ["set protection.copies 3"]);
+        // Level other than custom ignores copies and online, so they cannot break it.
+        let basic = crate::config::ProtectionConfig { copies: Some(1.into()), online: Some(2.into()), ..Default::default() };
+        assert!(run(&Setting::ProtEmail, "report", &basic).is_ok());
+    }
+
+    #[test]
+    fn a_wrong_value_is_refused_with_the_configs_words() {
+        assert_eq!(build_changes(&Setting::ProtLevel, &values(&["paranoid"])).unwrap_err(), "[protection] level must be basic, careful or custom");
+        assert_eq!(build_changes(&Setting::ProtRecent, &values(&["often"])).unwrap_err(), "[protection] recent must be strict, normal or relaxed");
+        assert_eq!(build_changes(&Setting::ProtEmail, &values(&["daily"])).unwrap_err(), "[protection] email must be immediate, report or off");
+        assert_eq!(build_changes(&Setting::ProtCopies, &values(&["4"])).unwrap_err(), "[protection] copies must be 1, 2 or 3");
+        assert_eq!(build_changes(&Setting::ProtOnline, &values(&["3"])).unwrap_err(), "[protection] online must be 0, 1 or 2");
+        assert!(build_changes(&Setting::ProtCopies, &values(&["many"])).is_err());
     }
 
     #[test]

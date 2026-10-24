@@ -82,6 +82,9 @@ pub struct HostRow {
     pub load: Cell,
     pub scrub: Cell,
     pub errors: Cell,
+    /// The ARC hit rate since boot, and the L2ARC's size and hit rate: plain text, never judged.
+    pub arc: Cell,
+    pub l2arc: Cell,
     /// The OS name, plain text (`-` until read); never judged.
     pub os: Cell,
     /// What `assess()` itself says when it is not fine (unreachable, `tank DEGRADED`, `job failed`...).
@@ -239,12 +242,29 @@ pub fn host_row(input: &HostInput, t: &Thresholds, now: DateTime<Utc>) -> HostRo
         Some((newest, _)) if reached => (memory_cell(newest, t), cpu_cell(input.resources, t), load_cell(input.resources)),
         _ => (Cell::unknown(), Cell::unknown(), Cell::unknown()),
     };
+    let (arc, l2arc) = match input.resources {
+        Some((newest, _)) if reached => cache_cells(newest),
+        _ => (Cell::unknown(), Cell::unknown()),
+    };
     let worst = [&space, &memory, &cpu, &scrub, &errors].into_iter().filter(|c| c.level >= Level::Watch).max_by_key(|c| c.level);
     let state = match worst {
         Some(cell) if cell.level > base_level => Cell::new(cell.note.clone().unwrap_or_else(|| cell.text.clone()), cell.level),
         _ => Cell::new(input.assessment.reason.clone(), base_level),
     };
-    HostRow { name: input.name.to_string(), state, os: input.os_name.map_or_else(Cell::none, |n| Cell::new(n, Level::Fine)), pools, space, memory, cpu, load, scrub, errors, base }
+    HostRow { name: input.name.to_string(), state, os: input.os_name.map_or_else(Cell::none, |n| Cell::new(n, Level::Fine)), pools, space, memory, cpu, load, scrub, errors, arc, l2arc, base }
+}
+
+/// The ARC hit rate and the L2ARC's size and hit rate, since boot as the Hosts panel shows them; `-` where the host has no cache counters,
+/// no cache device, or nothing has been read yet.
+fn cache_cells(r: &Resources) -> (Cell, Cell) {
+    let percent = |p: Option<f64>| p.map_or_else(|| "-".to_string(), |p| format!("{p:.1}%"));
+    match r.cache {
+        None => (Cell::none(), Cell::none()),
+        Some(c) => {
+            let l2 = if c.l2_size == 0 { "-".to_string() } else { format!("{} {}", crate::zfs::disk::human_size(c.l2_size), percent(c.l2_hit_percent())) };
+            (Cell::new(percent(c.arc_hit_percent()), Level::Fine), Cell::new(l2, Level::Fine))
+        }
+    }
 }
 
 /// The lines a host adds to Needs attention: every cell that is not fine, plus what `assess()` itself says, unless a cell
@@ -287,6 +307,12 @@ pub struct Item {
 pub struct Dashboard {
     pub verdict: Line,
     pub attention: Vec<Item>,
+    /// Every unprotected dataset as its own line, whatever `[protection] dashboard` shows (the pop-up lists these).
+    pub unprotected: Vec<Item>,
+    /// What each of `unprotected` lacks (the same order), for the pop-up's fixes.
+    pub gaps: Vec<crate::daemon::protection::Unprotected>,
+    /// The line that stands for those past the first `PROTECTION_NAMED`, or `None` when all of them have a line.
+    pub protection_more: Option<Item>,
     pub hosts: Vec<HostRow>,
     pub daemon: Line,
     pub jobs: Line,
@@ -309,6 +335,10 @@ pub struct Inputs<'a> {
     pub cloud_caps: &'a Caps,
     pub alerts: &'a AlertsView,
     pub thresholds: &'a Thresholds,
+    /// How well protected a dataset must be (`[protection]`).
+    pub protection: &'a crate::config::ProtectionSettings,
+    /// Why `[protection]` is wrong (then `protection` is Basic's defaults), for a line of its own.
+    pub protection_problem: Option<&'a str>,
     /// What the daemon's daily `smartctl` check found (`smart.json`).
     pub smart: &'a crate::daemon::smart_check::SmartFile,
     /// What the daily check found about file sharing (`shares.json`).
@@ -366,19 +396,20 @@ fn cloud_label(row: &cloud::Row) -> String {
 struct CloudWidths {
     remote: usize,
     last: usize,
+    traffic: usize,
 }
 
 const CLOUD_PROVIDER_W: usize = 16;
 const CLOUD_JOBS_W: usize = 7;
 const CLOUD_NEXT_W: usize = 15;
 
-/// The line's columns, two spaces apart: Provider, Remote, Jobs, Last run, Next run, In bucket.
-fn cloud_columns(w: &CloudWidths, provider: &str, remote: &str, jobs: &str, last: &str, next: &str, bucket: &str) -> String {
-    format!("{provider:<CLOUD_PROVIDER_W$}  {remote:<rw$}  {jobs:<CLOUD_JOBS_W$}  {last:<lw$}  {next:<CLOUD_NEXT_W$}  {bucket}", rw = w.remote, lw = w.last).trim_end().to_string()
+/// The line's columns, two spaces apart: Provider, Remote, Jobs, Last run, Next run, Traffic, In bucket.
+fn cloud_columns(w: &CloudWidths, provider: &str, remote: &str, jobs: &str, last: &str, next: &str, traffic: &str, bucket: &str) -> String {
+    format!("{provider:<CLOUD_PROVIDER_W$}  {remote:<rw$}  {jobs:<CLOUD_JOBS_W$}  {last:<lw$}  {next:<CLOUD_NEXT_W$}  {traffic:<tw$}  {bucket}", rw = w.remote, lw = w.last, tw = w.traffic).trim_end().to_string()
 }
 
 fn cloud_header(w: &CloudWidths) -> String {
-    cloud_columns(w, "Provider", "Remote", "Jobs", "Last run", "Next run", "In bucket")
+    cloud_columns(w, "Provider", "Remote", "Jobs", "Last run", "Next run", "Traffic", "In bucket")
 }
 
 /// What the "Last run" cell says for a row: the last result and its age, or `-` for a remote no job uses.
@@ -386,11 +417,16 @@ fn cloud_last(row: &cloud::Row, view: &JobsView, now: DateTime<Utc>) -> String {
     if row.job_ids.is_empty() { "-".to_string() } else { crate::ui::jobs::last_result_text(cloud::last_run(row, view), now) }
 }
 
+/// The Traffic cell for a row; the arrow moves one cell a second, from the clock.
+fn cloud_traffic(row: &cloud::Row, view: &JobsView, now: DateTime<Utc>) -> String {
+    if row.job_ids.is_empty() { "-".to_string() } else { cloud::traffic_cell(&cloud::traffic(row, view), now.timestamp().unsigned_abs()) }
+}
+
 fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidths) -> Line {
     let cells = cloud::cells(row, view, inputs.cloud_sizes, inputs.cloud_caps, inputs.now);
     let provider = cloud::provider_name(row.kind.as_deref());
     if row.job_ids.is_empty() {
-        return Line { level: Level::Unknown, text: cloud_columns(w, &provider, &cloud_label(row), "no jobs", "-", "-", "-") };
+        return Line { level: Level::Unknown, text: cloud_columns(w, &provider, &cloud_label(row), "no jobs", "-", "-", "-", "-") };
     }
     let level = if cloud::failed(row, view) {
         Level::Issue
@@ -403,7 +439,7 @@ fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidth
     };
     let jobs_text = format!("{} job{}", cells[3], if cells[3] == "1" { "" } else { "s" });
     let next = cloud::next_run_text(row, view, &inputs.now.with_timezone(&chrono::Local));
-    Line { level, text: cloud_columns(w, &provider, &cloud_label(row), &jobs_text, &cells[4], &next, &cells[5]) }
+    Line { level, text: cloud_columns(w, &provider, &cloud_label(row), &jobs_text, &cells[4], &next, &cloud_traffic(row, view, inputs.now), &cells[5]) }
 }
 
 fn alerts_line(alerts: &AlertsView, daemon_running: bool, now: DateTime<Utc>) -> Line {
@@ -441,7 +477,14 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     use crate::smart::Severity;
     let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
     let mut items = Vec::new();
-    for found in crate::daemon::smart_check::problems(inputs.smart).into_iter().filter(|p| reached(&p.host)) {
+    let role_of = |host: &str, dev: &str| {
+        let os = inputs.hosts.iter().find(|h| h.name == host).and_then(|h| match h.probe {
+            Some(HostProbe::Reached { os, .. }) => *os,
+            _ => None,
+        });
+        crate::daemon::storage_check::role_of(inputs.storage, host, dev, os)
+    };
+    for found in crate::daemon::smart_check::problems_with(inputs.smart, &role_of).into_iter().filter(|p| reached(&p.host)) {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.disks, age_text(inputs.now, found.checked_at));
         items.push(Item { level, subject: found.host.clone(), what, goto: Section::Disks, target: Some(found.host) });
@@ -486,6 +529,94 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     items
 }
 
+/// One line per unprotected dataset of a reached host: red for the operator's data, amber for the operating system's.
+/// Always shown whatever the email timing is (that setting is about email only).
+fn protection_items(inputs: &Inputs) -> Vec<(Item, crate::daemon::protection::Unprotected)> {
+    use crate::daemon::protection::{judge, Tier};
+    let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
+    judge(inputs.storage, &inputs.jobs.jobs, &inputs.jobs.runs, inputs.protection, inputs.now)
+        .into_iter()
+        .filter(|u| reached(&u.host))
+        .map(|u| {
+            let item = Item {
+                level: if u.tier == Tier::Data { Level::Issue } else { Level::Watch },
+                subject: if u.host == "local" { u.dataset.clone() } else { format!("{}:{}", u.host, u.dataset) },
+                what: u.describe(&|t| age_text(inputs.now, t)),
+                goto: Section::Jobs,
+                target: None,
+            };
+            (item, u)
+        })
+        .collect()
+}
+
+/// How many unprotected datasets the Dashboard names, one line each; the rest are folded into one line that opens the list.
+pub const PROTECTION_NAMED: usize = 3;
+
+/// The one line for the datasets past the named ones: red while any of your data is among them, amber when only the
+/// operating system's is. The datasets are still judged, and email and the report still name each one.
+fn protection_more(rest: &[Item]) -> Option<Item> {
+    if rest.is_empty() {
+        return None;
+    }
+    let data = rest.iter().filter(|i| i.level == Level::Issue).count();
+    Some(Item { level: if data > 0 { Level::Issue } else { Level::Watch }, subject: "protection".to_string(), what: format!("and {} more not protected ({data} of your data)", rest.len()), goto: Section::Jobs, target: None })
+}
+
+/// The title of the pop-up that lists the unprotected datasets.
+pub const PROTECTION_POPUP_TITLE: &str = "Unprotected data";
+
+/// The pop-up behind a protection line: what to say above the list, one row per dataset (your data first), what each
+/// lacks (the same order) and the row the chosen line stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtectionPopup {
+    pub note: String,
+    pub rows: Vec<String>,
+    pub gaps: Vec<crate::daemon::protection::Unprotected>,
+    pub selected: usize,
+    /// A heading per host and the colour of each row.
+    pub look: crate::ui::modal::ChooseLook,
+}
+
+impl Dashboard {
+    /// What a named protection line lacks (Enter goes straight to its fix); `None` for any other line.
+    pub fn protection_fix(&self, item: &Item) -> Option<&crate::daemon::protection::Unprotected> {
+        let at = self.unprotected.iter().take(PROTECTION_NAMED).position(|u| u == item)?;
+        self.gaps.get(at)
+    }
+
+    /// The pop-up behind the "and N more" line: every unprotected dataset, starting at the first one that has no line of
+    /// its own. `None` for any other line.
+    pub fn protection_popup(&self, item: &Item) -> Option<ProtectionPopup> {
+        if self.protection_more.as_ref() != Some(item) {
+            return None;
+        }
+        let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
+        let note = format!(
+            "{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine. A new job counts once it has run.\nEnter fixes the selected one.",
+            if self.unprotected.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", self.unprotected.len()) }
+        );
+        // Grouped by host, the hub first and then by name; inside a host your data before the operating system's.
+        let mut found: Vec<(usize, &crate::daemon::protection::Unprotected, &Item)> = self.gaps.iter().zip(&self.unprotected).enumerate().map(|(i, (g, item))| (i, g, item)).collect();
+        found.sort_by(|a, b| (a.1.host != "local", &a.1.host, a.1.tier, &a.1.dataset).cmp(&(b.1.host != "local", &b.1.host, b.1.tier, &b.1.dataset)));
+        let width = found.iter().map(|(_, g, _)| g.dataset.chars().count()).max().unwrap_or(0);
+        let rows = found.iter().map(|(_, g, item)| format!("{:<5}  {:<width$}  {}", if item.level == Level::Issue { "issue" } else { "watch" }, g.dataset, item.what)).collect();
+        let mut heads = Vec::new();
+        let mut at = 0;
+        for group in found.chunk_by(|a, b| a.1.host == b.1.host) {
+            let of_yours = group.iter().filter(|(_, _, item)| item.level == Level::Issue).count();
+            let count = if group.len() == 1 { "1 dataset".to_string() } else { format!("{} datasets", group.len()) };
+            let host = group.first().map_or("", |(_, g, _)| g.host.as_str());
+            heads.push((at, if of_yours > 0 { format!("{host}  ({count}, {of_yours} of your data)") } else { format!("{host}  ({count})") }));
+            at += group.len();
+        }
+        let levels = found.iter().map(|(_, _, item)| item.level).collect();
+        let selected = found.iter().position(|(i, _, _)| *i >= PROTECTION_NAMED).unwrap_or(0);
+        let gaps = found.iter().map(|(_, g, _)| (*g).clone()).collect();
+        Some(ProtectionPopup { note, rows, gaps, selected, look: crate::ui::modal::ChooseLook { heads, levels } })
+    }
+}
+
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
     let since = marker.since.with_timezone(&chrono::Local).format("%H:%M");
@@ -503,6 +634,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     let widths = CloudWidths {
         remote: inputs.cloud_rows.iter().map(|r| cloud_label(r).chars().count()).max().unwrap_or(0).max("Remote".len()),
         last: inputs.cloud_rows.iter().map(|r| cloud_last(r, inputs.jobs, inputs.now).chars().count()).max().unwrap_or(0).max("Last run".len()),
+        traffic: inputs.cloud_rows.iter().map(|r| cloud_traffic(r, inputs.jobs, inputs.now).chars().count()).max().unwrap_or(0).max("Traffic".len()),
     };
     let cloud: Vec<Line> = inputs.cloud_rows.iter().map(|r| cloud_line(r, inputs.jobs, inputs, &widths)).collect();
     let cloud_header = if cloud.is_empty() { String::new() } else { cloud_header(&widths) };
@@ -534,6 +666,22 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         let what = if why.is_empty() { format!("failed {age}") } else { format!("failed {age}: {why}") };
         attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs, target: Some(job.id.clone()) });
     }
+    let mut protection = Vec::new();
+    let mut unprotected = Vec::new();
+    let mut gaps = Vec::new();
+    let mut more = None;
+    if daemon.level == Level::Fine {
+        for late in crate::ui::overdue::overdue(inputs.jobs, now) {
+            attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
+        }
+        let (items, found): (Vec<Item>, Vec<_>) = protection_items(inputs).into_iter().unzip();
+        protection = items;
+        gaps = found;
+        unprotected.clone_from(&protection);
+        let rest = protection.split_off(PROTECTION_NAMED.min(protection.len()));
+        more = protection_more(&rest);
+        protection.extend(more.clone());
+    }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
             Some(Fill::Full) => Level::Issue,
@@ -545,7 +693,23 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     if let Some(problem) = &inputs.alerts.problem {
         attention.push(Item { level: Level::Watch, subject: "alerts".to_string(), what: problem.clone(), goto: Section::Alerts, target: None });
     }
+    if let Some(problem) = inputs.protection_problem {
+        attention.push(Item { level: Level::Watch, subject: "config.toml".to_string(), what: crate::config::protection_problem_line(problem), goto: Section::Settings, target: None });
+    }
     attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
+    // Within each level the protection lines come after the other items, so dozens of them never push a degraded pool or a
+    // failed job out of sight; among themselves they keep the judging's order (data first, then host and dataset).
+    protection.sort_by_key(|p| std::cmp::Reverse(p.level));
+    let mut rest = protection.into_iter().peekable();
+    let mut merged = Vec::with_capacity(attention.len() + rest.len());
+    for item in attention {
+        while rest.peek().is_some_and(|p| p.level > item.level) {
+            merged.extend(rest.next());
+        }
+        merged.push(item);
+    }
+    merged.extend(rest);
+    let attention = merged;
 
     let checking = inputs.hosts.iter().any(|h| h.assessment.level == HealthLevel::Probing);
     let verdict = {
@@ -569,7 +733,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 
@@ -612,6 +776,7 @@ mod tests {
             load: Some([0.05, 0.1, 0.1]),
             cpu_ticks: Some(crate::zfs::host::CpuTimes { user: busy, nice: 0, sys: 0, intr: 0, idle }),
             swap: None,
+            cache: None,
         }
     }
 
@@ -857,6 +1022,8 @@ mod tests {
         sizes: HashMap<String, crate::ui::cloud::Size>,
         caps: crate::ui::cloud::Caps,
         thresholds: Thresholds,
+        protection: crate::config::ProtectionSettings,
+        protection_problem: Option<String>,
         smart: crate::daemon::smart_check::SmartFile,
         shares: crate::daemon::shares_check::SharesFile,
         storage: crate::daemon::storage_check::StorageFile,
@@ -865,11 +1032,11 @@ mod tests {
 
     impl Fixture {
         fn new(view: JobsView) -> Fixture {
-            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), protection: crate::config::ProtectionSettings::default(), protection_problem: None, smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
         }
 
         fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, protection: &self.protection, protection_problem: self.protection_problem.as_deref(), smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
         }
     }
 
@@ -958,6 +1125,64 @@ mod tests {
     }
 
     #[test]
+    fn a_running_cloud_job_shows_its_rate_on_its_row_and_an_idle_one_shows_a_dotted_track() {
+        let jobs = vec![mirror("m1", "b2:zfsctl/photos"), mirror("m2", "t1:zfsctl/x")];
+        let mut known = crate::ui::cloud::Known::new();
+        known.insert("local".into(), vec![("b2".into(), "b2".into()), ("t1".into(), "sftp".into()), ("zfsctl-aws".into(), "s3".into())]);
+        let mut fx = Fixture::new(view(jobs.clone(), &[("m1", RunResult::Ok, "ok"), ("m2", RunResult::Ok, "ok")], beat(1)));
+        fx.cloud_rows = crate::ui::cloud::rows(&jobs, &known);
+        let idle = fx.build(vec![]);
+        assert!(idle.cloud_header.contains("Traffic") && idle.cloud_header.find("Traffic") > idle.cloud_header.find("Next run") && idle.cloud_header.find("Traffic") < idle.cloud_header.find("In bucket"), "{:?}", idle.cloud_header);
+        assert!(idle.cloud.iter().take(2).all(|l| l.text.contains("┄┄┄┄┄┄")), "{:?}", idle.cloud);
+        assert!(idle.cloud[2].text.contains("no jobs") && !idle.cloud[2].text.contains('┄'), "a remote nobody uses has no track: {}", idle.cloud[2].text);
+        // m1 is running at 3 MiB/s: its row (b2) has the arrow and the rate, the other row does not.
+        fx.view.runs.push(crate::daemon::history::Run { job_id: "m1".into(), run_id: "m1-live".into(), started_at: now(), scheduled_for: None, finished_at: None, result: None, message: String::new(), catch_up: false, summary: None });
+        fx.view.progress.push(crate::daemon::progress::Progress { job_id: "m1".into(), bytes: 1, total: None, started_at: now(), updated_at: now(), rate: Some(3 * 1024 * 1024) });
+        let busy = fx.build(vec![]);
+        assert!(busy.cloud[0].text.contains('▸') && busy.cloud[0].text.contains("3.0 MiB/s"), "{}", busy.cloud[0].text);
+        assert!(!busy.cloud[1].text.contains('▸') && !busy.cloud[1].text.contains("/s"), "{}", busy.cloud[1].text);
+        // the traffic column is as wide for the idle row as for the busy one, so In bucket lines up
+        assert_eq!(busy.cloud[0].text.chars().count(), busy.cloud[1].text.chars().count(), "{:?}", busy.cloud);
+    }
+
+    #[test]
+    fn a_job_that_stopped_succeeding_is_a_line_in_needs_attention_that_goes_to_the_job() {
+        let snap = Job::test_snapshot("snap-a", "tank/data", "hourly", 24);
+        let mut fx = Fixture::new(view(vec![snap], &[("snap-a", RunResult::Ok, "ok")], beat(1)));
+        // `view` puts the finished runs two hours before now: an hourly job is not late yet
+        assert!(fx.build(vec![]).attention.iter().all(|i| i.subject != "snap-a"), "{:?}", fx.build(vec![]).attention);
+        for run in &mut fx.view.runs {
+            run.finished_at = Some(now() - Duration::hours(6));
+        }
+        let item = fx.build(vec![]).attention.into_iter().find(|i| i.subject == "snap-a").expect("a late job is listed");
+        assert_eq!((item.level, item.goto, item.target.as_deref()), (Level::Issue, Section::Jobs, Some("snap-a")));
+        assert_eq!(item.what, "snapshot tank/data: last ok 6h ago (Hourly)");
+        // with the daemon down the job is not blamed: the daemon's own line says why nothing runs
+        let down = Fixture::new(JobsView { heartbeat: None, ..fx.view.clone() }).build(vec![]);
+        assert!(down.attention.iter().all(|i| i.subject != "snap-a"), "{:?}", down.attention);
+        assert!(down.attention.iter().any(|i| i.subject == "daemon"));
+    }
+
+    #[test]
+    fn the_arc_and_l2arc_cells_show_hit_rates_since_boot_and_a_dash_where_there_is_nothing() {
+        use crate::zfs::host_resources::CacheStats;
+        let probe = reached(vec![]);
+        let with = |cache: Option<CacheStats>| Resources { cache, ..reading(10, 0, 0, 100) };
+        let busy = with(Some(CacheStats { hits: 9990, misses: 10, l2_size: 2 * GIB, l2_hits: 300, l2_misses: 100 }));
+        let r = default_row(&probe, Some(&busy));
+        assert_eq!((r.arc.text.as_str(), r.l2arc.text.as_str()), ("99.9%", "2.0G 75.0%"));
+        assert_eq!((r.arc.level, r.l2arc.level), (Level::Fine, Level::Fine), "these are never judged");
+        let no_cache_device = default_row(&probe, Some(&with(Some(CacheStats { hits: 1, misses: 1, ..CacheStats::default() }))));
+        assert_eq!((no_cache_device.arc.text.as_str(), no_cache_device.l2arc.text.as_str()), ("50.0%", "-"));
+        let cold = default_row(&probe, Some(&with(Some(CacheStats { l2_size: GIB, ..CacheStats::default() }))));
+        assert_eq!((cold.arc.text.as_str(), cold.l2arc.text.as_str()), ("-", "1.0G -"), "a cache nothing has read from yet has no rate");
+        let no_zfs = default_row(&probe, Some(&with(None)));
+        assert_eq!((no_zfs.arc.text.as_str(), no_zfs.l2arc.text.as_str()), ("-", "-"));
+        let unknown = default_row(&HostProbe::Disconnected, None);
+        assert_eq!((unknown.arc.text.as_str(), unknown.l2arc.text.as_str()), ("?", "?"));
+    }
+
+    #[test]
     fn the_next_run_cell_is_the_soonest_enabled_job_and_a_dash_when_none() {
         let jobs = vec![mirror("m1", "b2:zfsctl/photos")];
         let mut known = crate::ui::cloud::Known::new();
@@ -1043,6 +1268,19 @@ mod tests {
     }
 
     #[test]
+    fn a_wearing_disk_says_what_it_is_for_when_the_storage_check_knows() {
+        use crate::smart::Severity::Watch;
+        use crate::zfs::pool_classes::{DeviceRole, PoolClasses};
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        fx.smart = smart_file(&[("h", 3, &[("ada4", Watch, "SSD wear 87%"), ("ada0", Watch, "pending sectors 8")])]);
+        let pools = vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: "cache".into(), device: "ada4p1".into() }, DeviceRole { role: "log".into(), device: "gpt/slog0".into() }], ..PoolClasses::default() }];
+        let result = crate::daemon::storage_check::StorageResult { checked_at: now(), datasets: vec![], seen: vec![], pools, zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+        fx.storage.hosts.insert("h".into(), result);
+        let items = disk_items(&fx, &["h"]);
+        assert!(items[0].what.contains("ada4 (cache of tank) SSD wear 87%; ada0 pending sectors 8"), "the partition ada4p1 is the disk ada4, and a disk with no known role keeps its bare name: {}", items[0].what);
+    }
+
+    #[test]
     fn the_last_good_result_stays_after_a_failed_check_with_its_real_age() {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         fx.smart = smart_file(&[("h", 30, &[("ada0", crate::smart::Severity::Watch, "pending sectors 2")])]);
@@ -1092,7 +1330,7 @@ mod tests {
 
     fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
         use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
     }
 
     #[test]
@@ -1107,6 +1345,215 @@ mod tests {
         assert_eq!((by("h").level, by("red").level), (Level::Watch, Level::Issue));
         assert!(by("h").what.starts_with("tank/home 94% of its 100 quota") && by("h").what.contains("checked 4m ago"), "{}", by("h").what);
         assert_eq!(by("h").target.as_deref(), Some("h"));
+    }
+
+    /// A storage file where each host has these datasets, all a week old, checked a minute ago.
+    fn with_datasets(fx: &mut Fixture, hosts: &[(&str, &[&str])]) {
+        use crate::daemon::storage_check::SeenDataset;
+        let created = Some((now() - chrono::Duration::days(7)).timestamp());
+        for (host, names) in hosts {
+            let mut entry = storage_entry(1, "x/x", 10);
+            entry.datasets.clear();
+            entry.seen = names.iter().map(|n| SeenDataset { name: (*n).into(), volume: false, created }).collect();
+            fx.storage.hosts.insert((*host).into(), entry);
+        }
+    }
+
+    fn protection_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Jobs && i.what.contains("no snapshots")).collect()
+    }
+
+    #[test]
+    fn an_unprotected_dataset_is_a_red_line_and_an_os_one_amber() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"]), ("nas", &["tank/media"])]);
+        let items = protection_items(&fx, &["local", "nas"]);
+        let by = |s: &str| items.iter().find(|i| i.subject == s).unwrap_or_else(|| panic!("{s} in {items:?}"));
+        assert_eq!(items.len(), 3, "{items:?}");
+        assert_eq!((by("tank/photos").level, by("zroot/var").level, by("nas:tank/media").level), (Level::Issue, Level::Watch, Level::Issue));
+        assert_eq!(by("tank/photos").what, "no snapshots; no copy on another machine");
+        assert_eq!((by("tank/photos").goto, by("tank/photos").target.clone()), (Section::Jobs, None));
+    }
+
+    #[test]
+    fn a_host_that_is_not_reached_adds_no_protection_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"]), ("gone", &["tank/x"])]);
+        let items = protection_items(&fx, &["local"]);
+        assert_eq!(items.iter().map(|i| i.subject.as_str()).collect::<Vec<_>>(), ["tank/photos"]);
+    }
+
+    #[test]
+    fn no_protection_lines_while_the_daemon_is_down_or_stale_or_a_host_is_unreachable() {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let named = |d: &Dashboard| d.attention.iter().filter(|i| i.what.contains("no snapshots")).count();
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        assert_eq!(named(&fx.build(vec![fine_host("local", &probe, &r, &b)])), 1, "control: a running daemon shows the line");
+        for heartbeat in [None, beat(600)] {
+            let mut down = Fixture::new(view(vec![], &[], heartbeat));
+            with_datasets(&mut down, &[("local", &["tank/photos"])]);
+            let d = down.build(vec![fine_host("local", &probe, &r, &b)]);
+            assert_ne!(d.daemon.level, Level::Fine);
+            assert_eq!(named(&d), 0, "{:?}", d.attention);
+        }
+        // A host that is listed but not reached says nothing.
+        let off = HostProbe::Disconnected;
+        let host = HostInput { name: "local", assessment: assess(Some(&off), false), probe: Some(&off), resources: None, utc_offset_secs: Some(0), os_name: None };
+        assert_eq!(named(&fx.build(vec![host])), 0);
+    }
+
+    #[test]
+    fn the_verdict_counts_the_protection_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.verdict.text == "1 issue, 1 to watch", "{}", d.verdict.text);
+    }
+
+    fn protected_view() -> JobsView {
+        let jobs = vec![Job::test_snapshot("s", "tank/photos", "auto", 24), Job::test_replicate("r", "tank/photos", "rep", "nas", "tank/copy")];
+        view(jobs, &[("s", RunResult::Ok, ""), ("r", RunResult::Ok, "")], beat(1))
+    }
+
+    #[test]
+    fn protected_datasets_add_nothing() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.attention.is_empty(), "{:?}", d.attention);
+        assert_eq!(d.verdict.text, "all quiet");
+    }
+
+    #[test]
+    fn the_chosen_level_changes_the_verdict() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        assert!(fx.build(vec![]).attention.is_empty());
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let at = |fx: &Fixture| fx.build(vec![fine_host("local", &probe, &r, &b)]).attention;
+        assert!(at(&fx).is_empty(), "basic: one snapshot job and one copy");
+        fx.protection = crate::config::ProtectionConfig { level: Some("careful".into()), ..Default::default() }.resolve().unwrap();
+        let lines = at(&fx);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].what, "1 of 3 copies on other machines; no online copy");
+    }
+
+    /// `local` has these datasets and nothing protects them; the screen is built for it.
+    fn five_unprotected(os_only_rest: bool) -> Dashboard {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        let names: &[&str] = if os_only_rest { &["tank/a", "tank/b", "tank/c", "zroot/var", "zroot/tmp"] } else { &["tank/a", "tank/b", "tank/c", "tank/d", "zroot/var"] };
+        with_datasets(&mut fx, &[("local", names)]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        fx.build(vec![fine_host("local", &probe, &r, &b)])
+    }
+
+    #[test]
+    fn up_to_three_unprotected_datasets_are_named_and_nothing_is_folded() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "tank/docs", "zroot/var"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert_eq!(d.attention.len(), 3, "{:?}", d.attention);
+        assert!(d.protection_more.is_none());
+        assert_eq!(d.verdict.text, "2 issues, 1 to watch");
+    }
+
+    #[test]
+    fn past_three_the_rest_fold_into_one_line_that_is_red_while_any_of_your_data_is_in_it() {
+        let d = five_unprotected(false);
+        let subjects: Vec<&str> = d.attention.iter().map(|i| i.subject.as_str()).collect();
+        assert_eq!(subjects, ["tank/a", "tank/b", "tank/c", "protection"], "your data first; three named, then the rest as one line");
+        let more = d.protection_more.clone().unwrap();
+        assert_eq!((more.level, more.what.as_str(), more.goto, more.target.clone()), (Level::Issue, "and 2 more not protected (1 of your data)", Section::Jobs, None));
+        assert_eq!(d.attention[3], more);
+        assert_eq!(d.verdict.text, "4 issues", "each line counts once; the folded datasets are one");
+        assert_eq!(d.unprotected.len(), 5, "the full list is kept for the pop-up");
+    }
+
+    #[test]
+    fn the_folded_line_is_amber_when_only_operating_system_data_is_in_it() {
+        let d = five_unprotected(true);
+        let more = d.protection_more.unwrap();
+        assert_eq!((more.level, more.what.as_str()), (Level::Watch, "and 2 more not protected (0 of your data)"));
+    }
+
+    #[test]
+    fn a_named_line_goes_straight_to_its_fix_and_the_folded_line_opens_the_list_at_the_first_hidden_dataset() {
+        let d = five_unprotected(false);
+        let fix = d.protection_fix(&d.attention[1]).expect("a named line has a fix");
+        assert_eq!(fix.dataset, "tank/b");
+        assert!(d.protection_popup(&d.attention[1]).is_none(), "a named line opens no list");
+        let more = d.attention[3].clone();
+        assert!(d.protection_fix(&more).is_none());
+        let popup = d.protection_popup(&more).expect("the folded line opens the list");
+        let note: Vec<&str> = popup.note.lines().collect();
+        assert_eq!(note[0], "5 datasets are not protected (4 of your data)");
+        assert!(note[1].starts_with("Protected means snapshots plus a copy on another machine"), "{}", note[1]);
+        assert_eq!(note[2], "Enter fixes the selected one.");
+        assert_eq!(popup.rows.len(), 5);
+        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/a") && popup.rows[0].ends_with("no snapshots; no copy on another machine"), "{}", popup.rows[0]);
+        assert!(popup.rows[4].starts_with("watch") && popup.rows[4].contains("zroot/var"), "{}", popup.rows[4]);
+        assert_eq!(popup.selected, 3, "the first dataset without a line of its own");
+        assert_eq!(popup.gaps.iter().map(|g| g.dataset.as_str()).collect::<Vec<_>>(), ["tank/a", "tank/b", "tank/c", "tank/d", "zroot/var"], "what each row lacks, in the rows' order");
+        assert!(d.protection_popup(&Item { level: Level::Issue, subject: "daemon".into(), what: "x".into(), goto: Section::Jobs, target: None }).is_none());
+    }
+
+    #[test]
+    fn the_popup_groups_by_host_with_the_hub_first_and_a_heading_and_colours_per_group() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["zroot/var", "tank/photos"]), ("nas", &["tank/old", "tank/media"]), ("alpha", &["tank/x"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let (p1, p2, p3) = (reached(vec![]), reached(vec![]), reached(vec![]));
+        let d = fx.build(vec![fine_host("local", &p1, &r, &b), fine_host("nas", &p2, &r, &b), fine_host("alpha", &p3, &r, &b)]);
+        let popup = d.protection_popup(&d.attention[3]).expect("five datasets: the fourth line opens the list");
+        let datasets: Vec<&str> = popup.gaps.iter().map(|g| g.dataset.as_str()).collect();
+        assert_eq!(datasets, ["tank/photos", "zroot/var", "tank/x", "tank/media", "tank/old"], "the hub first, then hosts by name; your data before the OS inside each");
+        assert_eq!(popup.gaps.iter().map(|g| g.host.as_str()).collect::<Vec<_>>(), ["local", "local", "alpha", "nas", "nas"]);
+        assert_eq!(popup.look.heads, [(0, "local  (2 datasets, 1 of your data)".to_string()), (2, "alpha  (1 dataset, 1 of your data)".to_string()), (3, "nas  (2 datasets, 2 of your data)".to_string())]);
+        assert_eq!(popup.look.levels, [Level::Issue, Level::Watch, Level::Issue, Level::Issue, Level::Issue]);
+        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/photos") && !popup.rows[0].contains("local"), "the host is in the heading, not the row: {}", popup.rows[0]);
+        assert_eq!(popup.selected, 1, "zroot/var is the first listed of the two datasets (it and tank/old) the Dashboard has no line for");
+    }
+
+    #[test]
+    fn a_host_with_only_operating_system_datasets_says_so_in_its_heading() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/a", "tank/b", "tank/c", "zroot/var", "zroot/tmp"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let p = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &p, &r, &b)]);
+        let popup = d.protection_popup(&d.attention[3]).unwrap();
+        assert_eq!(popup.look.heads, [(0, "local  (5 datasets, 3 of your data)".to_string())]);
+    }
+
+    #[test]
+    fn nothing_is_folded_or_named_when_every_dataset_is_protected() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.attention.is_empty() && d.protection_more.is_none() && d.unprotected.is_empty());
+    }
+
+    #[test]
+    fn email_off_still_shows_the_dashboard_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        fx.protection.email = crate::config::EmailTiming::Off;
+        assert_eq!(protection_items(&fx, &["local"]).len(), 1);
     }
 
     #[test]
@@ -1143,7 +1590,7 @@ mod tests {
     fn a_pool_with_a_lone_special_disk_is_a_red_line_that_goes_to_pools() {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         let mut entry = storage_entry(2, "tank/x", 10);
-        entry.pools = vec![crate::zfs::pool_classes::PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: false, cache_bad: false }];
+        entry.pools = vec![crate::zfs::pool_classes::PoolClasses { name: "tank".into(), unprotected: vec!["special".into()], log_bad: false, cache_bad: false, roles: vec![] }];
         fx.storage.hosts.insert("h".into(), entry);
         let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
         let probe = reached(vec![]);
@@ -1280,6 +1727,21 @@ mod tests {
     }
 
     #[test]
+    fn a_wrong_protection_section_is_a_watch_line_naming_config_toml() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        assert!(fx.build(vec![]).attention.iter().all(|i| i.subject != "config.toml"));
+        fx.protection_problem = Some("[protection] level must be basic, careful or custom".into());
+        let d = fx.build(vec![]);
+        let item = d.attention.iter().find(|i| i.subject == "config.toml").expect("a line for the wrong section");
+        assert_eq!((item.level, item.what.as_str(), item.goto), (Level::Watch, "[protection]: level must be basic, careful or custom; judging at Basic", Section::Settings));
+        assert_eq!(d.verdict.text, "1 to watch", "the header counts it");
+        // Also while the daemon is down (it is about the file, not the judging).
+        let mut down = Fixture::new(view(vec![], &[], None));
+        down.protection_problem = fx.protection_problem.clone();
+        assert!(down.build(vec![]).attention.iter().any(|i| i.subject == "config.toml"));
+    }
+
+    #[test]
     fn the_verdict_says_checking_until_every_host_has_answered_then_counts_issues_and_watches() {
         let fx = Fixture::new(view(vec![scrub_job("s")], &[("s", RunResult::Ok, "ok")], beat(1)));
         let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
@@ -1326,6 +1788,22 @@ mod tests {
         let no_daemon = Fixture::new(JobsView::default()).build(vec![]);
         assert_eq!(no_daemon.verdict.level, Level::Issue, "nothing has ever run the daemon: that is the one problem");
         assert!(empty.hosts.is_empty() && empty.cloud.is_empty());
+    }
+
+    #[test]
+    fn protection_lines_come_after_the_other_items_of_their_level() {
+        let mut fx = Fixture::new(view(vec![scrub_job("zz-scrub")], &[("zz-scrub", RunResult::Failed, "boom")], beat(1)));
+        let names: Vec<String> = (0..30).map(|i| format!("aa/d{i:02}")).chain(["zroot/var".to_string()]).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        with_datasets(&mut fx, &[("local", &refs)]);
+        let degraded = reached(vec![PoolProbe { health: PoolHealth::Degraded, ..pool("tank", 10, 0, Some(when(1))) }]);
+        let (r, before) = (reading(10, 0, 0, 1000), reading(10, 0, 0, 1000));
+        let d = fx.build(vec![fine_host("local", &degraded, &r, &before)]);
+        let order: Vec<(Level, &str)> = d.attention.iter().map(|i| (i.level, i.subject.as_str())).collect();
+        assert_eq!(order[..3], [(Level::Issue, "local"), (Level::Issue, "zz-scrub"), (Level::Issue, "aa/d00")], "the pool and the failed job first: {order:?}");
+        assert_eq!(order[2..5].iter().map(|(_, s)| *s).collect::<Vec<_>>(), refs[..3], "then the named protection lines, in their own order");
+        assert_eq!(order[5..], [(Level::Issue, "protection")], "the other 28 are one line, red because your data is among them: {order:?}");
+        assert_eq!(d.attention[5].what, "and 28 more not protected (27 of your data)");
     }
 
     #[test]

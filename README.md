@@ -1,12 +1,14 @@
-# zfsctl
+<h1 align="center"><img src="docs/logo/zfsctl-logo.svg" alt="zfsctl" width="360"></h1>
 
-A terminal UI for managing ZFS storage on FreeBSD.
+A terminal UI and daemon for managing ZFS storage: a FreeBSD hub that manages FreeBSD, Linux and illumos hosts over ssh.
+
+> **Built with Claude.** zfsctl was written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code): the design, code, tests and documentation were produced in conversation with it, and directed and tested by the author on real machines.
 
 **Documentation: [The zfsctl Book](docs/book/README.md)**, with real screens and a chapter for each part of the tool. This README is the reference for the details.
 
 ## Requirements
 
-- FreeBSD (uses `zpool`/`zfs`; no Linux/illumos support)
+- A FreeBSD machine as the hub, where zfsctl runs (it uses `zpool`/`zfs`). The hosts it manages over ssh may run FreeBSD, Linux (tested on Ubuntu 24 with OpenZFS) or illumos (tested on OmniOS)
 - Root privileges
 - `ssh` configured (with working host keys / `~/.ssh/config` entries) for any remote hosts you add to the config
 
@@ -63,7 +65,7 @@ auto_refresh_secs = 10   # seconds between refreshes; 0 turns it off
 
 ### Remote host setup: unprivileged SSH + sudo
 
-`ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (the exceptions are read-only lookups that need no privilege and run over SSH without sudo: `getent passwd` / `getent group` for the F2 picker, and `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` for the metrics panel, plus `sh`, `lsblk`, `systemctl`, `svcs`, `pgrep` and `stat` where the host's OS or a feature needs them; if the SSH key is locked to a forced command, that command must allow them too) (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the commands `zfsctl` ever runs, not full root. A port or other ssh option does not go in `ssh_target` (it is passed to ssh as one argument); put it in `~/.ssh/config` under the same host name.
+`ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (the exceptions are read-only lookups that need no privilege and run over SSH without sudo: `getent passwd` / `getent group` for the F2 picker, and `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` for the metrics panel, and `zoneadm` / `zonecfg` on illumos to find the zone that holds a dataset for the snapshot browser, plus `sh`, `lsblk`, `systemctl`, `svcs`, `pgrep` and `stat` where the host's OS or a feature needs them; if the SSH key is locked to a forced command, that command must allow them too) (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the commands `zfsctl` ever runs, not full root. A port or other ssh option does not go in `ssh_target` (it is passed to ssh as one argument); put it in `~/.ssh/config` under the same host name.
 The `!` shell is deliberately the plain unprivileged login: it adds no sudoers requirement and no path to root.
 
 **Let zfsctl write and check the entry.** On the hub, as root:
@@ -83,6 +85,10 @@ A twelfth binary, `/usr/local/bin/restic`, is needed only on a host that runs ba
 A thirteenth binary, `/usr/local/bin/rclone`, is needed only on a host that runs cloud mirror jobs (jobs on the hub itself run as root and need nothing): add it with `zfsctl print-sudoers HOST --with rclone`. It is as broad as `restic`: rclone as root can read any file and write to any remote its `rclone.conf` names.
 
 On an illumos host the boot environment tool is `/usr/sbin/beadm`, allowed with any arguments (`zfsctl print-sudoers HOST` includes it by default there; listing needs no sudo). A fourteenth binary, `/usr/local/sbin/smartctl` (from `pkg install smartmontools`), is needed only for the daily disk health check (`zfsctl print-sudoers HOST --with smart`). Its entry is pinned to two forms, `smartctl --scan -j` and `smartctl -j -H -A -i /dev/*`; sudo's `*` also matches spaces, so the second cannot stop an extra flag, but the account already holds `zfs` and `zpool`, which are as powerful as root, and zfsctl only ever sends the read-only flags.
+
+A fifteenth binary, `ls`, is needed only to look inside snapshots (`zfsctl print-sudoers HOST --with browse`; off by default on every OS). Its entry is pinned to forms that all end in `-- *` (print-sudoers writes the three for the host's own OS, two on illumos; all eight are: (sudo matches the words as one string, so this does not keep an extra option or path out, but `ls` has no option that writes or runs anything; the worst is a recursive listing): `ls -lAb -D %s -- *`, `ls -lAbc -D %s -- *`, `ls -lAbU -D %s -- *` (FreeBSD), `ls -lAQ --time-style +%s -- *`, `ls -lAQ --time-style +%s --time ctime -- *`, `ls -lAQ --time-style +%s --time birth -- *` (Linux), `ls -lAbE -- *` and `ls -lAbEc -- *` (illumos); the `b` and `Q` make `ls` print a newline or an escape character in a name as an escape sequence, so one line is always one entry). It lists names and metadata, never file contents. Sudo's `*` also matches spaces and `/`, so the path cannot be confined to `.zfs/snapshot`, but the account already holds `zfs` and `zpool`, which can read every dataset. A host set up before the escaped listings (the forms were `-lA...` before they became `-lAb`, `-lAQ` and `-lAbE`) needs the browse entry installed again: run `zfsctl print-sudoers HOST --with browse` and install the new file. For a dataset given to an illumos zone it reads through `<zone path>/root`, which that zone's own root user controls (a hostile zone could make the path lead elsewhere on the host), so that listing is a hint only; it finds the zone with `zoneadm list -cp` and `zonecfg -z NAME info dataset`, which need no sudo. The browser treats a snapshot's file names as untrusted text: listings are escaped (`ls -b`, `ls -Q`), so one line is always one entry and a crafted name cannot forge extra entries; a name with a control character, a byte that is not UTF-8 or, on illumos, a backslash is shown but never opened.
+
+A sixteenth binary, `cp`, is needed only to copy a file out of a snapshot (`zfsctl print-sudoers HOST --with restore`; off by default on every OS). Its entry is pinned to one form per OS: `cp -p -n -T -- * *` on Linux and `cp -p -n -- * *` on FreeBSD and illumos. `-p` keeps times and modes (run as root on FreeBSD it also keeps file flags and ACLs), `-n` never overwrites an existing file, and GNU's `-T` (Linux only; FreeBSD and illumos have no such option) makes an existing directory at the destination an error instead of a copy into it. Sudo matches the words as one string, so it cannot confine the paths: with this entry the account can copy any file the host can read to any new path, which `zfs` and `zpool` already allow.
 
 ```sh
 which zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee
@@ -111,7 +117,7 @@ Full paths (not bare command names) in the sudoers entry matter: `sudo`'s own `s
 - `r`: refresh whichever pane currently has focus (the middle list, or — for Pools/Datasets — the properties pane if it's focused)
 - **Confirmations take two keys.** A y/n window needs `y` (yes) or `n` / `Esc` (no) to *select*, then `Enter` to apply it; `Enter` on its own does nothing, so a stray key or a held-down Enter can never run, or even dismiss, a confirmation. The window shows what is selected and what Enter will do. Forms that cannot be taken back (creating a pool, adding a vdev, replacing a disk, revoking permissions) end in the same confirmation, which shows the exact command first; Enter on the last field never runs them by itself; shrinking a volume (`volsize`) and setting a pool `feature@…` property get the same confirmation. An Enter that follows another within a quarter of a second is ignored, which swallows most of a held key's repeats; what really protects you from a held key is that an unanswered confirmation ignores Enter. Typed-name confirmations (destroying a pool, dataset or snapshot) need the exact name and then `Enter`, and `Esc` cancels them at once. A confirmation that came from submitting a form (irreversible forms, volume size and pool features, saved jobs that would delete data) gives the form back when you decline it, with everything you typed and the last field focused: Enter asks again, Esc discards the form.
 - `?`: show the Help screen (full keybinding reference)
-- `A`: show the About screen
+- `A`: show the About screen (the wordmark and the version)
 - `!`: open a shell on the selected host and return to zfsctl when you exit it. On a remote host this is an interactive `ssh` login as the same unprivileged user zfsctl connects as, never a root shell (run the allowed `sudo zpool ...` yourself from there). Locally it is `$SHELL`. When the shell exits, the list on screen is refreshed.
 - `q`: quit
 - `Esc`: dismiss the current status message, back out of a focused properties pane, or (while a modal is open) cancel it
@@ -145,7 +151,7 @@ The Hosts list is a table: `● Name | Address | State | Type | Tag | Used | Poo
 
 State also tells a network failure (`unreachable`) from an ssh refusal (`ssh login refused`, `host key not accepted`). The other columns:
 
-- **Type**: `metal`, `vm` or `jail`, read once per host with `sysctl -n kern.vm_guest security.jail.jailed` (no sudo; a host where that fails shows `-`). `vm` is coloured cyan and `jail` magenta, apart from the health colours.
+- **Type**: `metal`, `vm` or `jail`, read once per host without sudo: FreeBSD `sysctl -n kern.vm_guest security.jail.jailed`, Linux `systemd-detect-virt` (or the DMI vendor in `/sys/class/dmi/id/sys_vendor`), illumos `zonename` and `smbios` (a container or a non-global zone shows as `jail`; a host where nothing can be read shows `-`). `vm` is coloured cyan and `jail` magenta, apart from the health colours.
 - **Tag**: a free label per host, `tag = "backup"` under its `[[hosts]]` entry in `config.toml` or the optional third field of the Add Host form (change it later by editing `config.toml` and restarting). Shown only when some host has one.
 - **Used**: the fullest pool's capacity, yellow from 80%, red from 90%. **Pools**: how many. **Scrub**: `running 34%` or `paused` if any pool is, else `never` if any pool never scrubbed, else the date of the oldest last scrub.
 - **Jobs**: `failed/total` of the host's enabled jobs (a job counts as failed when its latest run failed).
@@ -349,7 +355,7 @@ enabled = true          # default true
 created_at = "2026-10-06T12:00:00Z"  # optional; a catch-up never reaches back before this
 ```
 
-**A snapshot job** takes `zfs snapshot` of one dataset (`recursive = true` adds `-r`, so a whole tree is snapshotted atomically and pruned together) and names it `<prefix>-<UTC timestamp>`, for example `hourly-20261006T193000Z`. After a successful snapshot it destroys its own snapshots beyond the newest `keep`, oldest first. It only ever destroys names that match exactly `<prefix>-<YYYYMMDDTHHMMSSZ>`, so manual snapshots, other jobs' snapshots and look-alikes such as `hourly-keep-forever` are never touched. If a snapshot cannot be destroyed (a hold, a clone) the run is recorded as failed with the reason, and the rest are still pruned. Hourly, daily and weekly tiers are separate jobs with separate prefixes. Two enabled snapshot jobs cannot share a host and prefix on the same dataset, or on a dataset inside a recursive job's tree (they would prune each other); the later one is reported as unable to run. The lock is per dataset and prefix, so an hourly and a daily job on one dataset that fall due together both run. `keep` counts the snapshot just taken, which is never pruned. Changing a job's prefix leaves the old prefix's snapshots in place.
+**A snapshot job** takes `zfs snapshot` of one dataset (`recursive = true` adds `-r`, so a whole tree is snapshotted atomically and pruned together) and names it `<prefix>-<UTC timestamp>`, for example `hourly-20261006T193000Z`. After a successful snapshot it destroys its own snapshots beyond the newest `keep`, oldest first. It only ever destroys names that match exactly `<prefix>-<YYYYMMDDTHHMMSSZ>`, so manual snapshots, other jobs' snapshots and look-alikes such as `hourly-keep-forever` are never touched. A snapshot with a hold is kept and the run says `kept N (held)`; it is not an error. If a snapshot cannot be destroyed for another reason (a clone) the run is recorded as failed with the reason, and the rest are still pruned. Hourly, daily and weekly tiers are separate jobs with separate prefixes. Two enabled snapshot jobs cannot share a host and prefix on the same dataset, or on a dataset inside a recursive job's tree (they would prune each other); the later one is reported as unable to run. The lock is per dataset and prefix, so an hourly and a daily job on one dataset that fall due together both run. `keep` counts the snapshot just taken, which is never pruned. Changing a job's prefix leaves the old prefix's snapshots in place.
 
 ```toml
 [[jobs]]
@@ -500,7 +506,36 @@ remind_hours = 6                     # repeat an unresolved alert this often; de
 
 ## Status
 
-v1 covers browsing and 11 of the 12 ZFS operations implemented at the library layer: create/destroy/scrub a pool, offline/online/replace a disk, create/destroy a dataset, and create/destroy/rollback a snapshot — all from the TUI, locally or over SSH. Scheduled `zfs send`/`receive` replication between hosts is described under Scheduled jobs. Pool and dataset properties (`zpool`/`zfs get`/`set`) can now be viewed and edited from a properties pane next to the Pools/Datasets lists (`Right` to focus it). Delegated ZFS administration permissions (`zfs allow`/`unallow`) can be viewed, granted, and revoked from a Permissions sub-tab in the Datasets right pane (`'['`/`']'` to switch to it, once focused with `Right`) — Pools has no equivalent, since `zfs allow` only targets a filesystem or volume. File ACLs (`getfacl`/`setfacl`, NFSv4 only — POSIX ACLs are deferred) can be viewed, added, and removed from an ACL sub-tab in the Datasets right pane, scoped to the dataset's mountpoint; bhyve zvol association is still not implemented — planned as follow-up work. A Disks section lists every block device on the host with its size and pool/vdev membership, and lets you build a new pool or add a vdev to an existing one from a multi-disk selection instead of typing device names; `zpool resilver` is also available from the Pools section. A Shares section lists every dataset's active NFS/SMB share and lets you create or edit an NFS share's networks/hosts/read-only/root mapping from a structured form; SMB shares are created, edited and removed through a managed block in `smb4.conf` (see Shares → SMB shares), since FreeBSD's `sharesmb` ZFS property doesn't actually serve anything (confirmed empirically).
+Version 0.2, in development. It manages pools, datasets and their properties, snapshots, disks, NFS and SMB shares, boot environments, delegated permissions and ACLs, native encryption keys, and scheduled snapshot, replication, restic backup and rclone mirror jobs, with alerts and a daily report. The book (`docs/book`) documents every screen.
+
+### What is tested, and what is not
+
+Tested:
+- **Unit tests:** over two thousand, running against fake command runners (no real ZFS needed). Most behaviour that can go wrong, such as argument order, refusals and what a failing command reports, is pinned there.
+- **Mutation testing:** `cargo mutants` was run on the newer, safety-critical code (encryption, the job guards, replication, the Dashboard), and the mutants that survived were pinned with tests. The memory wipes on secrets cannot be tested from safe Rust and are not covered.
+- **Independent review:** each major change was reviewed by a separate AI reviewer before it was merged, and its findings were fixed.
+- **Live on real machines:** a FreeBSD 15 hub and three FreeBSD VMs (one on 16.0), with real pools, snapshots, replication between hosts, restic backups and rclone mirrors to Backblaze B2 and S3, boot environments including real reboots, and encryption keys loaded, changed and unloaded through the TUI.
+
+Tested less, or not live:
+- **Linux and illumos hosts:** checked on Ubuntu 24 and OmniOS, but far less than FreeBSD. Sections a host's OS cannot support are dimmed rather than half-working. Expect rough edges there.
+- **Raw replication of encrypted datasets:** the `zfs send -w` flow was verified by hand on FreeBSD, and the job logic is covered by tests with fake hosts. It has not run as a long-lived daemon job.
+- **Restic backups of remote hosts:** local hub backups were verified live; remote hosts were not.
+- **Not security-audited.** zfsctl runs commands as root through sudoers rules you install yourself. Read what `zfsctl print-sudoers` generates before installing it.
+
+How it protects data: every change needs `y` then `Enter`; what cannot be undone makes you type the name; recursive destroys refuse a pool's root and anything holding the running system; a replication or mirror of an encrypted dataset is refused unless it is explicitly raw; passphrases reach `zfs` only on standard input, never in an argument, a log or a file.
+
+Please try it on a test pool first, and keep backups of anything you care about.
+
+## Built on
+
+zfsctl is a thin layer over other people's work. None of it is bundled; all of it deserves credit and a visit:
+
+- [OpenZFS](https://openzfs.org/): the file system, volume manager and the `zpool`/`zfs` tools that zfsctl drives.
+- [FreeBSD](https://www.freebsd.org/): the operating system of the hub, and of most of the test machines.
+- [illumos](https://illumos.org/) and [OmniOS](https://omnios.org/): the descendant of OpenSolaris, where ZFS was born at Sun; OmniOS is the distribution used for testing.
+- [Linux](https://www.kernel.org/) (tested on [Ubuntu](https://ubuntu.com/)) with [OpenZFS on Linux](https://openzfs.github.io/openzfs-docs/).
+- [Rust](https://www.rust-lang.org/): the language, with [ratatui](https://ratatui.rs/) for the screen and [crossterm](https://github.com/crossterm-rs/crossterm) for the terminal.
+- [restic](https://restic.net/) and [rclone](https://rclone.org/): backups and cloud mirrors, when you use those job kinds.
 
 ## Licence
 

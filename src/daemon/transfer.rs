@@ -197,8 +197,18 @@ pub fn run_lines(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(
     let log = drain_stderr(&mut child);
     let (tx, rx) = channel::<String>();
     let reader = std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines().map_while(std::result::Result::ok) {
-            if tx.send(line).is_err() {
+        // Bytes, not `lines()`: a line that is not UTF-8 (a Latin-1 file name) must not end the read or vanish.
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut raw = Vec::new();
+        loop {
+            raw.clear();
+            match reader.read_until(b'\n', &mut raw) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let text = String::from_utf8_lossy(&raw);
+            let line = text.strip_suffix('\n').unwrap_or(&text);
+            if tx.send(line.strip_suffix('\r').unwrap_or(line).to_string()).is_err() {
                 break;
             }
         }

@@ -17,9 +17,33 @@ pub struct Resources {
     /// The cumulative `kern.cp_time` counters; the CPU share needs two readings.
     pub cpu_ticks: Option<CpuTimes>,
     pub swap: Option<Swap>,
+    /// The ZFS cache counters since boot; `None` where the host has no ZFS kstats.
+    pub cache: Option<CacheStats>,
 }
 
-const SYSCTL_ARGS: [&str; 9] = [
+/// The cumulative ARC and L2ARC counters (`kstat.zfs.misc.arcstats`): hits and misses, and the L2ARC's size, hits and misses. The
+/// hit rate since boot is what the Hosts panel shows too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub l2_size: u64,
+    pub l2_hits: u64,
+    pub l2_misses: u64,
+}
+
+impl CacheStats {
+    pub fn arc_hit_percent(&self) -> Option<f64> {
+        super::host::ArcStats { hits: self.hits, misses: self.misses, ..Default::default() }.hit_percent()
+    }
+
+    /// `None` when the host has no cache device (a size of 0) or it has not been read from yet.
+    pub fn l2_hit_percent(&self) -> Option<f64> {
+        (self.l2_size > 0).then(|| super::host::L2arc { size: self.l2_size, hits: self.l2_hits, misses: self.l2_misses }.hit_percent()).flatten()
+    }
+}
+
+const SYSCTL_ARGS: [&str; 14] = [
     "-n",
     "hw.ncpu",
     "hw.physmem",
@@ -29,12 +53,17 @@ const SYSCTL_ARGS: [&str; 9] = [
     "kstat.zfs.misc.arcstats.size",
     "vm.loadavg",
     "kern.cp_time",
+    "kstat.zfs.misc.arcstats.hits",
+    "kstat.zfs.misc.arcstats.misses",
+    "kstat.zfs.misc.arcstats.l2_size",
+    "kstat.zfs.misc.arcstats.l2_hits",
+    "kstat.zfs.misc.arcstats.l2_misses",
 ];
 
-/// The eight lines `sysctl -n` prints for `SYSCTL_ARGS` (swap is read separately).
+/// The lines `sysctl -n` prints for `SYSCTL_ARGS` (swap is read separately): the eight resource lines, then the five cache counters.
 fn parse_sysctl(output: &str) -> Option<Resources> {
     let lines: Vec<&str> = output.lines().map(str::trim).collect();
-    let &[ncpu, physmem, pagesize, free, inactive, arc, load, cp_time] = lines.as_slice() else { return None };
+    let &[ncpu, physmem, pagesize, free, inactive, arc, load, cp_time, hits, misses, l2_size, l2_hits, l2_misses] = lines.as_slice() else { return None };
     let page: u64 = pagesize.parse().ok().filter(|p| *p > 0)?;
     let pages = |s: &str| s.parse::<u64>().ok().map(|n| n.saturating_mul(page));
     Some(Resources {
@@ -46,6 +75,7 @@ fn parse_sysctl(output: &str) -> Option<Resources> {
         load: parse_loadavg(load),
         cpu_ticks: parse_cpu_times(cp_time),
         swap: None,
+        cache: (|| Some(CacheStats { hits: hits.parse().ok()?, misses: misses.parse().ok()?, l2_size: l2_size.parse().ok()?, l2_hits: l2_hits.parse().ok()?, l2_misses: l2_misses.parse().ok()? }))(),
     })
 }
 
@@ -109,11 +139,18 @@ mod tests {
 
     const GIB: u64 = 1 << 30;
     // hw.ncpu, hw.physmem (20 GiB), hw.pagesize, free pages (2 GiB), inactive pages (3 GiB), ARC size (10 GiB), loadavg, cp_time.
-    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n";
+    const SYSCTL: &str = "4\n21474836480\n4096\n524288\n786432\n10737418240\n{ 0.05 0.12 0.08 }\n1000 0 200 10 8790\n9990\n10\n2097152\n300\n100\n";
     const SWAPINFO: &str = "Device          1K-blocks     Used    Avail Capacity\n/dev/da0p2        2097152   524288  1572864    25%\n";
 
     fn resources(free: u64, inactive: u64, arc: u64) -> Resources {
-        Resources { cores: 4, physical: 20 * GIB, free, inactive, arc, load: None, cpu_ticks: None, swap: None }
+        Resources { cores: 4, physical: 20 * GIB, free, inactive, arc, load: None, cpu_ticks: None, swap: None, cache: None }
+    }
+
+    #[test]
+    fn a_host_without_a_cache_device_has_no_l2arc_hit_rate_and_one_without_accesses_no_arc_rate() {
+        assert_eq!(CacheStats { hits: 5, misses: 5, l2_size: 0, l2_hits: 0, l2_misses: 0 }.l2_hit_percent(), None);
+        assert_eq!(CacheStats::default().arc_hit_percent(), None);
+        assert_eq!(CacheStats { l2_size: 1, ..CacheStats::default() }.l2_hit_percent(), None, "nothing read from it yet");
     }
 
     #[test]
@@ -159,7 +196,10 @@ mod tests {
         let calls = runner.unprivileged_calls.lock().unwrap().clone();
         let names: Vec<&str> = calls.iter().map(|(c, _)| c.as_str()).collect();
         assert_eq!(names, ["sysctl", "swapinfo"]);
-        assert_eq!(calls[0].1, ["-n", "hw.ncpu", "hw.physmem", "hw.pagesize", "vm.stats.vm.v_free_count", "vm.stats.vm.v_inactive_count", "kstat.zfs.misc.arcstats.size", "vm.loadavg", "kern.cp_time"]);
+        assert_eq!(calls[0].1, ["-n", "hw.ncpu", "hw.physmem", "hw.pagesize", "vm.stats.vm.v_free_count", "vm.stats.vm.v_inactive_count", "kstat.zfs.misc.arcstats.size", "vm.loadavg", "kern.cp_time", "kstat.zfs.misc.arcstats.hits", "kstat.zfs.misc.arcstats.misses", "kstat.zfs.misc.arcstats.l2_size", "kstat.zfs.misc.arcstats.l2_hits", "kstat.zfs.misc.arcstats.l2_misses"]);
+        assert_eq!(r.cache, Some(CacheStats { hits: 9990, misses: 10, l2_size: 2_097_152, l2_hits: 300, l2_misses: 100 }));
+        assert_eq!(r.cache.and_then(|c| c.arc_hit_percent()).map(|p| (p * 10.0).round()), Some(999.0));
+        assert_eq!(r.cache.and_then(|c| c.l2_hit_percent()), Some(75.0));
         // `FakeRunner::run_unprivileged` itself refuses any command not registered as unprivileged, so no sudo is involved.
     }
 

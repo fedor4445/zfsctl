@@ -27,6 +27,8 @@ pub enum MutationCall {
     DestroyDatasetRecursive { name: String },
     SetDatasetProperty { dataset: String, key: String, value: String },
     CreateSnapshot { dataset: String, name: String },
+    HoldSnapshot { dataset: String, name: String },
+    ReleaseSnapshot { dataset: String, name: String },
     DestroySnapshot { dataset: String, name: String },
     RollbackSnapshot { dataset: String, name: String },
     AllowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Vec<String> },
@@ -60,6 +62,11 @@ pub enum MutationCall {
     SaveSettings { config_path: std::path::PathBuf, setting: crate::ui::settings::Setting, values: Vec<String> },
     /// Sends a real test message through the saved channels (`zfsctl notify-test`). The runner is not used.
     SendTestMessage { settings: Box<crate::config::NotifySettings>, hook: Option<String> },
+    /// Copies one file out of a snapshot to a new name next to the original (`cp -p -n`, run as root by the engine in
+    /// `zfs::snapshot_restore`, which checks the paths before and the result after). Never replaces anything; it is not a
+    /// destroy, not recursive and not forced. `host` is the host's name, for the engine's messages. Boxed: the plan and the
+    /// source are large.
+    RestoreFile { plan: Box<crate::zfs::snapshot_restore::RestorePlan>, source: Box<crate::zfs::snapshot_restore::RestoreSource>, host: String },
 }
 
 /// A password or passphrase held only until it is piped to the command that needs it (`smbpasswd`, `zfs load-key`).
@@ -94,6 +101,8 @@ impl MutationCall {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
             MutationCall::SaveSettings { .. } => Some("Saved to config.toml".to_string()),
+            MutationCall::HoldSnapshot { dataset, name } => Some(format!("Protected {dataset}@{name}")),
+            MutationCall::ReleaseSnapshot { dataset, name } => Some(format!("Released the zfsctl hold on {dataset}@{name}")),
             MutationCall::SendTestMessage { .. } => Some("Test message sent: the mail command accepted it (run from this terminal; the daemon runs it with root's home)".to_string()),
             _ => None,
         }
@@ -123,12 +132,15 @@ impl MutationCall {
             | MutationCall::ChangeKey { .. }
             | MutationCall::CreateEncryptedDataset { .. }
             | MutationCall::ActivateBootEnv { temporary: false, .. }
+            | MutationCall::ReleaseSnapshot { .. }
             | MutationCall::DeleteJob { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
             | MutationCall::ResilverPool { .. }
             | MutationCall::OnlineDisk { .. }
             | MutationCall::CreateDataset { .. }
             | MutationCall::CreateSnapshot { .. }
+            | MutationCall::HoldSnapshot { .. }
+            | MutationCall::RestoreFile { .. }
             | MutationCall::AllowPermission { .. }
             | MutationCall::AddAclEntry { .. }
             | MutationCall::SetPoolProperty { .. }
@@ -167,6 +179,8 @@ impl MutationCall {
             MutationCall::DestroyDatasetRecursive { .. } => "DESTROY DATASET AND EVERYTHING UNDER IT",
             MutationCall::SetDatasetProperty { .. } => "SET DATASET PROPERTY",
             MutationCall::CreateSnapshot { .. } => "CREATE SNAPSHOT",
+            MutationCall::HoldSnapshot { .. } => "HOLD SNAPSHOT",
+            MutationCall::ReleaseSnapshot { .. } => "RELEASE HOLD",
             MutationCall::DestroySnapshot { .. } => "DESTROY SNAPSHOT",
             MutationCall::RollbackSnapshot { .. } => "ROLLBACK SNAPSHOT",
             MutationCall::AllowPermission { .. } => "GRANT PERMISSION",
@@ -192,11 +206,25 @@ impl MutationCall {
             MutationCall::SaveNotify { .. } => "SAVE ALERT SETTINGS",
             MutationCall::SaveSettings { .. } => "SAVE SETTING",
             MutationCall::SendTestMessage { .. } => "SEND TEST MESSAGE",
+            MutationCall::RestoreFile { .. } => "RESTORE AS A COPY",
         }
     }
 }
 
+/// What the status line says after a restore: the verified copy as the engine found it.
+pub fn restored_note(done: &crate::zfs::snapshot_restore::Restored) -> String {
+    let clean = crate::display_text::sanitise_for_display;
+    format!("Restored {} ({} bytes, {}, owner {})", clean(&done.destination), done.size, clean(&done.mode), clean(&done.owner))
+}
+
 impl MutationCall {
+    /// Runs a `RestoreFile` and returns what the engine verified (`None` for every other call). The only call whose
+    /// success text depends on what the host answered, so the worker uses this instead of `run_on` to get the text.
+    pub fn restore_outcome(&self, runner: &dyn CommandRunner) -> Option<Result<crate::zfs::snapshot_restore::Restored>> {
+        let MutationCall::RestoreFile { plan, source, host } = self else { return None };
+        Some(crate::zfs::snapshot_restore::run_restore(runner, host, plan, source, &std::sync::atomic::AtomicBool::new(false)))
+    }
+
     /// The single place that maps a `MutationCall` variant to its
     /// underlying `zfs::*` library call.
     #[cfg(test)]
@@ -233,6 +261,8 @@ impl MutationCall {
                 crate::zfs::dataset::set_dataset_property(runner, dataset, key, value)
             }
             MutationCall::CreateSnapshot { dataset, name } => crate::zfs::snapshot::create_snapshot(runner, dataset, name),
+            MutationCall::HoldSnapshot { dataset, name } => crate::zfs::snapshot::hold_snapshot(runner, dataset, name),
+            MutationCall::ReleaseSnapshot { dataset, name } => crate::zfs::snapshot::release_snapshot(runner, dataset, name),
             MutationCall::DestroySnapshot { dataset, name } => crate::zfs::snapshot::destroy_snapshot(runner, dataset, name),
             MutationCall::RollbackSnapshot { dataset, name } => crate::zfs::snapshot::rollback_snapshot(runner, dataset, name),
             MutationCall::AllowPermission { dataset, target, perms } => crate::zfs::permission::allow(runner, dataset, target, perms),
@@ -261,8 +291,12 @@ impl MutationCall {
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
             MutationCall::SaveNotify { config_path, section } => crate::config::save_notify_section(config_path, section),
             MutationCall::SaveSettings { config_path, setting, values } => {
-                let changes = crate::ui::settings::build_changes(setting, values).map_err(crate::error::AppError::Config)?;
+                let changes = crate::ui::settings::build_changes_for(config_path, setting, values).map_err(crate::error::AppError::Config)?;
                 crate::config_edit::save(config_path, &changes)
+            }
+            MutationCall::RestoreFile { plan, source, host } => {
+                // There is no cancel key for a restore, so the flag is never raised.
+                crate::zfs::snapshot_restore::run_restore(runner, host, plan, source, &std::sync::atomic::AtomicBool::new(false)).map(|_| ())
             }
             MutationCall::SendTestMessage { settings, hook } => {
                 let (text, code) = crate::notify_cli::notify_test(settings, hook.as_deref(), chrono::Utc::now());
@@ -398,6 +432,9 @@ pub enum FormKind {
     /// yet. `handle_modal_key` special-cases this variant instead of
     /// routing it through `build_pending_action`.
     AddHost,
+    /// Fields: `[restore as]` -- the new name for a file restored from a snapshot. `source` is the picked file, fixed when
+    /// the form opens; `host` is the host the browser was reading. Submitting builds the plan and opens a confirm.
+    RestoreFile { host: usize, source: Box<crate::zfs::snapshot_restore::RestoreSource> },
 }
 
 impl FormKind {
@@ -442,6 +479,26 @@ pub enum Modal {
     /// A read-only overlay with no action to confirm or submit — Help
     /// and About. Dismissed by any key.
     Info { title: String, body: String },
+    /// A list to choose a row from: Up and Down move, Enter acts on the row, Esc closes. `note` is shown above the rows.
+    Choose { title: String, note: String, rows: Vec<String>, selected: usize, then: ChooseThen, look: ChooseLook },
+}
+
+/// How a `Modal::Choose` is drawn beyond its rows: headings between groups of rows, and a colour per row.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChooseLook {
+    /// `(row, text)`: a heading line before that row (a blank line separates it from the group above).
+    pub heads: Vec<(usize, String)>,
+    /// One level per row (red, amber...), or empty for plain rows.
+    pub levels: Vec<crate::ui::dashboard::Level>,
+}
+
+/// What Enter does with the chosen row of a `Modal::Choose`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChooseThen {
+    /// The rows are unprotected datasets (this list, same order): open the fix for the chosen one.
+    Unprotected(Vec<crate::daemon::protection::Unprotected>),
+    /// The rows are the kinds of copy (replication, backup, cloud mirror) for this dataset.
+    Copy { host: String, dataset: String },
 }
 
 #[cfg(test)]
@@ -637,7 +694,8 @@ mod tests {
         let call = MutationCall::DestroyDataset { name: "tank/olds".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
+        let destroys: Vec<_> = calls.iter().filter(|c| c.1[0] == "destroy").collect();
+        assert_eq!(*destroys[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/olds".to_string()]));
     }
 
     #[test]
@@ -651,11 +709,110 @@ mod tests {
 
     #[test]
     fn destroy_snapshot_call_runs_destroy_snapshot() {
-        let runner = FakeRunner::new("");
+        let runner = FakeRunner::new("").route("zfs", "get", "tank/data@old-1\t0\n");
         let call = MutationCall::DestroySnapshot { dataset: "tank/data".to_string(), name: "old-1".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+        let destroys: Vec<_> = calls.iter().filter(|c| c.1[0] == "destroy").collect();
+        assert_eq!(destroys.len(), 1);
+        assert_eq!(*destroys[0], ("zfs".to_string(), vec!["destroy".to_string(), "--".to_string(), "tank/data@old-1".to_string()]));
+    }
+
+    #[test]
+    fn hold_call_runs_hold_snapshot() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::HoldSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["hold".to_string(), "--".to_string(), "zfsctl".to_string(), "tank/data@s1".to_string()]));
+    }
+
+    #[test]
+    fn release_call_runs_release_snapshot() {
+        let runner = FakeRunner::new("");
+        let call = MutationCall::ReleaseSnapshot { dataset: "tank/data".to_string(), name: "s1".to_string() };
+        call.run(&runner).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0], ("zfs".to_string(), vec!["release".to_string(), "--".to_string(), "zfsctl".to_string(), "tank/data@s1".to_string()]));
+    }
+
+    /// A host with one folder: `ls` lists what the table holds, `cp` adds the destination to it.
+    struct RestoreHost {
+        table: std::sync::Mutex<Vec<(String, String)>>,
+        cps: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl CommandRunner for RestoreHost {
+        fn run(&self, cmd: &str, args: &[&str]) -> Result<crate::exec::CommandOutput> {
+            if cmd == "zfs" {
+                if args[0] == "list" {
+                    return Ok(crate::exec::CommandOutput { stdout: "tank/data\tyes\t/tank/data\n".to_string(), stderr: String::new(), status: 0 });
+                }
+                assert_eq!(args, ["get", "-H", "-o", "value", "normalization", "tank/data"]);
+                return Ok(crate::exec::CommandOutput { stdout: "none\n".to_string(), stderr: String::new(), status: 0 });
+            }
+            assert_eq!(cmd, "cp");
+            self.cps.lock().unwrap().push(args.iter().map(ToString::to_string).collect());
+            let dest = args[args.len() - 1].rsplit('/').next().unwrap().to_string();
+            self.table.lock().unwrap().push(("1234".to_string(), dest));
+            Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 })
+        }
+        fn run_with_stdin(&self, _c: &str, _a: &[&str], _s: &str) -> Result<crate::exec::CommandOutput> {
+            Err(crate::error::AppError::Config("no stdin".into()))
+        }
+        fn run_unprivileged(&self, _c: &str, _a: &[&str]) -> Result<crate::exec::CommandOutput> {
+            Err(crate::error::AppError::Config("no unprivileged".into()))
+        }
+        fn command(&self, _cmd: &str, args: &[&str]) -> Result<std::process::Command> {
+            let dir = args[args.len() - 1];
+            let rows: Vec<(String, String)> = if dir.contains(".zfs/snapshot") { vec![("1234".into(), "a.txt".into())] } else { self.table.lock().unwrap().clone() };
+            let body = format!("total 1\n{}\n", rows.iter().map(|(size, name)| format!("-rw-r--r--  1 alice alice {size} 1700000000 {name}")).collect::<Vec<_>>().join("\n"));
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg("printf \"%s\" \"$0\"").arg(body);
+            Ok(c)
+        }
+    }
+
+    fn restore_call() -> MutationCall {
+        use crate::zfs::snapshot_browse::{EntryKind, ListEntry};
+        let entry = ListEntry { name: "a.txt".into(), kind: EntryKind::File, mode: "-rw-r--r--".into(), owner: "alice".into(), group: "alice".into(), size: 1234, time: None, link_target: None, ambiguous: false };
+        let source = crate::zfs::snapshot_restore::RestoreSource { dataset: "tank/data".into(), snapshot: "s1".into(), mountpoint: "/tank/data".into(), folder: vec![], entry, zone: None, os: crate::zfs::host_health::HostOs::FreeBsd };
+        let plan = crate::zfs::snapshot_restore::plan_restore(&source, "a.restored-s1.txt").unwrap();
+        MutationCall::RestoreFile { plan: Box::new(plan), source: Box::new(source), host: "hub".into() }
+    }
+
+    #[test]
+    fn restore_call_runs_the_restore_engine_and_reports_what_it_verified() {
+        let host = RestoreHost { table: std::sync::Mutex::new(vec![("1234".into(), "a.txt".into())]), cps: std::sync::Mutex::new(vec![]) };
+        let call = restore_call();
+        call.run(&host).unwrap();
+        assert_eq!(host.cps.lock().unwrap().as_slice(), [["-p", "-n", "--", "/tank/data/.zfs/snapshot/s1/a.txt", "/tank/data/a.restored-s1.txt"].map(String::from).to_vec()]);
+        let done = call.restore_outcome(&RestoreHost { table: std::sync::Mutex::new(vec![("1234".into(), "a.txt".into())]), cps: std::sync::Mutex::new(vec![]) }).unwrap().unwrap();
+        assert_eq!(restored_note(&done), "Restored /tank/data/a.restored-s1.txt (1234 bytes, -rw-r--r--, owner alice)");
+    }
+
+    #[test]
+    fn restore_call_stops_before_cp_when_the_name_is_taken_and_is_a_neutral_non_destroy() {
+        let host = RestoreHost { table: std::sync::Mutex::new(vec![("1234".into(), "a.txt".into()), ("5".into(), "a.restored-s1.txt".into())]), cps: std::sync::Mutex::new(vec![]) };
+        let err = restore_call().run(&host).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(host.cps.lock().unwrap().is_empty());
+        assert_eq!(restore_call().tone(), Tone::Neutral);
+        assert_eq!(restore_call().label(), "RESTORE AS A COPY");
+        assert!(restore_call().done_note().is_none());
+        assert!(MutationCall::ScrubPool { pool: "p".into() }.restore_outcome(&host).is_none());
+    }
+
+    #[test]
+    fn tone_label_and_note_of_the_new_calls() {
+        let hold = MutationCall::HoldSnapshot { dataset: "tank/a".into(), name: "s".into() };
+        let release = MutationCall::ReleaseSnapshot { dataset: "tank/a".into(), name: "s".into() };
+        assert_eq!(hold.tone(), Tone::Neutral);
+        assert_eq!(release.tone(), Tone::Warn);
+        assert_eq!(hold.label(), "HOLD SNAPSHOT");
+        assert_eq!(release.label(), "RELEASE HOLD");
+        assert_eq!(hold.done_note().unwrap(), "Protected tank/a@s");
+        assert_eq!(release.done_note().unwrap(), "Released the zfsctl hold on tank/a@s");
     }
 
     #[test]
@@ -792,9 +949,10 @@ mod tone_tests {
         let call = MutationCall::DestroyDatasetRecursive { name: "tank/data".to_string() };
         call.run(&runner).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[0], ("zfs".to_string(), vec!["destroy".to_string(), "-r".to_string(), "--".to_string(), "tank/data".to_string()]));
+        let destroy = calls.iter().find(|c| c.1[0] == "destroy").unwrap();
+        assert_eq!(*destroy, ("zfs".to_string(), vec!["destroy".to_string(), "-r".to_string(), "--".to_string(), "tank/data".to_string()]));
         assert_eq!(call.tone(), Tone::Danger);
-        assert!(!calls[0].1.iter().any(|a| a == "-R"), "-R would also destroy clones elsewhere");
+        assert!(!destroy.1.iter().any(|a| a == "-R"), "-R would also destroy clones elsewhere");
     }
 
     #[test]

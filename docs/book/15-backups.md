@@ -63,7 +63,7 @@ Enter Next  Tab Next field  Shift+Tab Prev field  F2 Pick  F5 Check  Esc Cancel
 ```
 
 - **Host**: where restic runs.
-- **Dataset** and **Path**: the dataset, and optionally one directory inside it (`photos/2026`, relative to the dataset's root, no `..`). Blank backs up all of the dataset.
+- **Dataset** and **Path**: the dataset, and optionally one directory inside it (`photos/2026`, relative to the dataset's root, no `..`). Blank backs up all of the dataset. A backup with a Path does not count as a copy of the dataset in the unprotected-data check (it copies one folder, not the dataset).
 
 > **Safety:** every part of a Path must be a real folder. If one is a symlink, the run stops with an error before restic reads anything, because restic runs as root and would follow the link out of the snapshot (a `docs -> /` link with Path `docs/etc` would back up the host's own `/etc`). To look, the run uses `readlink`, which `zfsctl print-sudoers HOST --with restic` includes; a remote host set up before this check must have that line installed again, or its jobs that have a Path fail with a message saying so. Jobs without a Path are not affected.
 - **Source**: which snapshot to back up. Press `F2` to choose; it lists what the dataset already has.

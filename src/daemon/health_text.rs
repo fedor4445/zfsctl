@@ -3,6 +3,7 @@
 use super::deliver::{ascii_line, Message};
 use super::health::{Alert, AlertKind, Severity};
 use super::history::{Run, RunResult};
+use super::protection::{Tier, Unprotected};
 use crate::jobs::Job;
 use crate::zfs::host_health::{jobs_cell, pools_cell, scan_cell, used_cell, HostKind, Level, PoolProbe};
 use chrono::{DateTime, Utc};
@@ -50,7 +51,7 @@ fn severity_word(severity: Severity) -> &'static str {
 }
 
 /// `6h 2m`, `1h 30m`, `45m`, `3d 2h`; a zero part is dropped.
-fn dur(d: Duration) -> String {
+pub fn dur(d: Duration) -> String {
     let minutes = d.as_secs() / 60;
     let (days, hours, mins) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
     match (days, hours, mins) {
@@ -60,6 +61,11 @@ fn dur(d: Duration) -> String {
         (d, 0, _) => format!("{d}d"),
         (d, h, _) => format!("{d}d {h}h"),
     }
+}
+
+/// A past time as `3d ago` or `1h 30m ago` (a time in the future counts as now).
+pub fn ago(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
+    format!("{} ago", dur((now - then).to_std().unwrap_or_default()))
 }
 
 fn utc(t: DateTime<Utc>) -> String {
@@ -130,6 +136,44 @@ pub fn alert_message(row: &HostRow, alert: &Alert, now: DateTime<Utc>, hub: &str
     Message { kind: kind.to_string(), host: alert.host.clone(), level: severity_word(alert.severity).to_string(), subject, body }
 }
 
+/// The message for the datasets of one host that became unprotected (or are still, or are protected again) in one
+/// pass: `items` are each dataset with the alert the tracker gave it, data first. A warning-level alert is OS data.
+pub fn protection_message(host: &str, kind: AlertKind, items: &[(String, Alert)], now: DateTime<Utc>, hub: &str) -> Message {
+    let name = ascii_line(host);
+    let n = items.len();
+    let what = format!("{n} dataset{}", if n == 1 { "" } else { "s" });
+    let (subject, message_kind) = match kind {
+        AlertKind::Alert | AlertKind::Escalation => (format!("[zfsctl] {name}: {what} not protected"), "health-alert"),
+        AlertKind::Reminder => {
+            let longest = items.iter().filter_map(|(_, a)| a.bad_for).max().unwrap_or_default();
+            (format!("[zfsctl] {name}: {what} still not protected (for {})", dur(longest)), "health-reminder")
+        }
+        AlertKind::Recovery => (format!("[zfsctl] {name}: {what} protected again"), "health-recovered"),
+    };
+    let level = if kind == AlertKind::Recovery { Severity::Ok } else { items.iter().map(|(_, a)| a.severity).max().unwrap_or(Severity::Warning) };
+    let mut body = format!("Host:     {name}\nHub:      {}\nTime:     {}\n\n", ascii_line(hub), utc(now));
+    let mut lines = Vec::with_capacity(items.len().min(LIST_MAX + 1));
+    for (dataset, alert) in items {
+        let line = if kind == AlertKind::Recovery {
+            alert.bad_for.map_or_else(|| format!("  {dataset}: protected again"), |d| format!("  {dataset}: protected again after {}", dur(d)))
+        } else {
+            let os = if alert.severity == Severity::Warning { " (OS data)" } else { "" };
+            let since = if kind == AlertKind::Reminder { alert.bad_for.map(|d| format!(" (for {})", dur(d))).unwrap_or_default() } else { String::new() };
+            format!("  {dataset}: {}{os}{since}", alert.reason)
+        };
+        lines.push(ascii_line(&line));
+    }
+    // Cut like the report's lists (the subject keeps the full count).
+    for line in cut_list(lines) {
+        body.push_str(&line);
+        body.push('\n');
+    }
+    if kind != AlertKind::Recovery {
+        body.push_str("\nA dataset is protected when a current snapshot job and enough current copies on other machines cover it\n(how many: Settings, Data protection). The fix is made in the Jobs section.\n");
+    }
+    Message { kind: message_kind.to_string(), host: host.to_string(), level: severity_word(level).to_string(), subject, body }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthEvent {
     pub at: DateTime<Utc>,
@@ -182,18 +226,21 @@ fn cut_list(mut lines: Vec<String>) -> Vec<String> {
 /// The daily report. `bad_since` says when an open alert began; `since` starts the events window.
 #[allow(clippy::too_many_arguments)]
 /// The daily report's lines for disks with a problem, from the daemon's `smart.json`: `fbsd16: da1 reallocated sectors 8 (checked ... UTC)`.
-pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile) -> Vec<String> {
-    crate::daemon::smart_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.disks, utc(p.checked_at))).collect()
+pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile, storage: &crate::daemon::storage_check::StorageFile) -> Vec<String> {
+    // The report does not know a host's OS, so a device name is matched by either OS's partition rule.
+    let role_of = |host: &str, dev: &str| crate::daemon::storage_check::role_of(storage, host, dev, None);
+    crate::daemon::smart_check::problems_with(file, &role_of).iter().map(|p| format!("{}: {} (checked {})", p.host, p.disks, utc(p.checked_at))).collect()
 }
 
 /// All the lines the daily report adds for the daemon's checks: disks first, then shares.
 pub fn check_lines(state_dir: &std::path::Path) -> Vec<String> {
-    let mut lines = disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")));
+    let storage = crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE));
+    let mut lines = disk_lines(&crate::daemon::smart_check::SmartFile::load(&state_dir.join("smart.json")), &storage);
     lines.extend(share_lines(&crate::daemon::shares_check::SharesFile::load(&state_dir.join("shares.json"))));
     // The report has no config of its own: the thresholds are the user's, read from the fixed config path (defaults when absent).
     let thresholds = crate::config::Config::load(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH)).map(|c| c.dashboard.resolve()).unwrap_or_default();
     let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
-    lines.extend(storage_lines(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), thresholds.quota, thresholds.dedup_ratio, &jobs));
+    lines.extend(storage_lines(&storage, thresholds.quota, thresholds.dedup_ratio, &jobs));
     lines
 }
 
@@ -213,8 +260,50 @@ pub fn share_lines(file: &crate::daemon::shares_check::SharesFile) -> Vec<String
     crate::daemon::shares_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at))).collect()
 }
 
+/// The daily report's lines for datasets that are not protected: `  fbsd16:tank/photos (your data): no snapshots (for 3d)`.
+/// The `(for ...)` part is there when `bad_since` knows the dataset's key (`host\tdataset`).
+pub fn protection_lines(items: &[Unprotected], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, now: DateTime<Utc>) -> Vec<String> {
+    items
+        .iter()
+        .map(|u| {
+            let tier = if u.tier == Tier::Data { "your data" } else { "OS data" };
+            let since = bad_since(&format!("{}\t{}", u.host, u.dataset)).map(|t| format!(" (for {})", dur((now - t).to_std().unwrap_or_default()))).unwrap_or_default();
+            format!("  {}:{} ({tier}): {}{since}", u.host, u.dataset, u.describe(&|t| ago(now, t)))
+        })
+        .collect()
+}
+
+/// The report's "Unprotected data" section: the lines, how many configured hosts were judged, and each one that was
+/// not, with why (`t2 (unreachable)`). "All datasets are protected." is said only when every host was judged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProtectionSection {
+    pub lines: Vec<String>,
+    pub judged: usize,
+    pub unchecked: Vec<String>,
+}
+
+impl ProtectionSection {
+    fn text(&self) -> Vec<String> {
+        let unchecked = self.unchecked.join(", ");
+        if !self.lines.is_empty() {
+            let mut out = cut_list(self.lines.clone());
+            if !self.unchecked.is_empty() {
+                out.push(format!("  Not checked: {unchecked}"));
+            }
+            return out;
+        }
+        let line = match (self.judged, self.unchecked.is_empty()) {
+            (0, true) => "No host was checked.".to_string(),
+            (0, false) => format!("No host was checked: {unchecked}"),
+            (_, true) => "All datasets are protected.".to_string(),
+            (n, false) => format!("All datasets on {n} host{} are protected; not checked: {unchecked}", if n == 1 { "" } else { "s" }),
+        };
+        vec![format!("  {line}")]
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String]) -> Message {
+pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String], unprotected: Option<&ProtectionSection>) -> Message {
     let count = |want: &[Level]| rows.iter().filter(|r| want.contains(&r.level)).count();
     let (ok, warning, critical) = (count(&[Level::Ok]), count(&[Level::Warning]), count(&[Level::Critical, Level::Disconnected]));
     let mut parts = vec![format!("{ok} ok")];
@@ -246,6 +335,14 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
         body.push_str("  Nothing needs attention.\n");
     } else {
         for line in attention {
+            body.push_str(&line);
+            body.push('\n');
+        }
+    }
+
+    if let Some(section) = unprotected {
+        body.push_str("\nUNPROTECTED DATA\n");
+        for line in section.text() {
             body.push_str(&line);
             body.push('\n');
         }
@@ -328,7 +425,7 @@ mod tests {
         use crate::daemon::storage_check::{LimitedDataset, StorageFile, StorageResult};
         let mut file = StorageFile::default();
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
-        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         let lines = storage_lines(&file, (90, 98), 110, &[]);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/home 94% of its 100 quota (checked "), "{}", lines[0]);
@@ -340,7 +437,7 @@ mod tests {
         use crate::daemon::storage_check::{LockedDataset, StorageFile, StorageResult};
         let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
         let mut file = StorageFile::default();
-        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![], pools: vec![], zfs_version: None, locked: vec![LockedDataset { name: "tank/secure".into(), shared: true }], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+        file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![], seen: vec![], pools: vec![], zfs_version: None, locked: vec![LockedDataset { name: "tank/secure".into(), shared: true }], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         let lines = storage_lines(&file, (90, 98), 110, &[]);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: tank/secure is locked (shared) (checked "), "{}", lines[0]);
@@ -372,6 +469,49 @@ mod tests {
     }
 
     #[test]
+    fn protection_message_lists_one_line_per_dataset_in_ascii() {
+        let item = |dataset: &str, kind, severity, reason: &str, bad_for: Option<u64>| (dataset.to_string(), Alert { host: format!("fbsd16\t{dataset}"), kind, severity, reason: reason.into(), bad_for: bad_for.map(Duration::from_secs) });
+        let items = vec![item("tank/photos", AlertKind::Alert, Severity::Critical, "no snapshots", None), item("tank/caf\u{e9}", AlertKind::Alert, Severity::Critical, "copy job failing", None), item("zroot/var/log", AlertKind::Alert, Severity::Warning, "no copy on another machine", None)];
+        let m = protection_message("fbsd16", AlertKind::Alert, &items, t(0), "hub");
+        assert_eq!(m.subject, "[zfsctl] fbsd16: 3 datasets not protected");
+        assert_eq!((m.kind.as_str(), m.host.as_str(), m.level.as_str()), ("health-alert", "fbsd16", "critical"));
+        for want in ["Host:     fbsd16", "Hub:      hub", "  tank/photos: no snapshots", "  tank/caf?: copy job failing", "  zroot/var/log: no copy on another machine (OS data)"] {
+            assert!(m.body.contains(want), "{want:?} in\n{}", m.body);
+        }
+        assert!(m.body.is_ascii(), "{}", m.body);
+
+        let one = vec![item("zroot/var/log", AlertKind::Alert, Severity::Warning, "no snapshots", None)];
+        let w = protection_message("fbsd16", AlertKind::Alert, &one, t(0), "hub");
+        assert_eq!((w.subject.as_str(), w.level.as_str()), ("[zfsctl] fbsd16: 1 dataset not protected", "warning"));
+
+        let reminders = vec![item("tank/a", AlertKind::Reminder, Severity::Critical, "no snapshots", Some(3 * 86400)), item("tank/b", AlertKind::Reminder, Severity::Critical, "no snapshots", Some(3600))];
+        let r = protection_message("fbsd16", AlertKind::Reminder, &reminders, t(0), "hub");
+        assert_eq!((r.subject.as_str(), r.kind.as_str()), ("[zfsctl] fbsd16: 2 datasets still not protected (for 3d)", "health-reminder"));
+        assert!(r.body.contains("  tank/b: no snapshots (for 1h)"), "{}", r.body);
+
+        let back = vec![item("tank/a", AlertKind::Recovery, Severity::Ok, "protected again", Some(2 * 3600))];
+        let ok = protection_message("bad\nhost", AlertKind::Recovery, &back, t(0), "hub");
+        assert_eq!((ok.subject.as_str(), ok.kind.as_str(), ok.level.as_str()), ("[zfsctl] bad host: 1 dataset protected again", "health-recovered", "ok"));
+        assert!(ok.body.contains("  tank/a: protected again after 2h"), "{}", ok.body);
+    }
+
+    #[test]
+    fn a_protection_message_about_many_datasets_is_cut_like_the_report() {
+        let items: Vec<(String, Alert)> = (0..100).map(|i| (format!("tank/d{i:03}"), Alert { host: format!("h\ttank/d{i:03}"), kind: AlertKind::Alert, severity: Severity::Critical, reason: "no snapshots".into(), bad_for: None })).collect();
+        let m = protection_message("h", AlertKind::Alert, &items, t(0), "hub");
+        assert_eq!(m.subject, "[zfsctl] h: 100 datasets not protected", "the subject keeps the full count");
+        assert_eq!(m.body.lines().filter(|l| l.starts_with("  tank/d")).count(), LIST_MAX);
+        assert!(m.body.contains("  tank/d039: no snapshots\n  (+60 more)\n"), "{}", m.body);
+        assert!(!m.body.contains("tank/d040"), "{}", m.body);
+    }
+
+    #[test]
+    fn ago_words_a_past_time() {
+        assert_eq!(ago(t(3 * 1440), t(0)), "3d ago");
+        assert_eq!(ago(t(90), t(0)), "1h 30m ago");
+    }
+
+    #[test]
     fn durations_are_short_and_drop_a_zero_part() {
         assert_eq!(dur(Duration::from_secs(45 * 60)), "45m");
         assert_eq!(dur(Duration::from_secs(2 * 3600)), "2h");
@@ -380,16 +520,77 @@ mod tests {
         assert_eq!(dur(Duration::from_secs(10)), "0m");
     }
 
+    fn unprotected(dataset: &str, tier: crate::daemon::protection::Tier) -> crate::daemon::protection::Unprotected {
+        crate::daemon::protection::Unprotected { host: "fbsd16".into(), dataset: dataset.into(), tier, snapshots: Some(crate::daemon::protection::Gap::Missing), copies: None }
+    }
+
+    #[test]
+    fn the_report_lists_unprotected_data_first_with_how_long() {
+        use crate::daemon::protection::Tier;
+        let items = vec![unprotected("tank/photos", Tier::Data), unprotected("zroot/var/log", Tier::Os)];
+        let since = t(0) - chrono::Duration::days(3);
+        let lines = protection_lines(&items, &|k| (k == "fbsd16\ttank/photos").then_some(since), t(0));
+        assert_eq!(lines[0], "  fbsd16:tank/photos (your data): no snapshots (for 3d)");
+        assert_eq!(lines[1], "  fbsd16:zroot/var/log (OS data): no snapshots");
+        let section = ProtectionSection { lines: lines.clone(), judged: 1, unchecked: vec![] };
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&section));
+        let (a, u) = (m.body.find("NEEDS ATTENTION").unwrap(), m.body.find("\nUNPROTECTED DATA\n").unwrap());
+        assert!(a < u && u < m.body.find("EVENTS since").unwrap(), "{}", m.body);
+        assert!(m.body.contains("  fbsd16:tank/photos (your data): no snapshots (for 3d)\n"), "{}", m.body);
+        assert_eq!(m.subject, "[zfsctl] daily report: all 1 hosts ok");
+    }
+
+    fn section_of(lines: &[&str], judged: usize, unchecked: &[&str]) -> String {
+        let section = ProtectionSection { lines: lines.iter().map(|l| (*l).to_string()).collect(), judged, unchecked: unchecked.iter().map(|u| (*u).to_string()).collect() };
+        let body = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&section)).body;
+        let start = body.find("UNPROTECTED DATA\n").unwrap();
+        body[start..body.find("\nEVENTS since").unwrap()].to_string()
+    }
+
+    #[test]
+    fn the_report_says_all_protected_only_when_every_host_was_judged() {
+        assert_eq!(section_of(&[], 2, &[]), "UNPROTECTED DATA\n  All datasets are protected.\n");
+        assert_eq!(section_of(&[], 0, &["t2 (unreachable)", "omnios (no dataset list yet)"]), "UNPROTECTED DATA\n  No host was checked: t2 (unreachable), omnios (no dataset list yet)\n");
+        assert_eq!(section_of(&[], 0, &[]), "UNPROTECTED DATA\n  No host was checked.\n");
+        assert_eq!(section_of(&[], 1, &["t2 (unreachable)"]), "UNPROTECTED DATA\n  All datasets on 1 host are protected; not checked: t2 (unreachable)\n");
+        assert_eq!(section_of(&[], 2, &["t2 (unreachable)", "omnios (no dataset list for 3d)"]), "UNPROTECTED DATA\n  All datasets on 2 hosts are protected; not checked: t2 (unreachable), omnios (no dataset list for 3d)\n");
+        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshots"], 1, &["t2 (unreachable)"]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshots\n  Not checked: t2 (unreachable)\n");
+        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshots"], 1, &[]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshots\n");
+    }
+
+    #[test]
+    fn no_section_when_email_is_off() {
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], None);
+        assert!(!m.body.contains("UNPROTECTED DATA") && !m.body.contains("All datasets are protected"), "{}", m.body);
+    }
+
     #[test]
     fn the_daily_report_lists_the_disk_problems_under_needs_attention() {
         let mut file = crate::daemon::smart_check::SmartFile::default();
         file.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "reallocated sectors 8".into() }] }], error: None });
-        let lines = disk_lines(&file);
+        let lines = disk_lines(&file, &crate::daemon::storage_check::StorageFile::default());
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: da1 reallocated sectors 8 (checked "), "{}", lines[0]);
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines, None);
         assert!(m.body.contains("  fbsd16: da1 reallocated sectors 8") && !m.body.contains("Nothing needs attention"), "{}", m.body);
-        assert!(disk_lines(&crate::daemon::smart_check::SmartFile::default()).is_empty());
+        assert!(disk_lines(&crate::daemon::smart_check::SmartFile::default(), &crate::daemon::storage_check::StorageFile::default()).is_empty());
+    }
+
+    #[test]
+    fn the_daily_report_says_what_a_wearing_disk_is_for_when_the_storage_check_knows_on_any_os() {
+        use crate::daemon::storage_check::{Integrity, StorageFile, StorageResult};
+        use crate::zfs::pool_classes::{DeviceRole, PoolClasses};
+        let disk = |dev: &str| crate::smart::Disk { dev: dev.into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "SSD wear 87%".into() }] };
+        let mut smart = crate::daemon::smart_check::SmartFile::default();
+        smart.hosts.insert("ub24".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("nvme0n1"), disk("sdb")], error: None });
+        smart.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("ada4")], error: None });
+        let result = |device: &str, role: &str| StorageResult { checked_at: t(0), datasets: vec![], seen: vec![], pools: vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: role.into(), device: device.into() }, DeviceRole { role: "cache".into(), device: "sdb1".into() }], ..PoolClasses::default() }], zfs_version: None, locked: vec![], integrity: Integrity::default(), integrity_stale: false, error: None };
+        let mut storage = StorageFile::default();
+        storage.hosts.insert("ub24".into(), result("nvme0n1p1", "log"));
+        storage.hosts.insert("fbsd16".into(), result("ada4p1", "cache"));
+        let lines = disk_lines(&smart, &storage);
+        assert!(lines.iter().any(|l| l.starts_with("fbsd16: ada4 (cache of tank) SSD wear 87%")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("ub24: nvme0n1 (log of tank) SSD wear 87%; sdb (cache of tank) SSD wear 87%")), "Linux partition names (nvme0n1p1, sdb1) are matched too: {lines:?}");
     }
 
     #[test]
@@ -401,7 +602,7 @@ mod tests {
         let lines = check_lines(dir.path());
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: NFS: 2 shares but nfsd is not running (checked "), "{}", lines[0]);
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines, None);
         assert!(m.body.contains("  fbsd16: NFS: 2 shares but nfsd is not running") && !m.body.contains("Nothing needs attention"), "{}", m.body);
     }
 
@@ -416,7 +617,7 @@ mod tests {
     #[test]
     fn the_report_has_a_summary_a_table_and_what_needs_attention() {
         let rows = vec![row("hub", Level::Ok, "ok"), row("fbsd16", Level::Critical, "tank DEGRADED"), row("t1", Level::Warning, "tank 85% full"), row("t2", Level::Disconnected, "unreachable")];
-        let m = report_message(t(60 * 7), "2026-10-11 07:00", "hub", &rows, &|h| (h == "fbsd16").then(|| t(60 * 2)), t(0), &[], &[], &[], &[]);
+        let m = report_message(t(60 * 7), "2026-10-11 07:00", "hub", &rows, &|h| (h == "fbsd16").then(|| t(60 * 2)), t(0), &[], &[], &[], &[], None);
         assert_eq!(m.subject, "[zfsctl] daily report: 1 ok, 1 warning, 2 critical");
         assert_eq!((m.kind.as_str(), m.host.as_str()), ("health-report", "hub"));
         for want in ["4 hosts: 1 ok, 1 warning, 2 critical", "HOST", "ADDRESS", "STATE", "USED", "SCRUB", "JOBS", "fbsd16", "NEEDS ATTENTION", "fbsd16: tank DEGRADED (since 2026-10-11 02:00 UTC)", "t2: unreachable"] {
@@ -429,7 +630,7 @@ mod tests {
     #[test]
     fn an_all_green_report_says_so_in_the_subject_and_still_has_a_body() {
         let rows = vec![row("hub", Level::Ok, "ok"), row("t1", Level::Ok, "ok")];
-        let m = report_message(t(0), "2026-10-11 07:00", "hub", &rows, &|_| None, t(-60 * 24), &[], &[], &[], &[]);
+        let m = report_message(t(0), "2026-10-11 07:00", "hub", &rows, &|_| None, t(-60 * 24), &[], &[], &[], &[], None);
         assert_eq!(m.subject, "[zfsctl] daily report: all 2 hosts ok");
         assert!(m.body.contains("Nothing needs attention") && m.body.contains("EVENTS since"), "{}", m.body);
     }
@@ -445,7 +646,7 @@ mod tests {
             run("scrub-t", None, "", t(40)),
         ];
         let events = vec![HealthEvent { at: t(15), host: "fbsd16".into(), kind: "alert".into(), text: "tank DEGRADED".into() }, HealthEvent { at: t(-9000), host: "t1".into(), kind: "alert".into(), text: "old".into() }];
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &events, &[]);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &events, &[], None);
         for want in ["backup: 2 runs, 1 failed", "scrub: 1 run, 0 failed", "failed: backup-a on fbsd16", "restic exited 3", "fbsd16 alert: tank DEGRADED"] {
             assert!(m.body.contains(want), "{want:?} in\n{}", m.body);
         }
@@ -455,7 +656,7 @@ mod tests {
     #[test]
     fn runs_of_a_removed_job_are_still_counted_and_listed_without_a_question_mark() {
         let runs = vec![run("gone", Some(RunResult::Failed), "boom", t(10))];
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &[], &[], &[]);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &[], &[], &[], None);
         assert!(m.body.contains("removed jobs: 1 run, 1 failed") && m.body.contains("failed: gone at 00:10: boom"), "{}", m.body);
         assert!(!m.body.contains('?'), "{}", m.body);
     }
@@ -464,9 +665,9 @@ mod tests {
     fn long_event_lists_are_cut_with_a_count_and_empty_ones_say_none() {
         let jobs = vec![job("j", "snapshot", "hub")];
         let runs: Vec<Run> = (0..60).map(|i| run("j", Some(RunResult::Failed), &format!("boom {i}"), t(i))).collect();
-        let m = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &[], &[]);
+        let m = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &[], &[], None);
         assert!(m.body.contains("(+20 more)"), "{}", m.body);
-        let quiet = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[]);
+        let quiet = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], None);
         assert_eq!(quiet.body.matches("  none").count(), 3, "{}", quiet.body);
     }
 

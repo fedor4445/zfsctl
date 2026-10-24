@@ -21,7 +21,7 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `y / n, Enter` | a y/n confirmation takes two keys: y (yes) or n / Esc (no) selects, then Enter applies it; Enter alone does nothing. Forms that cannot be undone (create pool, add vdev, replace disk, revoke, shrinking a volume, pool features) end in one, showing the exact command |
 | `?` | this Help screen |
 | `!` | open a shell on the selected host (remote hosts: your unprivileged ssh login); exit returns to zfsctl |
-| `A` | About |
+| `A` | About: the zfsctl wordmark, the version and what the tool is for (include the version when you report a bug) |
 | `q` | quit |
 
 ## Hosts
@@ -146,7 +146,7 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | Key | What it does |
 |---|---|
 | `Up / Down` | select a line of Needs attention |
-| `Enter` | go to the section that owns that line (the Dashboard itself changes nothing) |
+| `Enter` | go to the section that owns that line; on an unprotected-data line, open the form that makes the missing job, or (on "and N more") the list of the unprotected datasets (the Dashboard itself changes nothing) |
 | `r` | reload the jobs, alerts, cloud list and `[dashboard]` settings |
 
 ## Cloud

@@ -69,7 +69,7 @@ FreeBSD has a `root` account and the `wheel` group (the people allowed to become
 
 FreeBSD *jails* are lightweight containers built into the system, much like Linux containers or Docker, but older and simpler. They are common on ZFS machines because a jail's files can be a dataset you snapshot and replicate like any other.
 
-> **Not built yet:** zfsctl does not manage jails (or bhyve virtual machines) yet. A jail's datasets are ordinary datasets, so everything in this book works on them.
+A jail's datasets are ordinary datasets, so everything in this book works on them.
 
 ## Try it
 

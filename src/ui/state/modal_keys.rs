@@ -4,10 +4,20 @@ use super::forms::{
     build_backup_job_action, build_bootenv_action, build_job_action, build_mirror_job_action, build_notify_action, build_pending_action, build_replicate_job_action, build_smb_action, build_snapshot_job_action, field_value, form_problem,
     build_create_encrypted, build_key_action, irreversible_prompt,
 };
-use super::{App, Instant, Modal, MutationCall, PendingAction};
-use crate::ui::modal::{FormField, FormKind};
+use super::{App, Instant, Modal, MutationCall, PaneFocus, PendingAction, Section};
+use crate::ui::modal::{ChooseLook, ChooseThen, FormField, FormKind};
 use crate::ui::picker::build_picker_state;
 use crossterm::event::KeyCode;
+
+/// The pieces of an open `Modal::Choose`, taken apart while one key is handled.
+struct ChooseParts {
+    title: String,
+    note: String,
+    rows: Vec<String>,
+    selected: usize,
+    then: ChooseThen,
+    look: ChooseLook,
+}
 
 /// The pieces of an open `Modal::Form`, taken apart while one key is handled and put back with `into_modal`.
 struct FormParts {
@@ -38,7 +48,94 @@ impl App {
             Modal::Confirm { prompt, action, choice } => self.confirm_key(key, prompt, action, choice),
             Modal::ConfirmTyped { prompt, expected, input, action } => self.confirm_typed_key(key, prompt, expected, input, action),
             Modal::Form { title, fields, focused, description, kind } => self.form_key(key, FormParts { title, fields, focused, description, kind }),
-            Modal::Info { .. } => None,
+            Modal::Info { title, body } => self.info_key(key, title, body),
+            Modal::Choose { title, note, rows, selected, then, look } => self.choose_key(key, ChooseParts { title, note, rows, selected, then, look }),
+        }
+    }
+
+    /// A read-only pop-up scrolls with the navigation keys; any other key closes it.
+    fn info_key(&mut self, key: KeyCode, title: String, body: String) -> Option<PendingAction> {
+        const PAGE: u16 = 10;
+        let last = u16::try_from(body.lines().count().saturating_sub(1)).unwrap_or(u16::MAX);
+        let scroll = match key {
+            KeyCode::Down => self.info_scroll.saturating_add(1),
+            KeyCode::Up => self.info_scroll.saturating_sub(1),
+            KeyCode::PageDown => self.info_scroll.saturating_add(PAGE),
+            KeyCode::PageUp => self.info_scroll.saturating_sub(PAGE),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            _ => {
+                self.info_scroll = 0;
+                return None;
+            }
+        };
+        self.info_scroll = scroll.min(last);
+        self.modal = Some(Modal::Info { title, body });
+        None
+    }
+
+    /// A list to choose from: the arrows move, Esc closes, Enter acts on the row, and every other key does nothing.
+    fn choose_key(&mut self, key: KeyCode, parts: ChooseParts) -> Option<PendingAction> {
+        const PAGE: usize = 10;
+        let ChooseParts { title, note, rows, selected, then, look } = parts;
+        let last = rows.len().saturating_sub(1);
+        let selected = match key {
+            KeyCode::Esc => return None,
+            KeyCode::Enter => {
+                self.choose_row(selected, then);
+                return None;
+            }
+            KeyCode::Down => (selected + 1).min(last),
+            KeyCode::Up => selected.saturating_sub(1),
+            KeyCode::PageDown => (selected + PAGE).min(last),
+            KeyCode::PageUp => selected.saturating_sub(PAGE),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            _ => selected,
+        };
+        self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
+        None
+    }
+
+    /// The fix for one unprotected dataset: open the form that makes the missing job, ask which kind of copy, or go to the
+    /// job that should be helping.
+    pub(super) fn fix_unprotected(&mut self, gap: &crate::daemon::protection::Unprotected) {
+        use crate::daemon::protection::{fix_for, Fix};
+        match fix_for(gap, &self.jobs_view.jobs) {
+            Fix::NewSnapshotJob => self.modal = Some(prefilled(self.snapshot_job_form(None, &gap.dataset), &gap.host, &gap.dataset)),
+            Fix::ChooseCopy => {
+                let rows = vec!["Replicate to another host".to_string(), "Back up with restic".to_string(), "Mirror to the cloud (rclone)".to_string()];
+                let note = format!("{}:{} needs a copy on another machine.\nEnter opens the form for the kind you pick.", gap.host, gap.dataset);
+                self.modal = Some(Modal::Choose { title: "Which copy?".to_string(), note, rows, selected: 0, then: ChooseThen::Copy { host: gap.host.clone(), dataset: gap.dataset.clone() }, look: ChooseLook::default() });
+            }
+            Fix::GoToJob(id) => {
+                if let Some(position) = self.sections.iter().position(|s| *s == Section::Jobs) {
+                    self.selected_section = position;
+                    self.pane_focus = PaneFocus::Middle;
+                }
+                if let Some(index) = self.jobs_view.jobs.iter().position(|j| j.id == id) {
+                    self.jobs_table.select(Some(index));
+                }
+            }
+        }
+    }
+
+    /// What Enter does on a row: open the form that fixes the dataset, ask which kind of copy, or go to the job that should be helping.
+    fn choose_row(&mut self, row: usize, then: ChooseThen) {
+        match then {
+            ChooseThen::Unprotected(gaps) => {
+                if let Some(gap) = gaps.get(row) {
+                    self.fix_unprotected(gap);
+                }
+            }
+            ChooseThen::Copy { host, dataset } => {
+                let form = match row {
+                    0 => self.replicate_job_form(None),
+                    1 => self.backup_job_form(None),
+                    _ => self.mirror_job_form(None),
+                };
+                self.modal = Some(prefilled(form, &host, &dataset));
+            }
         }
     }
 
@@ -174,6 +271,7 @@ impl App {
             FormKind::NotifySettings => self.submit_notify_form(form),
             FormKind::Setting { .. } => self.submit_setting_form(form),
             FormKind::AddHost => self.submit_add_host_form(form),
+            FormKind::RestoreFile { .. } => self.submit_restore_form(form),
             FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::ReplicateJob { .. } => self.submit_job_form(form),
             FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } => match build_bootenv_action(&form.kind, &form.fields) {
                 Ok(action) => {
@@ -342,7 +440,7 @@ impl App {
     fn submit_setting_form(&mut self, form: FormParts) -> Option<PendingAction> {
         let FormKind::Setting { setting } = form.kind.clone() else { return None };
         let values: Vec<String> = form.fields.iter().map(|f| f.value.clone()).collect();
-        match crate::ui::settings::build_changes(&setting, &values) {
+        match crate::ui::settings::build_changes_for(&self.config_path, &setting, &values) {
             Ok(_) => {
                 let prompt = format!("Save to config.toml?\n  {}\n(y/n)", crate::ui::settings::describe(&setting, &values));
                 let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Settings, call: MutationCall::SaveSettings { config_path: self.config_path.clone(), setting, values } };
@@ -431,6 +529,24 @@ impl App {
         None
     }
 
+    /// The restore form: the engine plans the copy from the picked file and the typed name (kept exactly as typed, spaces
+    /// included; only the line end is dropped). A refusal is shown as it is and the form stays open; a plan opens the confirm
+    /// that shows the exact command, and declining it hands the form back.
+    fn submit_restore_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let FormKind::RestoreFile { host, source } = form.kind.clone() else { return None };
+        let name = field_value(&form.fields, 0).trim_end_matches('\n').to_string();
+        let plan = match crate::zfs::snapshot_restore::plan_restore(&source, &name) {
+            Ok(plan) => plan,
+            Err(e) => return self.reject(form, super::refusal_text(e)),
+        };
+        let prompt = super::restore_prompt(&plan);
+        let host_name = self.hosts.get(host).cloned().unwrap_or_default();
+        let action = PendingAction { host, section: super::Section::Snapshots, call: MutationCall::RestoreFile { plan: Box::new(plan), source, host: host_name } };
+        self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+        None
+    }
+
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.
     fn submit_plain_form(&mut self, form: FormParts) -> Option<PendingAction> {
         let Some(action) = build_pending_action(&form.kind, &form.fields) else {
@@ -454,4 +570,15 @@ impl App {
         }
         Some(action)
     }
+}
+
+/// A new-job form with its first two fields (the host and the dataset the job is for) filled in.
+fn prefilled(mut form: Modal, host: &str, dataset: &str) -> Modal {
+    if let Modal::Form { fields, .. } = &mut form {
+        if let [first, second, ..] = fields.as_mut_slice() {
+            first.value = host.to_string();
+            second.value = dataset.to_string();
+        }
+    }
+    form
 }
