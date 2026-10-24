@@ -105,6 +105,7 @@ r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 - **Jobs that stopped succeeding.** An enabled snapshot, replication, backup or cloud job whose last success is older than two of its schedule's intervals gets a yellow line, `snapshot tank/data: last ok 3h ago (Hourly)`, and a red one at four intervals. A job that has never succeeded is measured from the day you created it (`never succeeded (created 10h ago)`). One missed run is not flagged, because a run can start late or a long replication can overlap the next slot. A weekday-only job is not late over the weekend. Jobs that are disabled, running, failed (they have their own red line) or whose host is unsupported are left out, and nothing is listed while the daemon is down (its own red line says why). It reads only the job history, so it costs no call to any host. Enter goes to the job.
 - **Resilvering and disk health.** A pool that is resilvering (a replaced disk catching up) gets a yellow line, `tank resilvering 42%`, until it finishes, because its redundancy is reduced meanwhile. A host whose disks have a SMART problem gets one line with the disks and the age of the check, `da1 reallocated sectors 8; ada4 (cache of tank) SSD wear 87%   (checked 6h ago)`, where the bracket says what the disk is for (cache, log, special, dedup or spare) when the storage check knows it (a disk named by label or id is shown bare): red if a drive says its own health check FAILED, yellow for reallocated, pending or uncorrectable sectors, an SSD worn to 80% or more, a low spare, or 60 degrees and up. Healthy hosts add nothing. The daemon asks `smartctl` once a day (03:30 by default; `daily_check` in `[daemon]` changes or stops it), so these lines are as old as the last check; if the check stops happening for three days, one more line says so (it counts the newest answer of the disk and the shares checks together). A host without `smartctl`, without the `smart` sudoers entry, or with virtual disks that report nothing, is left out without a word. Enter on a resilver line goes to that host's Pools, on a disk line to its Disks, on a shares line to its Shares.
 - **File sharing.** The same daily pass asks each host whether its NFS server and Samba are running where it has shares for them. A host with NFS shares while `nfsd` is stopped, or with Samba shares while `smbd` is stopped, gets a red line (`NFS: 2 shares but nfsd is not running   (checked 3h ago)`); a Samba block that cannot be read is yellow. Hosts with healthy sharing, with no shares, or without the `shares`/`samba` sudoers entries add nothing. While a check runs (the daemon's, or one you started with `c` in Hosts) a red line under the header says so (`▶ checking: daily disk and shares check since 03:30`); it is a notice, not a problem, and it goes when the check is done. A check that crashed leaves it for at most three minutes.
+- **Unprotected data.** A dataset with no safety net gets a line of its own, `fbsd16:tank/vm   no snapshots; no copy on another machine`: red for your data, yellow for the operating system's. See [Is my data protected?](#is-my-data-protected) below. Enter goes to Jobs, where the missing job is made. These lines come after the other problems of the same colour, so a degraded pool or a failed job is never pushed below them.
 - **Unknown is never green.** A host that has not answered, or a reading that cannot be taken yet (the first CPU figure needs two probes), is shown as `?` in dim text. Every status has a glyph and a word as well as a colour, so the `mono` theme reads the same.
 
 | Reading | Yellow (watch) | Red (issue) |
@@ -132,9 +133,42 @@ These defaults can be changed under `[dashboard]` in `config.toml` (see the conf
 
 > **Not built yet:** NFS and Samba availability, disk wear (SMART) and predictions such as "this pool fills in 40 days". The first needs a privileged check per host on every probe, the second needs smartmontools on each host, the third needs a history of samples that zfsctl does not keep.
 
+### Is my data protected?
+
+zfsctl calls a dataset **protected** when two things hold: **snapshots** and **a copy on another machine**, both made by jobs that are *current*. A job counts only while it keeps running: its last success must be no older than 1, 2 or 4 of its own schedule intervals, which is the "overdue" idea used above (the setting **How recent** picks strict, normal or relaxed; normal is 2). Only a run that really copied counts, so a copy job that often finds nothing new to send (for example a replication every 15 minutes with snapshots only hourly) may read "stopped" for part of each snapshot cycle; make the copy job's schedule match the snapshot job's. A job that never ran, failed last time or is disabled protects nothing.
+
+How many copies are needed is your choice, the **level**:
+
+| Level | Copies on other machines | Online |
+|---|---|---|
+| **Basic** (the default) | 1 | none needed |
+| **Careful** | 3 | at least 1 (the "2 on-premises plus 1 online" rule) |
+| **Custom** | 1 to 3, as you pick | 0 to 2, as you pick |
+
+Snapshots are always required. The operating system's own datasets (boot environments under `ROOT` and Ubuntu's `BOOT`, `tmp`, `var`, `usr/ports`, `usr/src`, `usr/obj`, swap and dump) only ever need Basic's single copy and are listed in yellow; everything else is your data and is listed in red.
+
+What counts as a copy:
+
+- a replication to another host, or to a file target on the hub (these are on-premises copies);
+- a restic backup whose repository starts with `sftp:` or `rest:` (counted as on-premises, even if the server is far away), or with `s3:`, `b2:`, `azure:`, `gs:`, `swift:` or `rclone:` (**online**);
+- a cloud mirror (**online**).
+
+A plain local path is not a copy on another machine. Two jobs that write to the same place count as one copy. A snapshot job covers a dataset's children only if it is **recursive**; a replication, backup or cloud mirror covers only the dataset it names. A backup or cloud mirror that has a **Path** set copies only that folder, so it does not count as a copy of the dataset at all. The destination of a current replication is a replica and is protected by its source.
+
+Some things are deliberately quiet. A dataset created in the last day is not judged yet. A host that did not answer, or whose stored dataset list is more than two days old, says nothing about its datasets (the host already shows its own state). And there is **no exclusion list**: a swap, scratch or test dataset is listed until you protect or remove it. That is on purpose.
+
+```text
+ NEEDS ATTENTION
+   ✖ issue  tank/photos          no snapshots
+   ✖ issue  fbsd16:tank/vm       no copy on another machine
+   ▲ watch  fbsd16:zroot/var     no snapshots
+```
+
+The same list reaches you by email (chapter 16). Set the level, how recent and the email timing in Settings, group **Data protection**.
+
 ## Settings
 
-The last section of the sidebar edits the parts of `config.toml` that no other screen has: the **theme** and the **auto-refresh** interval (`[ui]`), the **Dashboard thresholds** (`[dashboard]`: memory, swap, CPU, scrub age, and the pools the Dashboard does not judge by scrub age) and the **cloud caps** (`[cloud.caps]`, one row per rclone remote). Up and Down select a row and `Enter` opens a small form for it; a blank field goes back to the default, and a dimmed `(default)` marks every setting you have not set. A pair such as *Memory warn / crit* needs both numbers (or both empty), with warn above 0 and below crit. A save asks for the usual two-key confirmation, then writes only that key into `config.toml`: comments, hosts and every other section stay as they were, and the old file is kept as `config.toml.bak`. The change shows at once, with no restart: the theme repaints, the Dashboard uses the new thresholds and the Cloud screen the new caps. The email and report settings stay on the Alerts screen, and the hook command is edited in the file.
+The last section of the sidebar edits the parts of `config.toml` that no other screen has: the **theme** and the **auto-refresh** interval (`[ui]`), the **Dashboard thresholds** (`[dashboard]`: memory, swap, CPU, scrub age, and the pools the Dashboard does not judge by scrub age), the **cloud caps** (`[cloud.caps]`, one row per rclone remote) and **Data protection** (`[protection]`: the rows `Level`, `How recent (strict, normal, relaxed)` and `Email (immediate, report, off)`, plus `Copies on other machines (1 to 3)` and `Online copies (0 to 2)`, which appear only when the level is Custom; a wrong value in the file is shown as written, with a red line under the group that says what is wrong; see "Is my data protected?" above). Up and Down select a row and `Enter` opens a small form for it; a blank field goes back to the default, and a dimmed `(default)` marks every setting you have not set. A pair such as *Memory warn / crit* needs both numbers (or both empty), with warn above 0 and below crit. A save asks for the usual two-key confirmation, then writes only that key into `config.toml`: comments, hosts and every other section stay as they were, and the old file is kept as `config.toml.bak`. The change shows at once, with no restart: the theme repaints, the Dashboard uses the new thresholds and the Cloud screen the new caps. The Alerts screen keeps the mail address, the mail command and the report time, while this check's email timing lives in Data protection; the hook command is edited in the file.
 
 ```screen
 ┌zfsctl────────────────┐┌Settings — config.toml────────────────────────────────────────────────────┐

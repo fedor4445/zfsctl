@@ -329,6 +329,10 @@ pub struct Inputs<'a> {
     pub cloud_caps: &'a Caps,
     pub alerts: &'a AlertsView,
     pub thresholds: &'a Thresholds,
+    /// How well protected a dataset must be (`[protection]`).
+    pub protection: &'a crate::config::ProtectionSettings,
+    /// Why `[protection]` is wrong (then `protection` is Basic's defaults), for a line of its own.
+    pub protection_problem: Option<&'a str>,
     /// What the daemon's daily `smartctl` check found (`smart.json`).
     pub smart: &'a crate::daemon::smart_check::SmartFile,
     /// What the daily check found about file sharing (`shares.json`).
@@ -519,6 +523,24 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     items
 }
 
+/// One line per unprotected dataset of a reached host: red for the operator's data, amber for the operating system's.
+/// Always shown whatever the email timing is (that setting is about email only).
+fn protection_items(inputs: &Inputs) -> Vec<Item> {
+    use crate::daemon::protection::{judge, Tier};
+    let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
+    judge(inputs.storage, &inputs.jobs.jobs, &inputs.jobs.runs, inputs.protection, inputs.now)
+        .into_iter()
+        .filter(|u| reached(&u.host))
+        .map(|u| Item {
+            level: if u.tier == Tier::Data { Level::Issue } else { Level::Watch },
+            subject: if u.host == "local" { u.dataset.clone() } else { format!("{}:{}", u.host, u.dataset) },
+            what: u.describe(&|t| age_text(inputs.now, t)),
+            goto: Section::Jobs,
+            target: None,
+        })
+        .collect()
+}
+
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
     let since = marker.since.with_timezone(&chrono::Local).format("%H:%M");
@@ -568,10 +590,12 @@ pub fn build(inputs: &Inputs) -> Dashboard {
         let what = if why.is_empty() { format!("failed {age}") } else { format!("failed {age}: {why}") };
         attention.push(Item { level: Level::Issue, subject: job.id.clone(), what, goto: Section::Jobs, target: Some(job.id.clone()) });
     }
+    let mut protection = Vec::new();
     if daemon.level == Level::Fine {
         for late in crate::ui::overdue::overdue(inputs.jobs, now) {
             attention.push(Item { level: if late.red { Level::Issue } else { Level::Watch }, subject: late.job_id.clone(), what: late.text, goto: Section::Jobs, target: Some(late.job_id) });
         }
+        protection = protection_items(inputs);
     }
     for row in &inputs.cloud_rows {
         let level = match cloud::row_fill(row, inputs.cloud_sizes, inputs.cloud_caps) {
@@ -584,7 +608,23 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     if let Some(problem) = &inputs.alerts.problem {
         attention.push(Item { level: Level::Watch, subject: "alerts".to_string(), what: problem.clone(), goto: Section::Alerts, target: None });
     }
+    if let Some(problem) = inputs.protection_problem {
+        attention.push(Item { level: Level::Watch, subject: "config.toml".to_string(), what: crate::config::protection_problem_line(problem), goto: Section::Settings, target: None });
+    }
     attention.sort_by(|a, b| b.level.cmp(&a.level).then_with(|| a.subject.cmp(&b.subject)));
+    // Within each level the protection lines come after the other items, so dozens of them never push a degraded pool or a
+    // failed job out of sight; among themselves they keep the judging's order (data first, then host and dataset).
+    protection.sort_by_key(|p| std::cmp::Reverse(p.level));
+    let mut rest = protection.into_iter().peekable();
+    let mut merged = Vec::with_capacity(attention.len() + rest.len());
+    for item in attention {
+        while rest.peek().is_some_and(|p| p.level > item.level) {
+            merged.extend(rest.next());
+        }
+        merged.push(item);
+    }
+    merged.extend(rest);
+    let attention = merged;
 
     let checking = inputs.hosts.iter().any(|h| h.assessment.level == HealthLevel::Probing);
     let verdict = {
@@ -897,6 +937,8 @@ mod tests {
         sizes: HashMap<String, crate::ui::cloud::Size>,
         caps: crate::ui::cloud::Caps,
         thresholds: Thresholds,
+        protection: crate::config::ProtectionSettings,
+        protection_problem: Option<String>,
         smart: crate::daemon::smart_check::SmartFile,
         shares: crate::daemon::shares_check::SharesFile,
         storage: crate::daemon::storage_check::StorageFile,
@@ -905,11 +947,11 @@ mod tests {
 
     impl Fixture {
         fn new(view: JobsView) -> Fixture {
-            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
+            Fixture { view, alerts: alerts(true), cloud_rows: vec![], sizes: HashMap::new(), caps: HashMap::new(), thresholds: Thresholds::default(), protection: crate::config::ProtectionSettings::default(), protection_problem: None, smart: Default::default(), shares: Default::default(), storage: Default::default(), marker: None }
         }
 
         fn build(&self, hosts: Vec<HostInput>) -> Dashboard {
-            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
+            build(&Inputs { hosts, jobs: &self.view, cloud_rows: self.cloud_rows.clone(), cloud_sizes: &self.sizes, cloud_caps: &self.caps, alerts: &self.alerts, thresholds: &self.thresholds, protection: &self.protection, protection_problem: self.protection_problem.as_deref(), smart: &self.smart, shares: &self.shares, storage: &self.storage, running: self.marker.as_ref(), now: now() })
         }
     }
 
@@ -1147,7 +1189,7 @@ mod tests {
         let mut fx = Fixture::new(view(vec![], &[], beat(1)));
         fx.smart = smart_file(&[("h", 3, &[("ada4", Watch, "SSD wear 87%"), ("ada0", Watch, "pending sectors 8")])]);
         let pools = vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: "cache".into(), device: "ada4p1".into() }, DeviceRole { role: "log".into(), device: "gpt/slog0".into() }], ..PoolClasses::default() }];
-        let result = crate::daemon::storage_check::StorageResult { checked_at: now(), datasets: vec![], pools, zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+        let result = crate::daemon::storage_check::StorageResult { checked_at: now(), datasets: vec![], seen: vec![], pools, zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
         fx.storage.hosts.insert("h".into(), result);
         let items = disk_items(&fx, &["h"]);
         assert!(items[0].what.contains("ada4 (cache of tank) SSD wear 87%; ada0 pending sectors 8"), "the partition ada4p1 is the disk ada4, and a disk with no known role keeps its bare name: {}", items[0].what);
@@ -1203,7 +1245,7 @@ mod tests {
 
     fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
         use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
+        StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
     }
 
     #[test]
@@ -1218,6 +1260,115 @@ mod tests {
         assert_eq!((by("h").level, by("red").level), (Level::Watch, Level::Issue));
         assert!(by("h").what.starts_with("tank/home 94% of its 100 quota") && by("h").what.contains("checked 4m ago"), "{}", by("h").what);
         assert_eq!(by("h").target.as_deref(), Some("h"));
+    }
+
+    /// A storage file where each host has these datasets, all a week old, checked a minute ago.
+    fn with_datasets(fx: &mut Fixture, hosts: &[(&str, &[&str])]) {
+        use crate::daemon::storage_check::SeenDataset;
+        let created = Some((now() - chrono::Duration::days(7)).timestamp());
+        for (host, names) in hosts {
+            let mut entry = storage_entry(1, "x/x", 10);
+            entry.datasets.clear();
+            entry.seen = names.iter().map(|n| SeenDataset { name: (*n).into(), volume: false, created }).collect();
+            fx.storage.hosts.insert((*host).into(), entry);
+        }
+    }
+
+    fn protection_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let hosts: Vec<HostInput> = names.iter().map(|n| fine_host(n, &probe, &r, &b)).collect();
+        fx.build(hosts).attention.into_iter().filter(|i| i.goto == Section::Jobs && i.what.contains("no snapshots")).collect()
+    }
+
+    #[test]
+    fn an_unprotected_dataset_is_a_red_line_and_an_os_one_amber() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"]), ("nas", &["tank/media"])]);
+        let items = protection_items(&fx, &["local", "nas"]);
+        let by = |s: &str| items.iter().find(|i| i.subject == s).unwrap_or_else(|| panic!("{s} in {items:?}"));
+        assert_eq!(items.len(), 3, "{items:?}");
+        assert_eq!((by("tank/photos").level, by("zroot/var").level, by("nas:tank/media").level), (Level::Issue, Level::Watch, Level::Issue));
+        assert_eq!(by("tank/photos").what, "no snapshots; no copy on another machine");
+        assert_eq!((by("tank/photos").goto, by("tank/photos").target.clone()), (Section::Jobs, None));
+    }
+
+    #[test]
+    fn a_host_that_is_not_reached_adds_no_protection_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"]), ("gone", &["tank/x"])]);
+        let items = protection_items(&fx, &["local"]);
+        assert_eq!(items.iter().map(|i| i.subject.as_str()).collect::<Vec<_>>(), ["tank/photos"]);
+    }
+
+    #[test]
+    fn no_protection_lines_while_the_daemon_is_down_or_stale_or_a_host_is_unreachable() {
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let named = |d: &Dashboard| d.attention.iter().filter(|i| i.what.contains("no snapshots")).count();
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        assert_eq!(named(&fx.build(vec![fine_host("local", &probe, &r, &b)])), 1, "control: a running daemon shows the line");
+        for heartbeat in [None, beat(600)] {
+            let mut down = Fixture::new(view(vec![], &[], heartbeat));
+            with_datasets(&mut down, &[("local", &["tank/photos"])]);
+            let d = down.build(vec![fine_host("local", &probe, &r, &b)]);
+            assert_ne!(d.daemon.level, Level::Fine);
+            assert_eq!(named(&d), 0, "{:?}", d.attention);
+        }
+        // A host that is listed but not reached says nothing.
+        let off = HostProbe::Disconnected;
+        let host = HostInput { name: "local", assessment: assess(Some(&off), false), probe: Some(&off), resources: None, utc_offset_secs: Some(0), os_name: None };
+        assert_eq!(named(&fx.build(vec![host])), 0);
+    }
+
+    #[test]
+    fn the_verdict_counts_the_protection_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos", "zroot/var"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.verdict.text == "1 issue, 1 to watch", "{}", d.verdict.text);
+    }
+
+    fn protected_view() -> JobsView {
+        let jobs = vec![Job::test_snapshot("s", "tank/photos", "auto", 24), Job::test_replicate("r", "tank/photos", "rep", "nas", "tank/copy")];
+        view(jobs, &[("s", RunResult::Ok, ""), ("r", RunResult::Ok, "")], beat(1))
+    }
+
+    #[test]
+    fn protected_datasets_add_nothing() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+        assert!(d.attention.is_empty(), "{:?}", d.attention);
+        assert_eq!(d.verdict.text, "all quiet");
+    }
+
+    #[test]
+    fn the_chosen_level_changes_the_verdict() {
+        let mut fx = Fixture::new(protected_view());
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        assert!(fx.build(vec![]).attention.is_empty());
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let probe = reached(vec![]);
+        let at = |fx: &Fixture| fx.build(vec![fine_host("local", &probe, &r, &b)]).attention;
+        assert!(at(&fx).is_empty(), "basic: one snapshot job and one copy");
+        fx.protection = crate::config::ProtectionConfig { level: Some("careful".into()), ..Default::default() }.resolve().unwrap();
+        let lines = at(&fx);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].what, "1 of 3 copies on other machines; no online copy");
+    }
+
+    #[test]
+    fn email_off_still_shows_the_dashboard_lines() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/photos"])]);
+        fx.protection.email = crate::config::EmailTiming::Off;
+        assert_eq!(protection_items(&fx, &["local"]).len(), 1);
     }
 
     #[test]
@@ -1391,6 +1542,21 @@ mod tests {
     }
 
     #[test]
+    fn a_wrong_protection_section_is_a_watch_line_naming_config_toml() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        assert!(fx.build(vec![]).attention.iter().all(|i| i.subject != "config.toml"));
+        fx.protection_problem = Some("[protection] level must be basic, careful or custom".into());
+        let d = fx.build(vec![]);
+        let item = d.attention.iter().find(|i| i.subject == "config.toml").expect("a line for the wrong section");
+        assert_eq!((item.level, item.what.as_str(), item.goto), (Level::Watch, "[protection]: level must be basic, careful or custom; judging at Basic", Section::Settings));
+        assert_eq!(d.verdict.text, "1 to watch", "the header counts it");
+        // Also while the daemon is down (it is about the file, not the judging).
+        let mut down = Fixture::new(view(vec![], &[], None));
+        down.protection_problem = fx.protection_problem.clone();
+        assert!(down.build(vec![]).attention.iter().any(|i| i.subject == "config.toml"));
+    }
+
+    #[test]
     fn the_verdict_says_checking_until_every_host_has_answered_then_counts_issues_and_watches() {
         let fx = Fixture::new(view(vec![scrub_job("s")], &[("s", RunResult::Ok, "ok")], beat(1)));
         let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
@@ -1437,6 +1603,21 @@ mod tests {
         let no_daemon = Fixture::new(JobsView::default()).build(vec![]);
         assert_eq!(no_daemon.verdict.level, Level::Issue, "nothing has ever run the daemon: that is the one problem");
         assert!(empty.hosts.is_empty() && empty.cloud.is_empty());
+    }
+
+    #[test]
+    fn protection_lines_come_after_the_other_items_of_their_level() {
+        let mut fx = Fixture::new(view(vec![scrub_job("zz-scrub")], &[("zz-scrub", RunResult::Failed, "boom")], beat(1)));
+        let names: Vec<String> = (0..30).map(|i| format!("aa/d{i:02}")).chain(["zroot/var".to_string()]).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        with_datasets(&mut fx, &[("local", &refs)]);
+        let degraded = reached(vec![PoolProbe { health: PoolHealth::Degraded, ..pool("tank", 10, 0, Some(when(1))) }]);
+        let (r, before) = (reading(10, 0, 0, 1000), reading(10, 0, 0, 1000));
+        let d = fx.build(vec![fine_host("local", &degraded, &r, &before)]);
+        let order: Vec<(Level, &str)> = d.attention.iter().map(|i| (i.level, i.subject.as_str())).collect();
+        assert_eq!(order[..3], [(Level::Issue, "local"), (Level::Issue, "zz-scrub"), (Level::Issue, "aa/d00")], "the pool and the failed job first: {order:?}");
+        assert_eq!(order[2..32].iter().map(|(_, s)| *s).collect::<Vec<_>>(), refs[..30], "then the protection lines, in their own order");
+        assert_eq!(order[32..], [(Level::Watch, "zroot/var")], "Issue before Watch still: {order:?}");
     }
 
     #[test]

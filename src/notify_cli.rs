@@ -1,10 +1,10 @@
 //! `zfsctl notify-test` and `zfsctl report`: let the operator check the health notifications without waiting.
 
-use crate::config::{Config, NotifySettings};
+use crate::config::{Config, EmailTiming, NotifySettings};
 use crate::daemon::deliver::{self, Message};
 use crate::daemon::health_text::{report_message, EventLog};
 use crate::daemon::history::History;
-use crate::daemon::monitor::{build_rows, probe_all, HostInfo, Probed, PROBE_DEADLINE};
+use crate::daemon::monitor::{build_rows, judge_reachable, probe_all, HostInfo, Probed, PROBE_DEADLINE};
 use crate::error::Result;
 use crate::hosts::HostInventory;
 use crate::zfs::host_health::{HostKind, HostProbe};
@@ -76,8 +76,15 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
     let events = EventLog::new(state_dir.join("health-events.jsonl")).read();
     let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
     let local = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-    let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::check_lines(state_dir));
-    format!("Subject: {}\n\n{}", msg.subject, msg.body)
+    // The same judgment the daemon makes; the alert tracker lives only in the daemon, so the preview has no "(for 3d)".
+    let (settings, problem) = config.protection.resolve_or_basic();
+    let protection = (settings.email != EmailTiming::Off).then(|| judge_reachable(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), &probed, &rows, &jobs, &runs, &settings, now).section(&|_| None, now));
+    let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::check_lines(state_dir), protection.as_ref());
+    let mut text = format!("Subject: {}\n\n{}", msg.subject, msg.body);
+    if let Some(problem) = problem {
+        let _ = writeln!(text, "\nNote: config.toml {}", crate::config::protection_problem_line(&problem));
+    }
+    text
 }
 
 pub fn report_command(config: &Config, state_dir: &Path) -> Result<i32> {
@@ -142,5 +149,52 @@ mod tests {
         let text = report_text_with(&Config::default(), dir.path(), now, &fake_probe);
         assert!(text.contains("failed: backup-x on local") && text.contains("restic exited 3"), "{text}");
         assert!(text.contains("warning"), "a failed job makes the host a warning: {text}");
+    }
+
+    fn with_unprotected_dataset(dir: &Path, now: DateTime<Utc>) {
+        use crate::daemon::storage_check::{Integrity, SeenDataset, StorageFile, StorageResult};
+        let mut file = StorageFile::default();
+        let seen = vec![SeenDataset { name: "tank/photos".into(), volume: false, created: Some((now - chrono::Duration::days(30)).timestamp()) }];
+        file.hosts.insert("local".into(), StorageResult { checked_at: now, datasets: vec![], seen, pools: vec![], integrity: Integrity::default(), locked: vec![], integrity_stale: false, zfs_version: None, error: None });
+        file.save(&dir.join(crate::daemon::storage_check::FILE)).unwrap();
+    }
+
+    #[test]
+    fn the_report_preview_has_the_unprotected_data_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        with_unprotected_dataset(dir.path(), now);
+        let text = report_text_with(&Config::default(), dir.path(), now, &fake_probe);
+        assert!(text.contains("\nUNPROTECTED DATA\n  local:tank/photos (your data): no snapshots"), "{text}");
+        assert!(!text.contains("(for "), "the preview has no duration: {text}");
+        let none = tempfile::tempdir().unwrap();
+        let text = report_text_with(&Config::default(), none.path(), now, &fake_probe);
+        assert!(text.contains("UNPROTECTED DATA\n  No host was checked: local (no dataset list yet)\n"), "nothing judged is not all protected: {text}");
+        assert!(!text.contains("All datasets are protected"), "{text}");
+    }
+
+    #[test]
+    fn the_report_preview_says_when_protection_is_wrong() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        with_unprotected_dataset(dir.path(), now);
+        let mut config = Config::default();
+        config.protection.email = Some("of".into());
+        let text = report_text_with(&config, dir.path(), now, &fake_probe);
+        assert!(text.starts_with("Subject: "), "{text}");
+        assert!(text.ends_with("\nNote: config.toml [protection]: email must be immediate, report or off; judging at Basic\n"), "{text}");
+        assert!(text.contains("UNPROTECTED DATA"), "judged at Basic: {text}");
+        assert!(!report_text_with(&Config::default(), dir.path(), now, &fake_probe).contains("Note: config.toml"));
+    }
+
+    #[test]
+    fn the_report_preview_has_no_unprotected_section_when_email_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        with_unprotected_dataset(dir.path(), now);
+        let mut config = Config::default();
+        config.protection.email = Some("off".into());
+        let text = report_text_with(&config, dir.path(), now, &fake_probe);
+        assert!(!text.contains("UNPROTECTED DATA") && !text.contains("tank/photos"), "{text}");
     }
 }

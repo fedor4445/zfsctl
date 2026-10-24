@@ -1,7 +1,7 @@
 //! A scheduled host-to-host replication run: pick what to send, then pipe `zfs send` on the
 //! source into `zfs receive -s -u` on the destination, reporting progress and honouring cancel.
 
-use super::history::{EventKind, RunResult};
+use super::history::{EventKind, RunResult, UP_TO_DATE};
 use super::progress::{self, ProgressWriter};
 use super::scrub::{event, finish, Context, Outcome, Slot};
 use super::transfer::pump;
@@ -163,7 +163,7 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
             Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
             Plan::UpToDate(name) => {
                 return match prune_after(dst, job, &dest_host, &dest_ds, &prefix, &[name.clone()], false) {
-                    Ok(note) => skipped(format!("skipped: up to date ({name}){note}")),
+                    Ok(note) => skipped(format!("{UP_TO_DATE} ({name}){note}")),
                     Err(e) => failed(format!("up to date ({name}); {e}")),
                 };
             }

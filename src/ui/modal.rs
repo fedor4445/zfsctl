@@ -291,7 +291,7 @@ impl MutationCall {
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
             MutationCall::SaveNotify { config_path, section } => crate::config::save_notify_section(config_path, section),
             MutationCall::SaveSettings { config_path, setting, values } => {
-                let changes = crate::ui::settings::build_changes(setting, values).map_err(crate::error::AppError::Config)?;
+                let changes = crate::ui::settings::build_changes_for(config_path, setting, values).map_err(crate::error::AppError::Config)?;
                 crate::config_edit::save(config_path, &changes)
             }
             MutationCall::RestoreFile { plan, source, host } => {

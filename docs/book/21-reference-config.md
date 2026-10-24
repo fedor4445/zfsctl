@@ -76,6 +76,18 @@ When the Dashboard turns a reading yellow ("to watch") and red ("issue"). All ke
 | `scrub_crit_days` | number | `90` | days since the last scrub from which it turns red |
 | `scrub_ignore` | list of text | none | pool names the Dashboard does not judge by scrub age, such as `["scratch"]`; a resilver does not count as a scrub |
 
+### `[protection]`
+
+What counts as a protected dataset. All keys are optional, and the words are lower case. A wrong value, including one of the wrong type (`copies = "2"`, `copies = 300`, `level = 5`), never stops the daemon or the rest of the file from loading: zfsctl names the key and the values it takes (`[protection] copies must be 1, 2 or 3`) in the daemon's log (`config.toml [protection] problem ...`), on the Settings screen under Data protection, and as a yellow `config.toml` line in the Dashboard's Needs attention (`[protection]: email must be immediate, report or off; judging at Basic`). While it is wrong, the Dashboard and the `zfsctl report` preview judge at Basic; the running daemon keeps the settings it had before the change (it uses Basic only when it starts with a wrong section). Fix the file, or the row on the Settings screen.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `level` | text | `basic` | `basic` (one copy), `careful` (three copies, one of them online) or `custom` |
+| `copies` | number | `1` | with `level = "custom"`: how many copies a dataset needs, 1 to 3; ignored for the other levels |
+| `online` | number | `0` | with `level = "custom"`: how many of those copies must be online, 0 to 2 and never more than `copies`; ignored for the other levels |
+| `recent` | text | `normal` | how old a copy may be and still count: `strict` (one interval), `normal` (two) or `relaxed` (four) |
+| `email` | text | `immediate` | when an unprotected dataset is emailed: `immediate`, `report` (only in the daily report) or `off` |
+
 ## jobs.toml
 
 The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TUI writes it for you, and the daemon notices a change within a second. A job needs only the keys its kind uses.

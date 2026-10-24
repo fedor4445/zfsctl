@@ -50,6 +50,14 @@ pub struct LimitedDataset {
     pub refquota: u64,
 }
 
+/// Any dataset the host has, with when it was created (epoch seconds; `None` when the listing had no such column).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SeenDataset {
+    pub name: String,
+    pub volume: bool,
+    pub created: Option<i64>,
+}
+
 /// An encrypted dataset whose key is not loaded, and whether it is shared (`sharenfs` / `sharesmb` on).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LockedDataset {
@@ -63,6 +71,9 @@ pub struct StorageResult {
     pub checked_at: DateTime<Utc>,
     #[serde(default)]
     pub datasets: Vec<LimitedDataset>,
+    /// Every dataset the host has (the same `zfs list`), for the checks that judge them all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen: Vec<SeenDataset>,
     /// Pools with something to say about their special, dedup, log or cache devices (quiet pools are not stored).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pools: Vec<PoolClasses>,
@@ -150,8 +161,27 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// `zfs list -H -p -t filesystem,volume -o name,used,referenced,quota,refquota,type`: options first, as OmniOS's `zfs` wants.
-const LIST_ARGS: &[&str] = &["list", "-H", "-p", "-t", "filesystem,volume", "-o", "name,used,referenced,quota,refquota,type"];
+/// `zfs list` (options first, `-o name,used,referenced,quota,refquota,type,creation`): options first, as OmniOS's `zfs` wants.
+const LIST_ARGS: &[&str] = &["list", "-H", "-p", "-t", "filesystem,volume", "-o", "name,used,referenced,quota,refquota,type,creation"];
+
+/// Splits a listing line into its six leading columns and the creation column when there is one (6 or 7 columns).
+fn list_columns(line: &str) -> Option<([&str; 6], Option<&str>)> {
+    let mut parts = line.split('\t');
+    let first: [&str; 6] = std::array::from_fn(|_| parts.next().unwrap_or("\u{0}"));
+    let created = parts.next();
+    (!first.contains(&"\u{0}") && parts.next().is_none()).then_some((first, created))
+}
+
+/// Every dataset in the listing with its kind and creation time.
+fn parse_seen(output: &str) -> Vec<SeenDataset> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let ([name, _, _, _, _, kind], created) = list_columns(line)?;
+            Some(SeenDataset { name: name.to_string(), volume: kind.trim() == "volume", created: created.and_then(|c| c.trim().parse::<i64>().ok()) })
+        })
+        .collect()
+}
 
 /// Unset limits print as `0`, and as `-` on a volume (which has no quota).
 fn parse_limited(output: &str) -> Vec<LimitedDataset> {
@@ -159,8 +189,7 @@ fn parse_limited(output: &str) -> Vec<LimitedDataset> {
     output
         .lines()
         .filter_map(|line| {
-            let f: Vec<&str> = line.split('\t').collect();
-            let &[name, used, referenced, quota, refquota, _kind] = f.as_slice() else { return None };
+            let [name, used, referenced, quota, refquota, _kind] = list_columns(line)?.0;
             let (quota, refquota) = (number(quota), number(refquota));
             (quota > 0 || refquota > 0).then(|| LimitedDataset { name: name.to_string(), used: number(used), referenced: number(referenced), quota, refquota })
         })
@@ -294,7 +323,7 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
             let pool_list = text("zpool", &["list", "-H", "-p", "-o", "name,allocated,dedupratio"]);
             let zfs_version = parse_version(&text("zfs", &["version"]));
             let keys = text("zfs", &["get", "-H", "-t", "filesystem", "-o", "name,property,value", "keystatus,sharenfs,sharesmb"]);
-            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), pools, zfs_version, locked: parse_locked(&keys), integrity: parse_integrity(&settings, &pool_list), integrity_stale: lost, error: None })
+            Outcome::Checked(StorageResult { checked_at: now, datasets: parse_limited(&out.stdout), seen: parse_seen(&out.stdout), pools, zfs_version, locked: parse_locked(&keys), integrity: parse_integrity(&settings, &pool_list), integrity_stale: lost, error: None })
         }
     }
 }
@@ -492,7 +521,7 @@ mod tests {
 
     fn file_with(host: &str, datasets: Vec<LimitedDataset>) -> StorageFile {
         let mut file = StorageFile::default();
-        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+        file.hosts.insert(host.into(), StorageResult { checked_at: at(NOW), datasets, seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         file
     }
 
@@ -504,6 +533,39 @@ mod tests {
         assert_eq!(kept.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["tank/home", "tank/r"]);
         assert_eq!((kept[1].quota, kept[1].refquota), (0, 400));
         assert!(parse_limited("garbage\n").is_empty());
+    }
+
+    #[test]
+    fn parse_seen_reads_all_datasets_with_creation_times() {
+        let out = "tank\t100\t90\t0\t0\tfilesystem\t1700000000\ntank/vol\t5\t5\t-\t-\tvolume\t1700000100\ntank/old\t1\t1\t0\t0\tfilesystem\njunk line\n";
+        let seen = parse_seen(out);
+        assert_eq!(
+            seen,
+            vec![
+                SeenDataset { name: "tank".into(), volume: false, created: Some(1_700_000_000) },
+                SeenDataset { name: "tank/vol".into(), volume: true, created: Some(1_700_000_100) },
+                SeenDataset { name: "tank/old".into(), volume: false, created: None },
+            ]
+        );
+        assert_eq!(parse_limited(out).len(), 0, "7 columns parse for limits too, and nothing here has a limit");
+    }
+
+    #[test]
+    fn a_check_stores_every_dataset_not_only_limited_ones() {
+        let runner = FakeRunner::new("").route("zfs", "list", "a\t9\t9\t10\t0\tfilesystem\t1700000000\nb\t1\t1\t0\t0\tfilesystem\t1700000500\n");
+        let Outcome::Checked(r) = check_host(&runner, at(NOW)) else { panic!() };
+        assert_eq!(r.datasets.len(), 1);
+        assert_eq!(r.seen.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_failed_pass_keeps_the_last_seen_list() {
+        let mut file = StorageFile::default();
+        let runner = FakeRunner::new("").route("zfs", "list", "a\t9\t9\t0\t0\tfilesystem\t1700000000\n");
+        file.apply("hub", check_host(&runner, at(NOW)), at(NOW));
+        file.apply("hub", Outcome::Failed("ssh dropped".into()), at(NOW));
+        assert_eq!(file.hosts["hub"].seen.len(), 1);
+        assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh dropped"));
     }
 
     #[test]
@@ -537,7 +599,7 @@ mod tests {
         file.apply("hub", Outcome::Failed("ssh: connection reset".into()), at(NOW));
         assert_eq!(file.hosts["hub"].error.as_deref(), Some("ssh: connection reset"));
         assert_eq!(problems(&file, (90, 98)).len(), 1, "the last good reading stays until the host answers");
-        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }), at(NOW));
+        file.apply("hub", Outcome::Checked(StorageResult { checked_at: at(NOW), datasets: vec![], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }), at(NOW));
         assert!(problems(&file, (90, 98)).is_empty() && file.hosts["hub"].error.is_none(), "the quota was removed: the line goes");
         file.apply("hub", Outcome::Silent, at(NOW));
         assert!(file.hosts.is_empty());
@@ -783,7 +845,7 @@ mod tests {
     fn a_pool_that_only_just_started_deduplicating_is_not_judged_until_the_grace_has_passed() {
         const GIB: u64 = 1 << 30;
         let mut file = StorageFile::default();
-        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: std::collections::BTreeMap::default() }, integrity_stale: false, error: None };
+        let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: std::collections::BTreeMap::default() }, integrity_stale: false, error: None };
         file.apply("hub", Outcome::Checked(answer(true)), at(NOW));
         assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW), "first seen now");
         assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(1)).is_empty(), "2 TiB of old data, ratio 1.00x, one day after enabling: not yet");

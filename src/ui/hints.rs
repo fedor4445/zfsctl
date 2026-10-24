@@ -700,7 +700,7 @@ mod tests {
         let mut a = base();
         go(&mut a, Section::Settings);
         let row = |n: usize| crate::ui::settings::Row { group: "Display", setting: crate::ui::settings::Setting::Cpu, label: format!("row{n}"), value: "1".into(), is_default: true, raw: vec![String::new()] };
-        a.settings_view = crate::ui::settings::SettingsView { loaded: true, problem: None, rows: (0..rows).map(row).collect() };
+        a.settings_view = crate::ui::settings::SettingsView { loaded: true, problem: None, rows: (0..rows).map(row).collect(), protection_problem: None };
         a.settings_table.select((rows > 0).then_some(0));
         a
     }

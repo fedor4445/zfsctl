@@ -364,7 +364,7 @@ impl App {
     fn submit_setting_form(&mut self, form: FormParts) -> Option<PendingAction> {
         let FormKind::Setting { setting } = form.kind.clone() else { return None };
         let values: Vec<String> = form.fields.iter().map(|f| f.value.clone()).collect();
-        match crate::ui::settings::build_changes(&setting, &values) {
+        match crate::ui::settings::build_changes_for(&self.config_path, &setting, &values) {
             Ok(_) => {
                 let prompt = format!("Save to config.toml?\n  {}\n(y/n)", crate::ui::settings::describe(&setting, &values));
                 let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Settings, call: MutationCall::SaveSettings { config_path: self.config_path.clone(), setting, values } };

@@ -8612,6 +8612,22 @@ fn saving_the_auto_refresh_changes_the_interval_and_zero_turns_it_off() {
 }
 
 #[test]
+fn a_wrong_protection_value_reaches_the_dashboard_as_a_watch_line() {
+    let (mut app, dir) = settings_app("");
+    saved_settings(&mut app, &dir, "[protection]\nlevel = \"Careful\"\n");
+    assert_eq!(app.dashboard_protection_problem.as_deref(), Some("[protection] level must be basic, careful or custom"));
+    assert_eq!(app.dashboard_protection, crate::config::ProtectionSettings::default());
+    std::fs::write(dir.path().join("config.toml"), "[protection]\nemail = \"of\"\n").unwrap();
+    app.refresh_dashboard();
+    assert_eq!(app.dashboard_protection_problem.as_deref(), Some("[protection] email must be immediate, report or off"));
+    assert!(app.dashboard().attention.iter().any(|i| i.subject == "config.toml" && i.what.ends_with("judging at Basic")));
+    std::fs::write(dir.path().join("config.toml"), "[protection]\nemail = \"off\"\n").unwrap();
+    app.refresh_dashboard();
+    assert!(app.dashboard_protection_problem.is_none());
+    assert!(app.dashboard().attention.iter().all(|i| i.subject != "config.toml"));
+}
+
+#[test]
 fn saving_thresholds_and_caps_reaches_the_dashboard_and_cloud_at_once() {
     let (mut app, dir) = settings_app("");
     saved_settings(&mut app, &dir, "[dashboard]\nmemory_warn = 85\nmemory_crit = 95\n[cloud.caps]\nb2 = \"10G\"\n");
@@ -9434,7 +9450,7 @@ fn integrity_app(checksum: &str, dedup: &str) -> App {
 }
 
 fn version_of(app: &mut App, version: &str) {
-    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
 }
 
 #[test]
