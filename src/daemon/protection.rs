@@ -64,6 +64,8 @@ pub(crate) fn copy_of(job: &Job) -> Option<(CopyKind, String)> {
                 None
             }
         }
+        // A backup or mirror with a `path` copies one folder of the dataset, not the dataset.
+        jobs::KIND_BACKUP | jobs::KIND_MIRROR if job.path.as_deref().is_some_and(|p| !p.is_empty()) => None,
         jobs::KIND_BACKUP => {
             let repo = job.repository.as_deref()?;
             let online = ["s3:", "b2:", "azure:", "gs:", "swift:", "rclone:"].iter().any(|p| repo.starts_with(p));
@@ -639,6 +641,23 @@ mod tests {
         let mut off = hourly();
         off.enabled = false;
         assert!(!gives_snapshots(&off) && !gives_snapshots(&backup("/r")));
+    }
+
+    #[test]
+    fn a_backup_or_mirror_of_one_folder_does_not_protect_the_dataset() {
+        let file = storage(&[("local", &["tank/home"])]);
+        let whole = vec![snap("s", "tank/home"), bk("b", "tank/home", "sftp:nas:/r")];
+        assert!(judge(&file, &whole, &ok_runs(&whole), &level(1, 0), now()).is_empty(), "the whole dataset is copied");
+        let mut part = whole.clone();
+        part[1].path = Some("me/docs".into());
+        assert_eq!(words(&judge(&file, &part, &ok_runs(&part), &level(1, 0), now())), ["local: tank/home: no copy on another machine"]);
+        assert_eq!(copy_of(&part[1]), None);
+        let mut mirror = Job::test_mirror("m", "tank/home", "m", "b2:bucket/home");
+        assert!(copy_of(&mirror).is_some());
+        mirror.path = Some("me".into());
+        assert_eq!(copy_of(&mirror), None, "a mirror of one folder");
+        mirror.path = Some(String::new());
+        assert!(copy_of(&mirror).is_some(), "an empty path is the whole dataset");
     }
 
     #[test]
