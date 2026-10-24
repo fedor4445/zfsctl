@@ -122,6 +122,9 @@ pub fn alert_message(row: &HostRow, alert: &Alert, now: DateTime<Utc>, hub: &str
         AlertKind::Recovery => (bad_for.clone().map_or_else(|| format!("[zfsctl] {host}: recovered"), |d| format!("[zfsctl] {host}: recovered after {d}")), "health-recovered"),
     };
     let mut body = format!("Host:     {} ({})\nHub:      {hub}\nTime:     {}\nState:    {}: {}\n", row.name, row.address, utc(now), severity_word(alert.severity), alert.reason);
+    if !row.tag.trim().is_empty() {
+        let _ = writeln!(body, "Group:    {}", ascii_line(row.tag.trim()));
+    }
     if let Some(rtt) = row.rtt_ms {
         let _ = writeln!(body, "Rtt:      {rtt}ms");
     }
@@ -302,6 +305,48 @@ impl ProtectionSection {
     }
 }
 
+/// Whether any host has a tag: then the report is read by group.
+fn grouped(rows: &[HostRow]) -> bool {
+    rows.iter().any(|r| !r.tag.trim().is_empty())
+}
+
+/// The GROUPS block of the report, with its trailing blank line: one line per tag, `web (12)  1 critical, 2 warning` or `ok`,
+/// the groups with a problem first and the hosts without a tag last. Empty when no host has a tag.
+fn group_lines(rows: &[HostRow]) -> Vec<String> {
+    if !grouped(rows) {
+        return Vec::new();
+    }
+    let mut tags: Vec<&str> = Vec::new();
+    for tag in rows.iter().map(|r| r.tag.trim()) {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    let mut groups: Vec<(u8, bool, String, String)> = tags
+        .into_iter()
+        .map(|tag| {
+            let members: Vec<&HostRow> = rows.iter().filter(|r| r.tag.trim() == tag).collect();
+            let count = |levels: &[Level]| members.iter().filter(|r| levels.contains(&r.level)).count();
+            let (critical, warning, unknown) = (count(&[Level::Critical, Level::Disconnected]), count(&[Level::Warning]), count(&[Level::Probing]));
+            let mut parts = Vec::new();
+            for (n, word) in [(critical, "critical"), (warning, "warning"), (unknown, "unknown")] {
+                if n > 0 {
+                    parts.push(format!("{n} {word}"));
+                }
+            }
+            let worst = if critical > 0 { 3 } else if warning > 0 { 2 } else { u8::from(unknown > 0) };
+            let shown = if tag.is_empty() { "(no tag)" } else { tag };
+            (worst, tag.is_empty(), format!("{} ({})", ascii_line(shown), members.len()), if parts.is_empty() { "ok".to_string() } else { parts.join(", ") })
+        })
+        .collect();
+    groups.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+    let width = groups.iter().map(|g| g.2.chars().count()).max().unwrap_or(0);
+    let mut lines = vec!["GROUPS".to_string()];
+    lines.extend(groups.iter().map(|g| format!("  {:<width$}  {}", g.2, g.3)));
+    lines.push(String::new());
+    lines
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String], unprotected: Option<&ProtectionSection>) -> Message {
     let count = |want: &[Level]| rows.iter().filter(|r| want.contains(&r.level)).count();
@@ -316,7 +361,12 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
     let counts = parts.join(", ");
     let subject = if warning + critical == 0 { format!("[zfsctl] daily report: all {} hosts ok", rows.len()) } else { format!("[zfsctl] daily report: {counts}") };
 
-    let mut body = format!("zfsctl daily report\nHub:      {hub}\nTime:     {local} (hub local time), {}\n\n{} hosts: {counts}\n\n{}\n", utc(now), rows.len(), table_header());
+    let mut body = format!("zfsctl daily report\nHub:      {hub}\nTime:     {local} (hub local time), {}\n\n{} hosts: {counts}\n\n", utc(now), rows.len());
+    for line in group_lines(rows) {
+        body.push_str(&line);
+        body.push('\n');
+    }
+    let _ = writeln!(body, "{}", table_header());
     for r in rows {
         body.push_str(&table_row(r));
         body.push('\n');
@@ -325,9 +375,12 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
     let mut attention: Vec<String> = rows
         .iter()
         .filter(|r| !matches!(r.level, Level::Ok | Level::Probing))
-        .map(|r| match bad_since(&r.name) {
-            Some(t) => format!("  {}: {} (since {})", r.name, r.reason, utc(t)),
-            None => format!("  {}: {}", r.name, r.reason),
+        .map(|r| {
+            let group = if grouped(rows) && !r.tag.trim().is_empty() { format!("[{}] ", ascii_line(r.tag.trim())) } else { String::new() };
+            match bad_since(&r.name) {
+                Some(t) => format!("  {group}{}: {} (since {})", r.name, r.reason, utc(t)),
+                None => format!("  {group}{}: {}", r.name, r.reason),
+            }
         })
         .collect();
     attention.extend(disks.iter().map(|d| format!("  {d}")));
@@ -418,6 +471,55 @@ mod tests {
 
     fn run(job: &str, result: Option<RunResult>, msg: &str, at: DateTime<Utc>) -> Run {
         Run { job_id: job.into(), run_id: format!("{job}-{}", at.timestamp()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: msg.into(), catch_up: false, summary: None }
+    }
+
+    fn tagged(mut r: HostRow, tag: &str) -> HostRow {
+        r.tag = tag.into();
+        r
+    }
+
+    fn report_of(rows: &[HostRow]) -> String {
+        report_message(t(60), "2026-10-11 07:00", "hub", rows, &|_| None, t(0), &[], &[], &[], &[], None).body
+    }
+
+    #[test]
+    fn a_report_without_tags_has_no_groups_block() {
+        let body = report_of(&[row("a", Level::Ok, "ok"), row("b", Level::Critical, "tank DEGRADED")]);
+        assert!(!body.contains("GROUPS"), "{body}");
+        assert!(body.contains("  b: tank DEGRADED"), "the attention line is as it was: {body}");
+    }
+
+    #[test]
+    fn tagged_hosts_get_a_groups_block_with_the_problem_groups_first_and_the_untagged_last() {
+        let rows = [tagged(row("a", Level::Ok, "ok"), "web"), tagged(row("b", Level::Critical, "tank DEGRADED"), "web"), tagged(row("c", Level::Ok, "ok"), "db"), row("d", Level::Warning, "tank 85% full"), tagged(row("e", Level::Probing, "probing"), "db")];
+        let body = report_of(&rows);
+        let lines: Vec<&str> = body.lines().collect();
+        let at = lines.iter().position(|l| *l == "GROUPS").unwrap_or_else(|| panic!("no GROUPS in\n{body}"));
+        assert_eq!(&lines[at + 1..at + 5], ["  web (2)       1 critical", "  (no tag) (1)  1 warning", "  db (2)        1 unknown", ""], "{body}");
+        assert!(at < lines.iter().position(|l| l.starts_with("HOST ")).unwrap(), "before the hosts table");
+    }
+
+    #[test]
+    fn a_healthy_group_says_ok_and_several_problems_are_counted_worst_first() {
+        let rows = [tagged(row("a", Level::Ok, "ok"), "web"), tagged(row("b", Level::Ok, "ok"), "web"), tagged(row("c", Level::Critical, "x"), "db"), tagged(row("d", Level::Warning, "y"), "db"), tagged(row("e", Level::Warning, "z"), "db")];
+        let body = report_of(&rows);
+        assert!(body.contains("  db (3)   1 critical, 2 warning\n  web (2)  ok\n"), "{body}");
+    }
+
+    #[test]
+    fn a_tagged_hosts_attention_line_names_its_group_and_an_untagged_one_does_not() {
+        let body = report_of(&[tagged(row("a", Level::Critical, "tank DEGRADED"), "web"), row("b", Level::Warning, "tank 85% full")]);
+        assert!(body.contains("  [web] a: tank DEGRADED\n") && body.contains("  b: tank 85% full\n"), "{body}");
+    }
+
+    #[test]
+    fn an_alert_for_a_tagged_host_names_its_group_in_the_body_and_keeps_its_subject() {
+        let alert = Alert { host: "fbsd16".into(), kind: AlertKind::Alert, severity: Severity::Critical, reason: "tank DEGRADED".into(), bad_for: None };
+        let m = alert_message(&tagged(row("fbsd16", Level::Critical, "tank DEGRADED"), "web"), &alert, t(0), "hub");
+        assert_eq!(m.subject, "[zfsctl] fbsd16: tank DEGRADED", "subjects stay as they were, for mail filters");
+        assert!(m.body.contains("Group:    web\n"), "{}", m.body);
+        let plain = alert_message(&row("fbsd16", Level::Critical, "tank DEGRADED"), &alert, t(0), "hub");
+        assert!(!plain.body.contains("Group:"), "{}", plain.body);
     }
 
     #[test]
