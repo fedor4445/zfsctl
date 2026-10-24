@@ -401,12 +401,13 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("r", "Refresh", 4));
         }
         (Section::Dashboard, _) => {
-            let has_lines = !app.dashboard().attention.is_empty();
+            let dashboard = app.dashboard();
+            let has_lines = !dashboard.attention.is_empty();
             if has_lines {
                 v.push(h("↑↓", "Move", 1));
             }
-            if has_lines && app.dashboard_table.selected().is_some() {
-                v.push(h("Enter", "Go to section", 1));
+            if let Some(item) = app.dashboard_table.selected().and_then(|i| dashboard.attention.get(i)).filter(|_| has_lines) {
+                v.push(h("Enter", if dashboard.protection_popup(item).is_some() { "Show list" } else { "Go to section" }, 1));
             }
             v.push(h("r", "Refresh", 4));
         }
