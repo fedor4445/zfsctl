@@ -18,13 +18,18 @@ pub(crate) enum JobState {
     NeverRan,
 }
 
+/// When the job last succeeded (a skipped run is not a success).
+pub(crate) fn last_ok(job: &Job, runs: &[Run]) -> Option<DateTime<Utc>> {
+    runs.iter().filter(|r| r.job_id == job.id && r.result == Some(RunResult::Ok)).map(|r| r.finished_at.unwrap_or(r.started_at)).max()
+}
+
 pub(crate) fn job_state(job: &Job, runs: &[Run], tolerance: i32, now: DateTime<Utc>) -> JobState {
     let mine = || runs.iter().filter(|r| r.job_id == job.id);
     let latest_finished = mine().filter(|r| r.result.is_some()).max_by_key(|r| r.finished_at.unwrap_or(r.started_at));
     if latest_finished.is_some_and(|r| r.result == Some(RunResult::Failed)) {
         return JobState::Failing;
     }
-    let last_ok = mine().filter(|r| r.result == Some(RunResult::Ok)).map(|r| r.finished_at.unwrap_or(r.started_at)).max();
+    let last_ok = last_ok(job, runs);
     let Some(gap) = schedule_gap(&job.schedule, now) else {
         return JobState::Stopped { last_ok: last_ok.or(job.created_at).unwrap_or(now) };
     };
