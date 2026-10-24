@@ -202,7 +202,7 @@ fn plan(hosts: &[HostRow], width: usize) -> Plan {
     // A column of dashes says nothing: the cache columns are drawn only while some host has a reading for them.
     let has = |col: Col| hosts.iter().any(|h| !matches!(col.cell(h).text.as_str(), "-" | "?"));
     let mut plan = Plan {
-        columns: COLUMNS.iter().copied().filter(|c| !matches!(c, Col::Arc | Col::L2arc) || has(*c)).collect(),
+        columns: COLUMNS.iter().copied().filter(|c| !matches!(c, Col::Arc | Col::L2arc | Col::Os) || has(*c)).collect(),
         gauges: true,
         name_w: longest(|h| h.name.chars().count()).clamp(4, 14),
         state_w: (longest(|h| h.state.text.chars().count()) + 2).clamp(10, 30),
@@ -464,6 +464,18 @@ mod tests {
         assert_eq!(row_style(None), row_style(Some(0)), "an attention line selected leaves the groups alone");
         let marked = |selected: Option<usize>| screen_lines(&d, selected, 120, 40, "Sat", &app.theme).iter().any(|l| l.to_string().contains('▸'));
         assert!(marked(Some(0)) && !marked(Some(n)), "the arrow marks attention lines only");
+    }
+
+    #[test]
+    fn a_group_table_has_no_column_of_dashes_and_shows_the_highest_load() {
+        let mut app = mixed_app();
+        app.set_host_tags(vec!["web".to_string(), "web".to_string(), "web".to_string()]);
+        let text = screen_lines(&app.dashboard(), None, 160, 40, "Sat", &app.theme).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let head = text.lines().find(|l| l.contains("Group")).unwrap();
+        assert!(!head.contains(" OS"), "no host has an OS name read: no OS column, as the cache columns go when empty: {head}");
+        assert!(head.contains("Load"), "{head}");
+        let row = text.lines().find(|l| l.contains("web (3)")).unwrap();
+        assert!(row.contains("0.05") || row.contains("0.1"), "the group's load is the highest of its hosts: {row}");
     }
 
     #[test]
