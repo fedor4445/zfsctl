@@ -127,8 +127,8 @@ be named in the code).
 One line per unprotected dataset in the existing **Needs attention** list, drawn like every other item: a coloured dot
 (red for data, amber for OS data), the subject `host: dataset`, and what is missing in a short phrase:
 
-- `no snapshots` / `snapshots stopped 3 days ago` / `snapshot job failing`
-- `no copy on another machine` / `copy on another machine stopped 3 days ago` / `copy job failing` when none is current;
+- `no snapshot job` / `snapshot job has not run yet` / `snapshots stopped 3 days ago` / `snapshot job failing`
+- `no copy job` / `copy job has not run yet` / `copy on another machine stopped 3 days ago` / `copy job failing` when none is current;
   `1 of 3 copies on other machines` when some are current but fewer than the level asks; `no online copy` /
   `0 of 2 online copies` when the online requirement is not met
 

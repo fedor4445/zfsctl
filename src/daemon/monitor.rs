@@ -854,7 +854,7 @@ mod tests {
         for n in names {
             assert_eq!(mail[0].body.lines().filter(|l| l.trim_start().starts_with(&format!("{n}:"))).count(), 1, "{n} in\n{}", mail[0].body);
         }
-        assert!(mail[0].body.contains("tank/a: no snapshots; no copy on another machine"), "{}", mail[0].body);
+        assert!(mail[0].body.contains("tank/a: no snapshot job; no copy job"), "{}", mail[0].body);
         assert_eq!(sink.sent.len(), 1, "the healthy host itself sends nothing");
         let events = EventLog::new(dir.join("health-events.jsonl")).read();
         assert_eq!(events.iter().filter(|e| e.kind == "alert" && e.host == "a").count(), 1, "one event for the message, not six: {events:?}");
@@ -1130,8 +1130,8 @@ mod tests {
         m.observe(t(0), at_local(6, 0), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         m.observe(t(90), at_local(7, 30), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
         let report = sink.sent.iter().find(|s| s.kind == "health-report").unwrap();
-        assert!(report.body.contains("  a:tank/x (your data): no snapshots; no copy on another machine (for 1h 30m)\n"), "{}", report.body);
-        assert!(report.body.contains("  a:zroot/var/log (OS data): no snapshots; no copy on another machine (for 1h 30m)\n"), "{}", report.body);
+        assert!(report.body.contains("  a:tank/x (your data): no snapshot job; no copy job (for 1h 30m)\n"), "{}", report.body);
+        assert!(report.body.contains("  a:zroot/var/log (OS data): no snapshot job; no copy job (for 1h 30m)\n"), "{}", report.body);
         // Protected or gone: forgotten, so it starts again from zero.
         write_storage(&dir, &[("a", &["tank/x"])], week());
         m.observe(t(100), at_local(7, 40), &hosts, &[probed_ok("a")], &[], &[], &mut sink);

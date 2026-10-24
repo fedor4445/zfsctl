@@ -260,7 +260,7 @@ pub fn share_lines(file: &crate::daemon::shares_check::SharesFile) -> Vec<String
     crate::daemon::shares_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at))).collect()
 }
 
-/// The daily report's lines for datasets that are not protected: `  fbsd16:tank/photos (your data): no snapshots (for 3d)`.
+/// The daily report's lines for datasets that are not protected: `  fbsd16:tank/photos (your data): no snapshot job (for 3d)`.
 /// The `(for ...)` part is there when `bad_since` knows the dataset's key (`host\tdataset`).
 pub fn protection_lines(items: &[Unprotected], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, now: DateTime<Utc>) -> Vec<String> {
     items
@@ -530,13 +530,13 @@ mod tests {
         let items = vec![unprotected("tank/photos", Tier::Data), unprotected("zroot/var/log", Tier::Os)];
         let since = t(0) - chrono::Duration::days(3);
         let lines = protection_lines(&items, &|k| (k == "fbsd16\ttank/photos").then_some(since), t(0));
-        assert_eq!(lines[0], "  fbsd16:tank/photos (your data): no snapshots (for 3d)");
-        assert_eq!(lines[1], "  fbsd16:zroot/var/log (OS data): no snapshots");
+        assert_eq!(lines[0], "  fbsd16:tank/photos (your data): no snapshot job (for 3d)");
+        assert_eq!(lines[1], "  fbsd16:zroot/var/log (OS data): no snapshot job");
         let section = ProtectionSection { lines: lines.clone(), judged: 1, unchecked: vec![] };
         let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&section));
         let (a, u) = (m.body.find("NEEDS ATTENTION").unwrap(), m.body.find("\nUNPROTECTED DATA\n").unwrap());
         assert!(a < u && u < m.body.find("EVENTS since").unwrap(), "{}", m.body);
-        assert!(m.body.contains("  fbsd16:tank/photos (your data): no snapshots (for 3d)\n"), "{}", m.body);
+        assert!(m.body.contains("  fbsd16:tank/photos (your data): no snapshot job (for 3d)\n"), "{}", m.body);
         assert_eq!(m.subject, "[zfsctl] daily report: all 1 hosts ok");
     }
 
@@ -554,8 +554,8 @@ mod tests {
         assert_eq!(section_of(&[], 0, &[]), "UNPROTECTED DATA\n  No host was checked.\n");
         assert_eq!(section_of(&[], 1, &["t2 (unreachable)"]), "UNPROTECTED DATA\n  All datasets on 1 host are protected; not checked: t2 (unreachable)\n");
         assert_eq!(section_of(&[], 2, &["t2 (unreachable)", "omnios (no dataset list for 3d)"]), "UNPROTECTED DATA\n  All datasets on 2 hosts are protected; not checked: t2 (unreachable), omnios (no dataset list for 3d)\n");
-        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshots"], 1, &["t2 (unreachable)"]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshots\n  Not checked: t2 (unreachable)\n");
-        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshots"], 1, &[]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshots\n");
+        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshot job"], 1, &["t2 (unreachable)"]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshot job\n  Not checked: t2 (unreachable)\n");
+        assert_eq!(section_of(&["  fbsd16:tank/x (your data): no snapshot job"], 1, &[]), "UNPROTECTED DATA\n  fbsd16:tank/x (your data): no snapshot job\n");
     }
 
     #[test]

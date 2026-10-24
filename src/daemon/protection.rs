@@ -124,8 +124,10 @@ pub fn tier_of(dataset: &str, volume: bool) -> Tier {
 /// What is wrong with one half (snapshots or copies).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gap {
-    /// No job gives it (or none has succeeded yet).
+    /// No enabled job gives it.
     Missing,
+    /// A job gives it but has not succeeded yet (never ran, or nothing dates it).
+    NotYet,
     /// The job stopped succeeding in time; its last success.
     Stopped { last_ok: DateTime<Utc> },
     /// The job's latest run failed.
@@ -261,23 +263,29 @@ struct CopyJob<'a> {
 }
 
 /// `None` for a current job, else what it lacks. A job that never ran, or a bad schedule with nothing to date it by
-/// (the state then says it stopped "now"), is `Missing`, so nobody reads "stopped 0 minutes ago".
+/// (the state then says it stopped "now"), is `NotYet`, so nobody reads "stopped 0 minutes ago".
 fn gap_of(state: &JobState, now: DateTime<Utc>) -> Option<Gap> {
     match state {
         JobState::Current => None,
         JobState::Failing => Some(Gap::Failing),
         JobState::Stopped { last_ok } if *last_ok < now => Some(Gap::Stopped { last_ok: *last_ok }),
-        JobState::Stopped { .. } | JobState::NeverRan => Some(Gap::Missing),
+        JobState::Stopped { .. } | JobState::NeverRan => Some(Gap::NotYet),
     }
 }
 
-/// The gap worth naming of two: a failing job first, then the most recently stopped, then a missing one.
+/// The gap worth naming of two: a failing job first, then the most recently stopped, then one that has not run yet, then a
+/// missing one.
 fn worse(a: Gap, b: Gap) -> Gap {
+    let rank = |g: Gap| match g {
+        Gap::Missing => 0,
+        Gap::NotYet => 1,
+        Gap::Stopped { .. } => 2,
+        Gap::Failing => 3,
+    };
     match (a, b) {
-        (Gap::Failing, _) | (_, Gap::Failing) => Gap::Failing,
         (Gap::Stopped { last_ok: x }, Gap::Stopped { last_ok: y }) => Gap::Stopped { last_ok: x.max(y) },
-        (stopped @ Gap::Stopped { .. }, Gap::Missing) | (Gap::Missing, stopped @ Gap::Stopped { .. }) => stopped,
-        (Gap::Missing, Gap::Missing) => Gap::Missing,
+        _ if rank(a) >= rank(b) => a,
+        _ => b,
     }
 }
 
@@ -286,12 +294,13 @@ fn small(n: usize) -> u8 {
 }
 
 impl Unprotected {
-    /// What is missing, in a short phrase (`no snapshots; no copy on another machine`). `age` words a past time
+    /// What is missing, in a short phrase (`no snapshot job; no copy job`). `age` words a past time
     /// (`3 days ago`).
     pub fn describe(&self, age: &dyn Fn(DateTime<Utc>) -> String) -> String {
         let mut parts: Vec<String> = Vec::new();
         match self.snapshots {
-            Some(Gap::Missing) => parts.push("no snapshots".into()),
+            Some(Gap::Missing) => parts.push("no snapshot job".into()),
+            Some(Gap::NotYet) => parts.push("snapshot job has not run yet".into()),
             Some(Gap::Stopped { last_ok }) => parts.push(format!("snapshots stopped {}", age(last_ok))),
             Some(Gap::Failing) => parts.push("snapshot job failing".into()),
             None => {}
@@ -299,7 +308,8 @@ impl Unprotected {
         if let Some(c) = &self.copies {
             if c.have == 0 && c.need >= 1 {
                 parts.push(match c.worst {
-                    Gap::Missing => "no copy on another machine".into(),
+                    Gap::Missing => "no copy job".into(),
+                    Gap::NotYet => "copy job has not run yet".into(),
                     Gap::Stopped { last_ok } => format!("copy on another machine stopped {}", age(last_ok)),
                     Gap::Failing => "copy job failing".into(),
                 });
@@ -392,24 +402,24 @@ mod tests {
         let only_snap = vec![snap("s", "tank/data")];
         let found = judge(&file, &only_snap, &ok_runs(&only_snap), &level(1, 0), now());
         assert_eq!(found, vec![Unprotected { host: "local".into(), dataset: "tank/data".into(), tier: Tier::Data, snapshots: None, copies: Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, worst: Gap::Missing }) }]);
-        assert_eq!(words(&found), ["local: tank/data: no copy on another machine"]);
+        assert_eq!(words(&found), ["local: tank/data: no copy job"]);
 
         let only_copy = vec![repl("r", "tank/data", "fbsd16", "tank/copy")];
         let found = judge(&file, &only_copy, &ok_runs(&only_copy), &level(1, 0), now());
         assert_eq!((found[0].snapshots, found[0].copies), (Some(Gap::Missing), None));
-        assert_eq!(words(&found), ["local: tank/data: no snapshots"]);
+        assert_eq!(words(&found), ["local: tank/data: no snapshot job"]);
 
         let found = judge(&file, &[], &[], &level(1, 0), now());
-        assert_eq!(words(&found), ["local: tank/data: no snapshots; no copy on another machine"]);
+        assert_eq!(words(&found), ["local: tank/data: no snapshot job; no copy job"]);
 
         // A local restic repository and a same-host replication are not copies on another machine.
         let local = vec![snap("s", "tank/data"), bk("b", "tank/data", "/mnt/repo"), repl("r", "tank/data", "local", "tank/copy")];
-        assert_eq!(words(&judge(&file, &local, &ok_runs(&local), &level(1, 0), now())), ["local: tank/data: no copy on another machine"]);
+        assert_eq!(words(&judge(&file, &local, &ok_runs(&local), &level(1, 0), now())), ["local: tank/data: no copy job"]);
 
         // A disabled job gives nothing, whatever its history says.
         let mut off = both.clone();
         off[1].enabled = false;
-        assert_eq!(words(&judge(&file, &off, &ok_runs(&off), &level(1, 0), now())), ["local: tank/data: no copy on another machine"]);
+        assert_eq!(words(&judge(&file, &off, &ok_runs(&off), &level(1, 0), now())), ["local: tank/data: no copy job"]);
     }
 
     #[test]
@@ -454,10 +464,13 @@ mod tests {
         let age = |t: DateTime<Utc>| if t == at { "3 days ago".to_string() } else { format!("wrong time {t}") };
         let item = |snapshots: Option<Gap>, copies: Option<CopyGap>| Unprotected { host: "h".into(), dataset: "tank/d".into(), tier: Tier::Data, snapshots, copies };
         let none = |worst: Gap| Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, worst });
-        assert_eq!(item(Some(Gap::Missing), None).describe(&age), "no snapshots");
+        assert_eq!(item(Some(Gap::Missing), None).describe(&age), "no snapshot job");
         assert_eq!(item(Some(Gap::Stopped { last_ok: at }), None).describe(&age), "snapshots stopped 3 days ago");
         assert_eq!(item(Some(Gap::Failing), None).describe(&age), "snapshot job failing");
-        assert_eq!(item(None, none(Gap::Missing)).describe(&age), "no copy on another machine");
+        assert_eq!(item(None, none(Gap::Missing)).describe(&age), "no copy job");
+        assert_eq!(item(Some(Gap::NotYet), None).describe(&age), "snapshot job has not run yet");
+        assert_eq!(item(None, none(Gap::NotYet)).describe(&age), "copy job has not run yet");
+        assert_eq!(item(Some(Gap::Missing), none(Gap::NotYet)).describe(&age), "no snapshot job; copy job has not run yet");
         assert_eq!(item(None, none(Gap::Stopped { last_ok: at })).describe(&age), "copy on another machine stopped 3 days ago");
         assert_eq!(item(None, none(Gap::Failing)).describe(&age), "copy job failing");
         assert_eq!(item(None, Some(CopyGap { have: 1, need: 3, online_have: 0, online_need: 0, worst: Gap::Missing })).describe(&age), "1 of 3 copies on other machines");
@@ -477,13 +490,13 @@ mod tests {
         assert_eq!((found[0].snapshots, found[0].copies.map(|c| c.worst)), (Some(Gap::Stopped { last_ok: at }), Some(Gap::Stopped { last_ok: at })));
         assert_eq!(words(&found), ["local: tank/data: snapshots stopped 3 days ago; copy on another machine stopped 3 days ago"]);
         let found = judged(&[], &jobs);
-        assert_eq!(words(&found), ["local: tank/data: no snapshots; no copy on another machine"], "a job that never ran gives nothing yet");
-        // A bad schedule with no success and no creation time: Missing, never "stopped 0 minutes ago".
+        assert_eq!(words(&found), ["local: tank/data: snapshot job has not run yet; copy job has not run yet"], "a job that never ran gives nothing yet, and says so");
+        // A bad schedule with no success and no creation time: not yet, never "stopped 0 minutes ago".
         let mut bad = jobs.clone();
         bad[0].schedule = "not a schedule".into();
         bad[1].schedule = "not a schedule".into();
         let found = judged(&[], &bad);
-        assert_eq!((found[0].snapshots, found[0].copies.map(|c| c.worst)), (Some(Gap::Missing), Some(Gap::Missing)));
+        assert_eq!((found[0].snapshots, found[0].copies.map(|c| c.worst)), (Some(Gap::NotYet), Some(Gap::NotYet)));
         // Of two covering copy jobs, a failing one is named before a stopped one; of two stopped, the latest.
         let two = vec![snap("s", "tank/data"), bk("b", "tank/data", "sftp:nas:/r"), bk("c", "tank/data", "sftp:nas2:/r")];
         let runs = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("b", Duration::days(3), Some(RunResult::Ok)), run("c", Duration::minutes(10), Some(RunResult::Failed))];
@@ -548,7 +561,7 @@ mod tests {
         }
         let found = judge(&file, &jobs[..1], &ok_runs(&jobs[..1]), &level(3, 1), now());
         assert_eq!((found[0].tier, found[0].copies), (Tier::Os, Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, worst: Gap::Missing })));
-        assert_eq!(words(&found), ["local: zroot/var/log: no copy on another machine"]);
+        assert_eq!(words(&found), ["local: zroot/var/log: no copy job"]);
     }
 
     #[test]
@@ -566,7 +579,7 @@ mod tests {
         jobs[0].recursive = true;
         jobs[1].recursive = true;
         let found = judge(&file, &jobs, &ok_runs(&jobs), &level(1, 0), now());
-        assert_eq!(words(&found), ["local: tank/data/child: no copy on another machine"]);
+        assert_eq!(words(&found), ["local: tank/data/child: no copy job"]);
     }
 
     #[test]
@@ -699,7 +712,7 @@ mod tests {
         assert!(judge(&file, &whole, &ok_runs(&whole), &level(1, 0), now()).is_empty(), "the whole dataset is copied");
         let mut part = whole.clone();
         part[1].path = Some("me/docs".into());
-        assert_eq!(words(&judge(&file, &part, &ok_runs(&part), &level(1, 0), now())), ["local: tank/home: no copy on another machine"]);
+        assert_eq!(words(&judge(&file, &part, &ok_runs(&part), &level(1, 0), now())), ["local: tank/home: no copy job"]);
         assert_eq!(copy_of(&part[1]), None);
         let mut mirror = Job::test_mirror("m", "tank/home", "m", "b2:bucket/home");
         assert!(copy_of(&mirror).is_some());
