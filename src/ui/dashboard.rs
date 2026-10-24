@@ -574,6 +574,8 @@ pub struct ProtectionPopup {
     pub rows: Vec<String>,
     pub gaps: Vec<crate::daemon::protection::Unprotected>,
     pub selected: usize,
+    /// A heading per host and the colour of each row.
+    pub look: crate::ui::modal::ChooseLook,
 }
 
 impl Dashboard {
@@ -589,15 +591,29 @@ impl Dashboard {
         if self.protection_more.as_ref() != Some(item) {
             return None;
         }
-        let selected = PROTECTION_NAMED;
         let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
-        let width = self.unprotected.iter().map(|u| u.subject.chars().count()).max().unwrap_or(0);
         let note = format!(
             "{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine. A new job counts once it has run.\nEnter fixes the selected one.",
             if self.unprotected.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", self.unprotected.len()) }
         );
-        let rows = self.unprotected.iter().map(|u| format!("{:<5}  {:<width$}  {}", if u.level == Level::Issue { "issue" } else { "watch" }, u.subject, u.what)).collect();
-        Some(ProtectionPopup { note, rows, gaps: self.gaps.clone(), selected })
+        // Grouped by host, the hub first and then by name; inside a host your data before the operating system's.
+        let mut found: Vec<(usize, &crate::daemon::protection::Unprotected, &Item)> = self.gaps.iter().zip(&self.unprotected).enumerate().map(|(i, (g, item))| (i, g, item)).collect();
+        found.sort_by(|a, b| (a.1.host != "local", &a.1.host, a.1.tier, &a.1.dataset).cmp(&(b.1.host != "local", &b.1.host, b.1.tier, &b.1.dataset)));
+        let width = found.iter().map(|(_, g, _)| g.dataset.chars().count()).max().unwrap_or(0);
+        let rows = found.iter().map(|(_, g, item)| format!("{:<5}  {:<width$}  {}", if item.level == Level::Issue { "issue" } else { "watch" }, g.dataset, item.what)).collect();
+        let mut heads = Vec::new();
+        let mut at = 0;
+        for group in found.chunk_by(|a, b| a.1.host == b.1.host) {
+            let of_yours = group.iter().filter(|(_, _, item)| item.level == Level::Issue).count();
+            let count = if group.len() == 1 { "1 dataset".to_string() } else { format!("{} datasets", group.len()) };
+            let host = group.first().map_or("", |(_, g, _)| g.host.as_str());
+            heads.push((at, if of_yours > 0 { format!("{host}  ({count}, {of_yours} of your data)") } else { format!("{host}  ({count})") }));
+            at += group.len();
+        }
+        let levels = found.iter().map(|(_, _, item)| item.level).collect();
+        let selected = found.iter().position(|(i, _, _)| *i >= PROTECTION_NAMED).unwrap_or(0);
+        let gaps = found.iter().map(|(_, g, _)| (*g).clone()).collect();
+        Some(ProtectionPopup { note, rows, gaps, selected, look: crate::ui::modal::ChooseLook { heads, levels } })
     }
 }
 
@@ -1492,6 +1508,34 @@ mod tests {
         assert_eq!(popup.selected, 3, "the first dataset without a line of its own");
         assert_eq!(popup.gaps.iter().map(|g| g.dataset.as_str()).collect::<Vec<_>>(), ["tank/a", "tank/b", "tank/c", "tank/d", "zroot/var"], "what each row lacks, in the rows' order");
         assert!(d.protection_popup(&Item { level: Level::Issue, subject: "daemon".into(), what: "x".into(), goto: Section::Jobs, target: None }).is_none());
+    }
+
+    #[test]
+    fn the_popup_groups_by_host_with_the_hub_first_and_a_heading_and_colours_per_group() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["zroot/var", "tank/photos"]), ("nas", &["tank/old", "tank/media"]), ("alpha", &["tank/x"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let (p1, p2, p3) = (reached(vec![]), reached(vec![]), reached(vec![]));
+        let d = fx.build(vec![fine_host("local", &p1, &r, &b), fine_host("nas", &p2, &r, &b), fine_host("alpha", &p3, &r, &b)]);
+        let popup = d.protection_popup(&d.attention[3]).expect("five datasets: the fourth line opens the list");
+        let datasets: Vec<&str> = popup.gaps.iter().map(|g| g.dataset.as_str()).collect();
+        assert_eq!(datasets, ["tank/photos", "zroot/var", "tank/x", "tank/media", "tank/old"], "the hub first, then hosts by name; your data before the OS inside each");
+        assert_eq!(popup.gaps.iter().map(|g| g.host.as_str()).collect::<Vec<_>>(), ["local", "local", "alpha", "nas", "nas"]);
+        assert_eq!(popup.look.heads, [(0, "local  (2 datasets, 1 of your data)".to_string()), (2, "alpha  (1 dataset, 1 of your data)".to_string()), (3, "nas  (2 datasets, 2 of your data)".to_string())]);
+        assert_eq!(popup.look.levels, [Level::Issue, Level::Watch, Level::Issue, Level::Issue, Level::Issue]);
+        assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/photos") && !popup.rows[0].contains("local"), "the host is in the heading, not the row: {}", popup.rows[0]);
+        assert_eq!(popup.selected, 1, "zroot/var is the first listed of the two datasets (it and tank/old) the Dashboard has no line for");
+    }
+
+    #[test]
+    fn a_host_with_only_operating_system_datasets_says_so_in_its_heading() {
+        let mut fx = Fixture::new(view(vec![], &[], beat(1)));
+        with_datasets(&mut fx, &[("local", &["tank/a", "tank/b", "tank/c", "zroot/var", "zroot/tmp"])]);
+        let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+        let p = reached(vec![]);
+        let d = fx.build(vec![fine_host("local", &p, &r, &b)]);
+        let popup = d.protection_popup(&d.attention[3]).unwrap();
+        assert_eq!(popup.look.heads, [(0, "local  (5 datasets, 3 of your data)".to_string())]);
     }
 
     #[test]

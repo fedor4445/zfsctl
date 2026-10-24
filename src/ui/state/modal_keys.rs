@@ -5,9 +5,19 @@ use super::forms::{
     build_create_encrypted, build_key_action, irreversible_prompt,
 };
 use super::{App, Instant, Modal, MutationCall, PaneFocus, PendingAction, Section};
-use crate::ui::modal::{ChooseThen, FormField, FormKind};
+use crate::ui::modal::{ChooseLook, ChooseThen, FormField, FormKind};
 use crate::ui::picker::build_picker_state;
 use crossterm::event::KeyCode;
+
+/// The pieces of an open `Modal::Choose`, taken apart while one key is handled.
+struct ChooseParts {
+    title: String,
+    note: String,
+    rows: Vec<String>,
+    selected: usize,
+    then: ChooseThen,
+    look: ChooseLook,
+}
 
 /// The pieces of an open `Modal::Form`, taken apart while one key is handled and put back with `into_modal`.
 struct FormParts {
@@ -39,7 +49,7 @@ impl App {
             Modal::ConfirmTyped { prompt, expected, input, action } => self.confirm_typed_key(key, prompt, expected, input, action),
             Modal::Form { title, fields, focused, description, kind } => self.form_key(key, FormParts { title, fields, focused, description, kind }),
             Modal::Info { title, body } => self.info_key(key, title, body),
-            Modal::Choose { title, note, rows, selected, then } => self.choose_key(key, title, note, rows, selected, then),
+            Modal::Choose { title, note, rows, selected, then, look } => self.choose_key(key, ChooseParts { title, note, rows, selected, then, look }),
         }
     }
 
@@ -65,8 +75,9 @@ impl App {
     }
 
     /// A list to choose from: the arrows move, Esc closes, Enter acts on the row, and every other key does nothing.
-    fn choose_key(&mut self, key: KeyCode, title: String, note: String, rows: Vec<String>, selected: usize, then: ChooseThen) -> Option<PendingAction> {
+    fn choose_key(&mut self, key: KeyCode, parts: ChooseParts) -> Option<PendingAction> {
         const PAGE: usize = 10;
+        let ChooseParts { title, note, rows, selected, then, look } = parts;
         let last = rows.len().saturating_sub(1);
         let selected = match key {
             KeyCode::Esc => return None,
@@ -82,7 +93,7 @@ impl App {
             KeyCode::End => last,
             _ => selected,
         };
-        self.modal = Some(Modal::Choose { title, note, rows, selected, then });
+        self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
         None
     }
 
@@ -95,7 +106,7 @@ impl App {
             Fix::ChooseCopy => {
                 let rows = vec!["Replicate to another host".to_string(), "Back up with restic".to_string(), "Mirror to the cloud (rclone)".to_string()];
                 let note = format!("{}:{} needs a copy on another machine.\nEnter opens the form for the kind you pick.", gap.host, gap.dataset);
-                self.modal = Some(Modal::Choose { title: "Which copy?".to_string(), note, rows, selected: 0, then: ChooseThen::Copy { host: gap.host.clone(), dataset: gap.dataset.clone() } });
+                self.modal = Some(Modal::Choose { title: "Which copy?".to_string(), note, rows, selected: 0, then: ChooseThen::Copy { host: gap.host.clone(), dataset: gap.dataset.clone() }, look: ChooseLook::default() });
             }
             Fix::GoToJob(id) => {
                 if let Some(position) = self.sections.iter().position(|s| *s == Section::Jobs) {

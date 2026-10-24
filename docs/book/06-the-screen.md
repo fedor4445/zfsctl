@@ -166,7 +166,7 @@ Some things are deliberately quiet. A dataset created in the last day is not jud
 
 The same list reaches you by email (chapter 16). Set the level, how recent and the email timing in Settings, group **Data protection**.
 
-The Dashboard names the first three unprotected datasets (your data first). When there are more, the rest become one line, `and 122 more not protected (62 of your data)`, red while any of your data is among them and yellow when only the operating system's is. That line counts once in the header. Every dataset is still judged, named in the daily report and emailed according to the **Email** setting; only what the Dashboard draws is shorter. Enter on the "and N more" line opens the full list in a pop-up, with the first dataset that has no line of its own selected: Up and Down move, Esc closes it, and Enter on a row fixes that dataset (below).
+The Dashboard names the first three unprotected datasets (your data first). When there are more, the rest become one line, `and 122 more not protected (62 of your data)`, red while any of your data is among them and yellow when only the operating system's is. That line counts once in the header. Every dataset is still judged, named in the daily report and emailed according to the **Email** setting; only what the Dashboard draws is shorter. Enter on the "and N more" line opens the full list in a pop-up, grouped by host (the hub first, then the others by name, each under a heading that counts its datasets), red rows for your data and yellow for the operating system's, with the first dataset that has no line of its own selected: Up and Down move, Esc closes it, and Enter on a row fixes that dataset (below).
 
 ## Settings
 
