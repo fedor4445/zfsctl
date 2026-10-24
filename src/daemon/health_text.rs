@@ -3,6 +3,7 @@
 use super::deliver::{ascii_line, Message};
 use super::health::{Alert, AlertKind, Severity};
 use super::history::{Run, RunResult};
+use super::protection::{Tier, Unprotected};
 use crate::jobs::Job;
 use crate::zfs::host_health::{jobs_cell, pools_cell, scan_cell, used_cell, HostKind, Level, PoolProbe};
 use chrono::{DateTime, Utc};
@@ -254,8 +255,21 @@ pub fn share_lines(file: &crate::daemon::shares_check::SharesFile) -> Vec<String
     crate::daemon::shares_check::problems(file).iter().map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at))).collect()
 }
 
+/// The daily report's lines for datasets that are not protected: `  fbsd16:tank/photos (your data): no snapshots (for 3d)`.
+/// The `(for ...)` part is there when `bad_since` knows the dataset's key (`host\tdataset`).
+pub fn protection_lines(items: &[Unprotected], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, now: DateTime<Utc>) -> Vec<String> {
+    items
+        .iter()
+        .map(|u| {
+            let tier = if u.tier == Tier::Data { "your data" } else { "OS data" };
+            let since = bad_since(&format!("{}\t{}", u.host, u.dataset)).map(|t| format!(" (for {})", dur((now - t).to_std().unwrap_or_default()))).unwrap_or_default();
+            format!("  {}:{} ({tier}): {}{since}", u.host, u.dataset, u.describe(&|t| ago(now, t)))
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String]) -> Message {
+pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String], unprotected: Option<&[String]>) -> Message {
     let count = |want: &[Level]| rows.iter().filter(|r| want.contains(&r.level)).count();
     let (ok, warning, critical) = (count(&[Level::Ok]), count(&[Level::Warning]), count(&[Level::Critical, Level::Disconnected]));
     let mut parts = vec![format!("{ok} ok")];
@@ -289,6 +303,18 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
         for line in attention {
             body.push_str(&line);
             body.push('\n');
+        }
+    }
+
+    if let Some(lines) = unprotected {
+        body.push_str("\nUNPROTECTED DATA\n");
+        if lines.is_empty() {
+            body.push_str("  All datasets are protected.\n");
+        } else {
+            for line in cut_list(lines.to_vec()) {
+                body.push_str(&line);
+                body.push('\n');
+            }
         }
     }
 
@@ -454,6 +480,37 @@ mod tests {
         assert_eq!(dur(Duration::from_secs(10)), "0m");
     }
 
+    fn unprotected(dataset: &str, tier: crate::daemon::protection::Tier) -> crate::daemon::protection::Unprotected {
+        crate::daemon::protection::Unprotected { host: "fbsd16".into(), dataset: dataset.into(), tier, snapshots: Some(crate::daemon::protection::Gap::Missing), copies: None }
+    }
+
+    #[test]
+    fn the_report_lists_unprotected_data_first_with_how_long() {
+        use crate::daemon::protection::Tier;
+        let items = vec![unprotected("tank/photos", Tier::Data), unprotected("zroot/var/log", Tier::Os)];
+        let since = t(0) - chrono::Duration::days(3);
+        let lines = protection_lines(&items, &|k| (k == "fbsd16\ttank/photos").then_some(since), t(0));
+        assert_eq!(lines[0], "  fbsd16:tank/photos (your data): no snapshots (for 3d)");
+        assert_eq!(lines[1], "  fbsd16:zroot/var/log (OS data): no snapshots");
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&lines));
+        let (a, u) = (m.body.find("NEEDS ATTENTION").unwrap(), m.body.find("\nUNPROTECTED DATA\n").unwrap());
+        assert!(a < u && u < m.body.find("EVENTS since").unwrap(), "{}", m.body);
+        assert!(m.body.contains("  fbsd16:tank/photos (your data): no snapshots (for 3d)\n"), "{}", m.body);
+        assert_eq!(m.subject, "[zfsctl] daily report: all 1 hosts ok");
+    }
+
+    #[test]
+    fn the_report_says_all_protected_when_none() {
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&[]));
+        assert!(m.body.contains("UNPROTECTED DATA\n  All datasets are protected.\n"), "{}", m.body);
+    }
+
+    #[test]
+    fn no_section_when_email_is_off() {
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], None);
+        assert!(!m.body.contains("UNPROTECTED DATA") && !m.body.contains("All datasets are protected"), "{}", m.body);
+    }
+
     #[test]
     fn the_daily_report_lists_the_disk_problems_under_needs_attention() {
         let mut file = crate::daemon::smart_check::SmartFile::default();
@@ -461,7 +518,7 @@ mod tests {
         let lines = disk_lines(&file, &crate::daemon::storage_check::StorageFile::default());
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: da1 reallocated sectors 8 (checked "), "{}", lines[0]);
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines, None);
         assert!(m.body.contains("  fbsd16: da1 reallocated sectors 8") && !m.body.contains("Nothing needs attention"), "{}", m.body);
         assert!(disk_lines(&crate::daemon::smart_check::SmartFile::default(), &crate::daemon::storage_check::StorageFile::default()).is_empty());
     }
@@ -492,7 +549,7 @@ mod tests {
         let lines = check_lines(dir.path());
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("fbsd16: NFS: 2 shares but nfsd is not running (checked "), "{}", lines[0]);
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &lines, None);
         assert!(m.body.contains("  fbsd16: NFS: 2 shares but nfsd is not running") && !m.body.contains("Nothing needs attention"), "{}", m.body);
     }
 
@@ -507,7 +564,7 @@ mod tests {
     #[test]
     fn the_report_has_a_summary_a_table_and_what_needs_attention() {
         let rows = vec![row("hub", Level::Ok, "ok"), row("fbsd16", Level::Critical, "tank DEGRADED"), row("t1", Level::Warning, "tank 85% full"), row("t2", Level::Disconnected, "unreachable")];
-        let m = report_message(t(60 * 7), "2026-10-11 07:00", "hub", &rows, &|h| (h == "fbsd16").then(|| t(60 * 2)), t(0), &[], &[], &[], &[]);
+        let m = report_message(t(60 * 7), "2026-10-11 07:00", "hub", &rows, &|h| (h == "fbsd16").then(|| t(60 * 2)), t(0), &[], &[], &[], &[], None);
         assert_eq!(m.subject, "[zfsctl] daily report: 1 ok, 1 warning, 2 critical");
         assert_eq!((m.kind.as_str(), m.host.as_str()), ("health-report", "hub"));
         for want in ["4 hosts: 1 ok, 1 warning, 2 critical", "HOST", "ADDRESS", "STATE", "USED", "SCRUB", "JOBS", "fbsd16", "NEEDS ATTENTION", "fbsd16: tank DEGRADED (since 2026-10-11 02:00 UTC)", "t2: unreachable"] {
@@ -520,7 +577,7 @@ mod tests {
     #[test]
     fn an_all_green_report_says_so_in_the_subject_and_still_has_a_body() {
         let rows = vec![row("hub", Level::Ok, "ok"), row("t1", Level::Ok, "ok")];
-        let m = report_message(t(0), "2026-10-11 07:00", "hub", &rows, &|_| None, t(-60 * 24), &[], &[], &[], &[]);
+        let m = report_message(t(0), "2026-10-11 07:00", "hub", &rows, &|_| None, t(-60 * 24), &[], &[], &[], &[], None);
         assert_eq!(m.subject, "[zfsctl] daily report: all 2 hosts ok");
         assert!(m.body.contains("Nothing needs attention") && m.body.contains("EVENTS since"), "{}", m.body);
     }
@@ -536,7 +593,7 @@ mod tests {
             run("scrub-t", None, "", t(40)),
         ];
         let events = vec![HealthEvent { at: t(15), host: "fbsd16".into(), kind: "alert".into(), text: "tank DEGRADED".into() }, HealthEvent { at: t(-9000), host: "t1".into(), kind: "alert".into(), text: "old".into() }];
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &events, &[]);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &events, &[], None);
         for want in ["backup: 2 runs, 1 failed", "scrub: 1 run, 0 failed", "failed: backup-a on fbsd16", "restic exited 3", "fbsd16 alert: tank DEGRADED"] {
             assert!(m.body.contains(want), "{want:?} in\n{}", m.body);
         }
@@ -546,7 +603,7 @@ mod tests {
     #[test]
     fn runs_of_a_removed_job_are_still_counted_and_listed_without_a_question_mark() {
         let runs = vec![run("gone", Some(RunResult::Failed), "boom", t(10))];
-        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &[], &[], &[]);
+        let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &[], &[], &[], None);
         assert!(m.body.contains("removed jobs: 1 run, 1 failed") && m.body.contains("failed: gone at 00:10: boom"), "{}", m.body);
         assert!(!m.body.contains('?'), "{}", m.body);
     }
@@ -555,9 +612,9 @@ mod tests {
     fn long_event_lists_are_cut_with_a_count_and_empty_ones_say_none() {
         let jobs = vec![job("j", "snapshot", "hub")];
         let runs: Vec<Run> = (0..60).map(|i| run("j", Some(RunResult::Failed), &format!("boom {i}"), t(i))).collect();
-        let m = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &[], &[]);
+        let m = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &runs, &jobs, &[], &[], None);
         assert!(m.body.contains("(+20 more)"), "{}", m.body);
-        let quiet = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[]);
+        let quiet = report_message(t(120), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], None);
         assert_eq!(quiet.body.matches("  none").count(), 3, "{}", quiet.body);
     }
 

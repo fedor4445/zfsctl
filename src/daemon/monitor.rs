@@ -3,7 +3,7 @@
 
 use super::deliver::Message;
 use super::health::{Alert, AlertKind, Tracker};
-use super::health_text::{ago, alert_message, protection_message, report_message, EventLog, HealthEvent, HostRow};
+use super::health_text::{ago, alert_message, protection_lines, protection_message, report_message, EventLog, HealthEvent, HostRow};
 use super::history::{Run, RunResult};
 use super::protection::{judge, Tier, Unprotected, STALE_AFTER};
 use super::storage_check::{self, StorageFile};
@@ -139,7 +139,6 @@ pub struct Monitor {
     /// The keys `protection` was fed last pass and still has to follow (to a recovery, or to forget them).
     protection_keys: HashSet<String>,
     /// The datasets judged unprotected on the last pass (configured, reachable hosts only), for the daily report.
-    #[allow(dead_code)]
     unprotected: Vec<Unprotected>,
 }
 
@@ -265,7 +264,8 @@ impl Monitor {
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
             let since = self.last_report_at.unwrap_or(now - chrono::Duration::hours(24));
-            let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir));
+            let protection = (self.protection_settings.email != EmailTiming::Off).then(|| protection_lines(&self.unprotected, &|k| self.protection.bad_since(k), now));
+            let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_deref());
             if sink.send(&msg) {
                 self.last_report_at = Some(now);
                 self.mark_report_sent(local.date(), true);
