@@ -5,7 +5,7 @@ use super::deliver::Message;
 use super::health::{Alert, AlertKind, Tracker};
 use super::health_text::{ago, alert_message, dur, protection_lines, protection_message, report_message, EventLog, HealthEvent, HostRow, ProtectionSection};
 use super::history::{Run, RunResult};
-use super::protection::{judge, Tier, Unprotected, STALE_AFTER};
+use super::protection::{judge, Tier, Unprotected, GRACE, STALE_AFTER};
 use super::storage_check::{self, StorageFile};
 use crate::config::{EmailTiming, NotifySettings, ProtectionSettings};
 use crate::exec::CommandRunner;
@@ -382,8 +382,11 @@ impl Monitor {
                 keys.insert(key);
                 continue;
             }
-            // A dataset that is gone (destroyed or renamed) is forgotten without a word.
-            if !file.hosts.get(host).is_some_and(|h| h.seen.iter().any(|s| s.name == dataset)) {
+            // A dataset that is gone (destroyed or renamed) is forgotten without a word; so is one of the same name made
+            // again (inside its grace, or made after the alert began): it is a new dataset, not a recovery.
+            let Some(seen) = file.hosts.get(host).and_then(|h| h.seen.iter().find(|s| s.name == dataset)) else { continue };
+            let created = seen.created.and_then(|c| DateTime::from_timestamp(c, 0));
+            if created.is_some_and(|c| (c <= now && now - c < GRACE) || self.protection.bad_since(&key).is_some_and(|since| c > since)) {
                 continue;
             }
             if let Some(alert) = self.protection.observe(&key, Level::Ok, "protected again", now) {
@@ -1003,6 +1006,42 @@ mod tests {
         let report = sink.sent.iter().find(|s| s.kind == "health-report").unwrap();
         assert!(report.body.contains("UNPROTECTED DATA\n  All datasets on 1 host are protected; not checked: b (unreachable)\n"), "{}", report.body);
         assert!(!report.body.contains("All datasets are protected."), "{}", report.body);
+    }
+
+    #[test]
+    fn a_dataset_destroyed_and_made_again_is_new_not_protected_again() {
+        // Made again inside one storage-check gap: still listed, but in its grace.
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1);
+        write_storage(&dir, &[("a", &["tank/x"])], chrono::Duration::hours(1));
+        for i in 2..6 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1, "a new dataset in its grace is not 'protected again': {:?}", sink.sent);
+        assert!(m.protection.bad_since("a\ttank/x").is_none() && !m.protection_keys.contains("a\ttank/x"), "forgotten");
+
+        // Made again after the alert was sent (the alert's start) and past its grace, now protected: still new, no recovery mail.
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        let mut sink = FakeSink::new();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1);
+        write_storage(&dir, &[("a", &["tank/x"])], chrono::Duration::minutes(-10));
+        let later = t(26 * 60);
+        let (jobs, _) = protecting("a", &["tank/x"]);
+        let runs: Vec<Run> = jobs.iter().map(|j| run(&j.id, Some(RunResult::Ok), "", later - chrono::Duration::minutes(10))).collect();
+        for i in 0..3 {
+            m.observe(later + chrono::Duration::minutes(i * 5), local(26 * 60 + i * 5), &hosts, &[probed_ok("a")], &jobs, &runs, &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1, "{:?}", sink.sent);
     }
 
     #[test]
