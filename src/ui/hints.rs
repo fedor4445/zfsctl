@@ -416,7 +416,9 @@ fn context_hints(app: &App) -> Vec<Hint> {
             }
             let selected = app.dashboard_table.selected().filter(|_| has_lines);
             if let Some(i) = selected {
-                if dashboard.group_at(i).is_some() {
+                if dashboard.is_safety(i) {
+                    v.push(h("Enter", "Show graph", 1));
+                } else if dashboard.group_at(i).is_some() {
                     v.push(h("Enter", "Open group", 1));
                 } else if let Some(item) = dashboard.attention.get(i) {
                     v.push(h("Enter", if dashboard.protection_fix(item).is_some() { "Fix" } else if dashboard.protection_popup(item).is_some() { "Show list" } else { "Go to section" }, 1));

@@ -304,7 +304,7 @@ fn status_line(level: Level, label: &str, text: &str, width: usize, theme: &Them
 
 /// Everything below the host table: the daemon and jobs, the cloud remotes and the alerts. `compact` drops the headings and
 /// blank lines (each line then says what it is) for a screen that is too short for the full layout.
-fn component_lines(d: &Dashboard, width: usize, compact: bool, theme: &Theme) -> Vec<Line<'static>> {
+fn component_lines(d: &Dashboard, selected: Option<usize>, width: usize, compact: bool, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let section = |lines: &mut Vec<Line<'static>>, title: &str| {
         if !compact {
@@ -313,6 +313,13 @@ fn component_lines(d: &Dashboard, width: usize, compact: bool, theme: &Theme) ->
         }
     };
     let label = |full: &'static str, short: &'static str| if compact { short } else { full };
+    if let Some(safety) = &d.safety {
+        section(&mut lines, "DATA SAFETY");
+        let (glyph, _) = glyph_word(safety.level);
+        let marked = selected.is_some_and(|s| d.is_safety(s));
+        let line = Line::styled(cut(&format!(" {} {glyph} {}{}", if marked { "▸" } else { " " }, label("", "safety  "), safety.text), width), level_style(theme, safety.level));
+        lines.push(if marked { line.patch_style(theme.selected_row()) } else { line });
+    }
     section(&mut lines, "DAEMON AND JOBS");
     lines.push(status_line(d.daemon.level, "daemon  ", &d.daemon.text, width, theme));
     lines.push(status_line(d.jobs.level, "jobs    ", &d.jobs.text, width, theme));
@@ -340,7 +347,7 @@ fn assemble(d: &Dashboard, selected: Option<usize>, width: usize, now: &str, the
     lines.extend(attention_lines(d, selected.filter(|s| *s < d.attention.len()), width, cap, theme));
     lines.push(Line::raw(""));
     lines.extend(host_lines(d, selected.and_then(|s| s.checked_sub(d.attention.len())), width, theme));
-    lines.extend(component_lines(d, width, compact, theme));
+    lines.extend(component_lines(d, selected, width, compact, theme));
     lines
 }
 
@@ -476,6 +483,20 @@ mod tests {
         assert!(head.contains("Load"), "{head}");
         let row = text.lines().find(|l| l.contains("web (3)")).unwrap();
         assert!(row.contains("0.05") || row.contains("0.1"), "the group's load is the highest of its hosts: {row}");
+    }
+
+    #[test]
+    fn the_data_safety_line_is_drawn_under_its_heading_and_marked_when_selected() {
+        let app = mixed_app();
+        let d = app.dashboard();
+        let n = d.attention.len();
+        let text = |selected: Option<usize>| screen_lines(&d, selected, 140, 40, "Sat", &app.theme).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let plain = text(None);
+        assert!(plain.contains("DATA SAFETY") && plain.contains("no dataset has a copy yet"), "{plain}");
+        let marked = text(Some(n));
+        let line = marked.lines().find(|l| l.contains("no dataset has a copy yet")).unwrap();
+        assert!(line.contains('▸'), "{line}");
+        assert!(!text(Some(0)).lines().find(|l| l.contains("no dataset has a copy yet")).unwrap().contains('▸'));
     }
 
     #[test]

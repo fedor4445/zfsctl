@@ -400,6 +400,12 @@ pub struct Dashboard {
     pub hosts: Vec<HostRow>,
     /// The hosts rolled up by tag, when any host has one.
     pub groups: Option<Vec<Group>>,
+    /// The one line about the data-safety graph (`weakest: ...`), when the jobs are loaded; Enter on it opens the pop-up.
+    pub safety: Option<Line>,
+    /// Every body of the graph, the weakest first, for that pop-up.
+    pub bodies: Vec<crate::daemon::safety::Body>,
+    /// The time the graph was read at (the pop-up's ages are relative to it).
+    pub at: DateTime<Utc>,
     pub daemon: Line,
     pub jobs: Line,
     /// Ids of the enabled jobs whose latest run failed.
@@ -669,7 +675,17 @@ pub struct ProtectionPopup {
 impl Dashboard {
     /// How many lines the selection moves through: the Needs attention lines, then one row per group.
     pub fn selectable(&self) -> usize {
-        self.attention.len() + self.groups.as_ref().map_or(0, Vec::len)
+        self.attention.len() + self.groups.as_ref().map_or(0, Vec::len) + usize::from(self.safety.is_some())
+    }
+
+    /// Whether a selection index stands for the data-safety line (the last line to move to).
+    pub fn is_safety(&self, selection: usize) -> bool {
+        self.safety.is_some() && selection == self.attention.len() + self.groups.as_ref().map_or(0, Vec::len)
+    }
+
+    /// The pop-up of the data-safety graph.
+    pub fn safety_popup(&self) -> String {
+        crate::ui::safety_text::popup(&self.bodies, self.at)
     }
 
     /// The group a selection index stands for (the indexes past the attention lines), if any.
@@ -728,6 +744,11 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     let now = inputs.now;
     let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
     let groups = groups_of(&inputs.hosts, &hosts, inputs.expand_groups);
+    let bodies = if inputs.jobs.loaded { crate::daemon::safety::bodies(&inputs.jobs.jobs, &inputs.jobs.runs, inputs.protection, &|h| h.to_string(), now) } else { Vec::new() };
+    let safety = inputs.jobs.loaded.then(|| match crate::ui::safety_text::summary(&bodies, now) {
+        Some((attention, text)) => Line { level: if attention { Level::Watch } else { Level::Fine }, text },
+        None => Line { level: Level::Unknown, text: "no dataset has a copy yet".to_string() },
+    });
     let daemon = daemon_line(inputs.jobs, now);
     let (jobs, failed_jobs) = jobs_line(inputs.jobs);
     let widths = CloudWidths {
@@ -832,7 +853,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, groups, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, groups, safety, bodies, at: now, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 
