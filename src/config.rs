@@ -15,6 +15,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
         "memory_warn", "memory_crit", "swap_warn", "swap_crit", "quota_warn", "quota_crit", "dedup_min_ratio", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
+        "level", "copies", "online", "recent", "email",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -38,6 +39,95 @@ pub struct Config {
     pub cloud: CloudConfig,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "DashboardConfig::is_default")]
     pub dashboard: DashboardConfig,
+    #[serde(default, skip_serializing_if = "ProtectionConfig::is_default")]
+    pub protection: ProtectionConfig,
+}
+
+/// What counts as protected (`[protection]`): how many copies of a dataset, how many of them online, how recent, and when to
+/// email. Wrong values are not defaulted: `resolve` names the key and the allowed values.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ProtectionConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub copies: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub online: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub recent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub email: Option<String>,
+}
+
+/// When the unprotected-datasets alert is emailed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)] // used by the unprotected-datasets check (later tasks)
+pub enum EmailTiming {
+    #[default]
+    Immediate,
+    Report,
+    Off,
+}
+
+/// `ProtectionConfig` validated, with the defaults filled in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // used by the unprotected-datasets check (later tasks)
+pub struct ProtectionSettings {
+    /// Copies a dataset needs (1 to 3).
+    pub copies: u8,
+    /// Of those, copies that must be online (0 to `copies`).
+    pub online: u8,
+    /// How many intervals old a copy may be and still count as recent.
+    pub tolerance: i32,
+    pub email: EmailTiming,
+}
+
+impl Default for ProtectionSettings {
+    fn default() -> Self {
+        ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate }
+    }
+}
+
+impl ProtectionConfig {
+    fn is_default(&self) -> bool {
+        *self == ProtectionConfig::default()
+    }
+
+    #[allow(dead_code)] // used by the unprotected-datasets check (later tasks)
+    pub fn resolve(&self) -> std::result::Result<ProtectionSettings, String> {
+        let (copies, online) = match self.level.as_deref().unwrap_or("basic") {
+            "basic" => (1, 0),
+            "careful" => (3, 1),
+            "custom" => {
+                let copies = self.copies.unwrap_or(1);
+                let online = self.online.unwrap_or(0);
+                if !(1..=3).contains(&copies) {
+                    return Err("[protection] copies must be 1, 2 or 3".into());
+                }
+                if online > 2 {
+                    return Err("[protection] online must be 0, 1 or 2".into());
+                }
+                if online > copies {
+                    return Err("[protection] online must not be more than copies".into());
+                }
+                (copies, online)
+            }
+            _ => return Err("[protection] level must be basic, careful or custom".into()),
+        };
+        let tolerance = match self.recent.as_deref().unwrap_or("normal") {
+            "strict" => 1,
+            "normal" => 2,
+            "relaxed" => 4,
+            _ => return Err("[protection] recent must be strict, normal or relaxed".into()),
+        };
+        let email = match self.email.as_deref().unwrap_or("immediate") {
+            "immediate" => EmailTiming::Immediate,
+            "report" => EmailTiming::Report,
+            "off" => EmailTiming::Off,
+            _ => return Err("[protection] email must be immediate, report or off".into()),
+        };
+        Ok(ProtectionSettings { copies, online, tolerance, email })
+    }
 }
 
 /// When the Dashboard turns a reading yellow (watch) and red (issue) (`[dashboard]`). Unset keys take the defaults of
@@ -711,6 +801,7 @@ mod tests {
             scrub_crit_days: Some(90),
             scrub_ignore: vec!["scratch".into()],
         };
+        let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2), online: Some(1), recent: Some("normal".into()), email: Some("report".into()) };
         let notify = NotifyConfig {
             mail_to: Some("a@b".into()),
             mail_command: Some("c".into()),
@@ -726,7 +817,7 @@ mod tests {
             catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
         };
         let mut found: Vec<String> = Vec::new();
-        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&ssh).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&job).unwrap()] {
+        for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&ssh).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&protection).unwrap(), toml::Value::try_from(&job).unwrap()] {
             found.extend(value.as_table().unwrap().keys().cloned());
         }
         found.sort();
@@ -939,6 +1030,65 @@ mod tests {
         assert_eq!(s.report_time, Some(chrono::NaiveTime::from_hms_opt(6, 30, 0).unwrap()));
         assert_eq!(s.remind, None, "0 hours means never");
         assert_eq!(toml::from_str::<Config>(&toml::to_string_pretty(&config).unwrap()).unwrap(), config);
+    }
+
+    fn prot(level: Option<&str>, copies: Option<u8>, online: Option<u8>, recent: Option<&str>, email: Option<&str>) -> ProtectionConfig {
+        ProtectionConfig { level: level.map(Into::into), copies, online, recent: recent.map(Into::into), email: email.map(Into::into) }
+    }
+
+    #[test]
+    fn protection_defaults_are_basic_normal_immediate() {
+        let s = ProtectionConfig::default().resolve().unwrap();
+        assert_eq!(s, ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate });
+        assert_eq!(s, ProtectionSettings::default());
+        assert_eq!(Config::default().protection.resolve().unwrap(), s);
+    }
+
+    #[test]
+    fn careful_means_three_copies_one_online() {
+        let s = prot(Some("careful"), None, None, None, None).resolve().unwrap();
+        assert_eq!((s.copies, s.online), (3, 1));
+    }
+
+    #[test]
+    fn custom_reads_copies_and_online_and_ignores_them_for_other_levels() {
+        let s = prot(Some("custom"), Some(2), Some(1), None, None).resolve().unwrap();
+        assert_eq!((s.copies, s.online), (2, 1));
+        let d = prot(Some("custom"), None, None, None, None).resolve().unwrap();
+        assert_eq!((d.copies, d.online), (1, 0));
+        let b = prot(Some("basic"), Some(3), Some(2), None, None).resolve().unwrap();
+        assert_eq!((b.copies, b.online), (1, 0));
+        let c = prot(Some("careful"), Some(9), Some(9), None, None).resolve().unwrap();
+        assert_eq!((c.copies, c.online), (3, 1), "bad numbers are ignored, not errors, outside custom");
+    }
+
+    #[test]
+    fn recent_steps_are_one_two_and_four_intervals() {
+        let t = |r| prot(None, None, None, Some(r), None).resolve().unwrap().tolerance;
+        assert_eq!((t("strict"), t("normal"), t("relaxed")), (1, 2, 4));
+        let e = |m| prot(None, None, None, None, Some(m)).resolve().unwrap().email;
+        assert_eq!((e("immediate"), e("report"), e("off")), (EmailTiming::Immediate, EmailTiming::Report, EmailTiming::Off));
+    }
+
+    #[test]
+    fn a_wrong_value_names_the_key() {
+        let err = |c: ProtectionConfig| c.resolve().unwrap_err();
+        assert_eq!(err(prot(Some("paranoid"), None, None, None, None)), "[protection] level must be basic, careful or custom");
+        assert!(err(prot(Some("custom"), Some(4), None, None, None)).contains("copies"));
+        assert!(err(prot(Some("custom"), Some(0), None, None, None)).contains("copies"));
+        assert!(err(prot(Some("custom"), Some(3), Some(3), None, None)).contains("online"));
+        assert!(err(prot(Some("custom"), Some(1), Some(2), None, None)).contains("online"));
+        assert!(err(prot(None, None, None, Some("fast"), None)).contains("recent must be strict, normal or relaxed"));
+        assert!(err(prot(None, None, None, None, Some("daily"))).contains("email must be immediate, report or off"));
+    }
+
+    #[test]
+    fn an_empty_section_is_not_written_back() {
+        let c: Config = toml::from_str("[protection]\n").unwrap();
+        assert_eq!(c.protection, ProtectionConfig::default());
+        assert!(!toml::to_string(&c).unwrap().contains("protection"));
+        let set: Config = toml::from_str("[protection]\nlevel = \"careful\"\nemail = \"off\"\n").unwrap();
+        assert_eq!(toml::from_str::<Config>(&toml::to_string(&set).unwrap()).unwrap(), set);
     }
 
     #[test]

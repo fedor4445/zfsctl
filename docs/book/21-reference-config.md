@@ -76,6 +76,18 @@ When the Dashboard turns a reading yellow ("to watch") and red ("issue"). All ke
 | `scrub_crit_days` | number | `90` | days since the last scrub from which it turns red |
 | `scrub_ignore` | list of text | none | pool names the Dashboard does not judge by scrub age, such as `["scratch"]`; a resilver does not count as a scrub |
 
+### `[protection]`
+
+What counts as a protected dataset. All keys are optional; a wrong value is reported by name and never replaced by a default.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `level` | text | `basic` | `basic` (one copy), `careful` (three copies, one of them online) or `custom` |
+| `copies` | number | `1` | with `level = "custom"`: how many copies a dataset needs, 1 to 3; ignored for the other levels |
+| `online` | number | `0` | with `level = "custom"`: how many of those copies must be online, 0 to 2 and never more than `copies`; ignored for the other levels |
+| `recent` | text | `normal` | how old a copy may be and still count: `strict` (one interval), `normal` (two) or `relaxed` (four) |
+| `email` | text | `immediate` | when an unprotected dataset is emailed: `immediate`, `report` (only in the daily report) or `off` |
+
 ## jobs.toml
 
 The file is `/var/db/zfsctl/jobs.toml`. Each job is one `[[jobs]]` table; the TUI writes it for you, and the daemon notices a change within a second. A job needs only the keys its kind uses.
