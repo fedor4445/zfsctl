@@ -62,6 +62,11 @@ fn dur(d: Duration) -> String {
     }
 }
 
+/// A past time as `3d ago` or `1h 30m ago` (a time in the future counts as now).
+pub fn ago(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
+    format!("{} ago", dur((now - then).to_std().unwrap_or_default()))
+}
+
 fn utc(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M UTC").to_string()
 }
@@ -128,6 +133,39 @@ pub fn alert_message(row: &HostRow, alert: &Alert, now: DateTime<Utc>, hub: &str
         body.push('\n');
     }
     Message { kind: kind.to_string(), host: alert.host.clone(), level: severity_word(alert.severity).to_string(), subject, body }
+}
+
+/// The message for the datasets of one host that became unprotected (or are still, or are protected again) in one
+/// pass: `items` are each dataset with the alert the tracker gave it, data first. A warning-level alert is OS data.
+pub fn protection_message(host: &str, kind: AlertKind, items: &[(String, Alert)], now: DateTime<Utc>, hub: &str) -> Message {
+    let name = ascii_line(host);
+    let n = items.len();
+    let what = format!("{n} dataset{}", if n == 1 { "" } else { "s" });
+    let (subject, message_kind) = match kind {
+        AlertKind::Alert | AlertKind::Escalation => (format!("[zfsctl] {name}: {what} not protected"), "health-alert"),
+        AlertKind::Reminder => {
+            let longest = items.iter().filter_map(|(_, a)| a.bad_for).max().unwrap_or_default();
+            (format!("[zfsctl] {name}: {what} still not protected (for {})", dur(longest)), "health-reminder")
+        }
+        AlertKind::Recovery => (format!("[zfsctl] {name}: {what} protected again"), "health-recovered"),
+    };
+    let level = if kind == AlertKind::Recovery { Severity::Ok } else { items.iter().map(|(_, a)| a.severity).max().unwrap_or(Severity::Warning) };
+    let mut body = format!("Host:     {name}\nHub:      {}\nTime:     {}\n\n", ascii_line(hub), utc(now));
+    for (dataset, alert) in items {
+        let line = if kind == AlertKind::Recovery {
+            alert.bad_for.map_or_else(|| format!("  {dataset}: protected again"), |d| format!("  {dataset}: protected again after {}", dur(d)))
+        } else {
+            let os = if alert.severity == Severity::Warning { " (OS data)" } else { "" };
+            let since = if kind == AlertKind::Reminder { alert.bad_for.map(|d| format!(" (for {})", dur(d))).unwrap_or_default() } else { String::new() };
+            format!("  {dataset}: {}{os}{since}", alert.reason)
+        };
+        body.push_str(&ascii_line(&line));
+        body.push('\n');
+    }
+    if kind != AlertKind::Recovery {
+        body.push_str("\nA dataset is protected when a current snapshot job and enough current copies on other machines cover it\n(how many: Settings, Data protection). The fix is made in the Jobs section.\n");
+    }
+    Message { kind: message_kind.to_string(), host: host.to_string(), level: severity_word(level).to_string(), subject, body }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,6 +410,39 @@ mod tests {
         assert_eq!((m.subject.as_str(), m.kind.as_str()), ("[zfsctl] fbsd16: still: tank 90% full (for 6h 2m)", "health-reminder"));
         let ok = alert_message(&r, &mk(AlertKind::Recovery, Severity::Ok, Some(Duration::from_secs(90 * 60))), t(0), "hub");
         assert_eq!((ok.subject.as_str(), ok.kind.as_str(), ok.level.as_str()), ("[zfsctl] fbsd16: recovered after 1h 30m", "health-recovered", "ok"));
+    }
+
+    #[test]
+    fn protection_message_lists_one_line_per_dataset_in_ascii() {
+        let item = |dataset: &str, kind, severity, reason: &str, bad_for: Option<u64>| (dataset.to_string(), Alert { host: format!("fbsd16\t{dataset}"), kind, severity, reason: reason.into(), bad_for: bad_for.map(Duration::from_secs) });
+        let items = vec![item("tank/photos", AlertKind::Alert, Severity::Critical, "no snapshots", None), item("tank/caf\u{e9}", AlertKind::Alert, Severity::Critical, "copy job failing", None), item("zroot/var/log", AlertKind::Alert, Severity::Warning, "no copy on another machine", None)];
+        let m = protection_message("fbsd16", AlertKind::Alert, &items, t(0), "hub");
+        assert_eq!(m.subject, "[zfsctl] fbsd16: 3 datasets not protected");
+        assert_eq!((m.kind.as_str(), m.host.as_str(), m.level.as_str()), ("health-alert", "fbsd16", "critical"));
+        for want in ["Host:     fbsd16", "Hub:      hub", "  tank/photos: no snapshots", "  tank/caf?: copy job failing", "  zroot/var/log: no copy on another machine (OS data)"] {
+            assert!(m.body.contains(want), "{want:?} in\n{}", m.body);
+        }
+        assert!(m.body.is_ascii(), "{}", m.body);
+
+        let one = vec![item("zroot/var/log", AlertKind::Alert, Severity::Warning, "no snapshots", None)];
+        let w = protection_message("fbsd16", AlertKind::Alert, &one, t(0), "hub");
+        assert_eq!((w.subject.as_str(), w.level.as_str()), ("[zfsctl] fbsd16: 1 dataset not protected", "warning"));
+
+        let reminders = vec![item("tank/a", AlertKind::Reminder, Severity::Critical, "no snapshots", Some(3 * 86400)), item("tank/b", AlertKind::Reminder, Severity::Critical, "no snapshots", Some(3600))];
+        let r = protection_message("fbsd16", AlertKind::Reminder, &reminders, t(0), "hub");
+        assert_eq!((r.subject.as_str(), r.kind.as_str()), ("[zfsctl] fbsd16: 2 datasets still not protected (for 3d)", "health-reminder"));
+        assert!(r.body.contains("  tank/b: no snapshots (for 1h)"), "{}", r.body);
+
+        let back = vec![item("tank/a", AlertKind::Recovery, Severity::Ok, "protected again", Some(2 * 3600))];
+        let ok = protection_message("bad\nhost", AlertKind::Recovery, &back, t(0), "hub");
+        assert_eq!((ok.subject.as_str(), ok.kind.as_str(), ok.level.as_str()), ("[zfsctl] bad host: 1 dataset protected again", "health-recovered", "ok"));
+        assert!(ok.body.contains("  tank/a: protected again after 2h"), "{}", ok.body);
+    }
+
+    #[test]
+    fn ago_words_a_past_time() {
+        assert_eq!(ago(t(3 * 1440), t(0)), "3d ago");
+        assert_eq!(ago(t(90), t(0)), "1h 30m ago");
     }
 
     #[test]

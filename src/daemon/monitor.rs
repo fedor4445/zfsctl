@@ -2,10 +2,12 @@
 //! sends the daily report. `observe` does everything after the probing, so it is tested without threads or ssh.
 
 use super::deliver::Message;
-use super::health::{AlertKind, Tracker};
-use super::health_text::{alert_message, report_message, EventLog, HealthEvent, HostRow};
+use super::health::{Alert, AlertKind, Tracker};
+use super::health_text::{ago, alert_message, protection_message, report_message, EventLog, HealthEvent, HostRow};
 use super::history::{Run, RunResult};
-use crate::config::NotifySettings;
+use super::protection::{judge, Tier, Unprotected, STALE_AFTER};
+use super::storage_check::{self, StorageFile};
+use crate::config::{EmailTiming, NotifySettings, ProtectionSettings};
 use crate::exec::CommandRunner;
 use crate::jobs::Job;
 use crate::zfs::host_health::{assess, probe_host_guarded, HostKind, HostProbe, Level};
@@ -110,9 +112,14 @@ pub trait Sink {
     fn send(&mut self, msg: &Message) -> bool;
 }
 
+/// The dataset alerts of one host and one kind in one pass: (host, kind, [(dataset, alert)]).
+type ProtectionGroup = (String, AlertKind, Vec<(String, Alert)>);
+
 struct Pending {
     msg: Message,
     attempts: u32,
+    /// The protection tracker keys (`host\tdataset`) the message is about; empty for a message about a host.
+    keys: Vec<String>,
 }
 
 pub struct Monitor {
@@ -126,6 +133,14 @@ pub struct Monitor {
     last_report_at: Option<DateTime<Utc>>,
     kinds: HashMap<String, HostKind>,
     events: EventLog,
+    protection_settings: ProtectionSettings,
+    /// The alert state of each unprotected dataset, keyed `host\tdataset`, fed only when the email timing is immediate.
+    protection: Tracker,
+    /// The keys `protection` was fed last pass and still has to follow (to a recovery, or to forget them).
+    protection_keys: HashSet<String>,
+    /// The datasets judged unprotected on the last pass (configured, reachable hosts only), for the daily report.
+    #[allow(dead_code)]
+    unprotected: Vec<Unprotected>,
 }
 
 impl Monitor {
@@ -138,7 +153,29 @@ impl Monitor {
         let events = EventLog::new(state_dir.join("health-events.jsonl"));
         let _ = events.append(&HealthEvent { at: now, host: hub.clone(), kind: "daemon-started".to_string(), text: "zfsctl daemon started".to_string() });
         let tracker = Tracker::new(CONFIRM, settings.remind);
-        Monitor { settings, hub, state_dir, tracker, pending: Vec::new(), last_report, report_attempts: 0, last_report_at: None, kinds: HashMap::new(), events }
+        let protection = Tracker::new(CONFIRM, settings.remind);
+        Monitor {
+            settings,
+            hub,
+            state_dir,
+            tracker,
+            pending: Vec::new(),
+            last_report,
+            report_attempts: 0,
+            last_report_at: None,
+            kinds: HashMap::new(),
+            events,
+            protection_settings: ProtectionSettings::default(),
+            protection,
+            protection_keys: HashSet::new(),
+            unprotected: Vec::new(),
+        }
+    }
+
+    /// Applies new `[protection]` settings; the next pass judges with them (and drops the dataset alerts when the email
+    /// timing is no longer immediate).
+    pub fn set_protection(&mut self, settings: ProtectionSettings) {
+        self.protection_settings = settings;
     }
 
     pub fn settings(&self) -> &NotifySettings {
@@ -149,6 +186,7 @@ impl Monitor {
     /// stay (only the reminder interval of the tracker changes).
     pub fn set_settings(&mut self, settings: NotifySettings) {
         self.tracker.set_remind(settings.remind);
+        self.protection.set_remind(settings.remind);
         self.settings = settings;
     }
 
@@ -202,8 +240,9 @@ impl Monitor {
                 AlertKind::Recovery => "recovery",
             };
             let _ = self.events.append(&HealthEvent { at: now, host: row.name.clone(), kind: kind.to_string(), text: alert.reason.clone() });
-            self.pending.push(Pending { msg: alert_message(row, &alert, now, &self.hub), attempts: 0 });
+            self.pending.push(Pending { msg: alert_message(row, &alert, now, &self.hub), attempts: 0, keys: Vec::new() });
         }
+        self.observe_protection(now, probed, &rows, jobs, runs);
         let queue = std::mem::take(&mut self.pending);
         for mut item in queue {
             if sink.send(&item.msg) {
@@ -213,9 +252,15 @@ impl Monitor {
             if item.attempts < MAX_ATTEMPTS {
                 self.pending.push(item);
             } else if item.msg.kind == "health-alert" {
-                // Given up on an alert nobody received: forget the host so the next bad probes alert it again,
-                // instead of a later "recovered" for something the operator never heard about.
-                self.tracker.forget_host(&item.msg.host);
+                // Given up on an alert nobody received: forget the host (or the datasets) so the next bad probes alert
+                // it again, instead of a later "recovered" for something the operator never heard about.
+                if item.keys.is_empty() {
+                    self.tracker.forget_host(&item.msg.host);
+                } else {
+                    for key in &item.keys {
+                        self.protection.forget_host(key);
+                    }
+                }
             }
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
@@ -231,6 +276,103 @@ impl Monitor {
                     self.mark_report_sent(local.date(), false);
                 }
             }
+        }
+    }
+
+    /// Drops every dataset alert and the messages still queued for them: the email timing is no longer immediate.
+    fn stop_protection_alerts(&mut self) {
+        if !self.protection_keys.is_empty() {
+            self.protection = Tracker::new(CONFIRM, self.settings.remind);
+            self.protection_keys.clear();
+        }
+        self.pending.retain(|p| p.keys.is_empty());
+    }
+
+    /// Judges the datasets once for this pass and, when the email timing is immediate, feeds the dataset alerts and queues
+    /// one message per host and kind. Only configured hosts that answered this pass and have a fresh dataset list are
+    /// judged; the alerts of any other configured host are left as they are (unknown is not a recovery).
+    fn observe_protection(&mut self, now: DateTime<Utc>, probed: &[Probed], rows: &[HostRow], jobs: &[Job], runs: &[Run]) {
+        if self.protection_settings.email == EmailTiming::Off {
+            self.unprotected.clear();
+            self.stop_protection_alerts();
+            return;
+        }
+        let file = StorageFile::load(&self.state_dir.join(storage_check::FILE));
+        let answered = |name: &str| probed.iter().any(|p| p.name == name && p.probe.is_some());
+        let known: HashSet<&str> = rows
+            .iter()
+            .filter(|r| !matches!(r.level, Level::Disconnected | Level::Probing) && answered(&r.name))
+            .filter(|r| file.hosts.get(&r.name).is_some_and(|h| now - h.checked_at <= STALE_AFTER))
+            .map(|r| r.name.as_str())
+            .collect();
+        let mut found = judge(&file, jobs, runs, &self.protection_settings, now);
+        found.retain(|u| known.contains(u.host.as_str()));
+        if self.protection_settings.email != EmailTiming::Immediate {
+            self.unprotected = found;
+            self.stop_protection_alerts();
+            return;
+        }
+
+        // (host, dataset, alert) in the order they arise: data first, as `judge` sorts, then the recoveries.
+        let mut alerts: Vec<(String, String, Alert)> = Vec::new();
+        let mut keys: HashSet<String> = HashSet::with_capacity(found.len());
+        for u in &found {
+            let key = format!("{}\t{}", u.host, u.dataset);
+            let level = match u.tier {
+                Tier::Data => Level::Critical,
+                Tier::Os => Level::Warning,
+            };
+            if let Some(alert) = self.protection.observe(&key, level, &u.describe(&|t| ago(now, t)), now) {
+                alerts.push((u.host.clone(), u.dataset.clone(), alert));
+            }
+            keys.insert(key);
+        }
+        let configured: HashSet<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        let mut earlier: Vec<String> = self.protection_keys.drain().filter(|k| !keys.contains(k)).collect();
+        earlier.sort_unstable();
+        for key in earlier {
+            let Some((host, dataset)) = key.split_once('\t') else { continue };
+            if !configured.contains(host) {
+                continue;
+            }
+            if !known.contains(host) {
+                keys.insert(key);
+                continue;
+            }
+            // A dataset that is gone (destroyed or renamed) is forgotten without a word.
+            if !file.hosts.get(host).is_some_and(|h| h.seen.iter().any(|s| s.name == dataset)) {
+                continue;
+            }
+            if let Some(alert) = self.protection.observe(&key, Level::Ok, "protected again", now) {
+                alerts.push((host.to_string(), dataset.to_string(), alert));
+            }
+            if self.protection.bad_since(&key).is_some() {
+                keys.insert(key);
+            }
+        }
+        let kept: Vec<String> = keys.iter().cloned().collect();
+        self.protection.forget_except(&kept);
+        self.protection_keys = keys;
+        self.unprotected = found;
+
+        let mut groups: Vec<ProtectionGroup> = Vec::new();
+        for (host, dataset, alert) in alerts {
+            let kind = if alert.kind == AlertKind::Escalation { AlertKind::Alert } else { alert.kind };
+            match groups.iter_mut().find(|(h, k, _)| *h == host && *k == kind) {
+                Some((_, _, items)) => items.push((dataset, alert)),
+                None => groups.push((host, kind, vec![(dataset, alert)])),
+            }
+        }
+        for (host, kind, items) in groups {
+            let msg = protection_message(&host, kind, &items, now, &self.hub);
+            let event = match kind {
+                AlertKind::Alert | AlertKind::Escalation => "alert",
+                AlertKind::Reminder => "reminder",
+                AlertKind::Recovery => "recovery",
+            };
+            let text = msg.subject.split_once(": ").map_or(msg.subject.as_str(), |(_, rest)| rest).to_string();
+            let _ = self.events.append(&HealthEvent { at: now, host: host.clone(), kind: event.to_string(), text });
+            self.pending.push(Pending { msg, attempts: 0, keys: items.into_iter().map(|(_, a)| a.host).collect() });
         }
     }
 }
@@ -580,6 +722,258 @@ mod tests {
         assert!(sink.sent.last().unwrap().subject.contains("recovered"), "the recovery still comes");
         let starts = EventLog::new(dir.path().join("health-events.jsonl")).read().iter().filter(|e| e.kind == "daemon-started").count();
         assert_eq!(starts, 1);
+    }
+
+    use crate::config::{EmailTiming, ProtectionSettings};
+    use crate::daemon::storage_check::{self, Integrity, SeenDataset, StorageFile, StorageResult};
+
+    /// Writes `storage.json` with each host's datasets, created `created_ago` before `t(0)` and checked at `t(0)`.
+    fn write_storage(dir: &std::path::Path, hosts: &[(&str, &[&str])], created_ago: chrono::Duration) {
+        let mut file = StorageFile::default();
+        for (h, names) in hosts {
+            let seen = names.iter().map(|n| SeenDataset { name: (*n).into(), volume: false, created: Some((t(0) - created_ago).timestamp()) }).collect();
+            file.hosts.insert((*h).into(), StorageResult { checked_at: t(0), datasets: vec![], seen, pools: vec![], integrity: Integrity::default(), locked: vec![], integrity_stale: false, zfs_version: None, error: None });
+        }
+        file.save(&dir.join(storage_check::FILE)).unwrap();
+    }
+
+    fn week() -> chrono::Duration {
+        chrono::Duration::days(7)
+    }
+
+    fn guarding(email: EmailTiming) -> (Monitor, PathBuf) {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let mut m = Monitor::new(settings_with_report("off"), "hub".into(), dir.clone(), t(0));
+        m.set_protection(ProtectionSettings { email, ..ProtectionSettings::default() });
+        (m, dir)
+    }
+
+    /// A current snapshot job and a current replication to another host for each dataset.
+    fn protecting(host: &str, datasets: &[&str]) -> (Vec<Job>, Vec<Run>) {
+        let mut jobs = Vec::new();
+        for (i, d) in datasets.iter().enumerate() {
+            let mut s = Job::test_snapshot(&format!("s-{host}-{i}"), d, "auto", 24);
+            s.host = host.into();
+            let mut r = Job::test_replicate(&format!("r-{host}-{i}"), d, "rep", "elsewhere", &format!("backup/{i}"));
+            r.host = host.into();
+            jobs.push(s);
+            jobs.push(r);
+        }
+        let runs = jobs.iter().map(|j| run(&j.id, Some(RunResult::Ok), "", t(-10))).collect();
+        (jobs, runs)
+    }
+
+    fn protection_mail(s: &FakeSink) -> Vec<&Message> {
+        s.sent.iter().filter(|m| m.subject.contains("protected")).collect()
+    }
+
+    #[test]
+    fn six_new_unprotected_datasets_on_one_host_send_one_message() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        let names = ["tank/a", "tank/b", "tank/c", "tank/d", "tank/e", "zroot/var/log"];
+        write_storage(&dir, &[("a", &names)], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        m.observe(t(0), local(0), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        assert!(protection_mail(&sink).is_empty(), "one pass is not enough, as for hosts");
+        m.observe(t(5), local(5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        let mail = protection_mail(&sink);
+        assert_eq!(mail.len(), 1, "{:?}", sink.sent);
+        assert_eq!(mail[0].subject, "[zfsctl] a: 6 datasets not protected");
+        assert_eq!((mail[0].kind.as_str(), mail[0].host.as_str(), mail[0].level.as_str()), ("health-alert", "a", "critical"));
+        for n in names {
+            assert_eq!(mail[0].body.lines().filter(|l| l.trim_start().starts_with(&format!("{n}:"))).count(), 1, "{n} in\n{}", mail[0].body);
+        }
+        assert!(mail[0].body.contains("tank/a: no snapshots; no copy on another machine"), "{}", mail[0].body);
+        assert_eq!(sink.sent.len(), 1, "the healthy host itself sends nothing");
+        let events = EventLog::new(dir.join("health-events.jsonl")).read();
+        assert_eq!(events.iter().filter(|e| e.kind == "alert" && e.host == "a").count(), 1, "one event for the message, not six: {events:?}");
+    }
+
+    #[test]
+    fn a_dataset_in_its_grace_sends_nothing() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/new"])], chrono::Duration::hours(1));
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        for i in 0..4 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert!(sink.sent.is_empty(), "{:?}", sink.sent);
+    }
+
+    #[test]
+    fn recovery_is_one_message_per_host() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x", "tank/y"]), ("b", &["tank/p", "tank/q"])], week());
+        let hosts = [host("a"), host("b")];
+        let probed = [probed_ok("a"), probed_ok("b")];
+        let mut sink = FakeSink::new();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &probed, &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 2, "one alert per host");
+        let (mut jobs, mut runs) = protecting("a", &["tank/x", "tank/y"]);
+        let (more_jobs, more_runs) = protecting("b", &["tank/p", "tank/q"]);
+        jobs.extend(more_jobs);
+        runs.extend(more_runs);
+        m.observe(t(10), local(10), &hosts, &probed, &jobs, &runs, &mut sink);
+        assert_eq!(protection_mail(&sink).len(), 2, "one good pass does not recover");
+        m.observe(t(15), local(15), &hosts, &probed, &jobs, &runs, &mut sink);
+        let mail = protection_mail(&sink);
+        assert_eq!(mail.len(), 4, "{:?}", sink.sent);
+        let mut subjects: Vec<&str> = mail[2..].iter().map(|m| m.subject.as_str()).collect();
+        subjects.sort_unstable();
+        assert_eq!(subjects, ["[zfsctl] a: 2 datasets protected again", "[zfsctl] b: 2 datasets protected again"]);
+        assert!(mail[2..].iter().all(|m| m.kind == "health-recovered" && m.level == "ok"));
+        m.observe(t(20), local(20), &hosts, &probed, &jobs, &runs, &mut sink);
+        assert_eq!(protection_mail(&sink).len(), 4, "once");
+    }
+
+    #[test]
+    fn a_second_pass_sends_no_duplicate() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        for i in 0..6 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        let mail = protection_mail(&sink);
+        assert_eq!(mail.len(), 1, "{:?}", sink.sent);
+        assert_eq!(mail[0].subject, "[zfsctl] a: 1 dataset not protected");
+    }
+
+    #[test]
+    fn a_failed_delivery_is_retried_then_alerts_again() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x", "tank/y"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::failing();
+        for i in 0..7 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert_eq!(sink.sent.len(), 6, "six attempts, then dropped: {:?}", sink.sent);
+        assert!(sink.sent.iter().all(|s| s.subject == "[zfsctl] a: 2 datasets not protected"));
+        sink.ok = true;
+        m.observe(t(40), local(40), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        assert_eq!(sink.sent.len(), 6, "forgotten: one pass is not enough again");
+        m.observe(t(45), local(45), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        assert_eq!(sink.sent.len(), 7);
+        assert_eq!(sink.sent[6].subject, "[zfsctl] a: 2 datasets not protected", "the same alert, sent anew");
+        // Giving up on the protection alert did not touch the host's own alert state: a bad host still alerts after two probes.
+        m.observe(t(50), local(50), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        m.observe(t(55), local(55), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        assert_eq!(sink.sent.last().unwrap().subject, "[zfsctl] a: unreachable");
+    }
+
+    #[test]
+    fn an_unreachable_host_sends_no_protection_mail() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x"]), ("b", &["tank/y"])], week());
+        let hosts = [host("a"), host("b")];
+        let mut sink = FakeSink::new();
+        for i in 0..3 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a"), Probed { name: "b".into(), probe: None }], &[], &[], &mut sink);
+        }
+        assert!(protection_mail(&sink).is_empty(), "{:?}", sink.sent);
+        assert!(sink.sent.iter().any(|s| s.subject == "[zfsctl] a: unreachable"));
+
+        // Alerted while reachable; while it is unreachable nothing changes, not even when its jobs are fixed.
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1);
+        let (jobs, runs) = protecting("a", &["tank/x"]);
+        for i in 2..6 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_bad("a")], &jobs, &runs, &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1, "no recovery while the host cannot be seen");
+        for i in 6..8 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &jobs, &runs, &mut sink);
+        }
+        let mail = protection_mail(&sink);
+        assert_eq!(mail.len(), 2, "{:?}", sink.sent);
+        assert_eq!(mail[1].subject, "[zfsctl] a: 1 dataset protected again", "the open alert was kept and recovers");
+    }
+
+    #[test]
+    fn a_destroyed_dataset_recovers_silently() {
+        let (mut m, dir) = guarding(EmailTiming::Immediate);
+        write_storage(&dir, &[("a", &["tank/x", "tank/y"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        for i in 0..2 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1);
+        write_storage(&dir, &[("a", &[])], week());
+        for i in 2..6 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 1, "no 'protected again' for datasets that are gone: {:?}", sink.sent);
+        // Forgotten: a dataset of the same name made later is new.
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        for i in 6..8 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        }
+        let mail = protection_mail(&sink);
+        assert_eq!(mail.len(), 2);
+        assert_eq!(mail[1].subject, "[zfsctl] a: 1 dataset not protected");
+    }
+
+    #[test]
+    fn report_and_off_send_no_alerts() {
+        for email in [EmailTiming::Report, EmailTiming::Off] {
+            let (mut m, dir) = guarding(email);
+            write_storage(&dir, &[("a", &["tank/x", "tank/y"])], week());
+            let hosts = [host("a")];
+            let mut sink = FakeSink::new();
+            for i in 0..4 {
+                m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+            }
+            assert!(sink.sent.is_empty(), "{email:?}: {:?}", sink.sent);
+            let listed: Vec<&str> = m.unprotected.iter().map(|u| u.dataset.as_str()).collect();
+            if email == EmailTiming::Report {
+                assert_eq!(listed, ["tank/x", "tank/y"], "kept for the daily report");
+            } else {
+                assert!(listed.is_empty(), "off: not even judged");
+            }
+        }
+    }
+
+    #[test]
+    fn switching_to_immediate_sends_one_message_per_host_for_the_current_list() {
+        let (mut m, dir) = guarding(EmailTiming::Report);
+        write_storage(&dir, &[("a", &["tank/1", "tank/2", "tank/3"]), ("b", &["tank/4", "tank/5", "tank/6"])], week());
+        let hosts = [host("a"), host("b")];
+        let probed = [probed_ok("a"), probed_ok("b")];
+        let mut sink = FakeSink::new();
+        for i in 0..3 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &probed, &[], &[], &mut sink);
+        }
+        assert!(sink.sent.is_empty());
+        m.set_protection(ProtectionSettings { email: EmailTiming::Immediate, ..ProtectionSettings::default() });
+        for i in 3..6 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &probed, &[], &[], &mut sink);
+        }
+        let mut subjects: Vec<&str> = protection_mail(&sink).iter().map(|m| m.subject.as_str()).collect();
+        subjects.sort_unstable();
+        assert_eq!(subjects, ["[zfsctl] a: 3 datasets not protected", "[zfsctl] b: 3 datasets not protected"]);
+
+        // Off and on again: the old alerts are cleared, so it is again one message per host, and no recovery for the switch.
+        m.set_protection(ProtectionSettings { email: EmailTiming::Off, ..ProtectionSettings::default() });
+        m.observe(t(30), local(30), &hosts, &probed, &[], &[], &mut sink);
+        assert_eq!(protection_mail(&sink).len(), 2, "no recovery mail for turning it off");
+        m.set_protection(ProtectionSettings { email: EmailTiming::Immediate, ..ProtectionSettings::default() });
+        for i in 7..9 {
+            m.observe(t(i * 5), local(i * 5), &hosts, &probed, &[], &[], &mut sink);
+        }
+        assert_eq!(protection_mail(&sink).len(), 4, "{:?}", sink.sent);
     }
 
     #[test]

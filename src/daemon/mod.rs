@@ -69,6 +69,8 @@ struct Shared {
     notify_command: RwLock<Option<String>>,
     /// The `[notify]` section: email, the monitor's interval, the daily report.
     settings: RwLock<crate::config::NotifySettings>,
+    /// The `[protection]` section, for the monitor's mail about unprotected datasets.
+    protection: RwLock<crate::config::ProtectionSettings>,
     /// Name, address and tag of each host, for the monitor's messages.
     host_info: RwLock<Vec<(String, String, String)>>,
     stop: Arc<AtomicBool>,
@@ -88,6 +90,9 @@ struct Loaded {
     /// settings (or none, at startup) and logs `notify_problem`.
     notify: Option<crate::config::NotifySettings>,
     notify_problem: Option<String>,
+    /// The defaults when `[protection]` is invalid (then `protection_problem` says why, for the log).
+    protection: crate::config::ProtectionSettings,
+    protection_problem: Option<String>,
     info: Vec<(String, String, String)>,
 }
 
@@ -101,7 +106,11 @@ fn load_hosts(config_path: &Path) -> Result<Loaded> {
         Ok(settings) => (Some(settings), None),
         Err(problem) => (None, Some(problem)),
     };
-    Ok(Loaded { hosts, notify_command: config.daemon.notify_command, notify, notify_problem, info })
+    let (protection, protection_problem) = match config.protection.resolve() {
+        Ok(settings) => (settings, None),
+        Err(problem) => (crate::config::ProtectionSettings::default(), Some(problem)),
+    };
+    Ok(Loaded { hosts, notify_command: config.daemon.notify_command, notify, notify_problem, protection, protection_problem, info })
 }
 
 /// Progress and cancel files can only belong to a transfer of a previous daemon: remove them.
@@ -139,6 +148,7 @@ impl Shared {
         if let Some(settings) = loaded.notify {
             *self.settings.write().unwrap_or_else(PoisonError::into_inner) = settings;
         }
+        *self.protection.write().unwrap_or_else(PoisonError::into_inner) = loaded.protection;
         *self.host_info.write().unwrap_or_else(PoisonError::into_inner) = loaded.info;
         names
     }
@@ -358,6 +368,8 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
             monitor = Some(monitor::Monitor::new(settings.clone(), hub, state_dir.to_path_buf(), Utc::now()));
         }
         let Some(m) = monitor.as_mut() else { continue };
+        // At construction and on every later tick, so an edited `[protection]` applies from the next pass.
+        m.set_protection(shared.protection.read().unwrap_or_else(PoisonError::into_inner).clone());
         guarded("the health monitor tick", || {
             let info = shared.host_info.read().unwrap_or_else(PoisonError::into_inner).clone();
             let runners = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
@@ -469,6 +481,9 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         // Never a reason to stay down: the jobs matter more than the notifications.
         log(&format!("config.toml [notify] problem, health notifications are off until it is fixed: {problem}"));
     }
+    if let Some(problem) = &loaded.protection_problem {
+        log(&format!("config.toml [protection] problem, using the default protection settings until it is fixed: {problem}"));
+    }
     let names: Vec<String> = loaded.hosts.iter().map(|(n, _)| n.clone()).collect();
     let shared = Arc::new(Shared {
         history: History::new(paths.history()),
@@ -478,6 +493,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
         poll: POLL,
         notify_command: RwLock::new(loaded.notify_command),
         settings: RwLock::new(loaded.notify.clone().unwrap_or_default()),
+        protection: RwLock::new(loaded.protection.clone()),
         host_info: RwLock::new(loaded.info),
         stop: Arc::clone(stop),
         progress_dir: paths.progress_dir(),
@@ -535,6 +551,9 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
                 Ok(loaded) => {
                     if let Some(problem) = &loaded.notify_problem {
                         log(&format!("config.toml [notify] problem, keeping the previous notify settings: {problem}"));
+                    }
+                    if let Some(problem) = &loaded.protection_problem {
+                        log(&format!("config.toml [protection] problem, using the default protection settings until it is fixed: {problem}"));
                     }
                     let names = shared.apply(loaded);
                     log(&format!("config.toml reloaded: hosts {}", names.join(", ")));
@@ -599,6 +618,7 @@ mod tests {
             poll: Duration::from_secs(30),
             notify_command: RwLock::new(notify),
             settings: RwLock::new(crate::config::NotifySettings::default()),
+            protection: RwLock::new(crate::config::ProtectionSettings::default()),
             host_info: RwLock::new(Vec::new()),
             stop: Arc::new(AtomicBool::new(false)),
             progress_dir: dir.path().join("progress"),
@@ -657,6 +677,23 @@ mod tests {
         shared.apply(l);
         assert_eq!(shared.settings.read().unwrap().mail_to, ["me@x.org"], "the previous settings are kept");
         assert!(shared.runner("later").is_some());
+    }
+
+    #[test]
+    fn a_bad_protection_section_falls_back_to_the_defaults_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[protection]\nemail = \"report\"\n").unwrap();
+        let shared = shared(&dir, FakeRunner::new(""), None);
+        let l = load_hosts(&path).unwrap();
+        assert!(l.protection_problem.is_none());
+        shared.apply(l);
+        assert_eq!(shared.protection.read().unwrap().email, crate::config::EmailTiming::Report);
+        std::fs::write(&path, "[protection]\nlevel = \"paranoid\"\nemail = \"report\"\n").unwrap();
+        let l = load_hosts(&path).expect("a bad [protection] is not a load failure");
+        assert_eq!(l.protection_problem.as_deref(), Some("[protection] level must be basic, careful or custom"));
+        shared.apply(l);
+        assert_eq!(*shared.protection.read().unwrap(), crate::config::ProtectionSettings::default(), "the defaults, not the previous settings");
     }
 
     #[test]
@@ -784,7 +821,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = shared(&dir, FakeRunner::new(""), None);
         assert!(shared.runner("later").is_none());
-        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()), notify: Some(crate::config::NotifySettings::default()), notify_problem: None, info: Vec::new() };
+        let loaded = Loaded { hosts: vec![("local".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>), ("later".to_string(), Arc::new(FakeRunner::new("")) as Arc<dyn CommandRunner>)], notify_command: Some("true".to_string()), notify: Some(crate::config::NotifySettings::default()), notify_problem: None, protection: crate::config::ProtectionSettings::default(), protection_problem: None, info: Vec::new() };
         let names = shared.apply(loaded);
         assert_eq!(names, vec!["local", "later"]);
         assert!(shared.runner("later").is_some());
