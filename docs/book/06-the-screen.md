@@ -146,13 +146,55 @@ How many copies are needed is your choice, the **level**:
 
 Snapshots are always required. The operating system's own datasets (boot environments under `ROOT` and Ubuntu's `BOOT`, `tmp`, `var`, `usr/ports`, `usr/src`, `usr/obj`, swap and dump) only ever need Basic's single copy and are listed in yellow; everything else is your data and is listed in red.
 
-What counts as a copy:
+#### What counts as a copy
 
-- a replication to another host, or to a file target on the hub (these are on-premises copies);
-- a restic backup whose repository starts with `sftp:` or `rest:` (counted as on-premises, even if the server is far away), or with `s3:`, `b2:`, `azure:`, `gs:`, `swift:` or `rclone:` (**online**);
-- a cloud mirror (**online**).
+A copy counts when a job makes it on **another machine**, for the **whole dataset**, and the job is **current**. These are the jobs that can:
 
-A plain local path is not a copy on another machine. Two jobs that write to the same place count as one copy. A snapshot job covers a dataset's children only if it is **recursive**; a replication, backup or cloud mirror covers only the dataset it names. A backup or cloud mirror that has a **Path** set copies only that folder, so it does not count as a copy of the dataset at all. The destination of a current replication is a replica and is protected by its source.
+| Job | Counts as a copy when | Kind |
+|---|---|---|
+| Replication to a host | the destination host is not the host the job runs on | on-premises |
+| Replication to a file | the job runs on another host (the file lands on the hub) | on-premises |
+| Backup (restic) | the repository starts with `sftp:` or `rest:` (counted as on-premises, even if the server is far away) | on-premises |
+| Backup (restic) | the repository starts with `s3:`, `b2:`, `azure:`, `gs:`, `swift:` or `rclone:` | **online** |
+| Cloud mirror (rclone) | the remote is a real `name:path` remote | **online** |
+
+Two jobs that write to the same place count as one copy. The destination of a current replication is a replica, and its source protects it.
+
+#### What does not count as a copy
+
+- **A backup repository on a local path**, such as `/mnt/usb/repo`: it is on the same machine, even if it is a different disk.
+- **A replication to a file on the hub, run by the hub itself**: the file is on the same machine.
+- **A replication whose destination is the host it runs on.**
+- **A backup or cloud mirror with a Path set.** The Path field means "only this folder of the dataset", so the job copies a folder, not the dataset, and the dataset's line stays. The folder is protected, but the check says nothing about it.
+- **A job on the parent or on a child.** A copy job covers only the dataset it names, even when it is marked recursive: each child needs a job of its own. (A recursive *snapshot* job is different, see below.)
+- **A copy you made by hand**, such as a `restic backup` or a `zfs send` you ran yourself. The check judges jobs, because only a job keeps running.
+- **A disabled job**, a job that has **never run**, one whose **last run failed**, or one whose **last success is too old** (older than the **How recent** setting allows). A run that was skipped because there was nothing new to send does not count as a success either.
+
+#### When does a "no copy job" line clear?
+
+All of these have to be true, for the exact dataset on the line:
+
+1. A copy job from the table above names that host and dataset (no Path).
+2. The job is enabled and its destination is another machine.
+3. The job has run **successfully**, and recently. Until its first success the line reads `copy job has not run yet`.
+4. There are **enough copies for your level**. At Basic one current copy is enough. At Careful a dataset needs three, at least one online, and until then the line reads `1 of 3 copies on other machines` or `no online copy`.
+5. The dataset also has its **snapshots**: a current snapshot job covers it. The two halves are judged separately, and the dataset is listed while either is missing.
+
+Some examples, at the Basic level:
+
+| What you set up | Does the line clear? |
+|---|---|
+| A replication of `tank/photos` to host `nas`, once it has run | Yes, for `tank/photos` only (its children still need their own) |
+| A restic backup of `tank/photos` to `sftp:nas:/backups/photos` | Yes, once it has run |
+| A restic backup of `tank/photos` to `/mnt/usb/photos` | No: a local path |
+| A restic backup of only the folder `holiday` inside `tank/photos` (Path set) | No: it copies a folder, not the dataset |
+| A cloud mirror of `tank/photos` to `b2:mybucket/photos` | Yes, once it has run |
+| A replication of `tank` marked recursive | Only for `tank` itself, not for `tank/photos` |
+| A backup you ran by hand last night | No: nothing says another one will follow |
+
+#### Snapshots and children
+
+A snapshot job covers a dataset's children only if it is **recursive** and its latest successful run was a recursive one (the run says `(recursive)` in its message). A job you have just made recursive therefore reads `snapshot job has not run recursively yet` for the children until its next run.
 
 Some things are deliberately quiet. A dataset created in the last day is not judged yet. A host that did not answer, or whose stored dataset list is more than two days old, says nothing about its datasets (the host already shows its own state). And there is **no exclusion list**: a swap, scratch or test dataset is listed until you protect or remove it. That is on purpose.
 
