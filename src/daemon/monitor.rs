@@ -194,6 +194,9 @@ pub struct Monitor {
     /// How many configured hosts the last pass judged, and the ones it could not with why, for the daily report.
     judged_hosts: usize,
     unchecked: Vec<String>,
+    /// When each dataset of `unprotected` (key `host\tdataset`) was first judged unprotected, kept whenever the email
+    /// timing is not off, so the report says how long even when no alert is tracked (`report` timing, OS data).
+    first_seen: HashMap<String, DateTime<Utc>>,
 }
 
 impl Monitor {
@@ -224,6 +227,7 @@ impl Monitor {
             unprotected: Vec::new(),
             judged_hosts: 0,
             unchecked: Vec::new(),
+            first_seen: HashMap::new(),
         }
     }
 
@@ -320,7 +324,7 @@ impl Monitor {
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
             let since = self.last_report_at.unwrap_or(now - chrono::Duration::hours(24));
-            let protection = (self.protection_settings.email != EmailTiming::Off).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.protection.bad_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone() });
+            let protection = (self.protection_settings.email != EmailTiming::Off).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.unprotected_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone() });
             let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_ref());
             if sink.send(&msg) {
                 self.last_report_at = Some(now);
@@ -332,6 +336,14 @@ impl Monitor {
                     self.mark_report_sent(local.date(), false);
                 }
             }
+        }
+    }
+
+    /// Since when the dataset key has been unprotected: the earlier of its alert's start and its first-seen time.
+    fn unprotected_since(&self, key: &str) -> Option<DateTime<Utc>> {
+        match (self.protection.bad_since(key), self.first_seen.get(key).copied()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
 
@@ -350,6 +362,7 @@ impl Monitor {
     fn observe_protection(&mut self, now: DateTime<Utc>, probed: &[Probed], rows: &[HostRow], jobs: &[Job], runs: &[Run]) {
         if self.protection_settings.email == EmailTiming::Off {
             self.unprotected.clear();
+            self.first_seen.clear();
             self.stop_protection_alerts();
             return;
         }
@@ -357,6 +370,13 @@ impl Monitor {
         let Judged { found, known, unchecked } = judge_reachable(&file, probed, rows, jobs, runs, &self.protection_settings, now);
         self.judged_hosts = known.len();
         self.unchecked = unchecked;
+        // First-seen times: new keys start now; a key that is protected or gone is dropped, one on a host not judged
+        // this pass is kept (unknown is not a verdict).
+        let now_bad: HashSet<String> = found.iter().map(|u| format!("{}\t{}", u.host, u.dataset)).collect();
+        self.first_seen.retain(|k, _| now_bad.contains(k) || k.split_once('\t').is_some_and(|(h, _)| !known.contains(h)));
+        for key in now_bad {
+            self.first_seen.entry(key).or_insert(now);
+        }
         if self.protection_settings.email != EmailTiming::Immediate {
             self.unprotected = found;
             self.stop_protection_alerts();
@@ -1097,6 +1117,31 @@ mod tests {
             m.observe(later + chrono::Duration::minutes(i * 5), local(26 * 60 + i * 5), &hosts, &[probed_ok("a")], &jobs, &runs, &mut sink);
         }
         assert_eq!(protection_mail(&sink).len(), 1, "{:?}", sink.sent);
+    }
+
+    #[test]
+    fn the_report_says_how_long_a_dataset_has_been_unprotected_in_report_timing_too() {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.clone(), t(0));
+        m.set_protection(ProtectionSettings { email: EmailTiming::Report, ..ProtectionSettings::default() });
+        write_storage(&dir, &[("a", &["tank/x", "zroot/var/log"])], week());
+        let hosts = [host("a")];
+        let mut sink = FakeSink::new();
+        m.observe(t(0), at_local(6, 0), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        m.observe(t(90), at_local(7, 30), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        let report = sink.sent.iter().find(|s| s.kind == "health-report").unwrap();
+        assert!(report.body.contains("  a:tank/x (your data): no snapshots; no copy on another machine (for 1h 30m)\n"), "{}", report.body);
+        assert!(report.body.contains("  a:zroot/var/log (OS data): no snapshots; no copy on another machine (for 1h 30m)\n"), "{}", report.body);
+        // Protected or gone: forgotten, so it starts again from zero.
+        write_storage(&dir, &[("a", &["tank/x"])], week());
+        m.observe(t(100), at_local(7, 40), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        assert!(!m.first_seen.contains_key("a\tzroot/var/log") && m.first_seen.contains_key("a\ttank/x"));
+        // An unreachable host is not a verdict: its datasets keep their first-seen time.
+        m.observe(t(105), at_local(7, 45), &hosts, &[probed_bad("a")], &[], &[], &mut sink);
+        assert_eq!(m.first_seen.get("a\ttank/x"), Some(&t(0)));
+        m.set_protection(ProtectionSettings { email: EmailTiming::Off, ..ProtectionSettings::default() });
+        m.observe(t(110), at_local(7, 50), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        assert!(m.first_seen.is_empty(), "off keeps nothing");
     }
 
     #[test]
