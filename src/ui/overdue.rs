@@ -2,40 +2,22 @@
 //! than its schedule says it should be. It reads only the job history the daemon keeps, so it needs no call to any host.
 //! A job whose last run failed already has its own Dashboard line, and a stopped daemon its own red one: neither is repeated here.
 
-use crate::daemon::cron::Schedule;
+use crate::daemon::cron::{schedule_gap, CURRENT_WITHIN_INTERVALS};
 use crate::daemon::history::RunResult;
 use crate::jobs::{self, Job};
 use crate::ui::jobs::{age_text, schedule_label, job_target, JobsView};
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Utc};
 
-/// A job is late once its last success is this many schedule intervals old, and in trouble at `RED_AFTER`. One missed run is
-/// normal (a run can start late, a long replication can overlap the next slot); two is a whole cycle gone, four is lasting.
-const YELLOW_AFTER: i32 = 2;
+/// A job is late once its last success is `YELLOW_AFTER` schedule intervals old, and in trouble at `RED_AFTER`: two is a whole
+/// cycle gone, four is lasting.
+const YELLOW_AFTER: i32 = CURRENT_WITHIN_INTERVALS;
 const RED_AFTER: i32 = 4;
-
-/// How many scheduled times ahead the interval is measured over: the longest gap among them counts, so a weekday-only job
-/// is not late over a weekend.
-const LOOKAHEAD: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Overdue {
     pub job_id: String,
     pub red: bool,
     pub text: String,
-}
-
-/// The longest gap between the next few scheduled times after `now`; `None` for a schedule that does not parse or never fires.
-fn interval(schedule: &str, now: DateTime<Utc>) -> Option<Duration> {
-    let schedule = Schedule::parse(schedule).ok()?;
-    let mut at = now.with_timezone(&Local);
-    let mut gaps = Vec::new();
-    for _ in 0..LOOKAHEAD {
-        let next = schedule.next_after(&at)?;
-        gaps.push(next - at);
-        at = next;
-    }
-    // the first "gap" is from `now`, not between two fires: leave it out
-    gaps.into_iter().skip(1).max()
 }
 
 fn label(job: &Job) -> &'static str {
@@ -61,7 +43,7 @@ pub fn overdue(view: &JobsView, now: DateTime<Utc>) -> Vec<Overdue> {
         }
         let last_ok = view.runs.iter().filter(|r| r.job_id == job.id && r.result == Some(RunResult::Ok)).filter_map(|r| r.finished_at.or(Some(r.started_at))).max();
         let Some(since) = last_ok.or(job.created_at) else { continue };
-        let Some(gap) = interval(&job.schedule, now) else { continue };
+        let Some(gap) = schedule_gap(&job.schedule, now) else { continue };
         let age = now - since;
         let red = age > gap * RED_AFTER;
         if !red && age <= gap * YELLOW_AFTER {
@@ -78,6 +60,7 @@ pub fn overdue(view: &JobsView, now: DateTime<Utc>) -> Vec<Overdue> {
 mod tests {
     use super::*;
     use crate::daemon::history::Run;
+    use chrono::Duration;
 
     fn now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap().with_timezone(&Utc)
