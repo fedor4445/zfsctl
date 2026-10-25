@@ -51,6 +51,26 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('+') if self.current_section() == Section::Pools && self.drilled_pool.is_some() => {
+                let Some(pool) = self.drilled_pool.clone() else { return true };
+                match crate::zfs::pool::attach_target(&self.vdevs, self.vdevs_table.selected().unwrap_or(usize::MAX)) {
+                    Ok((target, kind)) => {
+                        let what = match kind {
+                            crate::zfs::pool::AttachKind::Raidz => format!("Widen raidz vdev '{target}' of pool '{pool}'"),
+                            crate::zfs::pool::AttachKind::Mirror => format!("Attach a disk to the mirror of '{target}' in pool '{pool}'"),
+                            crate::zfs::pool::AttachKind::Single => format!("Attach a disk to '{target}' in pool '{pool}' (making a mirror)"),
+                        };
+                        self.modal = Some(Modal::Form {
+                            title: what,
+                            fields: vec![FormField { label: "New disk (not in any pool)".to_string(), value: String::new() }],
+                            focused: 0,
+                            description: None,
+                            kind: FormKind::AttachDisk { host: self.selected_host, pool, target, kind },
+                        });
+                    }
+                    Err(why) => self.status_message = Some(why),
+                }
+            }
             KeyCode::Char('a') if self.current_section() == Section::Pools => {
                 // Only meaningful while drilled into a pool; otherwise `a` does nothing here.
                 let Some(pool) = self.drilled_pool.clone() else { return true };

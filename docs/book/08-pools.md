@@ -109,6 +109,7 @@ You see the pool, its vdevs (`raidz2-0`) and the disks in each, with their state
 |---|---|
 | `o` / `O` | take the selected disk offline / bring it online (y/n) |
 | `x` | replace the selected disk with another (a form, then the question) |
+| `+` | attach a disk to the selected mirror (another side), lone disk (it becomes a mirror) or raidz group (it is widened): a form, then the question |
 | `a` | add a vdev to the pool (a form, then the question), including log, cache, special, dedup and spare devices |
 | `X` | remove the selected log, cache or spare device (a question first) |
 
@@ -179,9 +180,13 @@ Inside a pool, `X` removes the selected **log**, **cache** or **spare** device (
 - **Replace a disk** (`x` on the disk): type the new device and confirm; the pool resilvers onto it. `zpool replace` works as if it attached the new disk, waited for the resilver and then detached the old one ([zpool-replace(8)](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-replace.8.html)), so a disk that still works keeps helping while the new one fills: leave it online unless you must pull it. The new disk must be at least as large as the smallest disk of the vdev, and the question warns that it is overwritten.
 - **Offline / online** (`o` / `O`): take a disk out of service (before pulling it, or to stop a failing disk from slowing the pool), then bring it back. An offline disk no longer counts as redundancy: on a mirror of two or on a raidz1 that leaves no margin until it is back.
 
+## Attaching a disk to a mirror or a lone disk
+
+The same `+` key on a mirror row (or on one of its disks) adds another side to the mirror, and on a lone top-level disk it turns the disk into a two-way mirror. The pool resilvers onto the new disk, which is overwritten. `zpool detach` takes a side out again (at the shell); a raidz vdev cannot be shrunk. The key is offered for the data vdevs only: log, cache, spare, special and dedup devices are added with `a`, and the disks of a raidz group are not attached to (the group is).
+
 ## Widening a raidz vdev
 
-Since OpenZFS 2.3 a raidz vdev can grow one disk at a time with `zpool attach tank raidz2-0 da9`, while the pool stays in use. It needs the `raidz_expansion` feature (a pool created on an older release must be upgraded first, see the Handbook); once the pool has been expanded the feature is active and older software can no longer import it. Expansion does not change fault tolerance: a raidz2 stays a raidz2. Blocks written before keep their old data-to-parity ratio, spread over the wider vdev, and only new writes use the new one; `zfs rewrite` can redo old data. If a disk fails during the expansion, it pauses until the vdev is healthy again ([zpool-attach(8)](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-attach.8.html)). zfsctl does not do this for you: its Add vdev adds a *new* vdev. Use the shell, and read the vdev tree here afterwards.
+Since OpenZFS 2.3 a raidz vdev can grow one disk at a time with `zpool attach tank raidz2-0 da9`, while the pool stays in use. It needs the `raidz_expansion` feature (a pool created on an older release must be upgraded first, see the Handbook); once the pool has been expanded the feature is active and older software can no longer import it. Expansion does not change fault tolerance: a raidz2 stays a raidz2. Blocks written before keep their old data-to-parity ratio, spread over the wider vdev, and only new writes use the new one; `zfs rewrite` can redo old data. If a disk fails during the expansion, it pauses until the vdev is healthy again ([zpool-attach(8)](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-attach.8.html)). In zfsctl, select the raidz group row in the vdev tree and press `+`: a form asks for the new disk (it must not be in any pool; it is overwritten), and the question shows the exact command, `zpool attach tank raidz2-0 da9`, and what widening means, in the words above. zfsctl never adds `-f`, so ZFS itself refuses a disk that belongs to a pool. Progress shows as the pool's `expand:` line in `zpool status`; the vdev tree shows the disk at once.
 
 ## Pool properties
 

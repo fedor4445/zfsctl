@@ -703,6 +703,15 @@ pub(super) fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> O
             let role = crate::zfs::vdev_role::check_raw_spec(vdev_spec).unwrap_or(crate::zfs::vdev_role::Role::Data);
             Some(add_vdev_prompt(host, pool, vdev_spec, role, None))
         }
+        MutationCall::AttachDisk { pool, target, new_disk, kind } => {
+            use crate::zfs::pool::AttachKind;
+            let why = match kind {
+                AttachKind::Single => format!("{target} has no redundancy today. The new disk is overwritten and attached to it, and the two become a two-way mirror (the pool resilvers onto it). Attach it?"),
+                AttachKind::Mirror => format!("The new disk is overwritten and becomes another side of the mirror (the pool resilvers onto it; `zpool detach` takes a side out again). Attach it?"),
+                AttachKind::Raidz => format!("{target} is widened by one disk (raidz expansion). The new disk is overwritten; the pool stays in use while the data is spread over the new width. Data written before keeps its old data-to-parity ratio, fault tolerance does not change, a raidz vdev never shrinks again, and once the pool has been expanded older software can no longer import it. Widen it?"),
+            };
+            ask(format!("zpool attach {pool} {target} {new_disk}"), &why)
+        }
         MutationCall::ReplaceDisk { pool, old_disk, new_disk } => ask(
             format!("zpool replace {pool} {old_disk} {new_disk}"),
             "The new disk is overwritten. Replace it?",
@@ -877,6 +886,13 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
         FormKind::AddVdev { host, .. } | FormKind::AddVdevFromDisks { host, .. } => {
             let (pool, vdev_spec, _) = add_vdev_request(kind, fields).ok()?;
             Some(PendingAction { host: *host, section: Section::Vdevs, call: MutationCall::AddVdev { pool, vdev_spec } })
+        }
+        FormKind::AttachDisk { host, pool, target, kind } => {
+            let new_disk = field_value(fields, 0).trim();
+            if new_disk.is_empty() || new_disk.starts_with('-') {
+                return None;
+            }
+            Some(PendingAction { host: *host, section: Section::Vdevs, call: MutationCall::AttachDisk { pool: pool.clone(), target: target.clone(), new_disk: new_disk.to_string(), kind: *kind } })
         }
         FormKind::ReplaceDisk { host, pool, old_disk } => {
             let new_disk = field_value(fields, 0).trim();

@@ -19,6 +19,8 @@ pub enum MutationCall {
     OfflineDisk { pool: String, disk: String },
     OnlineDisk { pool: String, disk: String },
     ReplaceDisk { pool: String, old_disk: String, new_disk: String },
+    /// `zpool attach`: a disk joins a mirror, a lone disk (making a mirror) or a raidz group (expanding it).
+    AttachDisk { pool: String, target: String, new_disk: String, kind: crate::zfs::pool::AttachKind },
     SetPoolProperty { pool: String, key: String, value: String },
     CreateDataset { name: String },
     /// `zfs create` of a passphrase-encrypted dataset; the passphrase goes in on stdin.
@@ -134,6 +136,7 @@ impl MutationCall {
             | MutationCall::DestroyBootEnv { .. } => Tone::Danger,
             MutationCall::OfflineDisk { .. }
             | MutationCall::ReplaceDisk { .. }
+            | MutationCall::AttachDisk { .. }
             | MutationCall::CreatePool { .. }
             | MutationCall::AddVdev { .. }
             | MutationCall::RemoveVdev { .. }
@@ -189,6 +192,7 @@ impl MutationCall {
             MutationCall::OfflineDisk { .. } => "OFFLINE DISK",
             MutationCall::OnlineDisk { .. } => "ONLINE DISK",
             MutationCall::ReplaceDisk { .. } => "REPLACE DISK",
+            MutationCall::AttachDisk { .. } => "ATTACH DISK",
             MutationCall::SetPoolProperty { .. } => "SET POOL PROPERTY",
             MutationCall::CreateDataset { .. } => "CREATE DATASET",
             MutationCall::DestroyDataset { .. } => "DESTROY DATASET",
@@ -266,6 +270,7 @@ impl MutationCall {
             MutationCall::ReplaceDisk { pool, old_disk, new_disk } => {
                 crate::zfs::pool::replace_disk(runner, pool, old_disk, new_disk)
             }
+            MutationCall::AttachDisk { pool, target, new_disk, .. } => crate::zfs::pool::attach_disk(runner, pool, target, new_disk),
             MutationCall::SetPoolProperty { pool, key, value } => crate::zfs::pool::set_pool_property(runner, pool, key, value),
             MutationCall::CreateDataset { name } => crate::zfs::dataset::create_dataset(runner, name),
             MutationCall::DestroyDataset { name } => crate::zfs::dataset::destroy_dataset(runner, name),
@@ -386,6 +391,8 @@ pub enum FormKind {
     CreatePool { host: usize },
     /// Fields: `[new_disk]`.
     ReplaceDisk { host: usize, pool: String, old_disk: String },
+    /// The disk to attach to `target` (see `zfs::pool::attach_target`).
+    AttachDisk { host: usize, pool: String, target: String, kind: crate::zfs::pool::AttachKind },
     /// Fields: `[name, redundancy]` — `redundancy` blank means a stripe
     /// (each disk its own top-level vdev); `disks` is fixed at
     /// modal-open time from the Disks section's current selection.
