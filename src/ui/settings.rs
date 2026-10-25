@@ -19,6 +19,7 @@ pub enum Setting {
     ProtLevel,
     ProtCopies,
     ProtOnline,
+    ProtDomains,
     ProtRecent,
     ProtEmail,
 }
@@ -51,6 +52,7 @@ const CAPS: &str = "Cloud caps";
 const PROTECTION: &str = "Data protection";
 const PROT_COPIES: &str = "Copies on other machines (1 to 3)";
 const PROT_ONLINE: &str = "Online copies (0 to 2)";
+const PROT_DOMAINS: &str = "Failure domains the copies must span (1 to 3)";
 const PROT_RECENT: &str = "How recent (strict, normal, relaxed)";
 const PROT_EMAIL: &str = "Email (immediate, report, off)";
 
@@ -98,6 +100,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
         rows.push(row(PROTECTION, Setting::ProtCopies, PROT_COPIES, shown(&p.copies, "1"), p.copies.is_none(), vec![raw(&p.copies).unwrap_or_default()]));
         rows.push(row(PROTECTION, Setting::ProtOnline, PROT_ONLINE, shown(&p.online, "0"), p.online.is_none(), vec![raw(&p.online).unwrap_or_default()]));
     }
+    rows.push(row(PROTECTION, Setting::ProtDomains, PROT_DOMAINS, shown(&p.domains, "1"), p.domains.is_none(), vec![raw(&p.domains).unwrap_or_default()]));
     rows.push(row(PROTECTION, Setting::ProtRecent, PROT_RECENT, shown(&p.recent, "normal"), p.recent.is_none(), vec![raw(&p.recent).unwrap_or_default()]));
     rows.push(row(PROTECTION, Setting::ProtEmail, PROT_EMAIL, shown(&p.email, "immediate"), p.email.is_none(), vec![raw(&p.email).unwrap_or_default()]));
     let mut names: Vec<&String> = remotes.iter().chain(cfg.cloud.caps.keys()).collect();
@@ -124,6 +127,7 @@ pub fn form_fields(row: &Row) -> Vec<(String, String)> {
         Setting::ProtLevel => vec!["Level (basic, careful, custom)".to_string()],
         Setting::ProtCopies => vec![PROT_COPIES.to_string()],
         Setting::ProtOnline => vec![PROT_ONLINE.to_string()],
+        Setting::ProtDomains => vec![PROT_DOMAINS.to_string()],
         Setting::ProtRecent => vec![PROT_RECENT.to_string()],
         Setting::ProtEmail => vec![PROT_EMAIL.to_string()],
     };
@@ -165,12 +169,13 @@ fn protection_change(setting: &Setting, value: &str, current: &crate::config::Pr
         Setting::ProtLevel => ("level", "basic"),
         Setting::ProtCopies => ("copies", "1"),
         Setting::ProtOnline => ("online", "0"),
+        Setting::ProtDomains => ("domains", "1"),
         Setting::ProtRecent => ("recent", "normal"),
         _ => ("email", "immediate"),
     };
     let path = ["protection", key];
     let remove = value.is_empty() || value == default;
-    let count = if !remove && matches!(setting, Setting::ProtCopies | Setting::ProtOnline) { Some(value.parse::<u8>().map_err(|_| format!("'{value}' is not a whole number"))?) } else { None };
+    let count = if !remove && matches!(setting, Setting::ProtCopies | Setting::ProtOnline | Setting::ProtDomains) { Some(value.parse::<u8>().map_err(|_| format!("'{value}' is not a whole number"))?) } else { None };
     let text = (!remove).then(|| toml::Value::from(value));
     let number = count.map(toml::Value::from);
     let mut cfg = current.clone();
@@ -178,6 +183,7 @@ fn protection_change(setting: &Setting, value: &str, current: &crate::config::Pr
         Setting::ProtLevel => cfg.level = text,
         Setting::ProtCopies => cfg.copies = number,
         Setting::ProtOnline => cfg.online = number,
+        Setting::ProtDomains => cfg.domains = number,
         Setting::ProtRecent => cfg.recent = text,
         _ => cfg.email = text,
     }
@@ -248,7 +254,7 @@ fn build_changes_with(setting: &Setting, values: &[String], current: &crate::con
             }
             vec![Change::set(&["cloud", "caps", name], first)]
         }
-        Setting::ProtLevel | Setting::ProtCopies | Setting::ProtOnline | Setting::ProtRecent | Setting::ProtEmail => protection_change(setting, first, current)?,
+        Setting::ProtLevel | Setting::ProtCopies | Setting::ProtOnline | Setting::ProtDomains | Setting::ProtRecent | Setting::ProtEmail => protection_change(setting, first, current)?,
     })
 }
 
@@ -268,6 +274,7 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
         Setting::ProtLevel => ("Level", ""),
         Setting::ProtCopies => ("Copies on other machines", ""),
         Setting::ProtOnline => ("Online copies", ""),
+        Setting::ProtDomains => ("Failure domains", ""),
         Setting::ProtRecent => ("How recent", ""),
         Setting::ProtEmail => ("Email", ""),
         Setting::Cap(name) => return format!("Cap of {name}: {}", if v(0).is_empty() { "none" } else { v(0) }),
@@ -304,7 +311,7 @@ mod tests {
     fn load_lists_the_groups_in_order_with_defaults_marked() {
         let v = view("", &[], false);
         let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
+        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "Failure domains the copies must span (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
         assert!(v.loaded && v.problem.is_none() && v.rows.iter().all(|r| r.is_default), "{v:?}");
         assert_eq!(row(&v, "Theme").value, "ansi");
         assert_eq!(row(&v, "Auto-refresh").value, "10 s");
@@ -424,7 +431,7 @@ mod tests {
     fn the_protection_rows_show_the_effective_values() {
         let v = view("", &[], false);
         let prot: Vec<(&str, &str, bool)> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| (r.label.as_str(), r.value.as_str(), r.is_default)).collect();
-        assert_eq!(prot, [("Level", "basic", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true)]);
+        assert_eq!(prot, [("Level", "basic", true), ("Failure domains the copies must span (1 to 3)", "1", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true)]);
         assert!(v.rows.iter().all(|r| !r.label.starts_with("Copies") && !r.label.starts_with("Online")));
         let v = view("[protection]\nlevel = \"careful\"\nrecent = \"strict\"\n", &[], false);
         assert_eq!(row(&v, "Level").value, "careful");
@@ -453,7 +460,7 @@ mod tests {
     fn custom_adds_its_two_rows() {
         let v = view("[protection]\nlevel = \"custom\"\ncopies = 2\n", &[], false);
         let labels: Vec<&str> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
+        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "Failure domains the copies must span (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
         let copies = row(&v, "Copies on other machines (1 to 3)");
         assert_eq!((copies.value.as_str(), copies.is_default, copies.raw.as_slice()), ("2", false, &["2".to_string()][..]));
         let online = row(&v, "Online copies (0 to 2)");
@@ -519,5 +526,17 @@ mod tests {
         assert_eq!(describe(&Setting::Cap("b2".to_string()), &values(&[""])), "Cap of b2: none");
         assert_eq!(describe(&Setting::Theme, &values(&[""])), "Theme: back to the default");
         assert_eq!(describe(&Setting::DedupRatio, &values(&["1.25x"])), "Dedup warn below: 1.25x", "the unit is not doubled");
+    }
+
+    #[test]
+    fn domains_is_a_row_for_every_level_and_is_one_to_three() {
+        let v = view("", &[], false);
+        let row = v.rows.iter().find(|r| r.setting == Setting::ProtDomains).expect("a Domains row without custom level");
+        assert_eq!((row.value.as_str(), row.is_default), ("1", true));
+        assert_eq!(sets(&build_changes(&Setting::ProtDomains, &values(&["2"])).unwrap()), ["set protection.domains 2"]);
+        assert_eq!(sets(&build_changes(&Setting::ProtDomains, &values(&["1"])).unwrap()), ["remove protection.domains"], "the default is removed, not written");
+        assert_eq!(build_changes(&Setting::ProtDomains, &values(&["4"])).unwrap_err(), "[protection] domains must be 1, 2 or 3");
+        assert!(build_changes(&Setting::ProtDomains, &values(&["x"])).is_err());
+        assert_eq!(describe(&Setting::ProtDomains, &values(&["2"])), "Failure domains: 2");
     }
 }

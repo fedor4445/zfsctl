@@ -60,6 +60,8 @@ pub enum MutationCall {
     /// Writes one Settings row (`setting` with the form's `values`) into `config.toml`, checked again against the
     /// file as it is at that moment. A local file edit: the runner is not used.
     SaveSettings { config_path: std::path::PathBuf, setting: crate::ui::settings::Setting, values: Vec<String> },
+    /// Sets or clears `tag` and `site` in the `[[hosts]]` blocks of `names`, nothing else in the file. A local file edit.
+    SaveHostKeys { config_path: std::path::PathBuf, names: Vec<String>, tag: crate::config::KeyUpdate, site: crate::config::KeyUpdate },
     /// Sends a real test message through the saved channels (`zfsctl notify-test`). The runner is not used.
     SendTestMessage { settings: Box<crate::config::NotifySettings>, hook: Option<String> },
     /// Copies one file out of a snapshot to a new name next to the original (`cp -p -n`, run as root by the engine in
@@ -101,6 +103,7 @@ impl MutationCall {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
             MutationCall::SaveSettings { .. } => Some("Saved to config.toml".to_string()),
+            MutationCall::SaveHostKeys { names, .. } => Some(format!("Saved to config.toml for {}", if names.len() == 1 { names.join("") } else { format!("{} hosts", names.len()) })),
             MutationCall::HoldSnapshot { dataset, name } => Some(format!("Protected {dataset}@{name}")),
             MutationCall::ReleaseSnapshot { dataset, name } => Some(format!("Released the zfsctl hold on {dataset}@{name}")),
             MutationCall::SendTestMessage { .. } => Some("Test message sent: the mail command accepted it (run from this terminal; the daemon runs it with root's home)".to_string()),
@@ -147,6 +150,7 @@ impl MutationCall {
             | MutationCall::SaveJob { .. }
             | MutationCall::SaveNotify { .. }
             | MutationCall::SaveSettings { .. }
+            | MutationCall::SaveHostKeys { .. }
             | MutationCall::SendTestMessage { .. }
             | MutationCall::SetJobEnabled { .. }
             | MutationCall::SetSmbShare { .. }
@@ -205,6 +209,7 @@ impl MutationCall {
             MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
             MutationCall::SaveNotify { .. } => "SAVE ALERT SETTINGS",
             MutationCall::SaveSettings { .. } => "SAVE SETTING",
+            MutationCall::SaveHostKeys { .. } => "SAVE HOST TAG AND SITE",
             MutationCall::SendTestMessage { .. } => "SEND TEST MESSAGE",
             MutationCall::RestoreFile { .. } => "RESTORE AS A COPY",
         }
@@ -290,6 +295,7 @@ impl MutationCall {
             MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
             MutationCall::SaveNotify { config_path, section } => crate::config::save_notify_section(config_path, section),
+            MutationCall::SaveHostKeys { config_path, names, tag, site } => crate::config::set_host_keys_in_file(config_path, names, tag, site),
             MutationCall::SaveSettings { config_path, setting, values } => {
                 let changes = crate::ui::settings::build_changes_for(config_path, setting, values).map_err(crate::error::AppError::Config)?;
                 crate::config_edit::save(config_path, &changes)
@@ -432,6 +438,9 @@ pub enum FormKind {
     /// yet. `handle_modal_key` special-cases this variant instead of
     /// routing it through `build_pending_action`.
     AddHost,
+    /// Fields: `[tag, site]` of the `[[hosts]]` blocks named in `names`. With one host the fields hold its current values and
+    /// empty clears; with several they start empty, empty leaves the key alone and `-` clears it.
+    EditHosts { names: Vec<String> },
     /// Fields: `[restore as]` -- the new name for a file restored from a snapshot. `source` is the picked file, fixed when
     /// the form opens; `host` is the host the browser was reading. Submitting builds the plan and opens a confirm.
     RestoreFile { host: usize, source: Box<crate::zfs::snapshot_restore::RestoreSource> },

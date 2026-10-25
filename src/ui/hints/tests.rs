@@ -365,6 +365,7 @@ struct Fingerprint {
     alerts_scroll: usize,
     quit: bool,
     selected_disks: Vec<String>,
+    marked_hosts: Vec<String>,
     selections: Vec<Option<usize>>,
     status: Option<String>,
 }
@@ -387,6 +388,7 @@ fn fingerprint(a: &App) -> Fingerprint {
         quit: a.should_quit,
         status: None,
         selected_disks: disks,
+        marked_hosts: a.marked_hosts.iter().cloned().collect(),
         selections: vec![
             a.pools_table.selected(),
             a.datasets_table.selected(),

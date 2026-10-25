@@ -816,3 +816,43 @@ fn domains_is_a_number_from_one_to_three_laid_over_per_group_and_a_wrong_one_is_
     assert!(problems.is_empty(), "{problems:?}");
     assert_eq!((s.for_host("a").domains, s.for_host("local").domains), (3, 2));
 }
+
+const HOSTS_FILE: &str = "# my hosts\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"old\" # why\n\n# the second\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\n\n[ui]\ntheme = \"ansi\"\n";
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| (*s).to_string()).collect()
+}
+
+#[test]
+fn setting_a_site_adds_the_line_inside_the_block_and_keeps_everything_else() {
+    let out = set_host_keys(HOSTS_FILE, &names(&["a", "b"]), &KeyUpdate::Keep, &KeyUpdate::Set("rack1".into())).unwrap();
+    assert_eq!(out, "# my hosts\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"old\" # why\nsite = \"rack1\"\n\n# the second\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\nsite = \"rack1\"\n\n[ui]\ntheme = \"ansi\"\n");
+    let hosts = toml::from_str::<Config>(&out).unwrap().hosts;
+    assert_eq!(hosts.iter().map(|h| h.site.as_deref()).collect::<Vec<_>>(), [Some("rack1"), Some("rack1")]);
+}
+
+#[test]
+fn a_tag_is_replaced_in_place_and_cleared_by_removing_its_line() {
+    let out = set_host_keys(HOSTS_FILE, &names(&["a"]), &KeyUpdate::Set("new".into()), &KeyUpdate::Keep).unwrap();
+    assert!(out.contains("tag = \"new\"\n\n# the second") && !out.contains("old"), "{out}");
+    let out = set_host_keys(HOSTS_FILE, &names(&["a"]), &KeyUpdate::Clear, &KeyUpdate::Keep).unwrap();
+    assert_eq!(out, HOSTS_FILE.replace("tag = \"old\" # why\n", ""));
+    assert_eq!(set_host_keys(HOSTS_FILE, &names(&["b"]), &KeyUpdate::Clear, &KeyUpdate::Clear).unwrap(), HOSTS_FILE, "clearing what is not there changes nothing");
+}
+
+#[test]
+fn a_host_without_a_block_or_hosts_written_by_hand_is_refused_and_the_file_is_untouched() {
+    let err = set_host_keys(HOSTS_FILE, &names(&["local"]), &KeyUpdate::Keep, &KeyUpdate::Set("x".into())).unwrap_err();
+    assert!(err.contains("'local' has no [[hosts]] block"), "{err}");
+    let inline = "hosts = [{ name = \"a\", ssh_target = \"u@a\" }]\n";
+    assert!(set_host_keys(inline, &names(&["a"]), &KeyUpdate::Keep, &KeyUpdate::Set("x".into())).unwrap_err().contains("edit it by hand"));
+    let crlf = HOSTS_FILE.replace('\n', "\r\n");
+    let out = set_host_keys(&crlf, &names(&["b"]), &KeyUpdate::Keep, &KeyUpdate::Set("r".into())).unwrap();
+    assert!(out.contains("ssh_target = \"u@b\"\r\nsite = \"r\"\r\n"), "{out:?}");
+}
+
+#[test]
+fn a_file_with_no_final_newline_gets_its_new_line_on_its_own_line() {
+    let out = set_host_keys("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"", &names(&["a"]), &KeyUpdate::Keep, &KeyUpdate::Set("r".into())).unwrap();
+    assert_eq!(out, "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\nsite = \"r\"\n");
+}
