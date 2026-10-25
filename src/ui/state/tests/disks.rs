@@ -264,7 +264,7 @@ fn disk_form_description(key: char) -> String {
     app.handle_key(KeyCode::Char(key));
     match &app.modal {
         Some(Modal::Form { description: Some(d), fields, .. }) => {
-            assert_eq!(fields.len(), if key == 'a' { 3 } else { 2 }, "the Add vdev form gained a Role field");
+            assert_eq!(fields.len(), 3, "the Add vdev form has a Role field and the Create Pool form an Options field");
             d.clone()
         }
         other => panic!("expected Form with description, got {other:?}"),
@@ -336,7 +336,7 @@ fn handle_key_n_in_disks_with_selection_opens_create_pool_from_disks_form() {
     app.handle_key(KeyCode::Char('n'));
     match &app.modal {
         Some(Modal::Form { fields, kind, .. }) => {
-            assert_eq!(fields.len(), 2);
+            assert_eq!(fields.len(), 3, "name, redundancy and options");
             assert_eq!(
                 *kind,
                 FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".to_string(), "da1".to_string()] },
@@ -473,6 +473,7 @@ fn selected_disks_survives_a_failed_create_pool_from_disks_submission() {
         app.handle_modal_key(KeyCode::Char(c));
     }
     app.handle_modal_key(KeyCode::Tab); // move to the Redundancy field
+    app.handle_modal_key(KeyCode::Tab); // and on to the Options field, the last one
     let result = submit_and_confirm(&mut app);
     assert!(result.is_some(), "the form still submits and returns a PendingAction");
     assert!(

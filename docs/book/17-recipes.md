@@ -11,7 +11,7 @@ Each recipe is self-contained. The names (`tank`, `backup`, `hub`) are the runni
 
 1. Disks: look at the **serial numbers** and compare them with the labels on the drives.
 2. Mark the disks you want with `Space`.
-3. Press `n`, name the pool, and choose the redundancy (`mirror` for two disks; for three or more, `raidz2` is the safer choice with large disks). If the disks have 4096-byte sectors, create the pool at the shell with `-o ashift=12` instead (chapter 8).
+3. Press `n`, name the pool, and choose the redundancy (`mirror` for two disks; for three or more, `raidz2` is the safer choice with large disks). If the disks have 4096-byte sectors, put `-o ashift=12` in the options (chapter 8).
 4. Read the command in the confirmation. Press `y`, then `Enter`.
 5. Check: Pools shows `● ONLINE`.
 
