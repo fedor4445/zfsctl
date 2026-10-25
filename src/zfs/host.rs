@@ -47,6 +47,9 @@ pub struct HostSummary {
     pub l2arc: Option<L2arc>,
     /// Per-pool detail for the panel (capacity, fragmentation, health, errors, last scrub).
     pub pool_rows: Vec<crate::zfs::host_health::PoolProbe>,
+    /// The network interfaces worth watching, with link state, speed and the current rates; empty on a host whose
+    /// `netstat`/`ifconfig` this does not understand.
+    pub net: Vec<super::net::NetIface>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -258,14 +261,22 @@ pub fn sample_host(runner: &dyn CommandRunner, host_os: Option<crate::zfs::host_
         swap: stdout_of(runner.run_unprivileged("swapinfo", &["-k"])).and_then(|s| parse_swapinfo(&s)),
         l2arc,
         pool_rows,
+        net: Vec::new(),
     };
     // The CPU usage needs two readings; the 1-second iostat window below sits between them, so the
     // measurement costs no extra waiting.
+    // The network rates are read the same way: the byte counters before and after that window.
+    let links = stdout_of(runner.run_unprivileged("ifconfig", &["-a"])).map(|s| super::net::parse_ifconfig(&s)).unwrap_or_default();
     let cpu_before = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kern.cp_time"])).and_then(|s| parse_cpu_times(&s));
+    let net_before = stdout_of(runner.run_unprivileged("netstat", &["-ibn"])).map(|s| super::net::parse_netstat_ibn(&s)).unwrap_or_default();
+    let net_window = Instant::now();
     let io = stdout_of(runner.run("zpool", &["iostat", "-Hpy", "1", "1"])).map(|s| parse_iostat_total(&s)).unwrap_or_default();
+    let net_after = stdout_of(runner.run_unprivileged("netstat", &["-ibn"])).map(|s| super::net::parse_netstat_ibn(&s)).unwrap_or_default();
+    let net_elapsed_ms = u64::try_from(net_window.elapsed().as_millis()).unwrap_or(u64::MAX);
     let cpu_after = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kern.cp_time"])).and_then(|s| parse_cpu_times(&s));
     let percent = cpu_before.zip(cpu_after).and_then(|(a, b)| cpu_percent(a, b));
-    let summary = HostSummary { cpu: core.map(|c| CpuInfo { model: c.model, cores: c.cores, percent }), ..summary_without_cpu };
+    let net = super::net::rates(&net_before, &net_after, &links, net_elapsed_ms);
+    let summary = HostSummary { cpu: core.map(|c| CpuInfo { model: c.model, cores: c.cores, percent }), net, ..summary_without_cpu };
     Ok((summary, io))
 }
 
@@ -329,8 +340,29 @@ mod tests {
         assert_eq!(s.status.as_deref(), Some("all pools are healthy"));
         assert_eq!(io.write_bps, 2048);
         let unpriv = runner.unprivileged_calls.lock().unwrap();
-        assert!(unpriv.iter().all(|(cmd, _)| ["uname", "date", "sysctl", "swapinfo"].contains(&cmd.as_str())), "{unpriv:?}");
+        assert!(unpriv.iter().all(|(cmd, _)| ["uname", "date", "sysctl", "swapinfo", "ifconfig", "netstat"].contains(&cmd.as_str())), "{unpriv:?}");
         assert!(runner.calls.lock().unwrap().iter().any(|(c, a)| c == "zfs" && a == &["version"]));
+    }
+
+    #[test]
+    fn sample_host_lists_the_visible_interfaces_with_link_state_and_speed() {
+        let netstat = "Name Mtu Network Address Ipkts Ierrs Idrop Ibytes Opkts Oerrs Obytes Coll\nvtnet0 1500 <Link#1> 00:00:5e:00:53:01 5 0 0 700 6 0 800 0\nlo0 16384 <Link#2> lo0 1 0 0 10 1 0 10 0\n";
+        let ifconfig = "vtnet0: flags=1008843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\tmedia: Ethernet autoselect (10Gbase-T <full-duplex>)\n\tstatus: active\nlo0: flags=8049<UP,LOOPBACK,RUNNING> metric 0 mtu 16384\n";
+        let runner = FakeRunner::new("")
+            .route("zpool", "list", "tank\t3000\t1000\t2000\t5\tONLINE\n")
+            .route("netstat", "-ibn", netstat)
+            .route("ifconfig", "-a", ifconfig);
+        let (s, _) = sample_host(&runner, None).unwrap();
+        assert_eq!(s.net.len(), 1, "the loopback is not listed: {:?}", s.net);
+        assert_eq!((s.net[0].name.as_str(), s.net[0].up, s.net[0].speed.as_deref()), ("vtnet0", true, Some("10Gbase-T")));
+        let unpriv = runner.unprivileged_calls.lock().unwrap();
+        assert_eq!(unpriv.iter().filter(|(c, _)| c == "netstat").count(), 2, "one reading before and one after the disk window");
+    }
+
+    #[test]
+    fn a_host_without_the_freebsd_network_tools_just_has_no_interfaces() {
+        let runner = FakeRunner::new("").route("zpool", "list", "tank\t3000\t1000\t2000\t5\tONLINE\n").route_failure("netstat", "-ibn", "invalid option", 1);
+        assert!(sample_host(&runner, None).unwrap().0.net.is_empty());
     }
 
     // Captured on 2026-10-09: the FreeBSD 15.1 hub (36 cores), then fbsd16 (16.0-CURRENT, 4 cores).
