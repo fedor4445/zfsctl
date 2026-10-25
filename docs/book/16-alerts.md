@@ -61,6 +61,10 @@ DATA SAFETY
 │Alerts                ││Last report sent 2026-10-25                                                                   │
 │Settings              ││                                                                                              │
 │                      ││Recent events                                                                                 │
+│                      ││10-25 14:40  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-25 14:30  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-25 12:03  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-25 11:41  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-25 11:09  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-25 09:27  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-25 08:07  fb  daemon-started  zfsctl daemon started                                        │
@@ -71,11 +75,7 @@ DATA SAFETY
 │                      ││10-24 21:55  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 21:06  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 20:38  fb  daemon-started  zfsctl daemon started                                        │
-│                      ││10-24 20:35  ub24  alert  2 datasets not protected                                            │
-│                      ││10-24 20:35  omnios  alert  40 datasets not protected                                         │
 │                      ││10-24 20:35  local  alert  11 datasets not protected                                          │
-│                      ││10-24 20:35  fbsd16t2  alert  5 datasets not protected                                        │
-│                      ││10-24 20:35  fbsd16t1  alert  6 datasets not protected                                        │
 │                      ││                                                                                              │
 │                      ││                                                                                              │
 │                      ││                                                                                              │

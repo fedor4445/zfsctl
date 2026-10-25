@@ -59,7 +59,7 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sun 25 Oct 11:57                                                                                                  ✖ 4 issues
+┌zfsctl────────────────┐ Dashboard  ·  Sun 25 Oct 14:41                                                                                                  ✖ 4 issues
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ✖ issue fbsd16:zroot      no copy job
@@ -69,11 +69,11 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │Shares                │
 │Boot Envs             │ GROUPS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Jobs                  │  Group         State       Pools  Capacity             Memory             CPU              Load  Scrub     Errors
-│Cloud                 │  freebsd (3)   ● ok        5      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 27%     ?                0.69  7 d ago   0
-│Alerts                │  (no tag) (1)  ● ok        3      ━━━━━╌╌╌╌╌ 45%       ━━╌╌╌╌╌╌╌╌ 16%     ?                2.98  16 d ago  0
+│Cloud                 │  freebsd (3)   ● ok        5      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 27%     ?                0.54  7 d ago   0
+│Alerts                │  (no tag) (1)  ● ok        3      ━━━━━╌╌╌╌╌ 45%       ━━╌╌╌╌╌╌╌╌ 18%     ?                0.04  16 d ago  0
 │Settings              │
 │                      │ DATA SAFETY ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 27 min · 1 data set has copies
+│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 11 min · 1 data set has copies
 │                      │     ignored by choice: local:zroot/ROOT, local:zroot/ROOT/default, local:zroot/tmp and 41 more (and everything below; Enter lists them)
 │                      │
 │                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 │                      │
 │                      │ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert ub24 2 datasets not protected (15h ago) · report 2026-10-25
+│                      │   ● monitor on · last alert local 11 datasets not protected (18h ago) · report 2026-10-25
 │                      │
 │                      │
 │                      │
