@@ -134,6 +134,17 @@ On the left is the system: operating system, uptime and round trip, load average
 
 When the panel is wide enough (about 90 columns) it also shows two graphs, **Read** and **Write**, with the peak of what is drawn: they plot the whole host's disk activity over the most recent samples (roughly one every second or two). On a narrower terminal, as in the capture above, the panel keeps the figures and shows the rates as one line.
 
+Below them, when the terminal is tall enough to spare the rows, comes a **Network** block with one line per network interface of the host:
+
+```text
+Network
+vtnet0     ● 10Gbase-T  In  945K/s ⣸⣦⡆          Out 25.2K/s ⣀⣀⡀
+vtnet1     ○ down
+tailscale0 ●            In    0B/s              Out    0B/s
+```
+
+Each line gives the interface name, a link dot (`●` up, `○` down), the speed the link negotiated (`10Gbase-T`; blank when the interface reports none, as a VPN tunnel does), and the current **In** and **Out** rates in bytes per second, each with a small graph. The two graphs of one interface share a scale, so you can see which direction is busier. An interface that is down is one dim line. Loopback and housekeeping interfaces (`lo0`, `pflog0`, `enc0`) are not listed. The rates come from the interface's byte counters, read twice around the same one-second window as the disk figures, so they cost no extra wait. If there are more interfaces than rows, the last line says how many are hidden; below about 70 columns the graphs are dropped and only the rates remain. The disk graphs and the host text always keep the rows they need: on a short terminal the Network block simply does not appear. It needs FreeBSD's `netstat` and `ifconfig` on the host (no `sudo`); on a host without them the block is left out.
+
 ## Checking one host now
 
 `c` in Hosts checks the selected host's disks (`smartctl`) and its file sharing services (NFS, Samba) right now, in the background, and says what it found (`fbsd16: disks fine, shares fine`). Use it after you replace a disk or restart a service, instead of waiting for the daily check (03:30). The answer is written where the daily check writes it, so the Dashboard shows it too, and a problem that is gone clears. If the host cannot be reached the old answer stays, with a note. Only reads: no self-test is started and nothing is changed on the host. While another check is running (the daemon's pass, or one of yours) `c` waits and says who is running it.

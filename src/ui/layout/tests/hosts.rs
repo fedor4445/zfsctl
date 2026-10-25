@@ -227,3 +227,39 @@ fn the_hosts_table_shows_each_hosts_site_and_the_filter_finds_it() {
     app.host_sites.clear();
     assert!(!render(&mut app, 190, 30).join("\n").contains("Site"), "no site on any host: no column");
 }
+
+fn host_screen_with_net(w: u16, h: u16) -> String {
+    use crate::zfs::metrics::{MetricsTarget, PoolFacts, PoolIo, PoolSample, TargetSample};
+    use crate::zfs::net::NetIface;
+    let mut app = App::new(vec!["local".to_string()]);
+    app.metrics.retarget(Some(MetricsTarget::Host));
+    let net = vec![
+        NetIface { name: "vtnet0".into(), up: true, speed: Some("10Gbase-T".into()), in_bps: 1_258_291, out_bps: 1_153_434 },
+        NetIface { name: "vtnet1".into(), up: false, speed: Some("10Gbase-T".into()), in_bps: 0, out_bps: 0 },
+        NetIface { name: "tailscale0".into(), up: true, speed: None, in_bps: 2048, out_bps: 0 },
+    ];
+    for _ in 0..3 {
+        let host = crate::ui::metrics::tests_support::rich_host();
+        let sample = TargetSample { pool: PoolSample { io: PoolIo::default(), facts: PoolFacts::default() }, space: None, host: Some(crate::zfs::host::HostSummary { net: net.clone(), ..host }), snapshot: None, disk: None, share: None, contents: None };
+        app.metrics.apply(&MetricsTarget::Host, Ok(sample), std::time::Instant::now());
+    }
+    render(&mut app, w, h).join("\n")
+}
+
+#[test]
+fn the_host_panel_shows_the_network_block_below_the_io_graphs_when_there_is_room() {
+    let text = host_screen_with_net(130, 46);
+    let at = |needle: &str| text.lines().position(|l| l.contains(needle)).unwrap_or_else(|| panic!("no {needle:?} in\n{text}"));
+    assert!(at("Network") > at("Read "), "the network block comes after the I/O graphs");
+    for want in ["vtnet0", "10Gbase-T", "1.2M/s", "○ down", "tailscale0", "ZFS     2.4.2-1"] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    assert!(at("vtnet0") > at("Network") && at("tailscale0") > at("vtnet1"), "one line per interface, in order");
+}
+
+#[test]
+fn a_short_terminal_keeps_the_host_panel_whole_and_drops_the_network_block() {
+    let text = host_screen_with_net(130, 24);
+    assert!(!text.contains("Network"), "no room for it: the I/O graphs and pool rows keep their rows\n{text}");
+    assert!(text.contains("Read "), "{text}");
+}

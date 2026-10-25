@@ -7,6 +7,7 @@ use crate::zfs::disk::human_size;
 use crate::zfs::disk::{DiskInfo, DiskMedia, DiskMembership};
 use crate::zfs::disk_detail::DiskLive;
 use crate::zfs::host::HostSummary;
+use crate::zfs::net::NetIface;
 use crate::zfs::host_health::{Assessment, Level, ScanSummary};
 use crate::zfs::snapshot_detail::SnapshotDetail;
 use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolFacts, PoolIo, TargetSample};
@@ -19,7 +20,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Sparkline, SparklineBar};
 use ratatui::Frame;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Samples kept per pool; wider than any terminal's graph column.
@@ -40,6 +41,8 @@ pub const CONTENTS_INTERVAL: Duration = Duration::from_secs(30);
 pub struct MetricsView {
     target: Option<MetricsTarget>,
     io_history: VecDeque<PoolIo>,
+    /// Per network interface, the (in, out) bytes per second of each sample; only a host target fills it.
+    net_history: HashMap<String, VecDeque<(u64, u64)>>,
     facts: Option<PoolFacts>,
     space: Option<DatasetSpace>,
     host: Option<HostSummary>,
@@ -66,6 +69,7 @@ impl MetricsView {
         let same_pool = matches!((&self.target, &wanted), (Some(a), Some(b)) if a.pool().is_some() && a.pool() == b.pool());
         if !same_pool {
             self.io_history.clear();
+            self.net_history.clear();
             self.facts = None;
         }
         self.space = None;
@@ -79,6 +83,19 @@ impl MetricsView {
         self.error = None;
         self.last_finished = None;
         self.target = wanted;
+    }
+
+    /// Adds the host's latest network rates to each interface's history, and forgets an interface that is gone.
+    fn record_net(&mut self) {
+        let Some(host) = &self.host else { return };
+        self.net_history.retain(|name, _| host.net.iter().any(|i| &i.name == name));
+        for iface in &host.net {
+            let history = self.net_history.entry(iface.name.clone()).or_default();
+            if history.len() == HISTORY {
+                history.pop_front();
+            }
+            history.push_back((iface.in_bps, iface.out_bps));
+        }
     }
 
     pub fn target(&self) -> Option<&MetricsTarget> {
@@ -120,6 +137,7 @@ impl MetricsView {
                 }
                 self.space = sample.space;
                 self.host = sample.host;
+                self.record_net();
                 self.snapshot = sample.snapshot;
                 self.disk = sample.disk;
                 self.share = sample.share;
@@ -509,14 +527,76 @@ fn clip_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
     lines.iter().map(|l| clip_line(l, width)).collect()
 }
 
+/// Rows the host panel always keeps for its I/O graphs, however short the host text is.
+const HOST_PANEL_ROWS: usize = 8;
+/// Widest a network graph gets: more cells than the history has samples would only be blank.
+const NET_GRAPH_MAX: u16 = 60;
+/// Narrowest one is worth drawing: eight cells show 16 seconds. Below it the line keeps just the rates.
+const NET_GRAPH_MIN: u16 = 8;
+/// Width of the widest rate, `1023M/s`.
+const NET_RATE_WIDTH: usize = 7;
+
+/// The Network block: a header and one line per interface (name, link dot, speed, then In and Out with a graph each),
+/// `room` rows at most. What does not fit is counted, never cut silently; with fewer than three rows there is no
+/// block at all. An interface that is down is one dim line. The graphs share one scale per interface, so In and
+/// Out can be compared, and are dropped when the panel is too narrow for them to be readable.
+fn network_lines(view: &MetricsView, ifaces: &[NetIface], theme: &Theme, width: u16, room: usize) -> Vec<Line<'static>> {
+    if ifaces.is_empty() || room < 3 {
+        return Vec::new();
+    }
+    let listed = if ifaces.len() + 1 > room { room - 2 } else { ifaces.len() };
+    let name_w = ifaces.iter().map(|i| i.name.chars().count()).max().unwrap_or(0).min(14);
+    let speed_w = ifaces.iter().filter_map(|i| i.speed.as_deref()).map(|s| s.chars().count()).max().unwrap_or(0).min(14);
+    // "name ● speed  In rate graph  Out rate graph", the graphs sharing what the text leaves.
+    let fixed = name_w + speed_w + 5 + 3 + NET_RATE_WIDTH + 2 + 4 + NET_RATE_WIDTH;
+    let graph_w = u16::try_from(usize::from(width).saturating_sub(fixed + 2) / 2).unwrap_or(NET_GRAPH_MAX).min(NET_GRAPH_MAX);
+    let graph_w = if graph_w >= NET_GRAPH_MIN { graph_w } else { 0 };
+    let rate = |bps: u64| format!("{:>NET_RATE_WIDTH$}", per_sec(bps));
+    let mut lines = vec![Line::from(Span::styled("Network", theme.header()))];
+    for iface in ifaces.iter().take(listed) {
+        if !iface.up {
+            lines.push(Line::from(Span::styled(format!("{:<name_w$} ○ down", iface.name), theme.dim())));
+            continue;
+        }
+        let (ins, outs): (Vec<u64>, Vec<u64>) = view.net_history.get(&iface.name).map(|h| h.iter().copied().unzip()).unwrap_or_default();
+        let peak = peak_of(visible_tail(&ins, graph_w)).max(peak_of(visible_tail(&outs, graph_w)));
+        let graph = |data: &[u64]| if graph_w == 0 { String::new() } else { format!(" {}", braille_rows(data, graph_w, 1, peak).concat()) };
+        lines.push(Line::from(vec![
+            Span::raw(format!("{:<name_w$} ", iface.name)),
+            Span::styled("●", theme.ok),
+            Span::styled(format!(" {:<speed_w$}  ", iface.speed.as_deref().unwrap_or("")), theme.dim()),
+            Span::raw(format!("In {}", rate(iface.in_bps))),
+            Span::styled(graph(&ins), theme.info),
+            Span::raw(format!("  Out {}", rate(iface.out_bps))),
+            Span::styled(graph(&outs), theme.warn),
+        ]));
+    }
+    if listed < ifaces.len() {
+        let hidden = ifaces.len() - listed;
+        lines.push(Line::raw(format!("+{hidden} more interface{}: enlarge the terminal", if hidden == 1 { "" } else { "s" })));
+    }
+    lines
+}
+
 fn draw_host_panel(f: &mut Frame, view: &MetricsView, last: &PoolIo, host: &HostSummary, assessment: Option<&Assessment>, theme: &Theme, area: Rect) {
     // A failed sample leaves the last good figures on screen, dimmed.
     let mut panel = host_panel(host, assessment, theme, view.error.is_some());
     // Below this width the graphs would leave the text too narrow to read: drop them and keep the rates as a line.
-    let text = if area.width < 90 {
+    let narrow = area.width < 90;
+    if narrow {
         let io = Line::raw(format!("I/O     read {}  write {}", per_sec(last.read_bps), per_sec(last.write_bps)));
         panel.single.insert(0, io.clone());
         panel.system.insert(0, io);
+    }
+    // The network block sits across the bottom and takes only the rows the host text and graphs do not need.
+    let text_width = if narrow { area.width } else { panel_areas(area)[2].width };
+    let wanted = if text_width >= 72 { panel.system.len().max(panel.zfs.len()) + panel.pools.len() } else { panel.single.len() };
+    let net_rows = usize::from(area.height).saturating_sub(wanted.max(HOST_PANEL_ROWS));
+    let net = network_lines(view, &host.net, theme, area.width, net_rows);
+    let net_height = u16::try_from(net.len()).unwrap_or(u16::MAX);
+    let [area, net_area] = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(0), Constraint::Length(net_height)]).areas(area);
+    f.render_widget(Paragraph::new(clip_lines(&net, net_area.width)), net_area);
+    let text = if narrow {
         area
     } else {
         let [read, write, text] = panel_areas(area);
@@ -805,6 +885,7 @@ pub(crate) mod tests_support {
                 PoolProbe { name: "tank".into(), health: PoolHealth::Degraded, capacity_percent: 91, frag_percent: None, errors: Some(3), scan: Some(ScanSummary::Running { percent: Some(34), resilver: false }), last_scrub: None },
                 PoolProbe { name: "zroot".into(), health: PoolHealth::Online, capacity_percent: 24, frag_percent: Some(33), errors: Some(0), scan: Some(ScanSummary::Never), last_scrub: None },
             ],
+            net: Vec::new(),
         }
     }
 }
@@ -1204,5 +1285,86 @@ mod tests {
         }
         let plain = host_panel(&rich_host(), Some(&assessed(Level::Ok, "ok")), &theme, false);
         assert!(!text_of(&plain.zfs).contains("tank 91% full"), "no reason line when the host is ok");
+    }
+    fn iface(name: &str, up: bool, speed: Option<&str>, in_bps: u64, out_bps: u64) -> crate::zfs::net::NetIface {
+        crate::zfs::net::NetIface { name: name.into(), up, speed: speed.map(Into::into), in_bps, out_bps }
+    }
+
+    fn host_with(net: Vec<crate::zfs::net::NetIface>) -> TargetSample {
+        let mut sample = sample(0).unwrap();
+        sample.host = Some(HostSummary { net, ..rich_host() });
+        sample
+    }
+
+    fn view_after(samples: Vec<Vec<crate::zfs::net::NetIface>>) -> MetricsView {
+        let mut view = MetricsView::default();
+        view.retarget(Some(MetricsTarget::Host));
+        for net in samples {
+            view.apply(&MetricsTarget::Host, Ok(host_with(net)), Instant::now());
+        }
+        view
+    }
+
+    fn net_text(view: &MetricsView, width: u16, room: usize) -> Vec<String> {
+        let ifaces = view.host.as_ref().map(|h| h.net.clone()).unwrap_or_default();
+        network_lines(view, &ifaces, &Theme::ansi(), width, room).iter().map(|l| text_of(std::slice::from_ref(l))).collect()
+    }
+
+    #[test]
+    fn each_interface_gets_its_own_history_and_one_that_disappears_loses_it() {
+        let mut view = view_after(vec![
+            vec![iface("vtnet0", true, None, 10, 20), iface("tun0", true, None, 1, 1)],
+            vec![iface("vtnet0", true, None, 30, 40)],
+        ]);
+        assert_eq!(view.net_history["vtnet0"].iter().copied().collect::<Vec<_>>(), [(10, 20), (30, 40)]);
+        assert!(!view.net_history.contains_key("tun0"), "a gone interface does not keep a stale graph");
+        view.retarget(Some(MetricsTarget::Pool("tank".into())));
+        assert!(view.net_history.is_empty(), "moving off the host drops the network history");
+    }
+
+    #[test]
+    fn the_network_history_keeps_only_the_newest_samples() {
+        let view = view_after((0..HISTORY as u64 + 5).map(|i| vec![iface("vtnet0", true, None, i, 0)]).collect());
+        assert_eq!(view.net_history["vtnet0"].len(), HISTORY);
+        assert_eq!(view.net_history["vtnet0"].front().copied(), Some((5, 0)));
+    }
+
+    #[test]
+    fn an_up_interface_line_has_link_speed_both_rates_and_a_graph_for_each() {
+        let view = view_after(vec![vec![iface("vtnet0", true, Some("10Gbase-T"), 1_258_291, 1_153_434)], vec![iface("vtnet0", true, Some("10Gbase-T"), 1_258_291, 1_153_434)]]);
+        let lines = net_text(&view, 110, 6);
+        assert_eq!(lines[0], "Network");
+        let row = &lines[1];
+        for want in ["vtnet0", "●", "10Gbase-T", "In ", "1.2M/s", "Out ", "1.1M/s"] {
+            assert!(row.contains(want), "missing {want:?} in {row:?}");
+        }
+        assert!(row.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)), "a graph of braille dots: {row:?}");
+        assert!(row.chars().count() <= 110, "never wider than the panel: {row:?}");
+    }
+
+    #[test]
+    fn a_down_interface_is_one_dim_line_without_graphs() {
+        let view = view_after(vec![vec![iface("vtnet1", false, Some("10Gbase-T"), 0, 0)]]);
+        let lines = net_text(&view, 110, 6);
+        assert_eq!(lines[1], "vtnet1 ○ down");
+    }
+
+    #[test]
+    fn a_narrow_panel_drops_the_graphs_but_keeps_the_rates() {
+        let view = view_after(vec![vec![iface("vtnet0", true, Some("10Gbase-T"), 2048, 1024)]]);
+        let row = net_text(&view, 60, 6)[1].clone();
+        assert!(row.contains("2.0K/s") && row.contains("1.0K/s"), "{row:?}");
+        assert!(!row.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)), "{row:?}");
+    }
+
+    #[test]
+    fn too_many_interfaces_are_counted_not_cut_silently_and_no_room_means_no_block() {
+        let net: Vec<_> = (0..6).map(|i| iface(&format!("em{i}"), true, None, 0, 0)).collect();
+        let view = view_after(vec![net]);
+        let lines = net_text(&view, 110, 5);
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!(lines[4].starts_with("+3 more interfaces"), "{lines:?}");
+        assert!(net_text(&view, 110, 2).is_empty(), "a header with nothing under it is not worth the rows");
+        assert!(net_text(&MetricsView::default(), 110, 6).is_empty());
     }
 }

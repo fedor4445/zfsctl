@@ -9,6 +9,7 @@ pub mod host_health;
 pub mod host_resources;
 pub mod integrity;
 pub mod metrics;
+pub mod net;
 pub mod permission;
 pub mod pool;
 pub mod pool_classes;
