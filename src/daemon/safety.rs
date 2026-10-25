@@ -142,6 +142,13 @@ fn remote_domain(id: &str) -> String {
     rest.split([':', '/']).next().unwrap_or(rest).to_string()
 }
 
+/// The failure domain of the place a copy job writes to: the host it replicates to (through `domain_of`), the hub for a
+/// file target, the remote or machine a repository names for the rest. `None` for a job that makes no copy.
+pub fn copy_domain(job: &Job, domain_of: &dyn Fn(&str) -> String) -> Option<String> {
+    let (id, _, host, _) = place_of(job)?;
+    Some(host.map_or_else(|| remote_domain(&id), |h| domain_of(&h)))
+}
+
 /// Every body of the jobs: one per original that has at least one copy job (enabled, to another machine, for the whole
 /// dataset), the weakest first (the oldest data among its places, a place never reached before any). `domain_of` says which
 /// failure domain a host belongs to.

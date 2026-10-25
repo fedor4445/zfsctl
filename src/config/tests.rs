@@ -40,7 +40,7 @@ fn documented_keys_match_the_serialised_fields() {
         scrub_crit_days: Some(90),
         scrub_ignore: vec!["scratch".into()],
     };
-    let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), recent: Some("normal".into()), email: Some("report".into()), not_a_table: false };
+    let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), domains: Some(2.into()), recent: Some("normal".into()), email: Some("report".into()), not_a_table: false };
     let notify = NotifyConfig {
         mail_to: Some("a@b".into()),
         mail_command: Some("c".into()),
@@ -273,13 +273,13 @@ fn every_notify_key_parses_and_round_trips() {
 }
 
 fn prot(level: Option<&str>, copies: Option<u8>, online: Option<u8>, recent: Option<&str>, email: Option<&str>) -> ProtectionConfig {
-    ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), recent: recent.map(Into::into), email: email.map(Into::into), not_a_table: false }
+    ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), domains: None, recent: recent.map(Into::into), email: email.map(Into::into), not_a_table: false }
 }
 
 #[test]
 fn protection_defaults_are_basic_normal_immediate() {
     let s = ProtectionConfig::default().resolve().unwrap();
-    assert_eq!(s, ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
+    assert_eq!(s, ProtectionSettings { copies: 1, online: 0, domains: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
     assert_eq!(s, ProtectionSettings::default());
     assert_eq!(Config::default().protection.resolve().unwrap(), s);
 }
@@ -342,8 +342,8 @@ fn a_wrong_type_in_protection_loads_and_resolve_names_the_key() {
     assert_eq!(resolved("[protection]\nrecent = true\n").unwrap_err(), "[protection] recent must be strict, normal or relaxed");
     assert_eq!(resolved("[protection]\nemail = \"of\"\n").unwrap_err(), "[protection] email must be immediate, report or off");
     assert_eq!(resolved("[protection]\nemail = [\"off\"]\n").unwrap_err(), "[protection] email must be immediate, report or off");
-    assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, recent, email)");
-    assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
+    assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, domains, recent, email)");
+    assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, domains: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
     assert_eq!(resolved("[protection]\nlevel = \"careful\"\ncopies = \"x\"\n").unwrap().copies, 3, "copies only counts under custom");
 }
 
@@ -803,4 +803,16 @@ fn hosts_with_the_same_site_are_one_failure_domain_and_a_host_without_one_is_its
     assert_eq!((settings.domain_of("c"), settings.domain_of("d"), settings.domain_of("local")), ("c".to_string(), "d".to_string(), "local".to_string()));
     let text = render_host_block(&host("a", Some("rack1")));
     assert!(text.contains("site = \"rack1\""), "{text}");
+}
+
+#[test]
+fn domains_is_a_number_from_one_to_three_laid_over_per_group_and_a_wrong_one_is_named() {
+    let ok = |t: &str| toml::from_str::<Config>(t).unwrap().protection_settings();
+    assert_eq!(ok("").0.domains, 1);
+    assert_eq!(ok("[protection]\ndomains = 2\n").0.domains, 2);
+    let (s, problems) = ok("[protection]\ndomains = 4\n");
+    assert_eq!((s.domains, problems), (1, vec!["[protection] domains must be 1, 2 or 3".to_string()]));
+    let (s, problems) = ok("[protection]\ndomains = 2\n\n[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"db\"\n\n[groups.db.protection]\ndomains = 3\n");
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!((s.for_host("a").domains, s.for_host("local").domains), (3, 2));
 }

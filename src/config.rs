@@ -15,7 +15,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
         "memory_warn", "memory_crit", "swap_warn", "swap_crit", "quota_warn", "quota_crit", "dedup_min_ratio", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
-        "level", "copies", "online", "recent", "email",
+        "level", "copies", "online", "domains", "recent", "email",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -76,6 +76,8 @@ pub struct ProtectionConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub online: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub domains: Option<toml::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub recent: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub email: Option<toml::Value>,
@@ -131,6 +133,8 @@ pub struct ProtectionSettings {
     pub copies: u8,
     /// Of those, copies that must be online (0 to `copies`).
     pub online: u8,
+    /// Separate failure domains the copies must span, the original's included (1 asks nothing).
+    pub domains: u8,
     /// How many intervals old a copy may be and still count as recent.
     pub tolerance: i32,
     pub email: EmailTiming,
@@ -143,6 +147,7 @@ pub struct ProtectionSettings {
 pub struct Effective {
     pub copies: u8,
     pub online: u8,
+    pub domains: u8,
     pub tolerance: i32,
     pub email: EmailTiming,
 }
@@ -164,13 +169,13 @@ impl ProtectionSettings {
     /// The settings that apply to `host`: its group's, or the global ones (a host without a tag, or in a group that sets
     /// nothing, and `local`, the hub).
     pub fn for_host(&self, host: &str) -> Effective {
-        self.groups.host_tag.get(host).and_then(|tag| self.groups.by_tag.get(tag)).copied().unwrap_or(Effective { copies: self.copies, online: self.online, tolerance: self.tolerance, email: self.email })
+        self.groups.host_tag.get(host).and_then(|tag| self.groups.by_tag.get(tag)).copied().unwrap_or(Effective { copies: self.copies, online: self.online, domains: self.domains, tolerance: self.tolerance, email: self.email })
     }
 }
 
 impl Default for ProtectionSettings {
     fn default() -> Self {
-        ProtectionSettings { copies: 1, online: 0, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() }
+        ProtectionSettings { copies: 1, online: 0, domains: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() }
     }
 }
 
@@ -182,7 +187,7 @@ impl ProtectionConfig {
 
     pub fn resolve(&self) -> std::result::Result<ProtectionSettings, String> {
         if self.not_a_table {
-            return Err("[protection] must be a table of keys (level, copies, online, recent, email)".into());
+            return Err("[protection] must be a table of keys (level, copies, online, domains, recent, email)".into());
         }
         // A word key: absent is the default, a string is checked by the caller, any other type is wrong.
         let word = |v: &Option<toml::Value>, default: &'static str, wrong: &str| -> std::result::Result<String, String> {
@@ -214,6 +219,7 @@ impl ProtectionConfig {
             }
             _ => return Err(level_wrong.into()),
         };
+        let domains = count(&self.domains, 1, 1..=3, "[protection] domains must be 1, 2 or 3")?;
         let recent_wrong = "[protection] recent must be strict, normal or relaxed";
         let tolerance = match word(&self.recent, "normal", recent_wrong)?.as_str() {
             "strict" => 1,
@@ -228,7 +234,7 @@ impl ProtectionConfig {
             "off" => EmailTiming::Off,
             _ => return Err(email_wrong.into()),
         };
-        Ok(ProtectionSettings { copies, online, tolerance, email, groups: GroupRules::default() })
+        Ok(ProtectionSettings { copies, online, domains, tolerance, email, groups: GroupRules::default() })
     }
 
     /// The settings to judge with on a screen: `resolve`, or Basic's defaults with the problem in words.
@@ -897,10 +903,10 @@ impl Config {
             if g.is_default() {
                 continue;
             }
-            let merged = ProtectionConfig { level: over(&g.level, &b.level), copies: over(&g.copies, &b.copies), online: over(&g.online, &b.online), recent: over(&g.recent, &b.recent), email: over(&g.email, &b.email), not_a_table: false };
+            let merged = ProtectionConfig { level: over(&g.level, &b.level), copies: over(&g.copies, &b.copies), online: over(&g.online, &b.online), domains: over(&g.domains, &b.domains), recent: over(&g.recent, &b.recent), email: over(&g.email, &b.email), not_a_table: false };
             match merged.resolve() {
                 Ok(s) => {
-                    rules.by_tag.insert(tag, Effective { copies: s.copies, online: s.online, tolerance: s.tolerance, email: s.email });
+                    rules.by_tag.insert(tag, Effective { copies: s.copies, online: s.online, domains: s.domains, tolerance: s.tolerance, email: s.email });
                 }
                 // The global section is already reported, and the group would only repeat it.
                 Err(e) if global_problem.as_deref() == Some(e.as_str()) => {}
