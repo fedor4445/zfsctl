@@ -231,6 +231,7 @@ impl App {
         if !self.section_supported(Section::Shares) {
             self.shares.clear();
             (self.nfs_available, self.samba_available) = (None, None);
+            self.nfsv4_note = None;
             self.shares_loaded = false;
             return;
         }

@@ -162,7 +162,7 @@ fn an_smb_error_in_the_shares_snapshot_sets_an_error_status_but_keeps_the_nfs_sh
     app.tx
         .send(WorkerMsg::Shares(
             0,
-            Ok(crate::zfs::share::SharesSnapshot { shares: vec![nfs], nfs_available: true, samba_available: true, smb_error: Some("boom".into()) }),
+            Ok(crate::zfs::share::SharesSnapshot { shares: vec![nfs], nfs_available: true, samba_available: true, smb_error: Some("boom".into()), nfsv4_note: None }),
         ))
         .unwrap();
     app.drain_worker_messages();

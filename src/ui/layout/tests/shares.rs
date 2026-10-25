@@ -56,3 +56,13 @@ fn the_shares_title_names_the_services_of_a_freebsd_host() {
     let screen = render(&mut app, 160, 12).join("\n");
     assert!(screen.contains("NFS unavailable: nfsd not running") && screen.contains("SMB unavailable: smbd not running"), "{screen}");
 }
+
+#[test]
+fn the_shares_title_carries_the_nfsv4_warning() {
+    let mut app = linux_host_app();
+    app.selected_host = 0;
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+    app.nfsv4_note = Some("NFSv4 is on, but no V4: line in /etc/exports marks its root".to_string());
+    let screen = render(&mut app, 200, 12).join("\n");
+    assert!(screen.contains("NFSv4 is on, but no V4: line"), "{screen}");
+}
