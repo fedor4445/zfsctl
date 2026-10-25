@@ -69,6 +69,7 @@ impl App {
             KeyCode::Esc if self.current_section() == Section::Disks && !self.selected_disks.is_empty() => {
                 self.selected_disks.clear();
             }
+            KeyCode::Esc if self.current_section() == Section::Hosts && !self.marked_hosts.is_empty() && self.modal.is_none() => self.marked_hosts.clear(),
             KeyCode::Esc if self.current_section() == Section::Hosts && !self.host_filter.is_empty() => {
                 self.host_filter.clear();
             }
@@ -205,6 +206,14 @@ impl App {
                 self.host_filter_origin = Some(self.selected_host);
             }
             KeyCode::Char('c') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() => self.request_host_check(),
+            KeyCode::Char(' ') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() => {
+                if let Some(name) = self.hosts.get(self.selected_host).cloned() {
+                    if !self.marked_hosts.remove(&name) {
+                        self.marked_hosts.insert(name);
+                    }
+                }
+            }
+            KeyCode::Char('e') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() => self.begin_edit_hosts(),
             KeyCode::Char('n') if self.current_section() == Section::Hosts => {
                 self.host_filter.clear();
                 self.modal = Some(Modal::Form {

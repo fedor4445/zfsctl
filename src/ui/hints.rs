@@ -154,6 +154,13 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if !app.hosts.is_empty() {
                 v.push(h("c", "Check disks and shares", 2));
             }
+            if !app.hosts.is_empty() {
+                v.push(h("Space", "Mark", 2));
+                v.push(h("e", "Edit tag and site", 2));
+            }
+            if !app.marked_hosts.is_empty() {
+                v.push(h("Esc", "Unmark", 2));
+            }
             v.push(h("n", "Add host", 2));
             v.push(h("/", "Filter", 3));
             if !app.host_filter.is_empty() {

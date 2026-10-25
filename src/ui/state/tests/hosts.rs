@@ -1157,3 +1157,86 @@ fn f_before_the_host_has_been_probed_asks_to_wait_instead_of_guessing_the_operat
     assert!(app.browse_view.is_none() && app.pending_browse.is_empty(), "nothing is sent to a host of unknown type");
     assert!(app.status_message.as_deref().is_some_and(|m| m.contains("not been probed")), "{:?}", app.status_message);
 }
+
+fn edit_app(config: &str) -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new(vec!["local".to_string(), "a".to_string(), "b".to_string()]);
+    app.config_path = dir.path().join("config.toml");
+    std::fs::write(&app.config_path, config).unwrap();
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
+    (app, dir)
+}
+
+const TWO_HOSTS: &str = "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\ntag = \"web\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\nsite = \"rack1\"\n";
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+}
+
+#[test]
+fn e_on_one_host_opens_its_current_tag_and_site_and_saving_goes_through_a_confirmation() {
+    let (mut app, _dir) = edit_app(TWO_HOSTS);
+    app.selected_host = 1;
+    app.handle_key(KeyCode::Char('e'));
+    let Some(Modal::Form { title, fields, description, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!((title.as_str(), fields.iter().map(|f| f.value.as_str()).collect::<Vec<_>>()), ("Edit host a", vec!["web", ""]));
+    assert!(description.as_deref().is_some_and(|d| d.contains("Sites in use: rack1")), "{description:?}");
+    app.handle_modal_key(KeyCode::Enter);
+    type_text(&mut app, "rack2");
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none(), "the confirmation comes first");
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("a\n") && prompt.contains("site: rack2") && !prompt.contains("tag:"), "{prompt}");
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter applies");
+    assert_eq!(action.section, Section::Hosts);
+    let MutationCall::SaveHostKeys { config_path, names, tag, site } = &action.call else { panic!("{:?}", action.call) };
+    crate::config::set_host_keys_in_file(config_path, names, tag, site).unwrap();
+    let hosts = crate::config::Config::load(config_path).unwrap().hosts;
+    assert_eq!((hosts[0].tag.as_deref(), hosts[0].site.as_deref(), hosts[1].site.as_deref()), (Some("web"), Some("rack2"), Some("rack1")), "the tag was kept (an unchanged field is written back as-is)");
+}
+
+#[test]
+fn marked_hosts_are_edited_together_empty_keeps_a_key_and_a_dash_clears_it() {
+    let (mut app, _dir) = edit_app(TWO_HOSTS);
+    app.selected_host = 1;
+    app.handle_key(KeyCode::Char(' '));
+    app.selected_host = 2;
+    app.handle_key(KeyCode::Char(' '));
+    assert_eq!(app.marked_hosts.iter().cloned().collect::<Vec<_>>(), ["a", "b"]);
+    app.handle_key(KeyCode::Char('e'));
+    let Some(Modal::Form { title, fields, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!((title.as_str(), fields.iter().all(|f| f.value.is_empty())), ("Edit 2 hosts", true));
+    type_text(&mut app, "-");
+    app.handle_modal_key(KeyCode::Enter);
+    type_text(&mut app, "lab-box");
+    app.handle_modal_key(KeyCode::Enter);
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("applies");
+    let MutationCall::SaveHostKeys { config_path, names, tag, site } = &action.call else { panic!("{:?}", action.call) };
+    assert_eq!((tag.clone(), site.clone()), (crate::config::KeyUpdate::Clear, crate::config::KeyUpdate::Set("lab-box".into())));
+    crate::config::set_host_keys_in_file(config_path, names, tag, site).unwrap();
+    let hosts = crate::config::Config::load(config_path).unwrap().hosts;
+    assert_eq!(hosts.iter().map(|h| (h.tag.as_deref(), h.site.as_deref())).collect::<Vec<_>>(), [(None, Some("lab-box")), (None, Some("lab-box"))]);
+    app.apply_saved_hosts();
+    assert!(app.marked_hosts.is_empty() && app.host_tags.iter().all(String::is_empty), "{:?}", app.host_tags);
+}
+
+#[test]
+fn the_local_host_has_no_block_so_it_cannot_be_edited_and_nothing_changed_is_said() {
+    let (mut app, dir) = edit_app(TWO_HOSTS);
+    app.selected_host = 0;
+    app.handle_key(KeyCode::Char('e'));
+    assert!(app.modal.is_none() && app.status_message.as_deref().is_some_and(|m| m.contains("'local' has no [[hosts]] block")), "{:?}", app.status_message);
+    app.selected_host = 1;
+    app.handle_key(KeyCode::Char(' '));
+    app.selected_host = 2;
+    app.handle_key(KeyCode::Char(' '));
+    app.handle_key(KeyCode::Char('e'));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none() && app.modal.is_none(), "two empty fields on several hosts change nothing");
+    assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), TWO_HOSTS);
+    app.handle_key(KeyCode::Esc);
+    assert!(app.marked_hosts.is_empty(), "Esc unmarks");
+}

@@ -640,6 +640,9 @@ impl App {
                 if section == Section::Settings {
                     self.apply_saved_settings();
                 }
+                if section == Section::Hosts {
+                    self.apply_saved_hosts();
+                }
                 if !restored_a_file {
                     refreshes_needed.push(section);
                 }

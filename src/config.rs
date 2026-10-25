@@ -553,6 +553,103 @@ pub fn render_host_block(host: &HostConfig) -> String {
     out
 }
 
+/// Whether `hosts` is written as an inline array, dotted keys or a plain table: forms this program does not edit.
+fn hosts_written_by_hand(lines: &[&str]) -> bool {
+    lines.iter().any(|l| {
+        let t = l.trim_start();
+        let key_is_hosts = t.starts_with("hosts.") || t.strip_prefix("hosts").is_some_and(|r| r.trim_start().starts_with('='));
+        key_is_hosts || t.starts_with("[hosts.") || (t.starts_with("[hosts]") && !t.starts_with("[["))
+    })
+}
+
+/// What an edit does to one key of a host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyUpdate {
+    /// Leave the key as it is.
+    Keep,
+    /// Remove the key.
+    Clear,
+    Set(String),
+}
+
+/// Sets, replaces or removes `tag` and `site` in the `[[hosts]]` blocks named in `names`, changing nothing else in the
+/// text: comments, order and other sections stay. Refuses a name that has no block of its own (the local host has
+/// none), `hosts` written in a form that cannot be edited line by line, and any result that differs from the old file
+/// by more than those keys of those hosts.
+pub fn set_host_keys(text: &str, names: &[String], tag: &KeyUpdate, site: &KeyUpdate) -> std::result::Result<String, String> {
+    const BY_HAND: &str = "config.toml writes hosts in a form this screen cannot edit safely: edit it by hand";
+    let crlf = text.contains("\r\n");
+    let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_string).collect();
+    if hosts_written_by_hand(&lines.iter().map(String::as_str).collect::<Vec<_>>()) {
+        return Err(BY_HAND.to_string());
+    }
+    let eol = if crlf { "\r\n" } else { "\n" };
+    let is_header = |l: &str| l.trim_start().starts_with('[');
+    let key_of = |l: &str| -> Option<String> { l.trim_start().split_once('=').map(|(k, _)| k.trim().to_string()).filter(|k| !k.is_empty() && !k.starts_with('#') && !k.starts_with('[')) };
+    for name in names {
+        let header = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim().starts_with("[[hosts]]"))
+            .map(|(i, _)| i)
+            .find(|&i| {
+                let end = lines.iter().enumerate().skip(i + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(j, _)| j);
+                lines.iter().take(end).skip(i + 1).any(|l| key_of(l).as_deref() == Some("name") && l.split_once('=').is_some_and(|(_, v)| v.split('#').next().unwrap_or("").trim().trim_matches('"') == name))
+            })
+            .ok_or_else(|| format!("'{name}' has no [[hosts]] block in config.toml, so it cannot be edited here"))?;
+        for (key, update) in [("tag", tag), ("site", site)] {
+            let end = lines.iter().enumerate().skip(header + 1).find(|(_, l)| is_header(l)).map_or(lines.len(), |(j, _)| j);
+            let at = (header + 1..end).find(|&i| lines.get(i).and_then(|l| key_of(l)).as_deref() == Some(key));
+            match (update, at) {
+                (KeyUpdate::Keep, _) | (KeyUpdate::Clear, None) => {}
+                (KeyUpdate::Clear, Some(i)) => {
+                    lines.remove(i);
+                }
+                (KeyUpdate::Set(v), Some(i)) => {
+                    if let Some(l) = lines.get_mut(i) {
+                        *l = format!("{key} = {}{eol}", toml_string(v));
+                    }
+                }
+                (KeyUpdate::Set(v), None) => {
+                    // After the last line of real content of the block; trailing blank and comment lines belong to what follows.
+                    let after = (header..end).rev().find(|&i| lines.get(i).is_some_and(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))).map_or(header + 1, |i| i + 1);
+                    if let Some(prev) = after.checked_sub(1).and_then(|i| lines.get_mut(i)).filter(|l| !l.ends_with('\n')) {
+                        prev.push_str(eol);
+                    }
+                    lines.insert(after, format!("{key} = {}{eol}", toml_string(v)));
+                }
+            }
+        }
+    }
+    let result: String = lines.concat();
+    let parse = |t: &str| -> std::result::Result<(toml::Table, Vec<HostConfig>), String> {
+        let mut table: toml::Table = t.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
+        table.remove("hosts");
+        let hosts = toml::from_str::<Config>(t).map_err(|e| format!("config.toml does not parse: {e}"))?.hosts;
+        Ok((table, hosts))
+    };
+    let (old_rest, mut want) = parse(text)?;
+    let (new_rest, new_hosts) = parse(&result)?;
+    for host in want.iter_mut().filter(|h| names.contains(&h.name)) {
+        for (slot, update) in [(&mut host.tag, tag), (&mut host.site, site)] {
+            match update {
+                KeyUpdate::Keep => {}
+                KeyUpdate::Clear => *slot = None,
+                KeyUpdate::Set(v) => *slot = Some(v.clone()),
+            }
+        }
+    }
+    if old_rest != new_rest || new_hosts != want {
+        return Err(BY_HAND.to_string());
+    }
+    Ok(result)
+}
+
+/// `set_host_keys` on the file, written the safe way (a backup copy first, replaced only if every step succeeds).
+pub fn set_host_keys_in_file(path: &Path, names: &[String], tag: &KeyUpdate, site: &KeyUpdate) -> Result<()> {
+    rewrite_config(path, &|text| set_host_keys(text, names, tag, site))
+}
+
 /// Adds a `[[hosts]]` block for `host` right after the last existing host block (so the hosts stay together),
 /// or at the end of the file when there is none, keeping every other byte: the comments that follow the last host
 /// belong to what comes next and stay below the new block. Refuses `hosts` written as an inline array or dotted keys,
@@ -567,12 +664,8 @@ pub fn add_host_block(text: &str, host: &HostConfig) -> std::result::Result<Stri
         let t = l.trim();
         t == "[[hosts]]" || t.strip_prefix("[[hosts]]").is_some_and(|rest| rest.trim_start().starts_with('#'))
     };
-    for l in &lines {
-        let t = l.trim_start();
-        let key_is_hosts = t.starts_with("hosts.") || t.strip_prefix("hosts").is_some_and(|r| r.trim_start().starts_with('='));
-        if key_is_hosts || t.starts_with("[hosts.") || (t.starts_with("[hosts]") && !t.starts_with("[[")) {
-            return Err(BY_HAND.to_string());
-        }
+    if hosts_written_by_hand(&lines) {
+        return Err(BY_HAND.to_string());
     }
     let block = fix(&render_host_block(host));
     let result = if let Some(last) = lines.iter().rposition(|l| is_hosts_header(l)) {

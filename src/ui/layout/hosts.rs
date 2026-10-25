@@ -86,7 +86,7 @@ pub(super) fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
                 Some(HostProbe::Reached { rtt_ms, pools, .. }) => Some((*rtt_ms, pools.as_slice())),
                 _ => None,
             };
-            let mut cells = vec![Cell::from(Line::from(vec![Span::styled("● ", marker_style), Span::styled(name.clone(), name_style)]))];
+            let mut cells = vec![Cell::from(Line::from(vec![Span::styled(if app.marked_hosts.contains(name) { "+ " } else { "● " }, marker_style), Span::styled(name.clone(), name_style)]))];
             if cols.addr {
                 cells.push(Cell::from(app.host_address(i).to_string()));
             }

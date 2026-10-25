@@ -209,6 +209,17 @@ impl App {
 
     /// After a save in Settings: the theme, the auto-refresh interval, the Dashboard thresholds and the cloud caps
     /// follow `config.toml` without a restart. A theme name that does not resolve changes nothing and says why.
+    /// After the host tags or sites were saved: the tags shown in Hosts and everything the Dashboard counts by them or by
+    /// site, read from the file as it is now. The marks are spent.
+    pub fn apply_saved_hosts(&mut self) {
+        self.marked_hosts.clear();
+        if let Ok(config) = crate::config::Config::load(&self.config_path) {
+            let tags: Vec<String> = self.hosts.iter().map(|name| config.hosts.iter().find(|h| &h.name == name).and_then(|h| h.tag.as_deref()).and_then(crate::config::clean_tag).unwrap_or_default()).collect();
+            self.set_host_tags(tags);
+        }
+        self.refresh_dashboard();
+    }
+
     pub fn apply_saved_settings(&mut self) {
         self.apply_saved_settings_with(&crate::ui::theme::ThemeEnv::from_process());
     }

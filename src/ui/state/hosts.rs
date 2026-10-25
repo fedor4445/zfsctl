@@ -128,6 +128,42 @@ impl App {
         }
     }
 
+    /// The Edit hosts form for the marked hosts, or the selected one when none is marked.
+    pub fn begin_edit_hosts(&mut self) {
+        let names: Vec<String> = if self.marked_hosts.is_empty() { self.hosts.get(self.selected_host).cloned().into_iter().collect() } else { self.hosts.iter().filter(|h| self.marked_hosts.contains(*h)).cloned().collect() };
+        if names.is_empty() {
+            return;
+        }
+        let Ok(config) = crate::config::Config::load(&self.config_path) else {
+            self.set_error("config.toml cannot be read, so hosts cannot be edited here".to_string());
+            return;
+        };
+        if let Some(missing) = names.iter().find(|n| !config.hosts.iter().any(|h| &h.name == *n)) {
+            self.set_error(format!("'{missing}' has no [[hosts]] block in config.toml (the local host has none), so it cannot be edited here"));
+            return;
+        }
+        let many = names.len() > 1;
+        let current = |f: &dyn Fn(&crate::config::HostConfig) -> Option<&String>| names.first().and_then(|n| config.hosts.iter().find(|h| &h.name == n)).and_then(f).cloned().unwrap_or_default();
+        let (tag, site) = if many { (String::new(), String::new()) } else { (current(&|h| h.tag.as_ref()), current(&|h| h.site.as_ref())) };
+        let mut sites: Vec<&str> = config.hosts.iter().filter_map(|h| h.site.as_deref()).collect();
+        sites.sort_unstable();
+        sites.dedup();
+        let used = if sites.is_empty() { "No site is set yet.".to_string() } else { format!("Sites in use: {}.", sites.join(", ")) };
+        let description = if many {
+            format!("{} hosts. Leave a field empty to keep it, type - to clear it. A site names what hosts share a failure with (one machine, one rack). {used}", names.len())
+        } else {
+            format!("Empty clears it. A site names what hosts share a failure with (one machine, one rack): hosts with the same site count as one when the copies are counted. {used}")
+        };
+        let title = if many { format!("Edit {} hosts", names.len()) } else { format!("Edit host {}", names.join("")) };
+        self.modal = Some(Modal::Form {
+            title,
+            fields: vec![FormField { label: "Tag".to_string(), value: tag }, FormField { label: "Site".to_string(), value: site }],
+            focused: 0,
+            description: Some(description),
+            kind: FormKind::EditHosts { names },
+        });
+    }
+
     pub fn set_host_tags(&mut self, tags: Vec<String>) {
         self.host_tags = tags;
     }

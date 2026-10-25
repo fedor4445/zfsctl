@@ -284,6 +284,7 @@ impl App {
             FormKind::NotifySettings => self.submit_notify_form(form),
             FormKind::Setting { .. } => self.submit_setting_form(form),
             FormKind::AddHost => self.submit_add_host_form(form),
+            FormKind::EditHosts { .. } => self.submit_edit_hosts_form(form),
             FormKind::RestoreFile { .. } => self.submit_restore_form(form),
             FormKind::Job { .. } | FormKind::SnapshotJob { .. } | FormKind::BackupJob { .. } | FormKind::MirrorJob { .. } | FormKind::ReplicateJob { .. } => self.submit_job_form(form),
             FormKind::CreateBootEnv { .. } | FormKind::RenameBootEnv { .. } => match build_bootenv_action(&form.kind, &form.fields) {
@@ -463,6 +464,55 @@ impl App {
             }
             Err(msg) => self.reject(form, msg),
         }
+    }
+
+    /// The Edit hosts form: what each key becomes, shown in a confirmation before the file is touched.
+    fn submit_edit_hosts_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        let FormKind::EditHosts { names } = form.kind.clone() else { return None };
+        let many = names.len() > 1;
+        let update = |raw: &str| -> Result<crate::config::KeyUpdate, String> {
+            let raw = raw.trim();
+            if many && raw.is_empty() {
+                return Ok(crate::config::KeyUpdate::Keep);
+            }
+            if raw.is_empty() || (many && raw == "-") {
+                return Ok(crate::config::KeyUpdate::Clear);
+            }
+            crate::config::clean_tag(raw).map(crate::config::KeyUpdate::Set).ok_or_else(|| "A tag or site is a few plain words".to_string())
+        };
+        let (tag, site) = match (update(field_value(&form.fields, 0)), update(field_value(&form.fields, 1))) {
+            (Ok(tag), Ok(site)) => (tag, site),
+            (Err(msg), _) | (_, Err(msg)) => return self.reject(form, msg),
+        };
+        // For one host an unchanged field is no change: compare with what the file has now.
+        let (tag, site) = match names.as_slice() {
+            [one] => {
+                let current = crate::config::Config::load(&self.config_path).ok().and_then(|c| c.hosts.into_iter().find(|h| &h.name == one));
+                let same = |u: crate::config::KeyUpdate, now: Option<String>| match (&u, &now) {
+                    (crate::config::KeyUpdate::Set(v), Some(n)) if v == n => crate::config::KeyUpdate::Keep,
+                    (crate::config::KeyUpdate::Clear, None) => crate::config::KeyUpdate::Keep,
+                    _ => u,
+                };
+                (same(tag, current.as_ref().and_then(|h| h.tag.clone())), same(site, current.as_ref().and_then(|h| h.site.clone())))
+            }
+            _ => (tag, site),
+        };
+        let say = |what: &str, u: &crate::config::KeyUpdate| match u {
+            crate::config::KeyUpdate::Keep => None,
+            crate::config::KeyUpdate::Clear => Some(format!("{what}: none")),
+            crate::config::KeyUpdate::Set(v) => Some(format!("{what}: {v}")),
+        };
+        let changes: Vec<String> = [say("tag", &tag), say("site", &site)].into_iter().flatten().collect();
+        if changes.is_empty() {
+            self.status_message = Some("Nothing to change".to_string());
+            return None;
+        }
+        let who = if many { format!("{} hosts ({})", names.len(), names.join(", ")) } else { names.join("") };
+        let prompt = format!("Save to config.toml?\n  {who}\n  {}\n(y/n)", changes.join(", "));
+        let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Hosts, call: MutationCall::SaveHostKeys { config_path: self.config_path.clone(), names, tag, site } };
+        self.confirm_restore = Some((prompt.clone(), form.into_modal()));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+        None
     }
 
     fn submit_add_host_form(&mut self, form: FormParts) -> Option<PendingAction> {

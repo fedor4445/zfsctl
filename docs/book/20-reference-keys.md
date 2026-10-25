@@ -31,6 +31,8 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | `Up / Down` | select the active host |
 | `/` | filter the host list by name, address, tag or type (Enter keeps it, Esc clears it) |
 | `c` | check the selected host's disks (`smartctl`) and shares (NFS, Samba) now; the result joins the Dashboard (read-only) |
+| `Space` | mark or unmark the selected host (a marked host shows `+` instead of `●`); `Esc` unmarks them all |
+| `e` | edit the tag and site of the marked hosts, or of the selected one when none is marked |
 | `n` | add a new host (prompts for Name, SSH target and an optional Tag) |
 
 ## Pools

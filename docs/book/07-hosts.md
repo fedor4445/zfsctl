@@ -141,6 +141,12 @@ When the panel is wide enough (about 90 columns) it also shows two graphs, **Rea
 
 Press `n`, fill in the **Name** (any label), the **SSH target** (`user@address`, the unprivileged account) and, if you like, a **Tag**, and press `Enter` on the last field. zfsctl first checks that it can reach the host (it runs a harmless `true` over ssh) and, if that works, adds it at once and saves it to `config.toml`: a new `[[hosts]]` block is added next to the others and nothing else in the file changes. If the check fails you see ssh's own message and can try again. Setting the host up on its side is [chapter 5](05-remote-hosts.md).
 
+## Editing tags and sites
+
+`e` in Hosts edits the **tag** and the **site** of the selected host; it asks for nothing else and changes nothing else in `config.toml` (only those two lines of that host's `[[hosts]]` block, with a backup copy first, `config.toml.bak`). The **site** names what hosts share a failure with: one physical machine, one rack, one office. Hosts with the same site count as one place when zfsctl counts how many separate failures your data survives (chapter 6, "Data safety"; the `domains` setting in chapter 21).
+
+To give several hosts the same tag or site, press `Space` on each (a marked host shows `+` instead of `●`) and then `e`. For one host the form shows its current values and an empty field clears the key. For several hosts the fields start empty: an empty field leaves that key alone and a `-` clears it. Before anything is written you see what will be saved and confirm it with `y` and `Enter`. The local host, the hub, has no `[[hosts]]` block, so it cannot be edited here. The number of separate failure domains the copies must span is a row in Settings, "Failure domains".
+
 ## Try it
 
 Add the second machine of your lab with `n`, give it the tag `backup`, and check that it appears with `ok`. Then press `/`, type `backup` and see the list narrow to it; press `Esc` to clear.
