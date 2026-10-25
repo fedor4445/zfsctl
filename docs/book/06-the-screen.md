@@ -59,7 +59,7 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sun 25 Oct 11:37                                                                                                  ✖ 4 issues
+┌zfsctl────────────────┐ Dashboard  ·  Sun 25 Oct 11:57                                                                                                  ✖ 4 issues
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ✖ issue fbsd16:zroot      no copy job
@@ -69,12 +69,12 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │Shares                │
 │Boot Envs             │ GROUPS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Jobs                  │  Group         State       Pools  Capacity             Memory             CPU              Load  Scrub     Errors
-│Cloud                 │  freebsd (3)   ● ok        5      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 27%     ?                0.75  7 d ago   0
-│Alerts                │  (no tag) (1)  ● ok        3      ━━━━━╌╌╌╌╌ 45%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.99  16 d ago  0
+│Cloud                 │  freebsd (3)   ● ok        5      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 27%     ?                0.69  7 d ago   0
+│Alerts                │  (no tag) (1)  ● ok        3      ━━━━━╌╌╌╌╌ 45%       ━━╌╌╌╌╌╌╌╌ 16%     ?                2.98  16 d ago  0
 │Settings              │
 │                      │ DATA SAFETY ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 7 min · 1 data set has copies
-│                      │     ignored by choice: local:zroot/ROOT, local:zroot/ROOT/default, local:zroot/tmp, local:zroot/usr/ports, local:zroot/usr/src, local:zroo…
+│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 27 min · 1 data set has copies
+│                      │     ignored by choice: local:zroot/ROOT, local:zroot/ROOT/default, local:zroot/tmp and 41 more (and everything below; Enter lists them)
 │                      │
 │                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │   ● daemon  running (pid 45678), heartbeat 2s ago
@@ -240,6 +240,35 @@ The Dashboard names the first three unprotected datasets (your data first). When
 **Many datasets at once.** When dozens of datasets lack a snapshot job, make the jobs together: `Space` marks the selected row (a marked row shows `+`), `a` marks every row of the selected row's host that has no snapshot job (`a` again unmarks them), and `s` makes one snapshot job for each marked row, or for the selected row when none is marked. Each job is the one the form would suggest: every hour (`0 * * * *`), prefix `auto`, the newest 24 kept, caught up after downtime, not recursive. Before anything is saved you see how many jobs will be created and for which datasets, and which marked rows were left out and why: a dataset that already has a snapshot job (stopped, failing or not yet run) goes to its job instead and is never given a second one, and a row that lacks only a copy is not a snapshot problem. Confirm with `y` and Enter; `n` returns to the list with your marks. A job only counts as protection once it has run, and the oldest `auto` snapshots of a job are pruned beyond 24, never any other. Copies are not batched: each needs its own destination, so `Enter` on a row still opens the form that asks for it.
 
 **Leaving datasets out.** Some datasets nobody wants snapshots of (scratch space, caches, build trees). Mark them (or select one) and press `i`: after a confirmation that says how many of the listed datasets it hides, `host:dataset` is added to `ignore` under `[protection]` in `config.toml`. An ignored dataset and **everything below it** is no longer judged: it leaves this list, the Dashboard, the alerts and the daily report's list of unprotected data. It is never hidden, though: the Dashboard names the ignored datasets under the data-safety line (`ignored by choice: local:zroot/tmp, local:zroot/var and 4 more (and everything below; Enter lists them)`: the first three, then how many more) and the report says `Ignored on purpose, with everything below them: ...` under the unprotected data, so "all datasets are protected" never speaks for what was left out. Nothing on the hosts is touched. A dataset that already had an open alert is dropped without a "protected again" email, since it was not protected, only set aside. To bring one back, select that line (it is the one after the data-safety line) and press `Enter`: a list of the ignored datasets opens. `Space` marks several, then `Enter` (or `u`) checks the marked ones again, or the selected one when nothing is marked, after a confirmation that names them; `n` or `Esc` leaves everything as it was. Nothing on the hosts is touched, and the dataset is judged again at the next refresh. The row **Ignored datasets** in Settings (a comma-separated list of `host:dataset`; empty clears it) edits the same list as text.
+
+```screen
+┌zfsctl────────────────┐┌Ignored datasets──────────────────────────────────────────────────────┐             ✖ 4 issues
+│Dashboard             ││44 datasets are ignored, with everything below.                       │
+│Hosts                 ││Space marks; Enter or u checks the marked ones (or this one) again.   │───────────────────────
+│Pools                 ││                                                                      │
+│Datasets              ││  local:zroot/ROOT                                                    │
+│Snapshots             ││  local:zroot/ROOT/default                                            │
+│Disks                 ││  local:zroot/tmp                                                     │
+│Shares                ││  local:zroot/usr/ports                                               │
+│Boot Envs             ││  local:zroot/usr/src                                                 │───────────────────────
+│Jobs                  ││  local:zroot/var                                                     │  Errors
+│Cloud                 ││  local:zroot/var/audit                                               │  0
+│Alerts                ││  local:zroot/var/crash                                               │  0
+│Settings              ││  local:zroot/var/log                                                 │copy 27 min · 1 data se…
+│                      ││  local:zroot/var/mail                                                │l:zroot/tmp and 41 more…
+│                      ││  local:zroot/var/tmp                                                 │
+│                      ││  fbsd16:zroot/ROOT                                                   │
+│                      ││  fbsd16:zroot/ROOT/default                                           │       Traffic  In buck…
+│                      ││  fbsd16:zroot/tmp                                                    │       -        -
+│                      ││  fbsd16:zroot/usr/ports                                              │       -        -
+│                      ││  fbsd16:zroot/usr/src                                                │       -        -
+│                      ││  fbsd16:zroot/var                                                    │ago) · report 2026-10-25
+│                      ││  fbsd16:zroot/var/audit                                              │
+│                      ││  fbsd16:zroot/var/crash                                              │
+│                      ││  fbsd16:zroot/var/log                                                │
+└──────────────────────┘│  fbsd16:zroot/var/mail                                               │
+↑/↓ Move  Enter Check ag└──────────────────────────────────────────────────────────────────────┘
+```
 
 ## Settings
 
