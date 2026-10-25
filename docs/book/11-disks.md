@@ -74,6 +74,13 @@ A disk that already belongs to a pool cannot be marked: a message tells you whic
 
 > **Not built yet:** zfsctl does not partition disks or label them (`gpart`). It uses whole disks as ZFS does when you give it `da0`.
 
+## Hardware notes
+
+- **Sector size.** Match it when you create the pool (`ashift`, chapter 2): it cannot be changed afterwards.
+- **A replacement disk must be at least as large as the smallest disk of its vdev** ([zpool-replace(8)](https://openzfs.github.io/openzfs-docs/man/master/8/zpool-replace.8.html)). Disks sold with the same capacity can differ a little between models and batches, which is why some administrators build pools from partitions slightly smaller than the disks. zfsctl does not partition (see above), so when you buy disks, buy spares of the same model or a little larger.
+- **Avoid drive-managed SMR disks.** OpenZFS's [hardware notes](https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Hardware.html) say they are "not recommended for ZFS pools": they can stall badly during a resilver, a scrub or a receive. Check the model before you buy.
+- **ECC memory.** The same notes call ECC memory "highly recommended", because "no technique used in ZFS (or any other filesystem) is capable of protecting against bit flips". ZFS runs without it; the point is that the checksum is made from whatever is in memory.
+
 ## Try it
 
 Look at your own disks: select each in turn and compare the serial number in the panel with the label on the drive or with `geom disk list`. If you have a spare disk or a USB stick you can erase, mark it with `Space` and press `n` to see the form and the confirmation, then answer `n` and `Enter` to cancel.

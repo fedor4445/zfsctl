@@ -11,11 +11,11 @@ Each recipe is self-contained. The names (`tank`, `backup`, `hub`) are the runni
 
 1. Disks: look at the **serial numbers** and compare them with the labels on the drives.
 2. Mark the disks you want with `Space`.
-3. Press `n`, name the pool, and choose the redundancy (`mirror` for two disks, `raidz1`/`raidz2` for three or more).
+3. Press `n`, name the pool, and choose the redundancy (`mirror` for two disks; for three or more, `raidz2` is the safer choice with large disks). If the disks have 4096-byte sectors, create the pool at the shell with `-o ashift=12` instead (chapter 8).
 4. Read the command in the confirmation. Press `y`, then `Enter`.
 5. Check: Pools shows `● ONLINE`.
 
-Then make datasets (Datasets, `n`) for the things you will treat differently, and set `compression=lz4` on the pool's root dataset so children inherit it.
+Then make datasets (Datasets, `n`) for the things you will treat differently. On OpenZFS 2.2 and later `compression=on` (lz4) is already the default; set a different value on the pool's root dataset to have children inherit it.
 
 ## Protect a dataset with automatic snapshots
 
@@ -56,8 +56,8 @@ Replication and cloud mirrors refuse an encrypted source; restic backups work wh
 
 1. Hosts shows the host red (`tank DEGRADED`); Pools shows `▲ DEGRADED`; press `Enter` to see which disk is `FAULTED` or `UNAVAIL`.
 2. Check the serial number of that disk in Disks and find the physical drive.
-3. Optionally take it offline: select it and press `o`.
-4. Swap the drive. Select the old entry in the vdev view, press `x`, type the new device name (`ada3`), and confirm.
+3. If the old disk still answers, leave it online: a replacement works as attach, resilver, then detach, so the old disk keeps helping until the new one is full. Take it offline (`o`) only when you have to pull it.
+4. If you have a free slot, connect the new drive first. Select the old entry in the vdev view, press `x`, type the new device name (`ada3`), and confirm. If the old drive has to come out first, swap it and do the same.
 5. Check: the pool resilvers (progress in the panel) and returns to `● ONLINE`. Leave it alone until it is done.
 
 > **Safety:** replacing overwrites the new disk. Check its name against its serial number first.

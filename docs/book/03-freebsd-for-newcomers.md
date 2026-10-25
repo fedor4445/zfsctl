@@ -44,7 +44,7 @@ FreeBSD names a disk after the driver that found it, plus a number. The most com
 |---|---|---|
 | `ada0`, `ada1`… | SATA disks | `/dev/sda`… |
 | `da0`, `da1`… | SCSI, SAS and USB disks | `/dev/sdb`… |
-| `nda0` | NVMe disks | `/dev/nvme0n1` |
+| `nda0` | NVMe disks (older releases and some setups show `nvd0`) | `/dev/nvme0n1` |
 | `vtbd0` | virtio disks in a VM | `/dev/vda` |
 
 The test hub's disks are `ada0` (the system disk) and `ada1` to `ada4` (the disks of the `tpool` pool, 5 GB each). A name can change if you move a disk to another port, so zfsctl also shows each disk's model and serial number, which is how you tell which physical disk is which before you replace one.
@@ -61,7 +61,7 @@ FreeBSD has a `root` account and the `wheel` group (the people allowed to become
 ## A few more things you will meet
 
 - `kldload` and `kldstat` load and list kernel modules (`zfs.ko`).
-- `freebsd-update fetch install` updates the base system; `bectl` manages *boot environments*, which let you roll back an upgrade (chapter 13).
+- `freebsd-update fetch install` updates the base system (FreeBSD 15 also offers the base as packages, *pkgbase*, which `pkg` then updates; see the [release notes](https://www.freebsd.org/releases/15.0R/relnotes/)); `bectl` manages *boot environments*, which let you roll back an upgrade (chapter 13).
 - `man zfs`, `man zpool`, `man rc.conf`: the manual pages are complete and worth reading.
 - `dmesg` shows what the kernel found at boot, including your disks.
 

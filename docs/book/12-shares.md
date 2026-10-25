@@ -93,6 +93,8 @@ zfsctl writes the dataset's `sharenfs` property in the syntax FreeBSD's `mountd`
 
 > **Safety:** an NFS share with no network or host restriction is open to everyone who can reach the host. Always give a network.
 
+> **Tip:** `sharenfs` makes `mountd` export the dataset, which is enough for NFSv3 clients. NFSv4 on FreeBSD needs more: [exports(5)](https://man.freebsd.org/cgi/man.cgi?query=exports&sektion=5&manpath=FreeBSD+15.0-RELEASE) says there must be a `V4:` line in `/etc/exports` that marks the root of the NFSv4 tree, together with the lines that export the filesystems, and every ZFS filesystem below that root must be exported; the NFSv4 server is switched on in `rc.conf` (see `nfsd(8)`). zfsctl does not write a `V4:` line or touch `/etc/exports`. A client that asks for NFSv4 from a server set up only with `sharenfs` may fail or fall back to NFSv3, depending on the client.
+
 ## SMB shares (Samba)
 
 FreeBSD's ZFS has no working `sharesmb` property (`zfs set sharesmb=on` just prints "No SMB support in FreeBSD yet."). So zfsctl manages Samba for you. In Datasets, select a *mounted* dataset and press `M`:

@@ -10,6 +10,7 @@ Terms are in alphabetical order.
 
 **alert**: a message sent when a host turns bad on two checks in a row; see chapter 16.
 
+**ashift**: the sector size of a vdev as a power of two (`12` is 4096 bytes), fixed when the vdev is created; chapter 2.
 **ARC**: adaptive replacement cache: ZFS's memory cache of recently used data; shown in the host panel.
 
 **backup**: a separate copy of your data, elsewhere, that you can restore from by itself; chapter 15.
@@ -26,7 +27,7 @@ Terms are in alphabetical order.
 
 **clone**: a writable copy of a snapshot that shares its blocks.
 
-**compression**: ZFS can compress data as it writes it; `lz4` is a good default.
+**compression**: ZFS can compress data as it writes it; `compression=on` means `lz4`, the default for new pools on OpenZFS 2.2 and later, and `zstd` compresses harder for more CPU.
 
 **copy-on-write**: ZFS never overwrites a block in place; it writes a new one and then moves the pointer, which is what makes snapshots free.
 
@@ -36,7 +37,7 @@ Terms are in alphabetical order.
 
 **dataset**: a filesystem or volume inside a pool; chapter 9.
 
-**dedup**: deduplication: storing identical blocks once; costly in memory and rarely worth it.
+**dedup**: deduplication: storing identical blocks once; the table that finds them grows with the number of unique blocks, so it is costly in memory and rarely worth it; chapter 9.
 
 **delegation**: letting an ordinary user perform certain ZFS actions, with `zfs allow`.
 
@@ -52,6 +53,7 @@ Terms are in alphabetical order.
 
 **export**: to detach a pool so it can be moved to another machine (`zpool export`).
 
+**feature flag**: a pool capability. Once enabled it cannot be disabled, and one that is in use (active) can stop older software from importing the pool; chapter 8.
 **fragmentation**: how scattered a pool's free space is; high values slow writes.
 
 **FreeBSD**: the operating system zfsctl manages; chapter 3.
@@ -150,6 +152,7 @@ Terms are in alphabetical order.
 
 **temporary boot**: using a boot environment for the next boot only.
 
+**TRIM**: telling an SSD which blocks are free; the pool property `autotrim` does it automatically; chapter 8.
 **theme**: the colour scheme of the screen.
 
 **vdev**: a virtual device: a disk, a mirror or a raidz group, from which pools are built; chapter 8.

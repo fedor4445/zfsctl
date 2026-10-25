@@ -89,10 +89,10 @@ Each row is a property with its **value** and its **source**: `local` (set on th
 
 | Property | What it does |
 |---|---|
-| `compression` | `lz4` is a good default: it saves space and usually speeds things up |
+| `compression` | `on` means lz4, which is the default for new pools and datasets on OpenZFS 2.2 and later: it saves space and usually costs no speed. `zstd` (levels 1 to 19; plain `zstd` is `zstd-3`) compresses harder for more CPU, and needs a pool feature (`zstd_compress`, chapter 8). Only data written afterwards is affected |
 | `quota` / `refquota` | the most this dataset (with / without its children and snapshots) may use |
 | `reservation` / `refreservation` | space guaranteed to it |
-| `recordsize` | the block size ZFS uses for files; 128K suits general use, smaller (16K) suits databases |
+| `recordsize` | the largest block ZFS uses for a file; the default (128K) suits general use. It applies only to files written afterwards, and OpenZFS calls changing it on general-purpose filesystems "strongly discouraged"; the classic reason to is a database that reads and writes fixed pages (match them, for example 16K) |
 | `mountpoint` | where it is mounted |
 | `readonly` | refuse writes |
 | `sharenfs` | NFS export options (chapter 12 does this from a form) |
@@ -121,7 +121,7 @@ When any dataset on the host has a limit, the Datasets list gets a **Quota** col
 Both properties only affect data written afterwards. zfsctl says so, and asks:
 
 - **`checksum=off`** asks you to **type the dataset's name**: with the checksum off, silent corruption in that dataset is not detected and a scrub cannot repair it. Any other checksum change asks for `y` then `Enter` and reminds you to run a scrub afterwards.
-- **Turning `dedup` on** asks you to **type the dataset's name** too: deduplication keeps a table of every block in memory (a rule of thumb is 1 to 5 GB of RAM per TB of deduplicated data), the question shows how much RAM the host has and warns when that is under 16 GiB, and switching it off later does not undeduplicate what is already stored. Turning it off, or changing the algorithm, asks `y` then `Enter`.
+- **Turning `dedup` on** asks you to **type the dataset's name** too: deduplication keeps a table with one entry for every unique block and looks in it on every write, so the table wants to live in memory. Its size depends on how many unique blocks the pool holds, not on terabytes: many small blocks make a big table (the Handbook's rule of thumb is 5 to 6 GB of RAM per TB, and the real figure can be well above or below that). Estimate before you switch it on: `zdb -S tank` simulates deduplication on the data already there and prints the table it would build (it reads the whole pool, so run it when the machine is quiet; [zdb(8)](https://openzfs.github.io/openzfs-docs/man/master/8/zdb.8.html)). OpenZFS 2.3's *fast dedup* (a log for table updates, the `dedup_table_quota` pool property that caps the table, and `zpool ddtprune` to drop old unique entries) is, in the release notes' words, "a major performance upgrade", but the rule is the same: try it on your own data first. The question shows how much RAM the host has and warns when that is under 16 GiB, and switching it off later does not undeduplicate what is already stored. Turning it off, or changing the algorithm, asks `y` then `Enter`.
 
 The panel under the list shows `Checksum` and `Dedup` only when they are not the defaults. Needs attention lists a host that has a dataset with its checksum off (`tank/scratch checksum is off`, up to three names) and a pool that has dedup on but saves less than `dedup_min_ratio` (default 1.10x) once it holds more than 10 GiB and has had dedup on for a week (`tank dedup is on but saves only 1.02x`): paying memory for nothing. The wait matters: the ratio only counts data written after dedup was switched on, so a pool full of old data reads 1.00x at first.
 
@@ -131,6 +131,8 @@ ZFS can encrypt a dataset (`encryption=aes-256-gcm` and the like), but only when
 
 - When any dataset on the host is encrypted, the Datasets list gets a **Lock** column: blank for a plain dataset, `open` when the key is loaded and **`LOCKED`** (red) when it is not. A locked dataset cannot be read or mounted. The panel adds the `Encrypt` line described above.
 - A locked dataset that a restic backup reads, that a replication writes into, or that is shared over NFS (a Samba share is not seen) is a yellow line in Needs attention (`tank/secure is locked (a job uses it)`) and in the daily report: it is something that will fail. A locked dataset nobody uses gets no line.
+- **What encryption does not hide.** ZFS encrypts file and volume data, file attributes, ACLs, permission bits and directory listings. It does **not** encrypt the structure of the pool: dataset and snapshot names, the dataset hierarchy, properties, file sizes and holes, and the deduplication tables are readable by anyone who has the disks ([zfs-load-key(8)](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-load-key.8.html)). Deduplication inside an encrypted dataset reveals which blocks are equal, and data is compressed before it is encrypted, so an application that lets an attacker influence the data and watch its size can leak through compression, as in the CRIME attack. Changing the passphrase does not re-encrypt the data, and the old wrapped key may still be recoverable from the disk.
+- **Encrypting data you already have.** A dataset cannot be encrypted in place. Create an encrypted dataset and copy the data into it: with `rsync`, or by receiving a plain `zfs send` stream into it with the encryption options (a full stream received that way becomes an encryption root; `keylocation=prompt`, which zfsctl's key handling expects, is then set with `zfs set`, see [zfs-receive(8)](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-receive.8.html)).
 - **Jobs and encryption:** a cloud mirror **refuses an encrypted source**, and a replication (to a host or to stream files) refuses one unless its **Raw** field is `y`: a plain send delivers the data decrypted, a raw one (`zfs send -w`) keeps it encrypted, and the copy on the destination is locked and stays locked. The form refuses to save a job that would send in the clear when it already knows the dataset is encrypted, and a job whose source became encrypted later fails with the same reason (red on the Dashboard). A locked raw replica is not reported as a problem. A **restic backup is allowed**: restic encrypts the files with its own key, so an open encrypted dataset is backed up as usual, while a locked one fails with `tank/secure is locked (key not loaded): load the key first`.
 
 ### Create an encrypted dataset: `E`
@@ -164,7 +166,7 @@ Make one dataset for each thing you will treat differently (home directories, me
 
 ## Permissions: `zfs allow`
 
-The Permissions tab shows **delegated permissions**: ZFS lets you allow an ordinary user to snapshot, mount or create datasets without making them root.
+The Permissions tab shows **delegated permissions**: ZFS lets you allow an ordinary user to snapshot, mount or create datasets without making them root. On FreeBSD, mounting also needs the system to let ordinary users mount at all (`sysctl vfs.usermount=1`, which the [Handbook](https://docs.freebsd.org/en/books/handbook/zfs/)'s delegation example sets) and the user must own the mount point's directory; `zfs allow … mount` alone is not enough.
 
 ```screen
 ┌zfsctl────────────────┐┌Datasets — local ('r' refresh, → for properties)─────────────────────────┐┌Permissions — scratch/data ('r' refresh, n/s/c gr┐
