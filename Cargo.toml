@@ -7,7 +7,7 @@ description = "A terminal UI and daemon for managing ZFS pools, datasets, snapsh
 repository = "https://github.com/fedor4445/zfsctl"
 homepage = "https://zfsctl.com"
 readme = "README.md"
-exclude = ["docs/superpowers/", "site/"]
+exclude = ["site/"]
 keywords = ["zfs", "freebsd", "tui", "storage", "backup"]
 categories = ["command-line-utilities", "filesystem"]
 
