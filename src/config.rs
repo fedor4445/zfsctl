@@ -16,7 +16,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "caps",
         "memory_warn", "memory_crit", "swap_warn", "swap_crit", "quota_warn", "quota_crit", "dedup_min_ratio", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
         "level", "copies", "online", "domains", "recent", "email", "ignore",
-        "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
+        "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "check_days", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
 }
