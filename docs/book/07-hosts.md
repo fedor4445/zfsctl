@@ -13,12 +13,12 @@ The Hosts section is where zfsctl opens. Every host in your configuration is pro
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │Dashboard             ││Name       Address            State                            Type   Tag     Site    Used  Pools Scrub         Jobs  Rtt   │
-│Hosts                 ││● local    local              ok                               vm                     45%   3     Oct 8 2026    0/11  17ms  │
+│Hosts                 ││● local    local              ok                               vm                     45%   3     Oct 8 2026    0/11  15ms  │
 │Pools                 ││● fbsd16   172.16.10.60       ok                               vm     freebsd lab-box 62%   1     Oct 17 2026   0/4   74ms  │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                               vm     freebsd lab-box 53%   2     Oct 17 2026   0/17  63ms  │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                               vm     freebsd lab-box 79%   2     Oct 17 2026   -     58ms  │
-│Disks                 ││● ub24     172.16.10.52       ok                               vm     linux   lab-box 0%    1     Oct 17 2026   -     74ms  │
-│Shares                ││● omnios   172.16.10.80       ok                               vm     illumos lab-box 52%   3     Oct 17 2026   0/53  151ms │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                               vm     freebsd lab-box 53%   2     Oct 17 2026   0/17  64ms  │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                               vm     freebsd lab-box 79%   2     Oct 17 2026   0/5   61ms  │
+│Disks                 ││                                                                                                                            │
+│Shares                ││                                                                                                                            │
 │Boot Envs             ││                                                                                                                            │
 │Jobs                  ││                                                                                                                            │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -98,8 +98,8 @@ Select a host with `Up` and `Down` and the panel shows it. The first sample of a
 │Pools                 ││● fbsd16   172.16.10.60       ok                        vm     freebsd lab-box 62%  │
 │Datasets              ││● fbsd16t1 172.16.10.61       ok                        vm     freebsd lab-box 53%  │
 │Snapshots             ││● fbsd16t2 172.16.10.62       ok                        vm     freebsd lab-box 79%  │
-│Disks                 ││● ub24     172.16.10.52       ok                        vm     linux   lab-box 0%   │
-│Shares                ││● omnios   172.16.10.80       ok                        vm     illumos lab-box 52%  │
+│Disks                 ││                                                                                    │
+│Shares                ││                                                                                    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
 │Cloud                 ││                                                                                    │
@@ -113,15 +113,15 @@ Select a host with `Up` and `Down` and the panel shows it. The first sample of a
 │                      │┌Metrics — host local (all pools)────────────────────────────────────────────────────┐
 │                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
 │                      ││OS      FreeBSD 15.1-RELEASE-p4            Pools   3 (all ONLINE)                   │
-│                      ││Up      13d 13h   rtt 3ms                  Space   31%  19.3G / 62.2G               │
-│                      ││Load    0.17 0.47 0.40                     ARC     5.1G / 18.9G  hit 100.0%         │
+│                      ││Up      14d 1h   rtt 2ms                   Space   31%  19.3G / 62.2G               │
+│                      ││Load    1.37 0.69 0.31                     ARC     5.2G / 18.9G  hit 100.0%         │
 │                      ││CPU     36 cores  0%                       Status  all pools are healthy            │
 │                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
-│                      ││Memory  19.9G  free 8.4G  wired 7.8G                                                │
+│                      ││Memory  19.9G  free 8.3G  wired 7.9G                                                │
 │                      ││Swap    0B / 2.0G                                                                   │
-│                      ││scratch       45% frag 48% ONLINE   scrub Oct  8 19:48:07 2026                      │
-│                      ││tpool         41% frag  2% ONLINE   scrub Oct 18 03:00:30 2026                      │
-│                      ││zroot         26% frag 41% ONLINE   scrub Oct 18 03:00:22 2026                      │
+│                      ││scratch       45% frag 50% ONLINE   scrub Oct  8 19:48:07 2026                      │
+│                      ││tpool         41% frag  2% ONLINE   scrub Oct 25 03:00:03 2026                      │
+│                      ││zroot         26% frag 41% ONLINE   scrub Oct 25 03:00:56 2026                      │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │

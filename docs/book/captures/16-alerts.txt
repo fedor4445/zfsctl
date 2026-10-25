@@ -9,9 +9,12 @@
 │Boot Envs             ││Hook command   (not set)   (edit in config.toml)                                              │
 │Jobs                  ││                                                                                              │
 │Cloud                 ││Monitor on (every 5 min, report at 07:00)                                                     │
-│Alerts                ││Last report sent 2026-10-24                                                                   │
+│Alerts                ││Last report sent 2026-10-25                                                                   │
 │Settings              ││                                                                                              │
 │                      ││Recent events                                                                                 │
+│                      ││10-25 11:09  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-25 09:27  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-25 08:07  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 23:07  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 22:45  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 22:20  fb  daemon-started  zfsctl daemon started                                        │
@@ -24,9 +27,6 @@
 │                      ││10-24 20:35  local  alert  11 datasets not protected                                          │
 │                      ││10-24 20:35  fbsd16t2  alert  5 datasets not protected                                        │
 │                      ││10-24 20:35  fbsd16t1  alert  6 datasets not protected                                        │
-│                      ││10-24 20:35  fbsd16  alert  4 datasets not protected                                          │
-│                      ││10-24 20:30  fb  daemon-started  zfsctl daemon started                                        │
-│                      ││10-24 19:15  ub24  alert  2 datasets not protected                                            │
 │                      ││                                                                                              │
 │                      ││                                                                                              │
 │                      ││                                                                                              │

@@ -59,28 +59,26 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 23:11                                                                                                  ✖ 4 issues
+┌zfsctl────────────────┐ Dashboard  ·  Sun 25 Oct 11:37                                                                                                  ✖ 4 issues
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ✖ issue fbsd16:zroot      no copy job
 │Datasets              │   ✖ issue fbsd16:zroot/ho…  no copy job
 │Snapshots             │   ✖ issue fbsd16:zroot/ho…  no copy job
-│Disks                 │   ✖ issue protection        and 88 more not protected (64 of your data)
+│Disks                 │   ✖ issue protection        and 22 more not protected (22 of your data)
 │Shares                │
 │Boot Envs             │ GROUPS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Jobs                  │  Group         State       Pools  Capacity             Memory             CPU              Load  Scrub     Errors
-│Cloud                 │  freebsd (3)   ● ok        5      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 28%     ?                0.76  7 d ago   0
-│Alerts                │  illumos (1)   ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.04  7 d ago   0
-│Settings              │  linux (1)     ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      ?                0.00  7 d ago   0
-│                      │  (no tag) (1)  ● ok        3      ━━━━━╌╌╌╌╌ 45%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.16  16 d ago  0
-│                      │
+│Cloud                 │  freebsd (3)   ● ok        5      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 27%     ?                0.75  7 d ago   0
+│Alerts                │  (no tag) (1)  ● ok        3      ━━━━━╌╌╌╌╌ 45%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.99  16 d ago  0
+│Settings              │
 │                      │ DATA SAFETY ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 41 min · 1 data set has copies
+│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 7 min · 1 data set has copies
 │                      │     ignored by choice: local:zroot/ROOT, local:zroot/ROOT/default, local:zroot/tmp, local:zroot/usr/ports, local:zroot/usr/src, local:zroo…
 │                      │
 │                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 45678), heartbeat 1s ago
-│                      │   ● jobs    scrub 2/2 ok  snapshot 82/82 ok  replicate 1/1 ok
+│                      │   ● daemon  running (pid 45678), heartbeat 2s ago
+│                      │   ● jobs    scrub 2/2 ok  snapshot 34/34 ok  replicate 1/1 ok
 │                      │
 │                      │ CLOUD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
@@ -89,7 +87,9 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 │                      │
 │                      │ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert ub24 2 datasets not protected (2h ago) · report 2026-10-24
+│                      │   ● monitor on · last alert ub24 2 datasets not protected (15h ago) · report 2026-10-25
+│                      │
+│                      │
 │                      │
 │                      │
 │                      │
@@ -299,56 +299,55 @@ Press `?` at any time. The Help screen lists every key for every section:
 
 ```screen
 ┌zfsctl───────────────┌Help────────────────────────────────────────────────────────────┐─────────────────────┐
-│Dashboard            │Global                                                          │  Tag     Used  Pools│
-│Hosts                │  Tab / Shift+Tab  switch sections                              │          42%   3    │
-│Pools                │  Up / Down        select a row                                 │          61%   1    │
-│Datasets             │(host/pool/dataset/snapshot/disk/share, or a                    │          53%   2    │
-│Snapshots            │property/permission/ACL row)                                    │          -     -    │
-│Disks                │  r                refresh the focused pane                     │  linux   0%    1    │
-│Shares               │  F2               in a form, on a field with known values      │  illumos 96%   2    │
-│Boot Envs            │(Permissions, Flags, Type, Recipient, Valid user, Root user     │                     │
-│Jobs                 │mapping, a pool property with fixed values such as failmode or  │                     │
-│Cloud                │autoexpand, a from-disks Redundancy, a job's Host, Pool or      │                     │
-│Alerts               │Dataset, a replication's Destination host, and Schedule): open a│                     │
-│Settings             │picker (type filter, Enter OK, Esc cancel; Space toggles in     │                     │
+│Dashboard            │Global                                                          │Tag     Site    Used │
+│Hosts                │  Tab / Shift+Tab  switch sections                              │                45%  │
+│Pools                │                                                                │freebsd lab-box 62%  │
+│Datasets             │  Up / Down        select a row                                 │freebsd lab-box 53%  │
+│Snapshots            │(host/pool/dataset/snapshot/disk/share, or a                    │freebsd lab-box 79%  │
+│Disks                │property/permission/ACL row)                                    │                     │
+│Shares               │                                                                │                     │
+│Boot Envs            │  r                refresh the focused pane                     │                     │
+│Jobs                 │                                                                │                     │
+│Cloud                │  F2               in a form, on a field with known values      │                     │
+│Alerts               │(Permissions, Flags, Type, Recipient, Valid user, Root user     │                     │
+│Settings             │mapping, a pool property with fixed values such as failmode or  │                     │
+│                     │autoexpand, a from-disks Redundancy, a job's Host, Pool or      │                     │
+│                     │Dataset, a replication's Destination host, and Schedule): open a│                     │
+│                     │picker (type filter, Enter OK, Esc cancel; Space toggles in     │                     │
 │                     │multi-select ones)                                              │                     │
+│                     │                                                                │                     │
 │                     │  F5               in the backup job form: check the repository │                     │
 │                     │check the remote (both read-only; never block saving)           │                     │
+│                     │                                                                │                     │
 │                     │  Esc              dismiss a status message, back out of a      │                     │
 │                     │focused pane, or cancel a modal (in a y/n confirmation Esc      │                     │
-│                     │selects No, then Enter)                                         │                     │
-│                     │  y / n, Enter     a y/n confirmation takes two keys: y (yes) or│                     │
-│                     │n / Esc (no) selects, then Enter applies it; Enter alone does   │                     │
-│                     │nothing. Forms that cannot be undone (create pool, add vdev,    │                     │
-│                     │replace disk, revoke, shrinking a volume, pool features) end in │                     │
-│                     │one, showing the exact command                                  │                     │
-│                     │  ?                this Help screen                             │─────────────────────┘
-│                     │  !                open a shell on the selected host (remote    │─────────────────────┐
-│                     │hosts: your unprivileged ssh login); exit returns to zfsctl     │BSD_g6330a45b0       │
-│                     │  A                About                                        │E)                   │
-│                     │  q                quit                                         │ 62.2G               │
-│                     │                                                                │  hit 99.9%          │
-│                     │Hosts                                                           │e healthy            │
+│                     │selects No, then Enter)                                         │─────────────────────┘
+│                     │                                                                │─────────────────────┐
+│                     │  y / n, Enter     a y/n confirmation takes two keys: y (yes) or│BSD_g6330a45b0       │
+│                     │n / Esc (no) selects, then Enter applies it; Enter alone does   │E)                   │
+│                     │nothing. Forms that cannot be undone (create pool, add vdev,    │ 62.2G               │
+│                     │replace disk, revoke, shrinking a volume, pool features) end in │  hit 100.0%         │
+│                     │one, showing the exact command                                  │e healthy            │
+│                     │                                                                │                     │
+│                     │  ?                this Help screen                             │                     │
+│                     │                                                                │                     │
+│                     │  !                open a shell on the selected host (remote    │                     │
+│                     │hosts: your unprivileged ssh login); exit returns to zfsctl     │                     │
+│                     │                                                                │                     │
+│                     │  A                About                                        │                     │
+│                     │                                                                │                     │
+│                     │  q                quit                                         │                     │
+│                     │                                                                │                     │
+│                     │Hosts                                                           │                     │
 │                     │  Up / Down        select the active host                       │                     │
-│                     │  /                filter the host list by name, address, tag or│                     │
-│                     │type (Enter keeps it, Esc clears it)                            │                     │
+│                     │                                                                │                     │
+│                     │  /                filter the host list by name, address, tag,  │                     │
+│                     │site or type (Enter keeps it, Esc clears it)                    │                     │
+│                     │                                                                │                     │
 │                     │  c                check the selected host's disks (smartctl)   │                     │
 │                     │and shares (NFS, Samba) now; the result joins the Dashboard     │                     │
-│                     │(read-only)                                                     │                     │
-│                     │  n                add a new host (prompts for Name, SSH target │                     │
-│                     │and an optional Tag)                                            │                     │
-│                     │                                                                │                     │
-│                     │Pools                                                           │                     │
-│                     │  Enter            drill into vdev/disk tree                    │                     │
-│                     │  Right / Left     focus/unfocus the properties pane            │                     │
-│                     │  n / d            create / destroy a pool                      │                     │
-│                     │  s / R            scrub / resilver (y/n confirm)               │                     │
-│                     │  J                schedule a recurring scrub of the selected   │                     │
-│                     │pool (opens the job form)                                       │                     │
-│                     │  J                (in Datasets) schedule recurring snapshots of│                     │
-│                     │the selected dataset                                            │                     │
-└─────────────────────│                                                                │─────────────────────┘
-any key Close         └────────────────────────────────────────────────────────────────┘
+└─────────────────────│(read-only)                                                     │─────────────────────┘
+↑/↓ Scroll  any key Cl└────────────────────────────────────────────────────────────────┘
 ```
 
 It is part of the program, so it is always right for the version you are running; any key closes it. (On a small terminal the window may cut off the end of the list; the keys reference in this book has everything.)
