@@ -136,6 +136,23 @@ fn a_choose_list_scrolls_to_keep_the_chosen_row_on_screen_and_marks_it() {
 }
 
 #[test]
+fn a_choose_list_stays_put_when_the_selection_moves_up_inside_the_view() {
+    let mut app = App::new(vec!["local".to_string()]);
+    let rows: Vec<String> = (0..40).map(|i| format!("dataset-{i:02} lacks something")).collect();
+    let choose = |selected: usize| Modal::Choose { title: "Unprotected data".into(), note: "40 datasets".into(), rows: rows.clone(), selected, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() }, look: crate::ui::modal::ChooseLook::default() };
+    app.modal = Some(choose(39));
+    render_buffer(&mut app, 100, 20);
+    let shows = |buf: &ratatui::buffer::Buffer, word: &str| (0..20u16).any(|y| (0..100u16).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().contains(word));
+    // One step up: the same rows stay on screen, only the highlight moves.
+    if let Some(Modal::Choose { selected, .. }) = app.modal.as_mut() {
+        *selected = 38;
+    }
+    let buf = render_buffer(&mut app, 100, 20);
+    let text: String = (0..20u16).map(|y| (0..100u16).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
+    assert!(shows(&buf, "dataset-39") && shows(&buf, "dataset-38"), "the view did not move:\n{text}");
+}
+
+#[test]
 fn an_info_pop_up_other_than_help_keeps_its_plain_lines() {
     let mut app = App::new(vec!["local".to_string()]);
     app.modal = Some(Modal::Info { title: "Report preview (nothing sent)".to_string(), body: "NEEDS ATTENTION\n  nothing".to_string() });

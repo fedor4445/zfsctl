@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(hint_line), hint_area);
 
     if let Some(modal) = app.modal.clone() {
-        draw_modal(f, &modal, app.backup_preflight.as_ref(), app.info_scroll, &app.theme, area);
+        draw_modal(f, &modal, app.backup_preflight.as_ref(), app.info_scroll, &app.choose_top, &app.theme, area);
     }
     if let Some(picker) = app.picker.clone() {
         draw_picker(f, &picker, &app.theme, area);

@@ -426,6 +426,8 @@ pub struct App {
     pub alerts_view: crate::ui::alerts::AlertsView,
     /// First visible line of an open Info pop-up (Help, About, report preview); Up/Down/PageUp/PageDown/Home/End move it.
     pub info_scroll: u16,
+    /// The first line of a `Modal::Choose` list shown at the last draw, so the list scrolls only when the chosen row leaves the view.
+    pub choose_top: std::cell::Cell<usize>,
     /// The Settings section: the rest of `config.toml` that can be edited here.
     pub settings_view: crate::ui::settings::SettingsView,
     pub settings_table: TableState,
@@ -665,6 +667,7 @@ impl App {
             config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
             alerts_view: crate::ui::alerts::AlertsView::default(),
             info_scroll: 0,
+            choose_top: std::cell::Cell::new(0),
             settings_view: crate::ui::settings::SettingsView::default(),
             settings_table: TableState::default(),
             smart: crate::daemon::smart_check::SmartFile::default(),
