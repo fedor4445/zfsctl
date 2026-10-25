@@ -250,17 +250,22 @@ The last section of the sidebar edits the parts of `config.toml` that no other s
 │Snapshots             ││Dashboard thresholds                                                      │
 │Disks                 ││  Memory warn / crit       90 / 97 %   (default)                          │
 │Shares                ││  Swap warn / crit         50 / 90 %   (default)                          │
-│Boot Envs             ││  CPU warn                 95 %   (default)                               │
-│Jobs                  ││  Scrub warn / crit        35 / 90 days   (default)                       │
-│Cloud                 ││  Scrub ignore             (none)   (default)                             │
-│Alerts                ││                                                                          │
-│Settings              ││Cloud caps                                                                │
+│Boot Envs             ││  Quota warn / crit        90 / 98 %   (default)                          │
+│Jobs                  ││  Dedup warn below         1.10x   (default)                              │
+│Cloud                 ││  CPU warn                 95 %   (default)                               │
+│Alerts                ││  Scrub warn / crit        35 / 90 days   (default)                       │
+│Settings              ││  Scrub ignore             (none)   (default)                             │
+│                      ││                                                                          │
+│                      ││Data protection                                                           │
+│                      ││  Level                    basic   (default)                              │
+│                      ││  Failure domains (1 to 3) 1   (default)                                  │
+│                      ││  How recent (strict, normal, relaxed) normal   (default)                 │
+│                      ││  Email (immediate, report, off) report                                   │
+│                      ││                                                                          │
+│                      ││Cloud caps                                                                │
 │                      ││  Cap of b2                10G                                            │
 │                      ││  Cap of t1                (no cap)   (default)                           │
 │                      ││  Cap of zfsctl-aws        (no cap)   (default)                           │
-│                      ││                                                                          │
-│                      ││                                                                          │
-│                      ││                                                                          │
 │                      ││                                                                          │
 └──────────────────────┘└──────────────────────────────────────────────────────────────────────────┘
 ↑↓ Move  Enter Edit  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
