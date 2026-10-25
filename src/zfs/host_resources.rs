@@ -79,14 +79,9 @@ fn parse_sysctl(output: &str) -> Option<Resources> {
     })
 }
 
-/// Reads the host's resources with unprivileged commands: one `sh -c` on Linux and illumos (see `host_resources_os`), two
-/// on FreeBSD and a host whose OS is not known. `None` when the answer fails or does not parse (or the host is
-/// unreachable); a failed `swapinfo` only costs the swap figure.
-pub fn probe_resources(runner: &dyn CommandRunner, os: Option<super::host_health::HostOs>) -> Option<Resources> {
-    if let Some(script) = os.and_then(super::host_resources_os::script) {
-        let out = runner.run_unprivileged("sh", &["-c", script]).ok().filter(crate::exec::CommandOutput::success)?;
-        return super::host_resources_os::parse(os?, &out.stdout);
-    }
+/// Reads the host's resources with two unprivileged commands (`sysctl`, `swapinfo`). `None` when the answer fails or
+/// does not parse (or the host is unreachable); a failed `swapinfo` only costs the swap figure.
+pub fn probe_resources(runner: &dyn CommandRunner) -> Option<Resources> {
     let out = runner.run_unprivileged("sysctl", &SYSCTL_ARGS).ok().filter(crate::exec::CommandOutput::success)?;
     let mut resources = parse_sysctl(&out.stdout)?;
     resources.swap = runner.run_unprivileged("swapinfo", &["-k"]).ok().filter(crate::exec::CommandOutput::success).and_then(|o| parse_swapinfo(&o.stdout));
@@ -188,7 +183,7 @@ mod tests {
     #[test]
     fn probe_resources_makes_exactly_two_unprivileged_calls() {
         let runner = FakeRunner::new("").route("sysctl", "-n", SYSCTL).route("swapinfo", "-k", SWAPINFO);
-        let r = probe_resources(&runner, None).expect("both commands answered");
+        let r = probe_resources(&runner).expect("both commands answered");
         assert_eq!((r.cores, r.physical, r.free, r.inactive, r.arc), (4, 20 * GIB, 2 * GIB, 3 * GIB, 10 * GIB));
         assert_eq!(r.load, Some([0.05, 0.12, 0.08]));
         assert_eq!(r.cpu_ticks.map(|t| (t.user, t.idle)), Some((1000, 8790)));
@@ -205,23 +200,11 @@ mod tests {
 
     #[test]
     fn a_failed_or_unreadable_sysctl_gives_none_and_a_failed_swapinfo_only_loses_swap() {
-        assert_eq!(probe_resources(&FakeRunner::failing("sysctl: unknown oid", 1), None), None);
-        assert_eq!(probe_resources(&FakeRunner::new("garbage\n"), None), None);
+        assert_eq!(probe_resources(&FakeRunner::failing("sysctl: unknown oid", 1)), None);
+        assert_eq!(probe_resources(&FakeRunner::new("garbage\n")), None);
         let no_swap = FakeRunner::new("").route("sysctl", "-n", SYSCTL);
-        let r = probe_resources(&no_swap, None).expect("the sysctl answered");
+        let r = probe_resources(&no_swap).expect("the sysctl answered");
         assert_eq!(r.swap, None, "swapinfo answered with nothing: no swap figure, but the rest stays");
-    }
-
-    #[test]
-    fn linux_and_illumos_hosts_are_read_with_one_sh_call_and_no_sysctl() {
-        use super::super::host_health::HostOs;
-        let linux = "== meminfo\nMemTotal:       32850256 kB\nMemAvailable:   31218412 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n== stat\ncpu  1 2 3 4 5 0 0 0 0 0\n== load\n0.04 0.02 0.00 1/756 1\n== arc\n== cores\n4\n";
-        let runner = FakeRunner::new("").route("sh", "-c", linux);
-        let r = probe_resources(&runner, Some(HostOs::Linux)).expect("a Linux answer");
-        assert_eq!((r.cores, r.load), (4, Some([0.04, 0.02, 0.0])));
-        let names: Vec<String> = runner.calls.lock().unwrap().iter().map(|(c, _)| c.clone()).collect();
-        assert_eq!(names, ["sh"], "no sysctl or swapinfo on Linux");
-        assert_eq!(probe_resources(&FakeRunner::failing("sh: not found", 127), Some(HostOs::Illumos)), None);
     }
 
     #[test]

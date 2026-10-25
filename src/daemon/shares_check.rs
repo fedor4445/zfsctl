@@ -20,11 +20,6 @@ pub struct SharesResult {
     /// Why the latest check did not happen; the rest is then from the last one that did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The services' own names on a host that is not FreeBSD (`nfs-server`, `smb/server`); unset means `nfsd` and Samba's `smbd`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nfs_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub smb_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -104,53 +99,12 @@ fn listing_failure(error: crate::error::AppError) -> Outcome {
     }
 }
 
-/// The same check for a Linux or illumos host: shares counted from `sharenfs` (and, on illumos, the native `sharesmb`),
-/// services from systemd or SMF. Samba shares on Linux live in `smb.conf` and are not counted yet. Read-only.
-fn check_other_os(runner: &dyn CommandRunner, now: DateTime<Utc>, os: crate::zfs::host_health::HostOs) -> Outcome {
-    use crate::zfs::host_health::HostOs;
-    use crate::zfs::share::{nfs_name, nfs_unit, parse_sharesmb, service_state, smb_name, smb_unit, ServiceState};
-    let nfs_shares = match crate::zfs::share::list_shares(runner) {
-        Ok(shares) => shares.len(),
-        Err(e) => return listing_failure(e),
-    };
-    let smb_shares = if os == HostOs::Illumos {
-        match super::super::zfs::run_checked(runner, "zfs", &["get", "-H", "-p", "-t", "filesystem", "sharesmb"], "zfs get sharesmb") {
-            Ok(out) => parse_sharesmb(&out.stdout).len(),
-            Err(e) => return listing_failure(e),
-        }
-    } else {
-        0
-    };
-    let (nfs, smb) = match (service_state(runner, os, nfs_unit(os)), service_state(runner, os, smb_unit(os))) {
-        (Ok(nfs), Ok(smb)) => (nfs, smb),
-        (Err(e), _) | (_, Err(e)) => return Outcome::Failed(e.to_string()),
-    };
-    Outcome::Checked(SharesResult {
-        checked_at: now,
-        // A state that could not be read makes no claim: it is not a server that is down.
-        nfs_running: matches!(nfs, ServiceState::Running | ServiceState::Unknown),
-        samba_running: matches!(smb, ServiceState::Running | ServiceState::Unknown),
-        nfs_shares,
-        smb_shares,
-        smb_error: None,
-        error: None,
-        nfs_name: Some(nfs_name(os).to_string()),
-        smb_name: Some(smb_name(os).to_string()),
-    })
-}
-
 /// Asks one host whether its NFS server and Samba run and how many shares need them. Read-only.
 pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
-    // `service ... onestatus` is FreeBSD's: Linux and illumos hosts are asked with their own tools; a host whose OS cannot be
-    // read is asked as FreeBSD.
+    // `service ... onestatus` is FreeBSD's: a host that answers `uname -s` with anything else is not checked.
     match runner.run_unprivileged("uname", &["-s"]) {
         Ok(out) if out.status == 255 => return Outcome::Failed(first_line(&out.stderr, "could not reach the host")),
-        Ok(out) if out.success() => {
-            let os = crate::zfs::host_health::host_os_from_uname(&out.stdout);
-            if matches!(os, crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos) {
-                return check_other_os(runner, now, os);
-            }
-        }
+        Ok(out) if out.success() && !out.stdout.trim().is_empty() && crate::zfs::host_health::host_os_from_uname(&out.stdout) != crate::zfs::host_health::HostOs::FreeBsd => return Outcome::Silent,
         Err(e) => return Outcome::Failed(e.to_string()),
         _ => {}
     }
@@ -186,7 +140,7 @@ pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
         Err(e) if samba_running => (0, Some(e.to_string())),
         Err(_) => (0, None),
     };
-    Outcome::Checked(SharesResult { checked_at: now, nfs_running: matches!(nfs, Service::Running), samba_running, nfs_shares, smb_shares, smb_error, error: None, nfs_name: None, smb_name: None })
+    Outcome::Checked(SharesResult { checked_at: now, nfs_running: matches!(nfs, Service::Running), samba_running, nfs_shares, smb_shares, smb_error, error: None })
 }
 
 /// One host's share problems in a form both the Dashboard and the daily report can print.
@@ -208,13 +162,11 @@ pub fn problems(file: &SharesFile) -> Vec<ShareProblem> {
             let mut texts = Vec::new();
             let mut severity = Severity::Watch;
             if r.nfs_shares > 0 && !r.nfs_running {
-                texts.push(format!("NFS: {} but {} is not running", shares(r.nfs_shares), r.nfs_name.as_deref().unwrap_or("nfsd")));
+                texts.push(format!("NFS: {} but {} is not running", shares(r.nfs_shares), "nfsd"));
                 severity = Severity::Issue;
             }
             if r.smb_shares > 0 && !r.samba_running {
-                let name = r.smb_name.as_deref().unwrap_or("smbd");
-                // Samba's own service says Samba; illumos's kernel service is plain SMB.
-                texts.push(format!("{}: {} but {name} is not running", if name == "smbd" { "Samba" } else { "SMB" }, shares(r.smb_shares)));
+                texts.push(format!("Samba: {} but smbd is not running", shares(r.smb_shares)));
                 severity = Severity::Issue;
             }
             if let Some(why) = &r.smb_error {
@@ -347,9 +299,9 @@ mod tests {
 
     #[test]
     fn a_listing_that_sudo_refuses_is_silent_and_other_failures_are_failed() {
-        let denied_zfs = Script(Box::new(|cmd, _| if cmd == "zfs" { out("", "sudo: a password is required", 1) } else { out(UP.0, "", 0) }));
+        let denied_zfs = Script(Box::new(|cmd, _| match cmd { "uname" => out("FreeBSD\n", "", 0), "zfs" => out("", "sudo: a password is required", 1), _ => out(UP.0, "", 0) }));
         assert_eq!(check_host(&denied_zfs, at(NOW)), Outcome::Silent);
-        let broken_zfs = Script(Box::new(|cmd, _| if cmd == "zfs" { out("", "cannot open 'x': dataset does not exist", 1) } else { out(UP.0, "", 0) }));
+        let broken_zfs = Script(Box::new(|cmd, _| match cmd { "uname" => out("FreeBSD\n", "", 0), "zfs" => out("", "cannot open 'x': dataset does not exist", 1), _ => out(UP.0, "", 0) }));
         assert!(matches!(check_host(&broken_zfs, at(NOW)), Outcome::Failed(_)));
     }
 
@@ -375,79 +327,20 @@ mod tests {
         assert!(matches!(check_host(&dropped, at(NOW)), Outcome::Failed(_)));
     }
 
-    /// A Linux or illumos host: `uname`, the share listings (sudo), the service states (no sudo).
-    fn other_os(uname: &'static str, nfs_list: &'static str, sharesmb: &'static str, nfs_state: &'static str, smb_state: &'static str) -> Script {
-        Script(Box::new(move |cmd, args| match (cmd, args[0]) {
-            ("uname", _) => out(uname, "", 0),
-            ("zfs", "get") => out(if args.contains(&"sharesmb") { sharesmb } else { nfs_list }, "", 0),
-            ("systemctl", "show") => out(if args.contains(&"nfs-server") { nfs_state } else { smb_state }, "", 0),
-            ("svcs", "-H") => out(if args.iter().any(|a| a.contains("nfs/server")) { nfs_state } else { smb_state }, "", 0),
-            other => panic!("a {uname:?} host was asked {other:?}"),
-        }))
-    }
-
-    const ONE_NFS: &str = "tank/data\tsharenfs\trw=@10.0.0.0/24\tlocal\n";
-    const TWO_SMB: &str = "tank/alice\tsharesmb\tname=alice\tlocal\ntank/carol\tsharesmb\tname=carol\tlocal\n";
-    const LOADED_ACTIVE: &str = "LoadState=loaded\nActiveState=active\n";
-    const LOADED_INACTIVE: &str = "LoadState=loaded\nActiveState=inactive\n";
-
     #[test]
-    fn a_linux_host_with_nfs_shares_and_a_stopped_server_is_red_with_its_own_service_name() {
-        let result = checked(check_host(&other_os("Linux\n", ONE_NFS, TWO_SMB, LOADED_INACTIVE, LOADED_ACTIVE), at(NOW)));
-        assert_eq!((result.nfs_running, result.nfs_shares, result.smb_shares), (false, 1, 0), "Samba shares are not counted on Linux yet");
-        let mut file = SharesFile::default();
-        file.hosts.insert("ub24".into(), result);
-        assert_eq!(problems(&file)[0].text, "NFS: 1 share but nfs-server is not running");
-        let healthy = checked(check_host(&other_os("Linux\n", ONE_NFS, "", LOADED_ACTIVE, LOADED_INACTIVE), at(NOW)));
-        file.hosts.insert("ub24".into(), healthy);
-        assert!(problems(&file).is_empty());
-        let not_installed = checked(check_host(&other_os("Linux\n", ONE_NFS, "", "LoadState=not-found\nActiveState=inactive\n", LOADED_INACTIVE), at(NOW)));
-        file.hosts.insert("ub24".into(), not_installed);
-        assert_eq!(problems(&file).len(), 1, "shares set on a host without an NFS server do not work");
+    fn a_host_that_is_not_freebsd_is_not_checked_and_nothing_but_uname_is_asked() {
+        for uname in ["Linux\n", "SunOS\n", "Darwin\n"] {
+            let runner = Script(Box::new(move |cmd, _| {
+                assert_eq!(cmd, "uname", "a {uname:?} host was asked {cmd}");
+                out(uname, "", 0)
+            }));
+            assert_eq!(check_host(&runner, at(NOW)), Outcome::Silent, "{uname:?}");
+        }
     }
 
     #[test]
-    fn an_illumos_host_counts_sharesmb_and_names_the_smf_services() {
-        let healthy = checked(check_host(&other_os("SunOS\n", ONE_NFS, TWO_SMB, "online\n", "online\n"), at(NOW)));
-        assert_eq!((healthy.nfs_shares, healthy.smb_shares, healthy.nfs_running, healthy.samba_running), (1, 2, true, true));
-        let down = checked(check_host(&other_os("SunOS\n", ONE_NFS, TWO_SMB, "online\n", "disabled\n"), at(NOW)));
-        let mut file = SharesFile::default();
-        file.hosts.insert("omnios".into(), down);
-        assert_eq!(problems(&file)[0].text, "SMB: 2 shares but smb/server is not running");
-    }
-
-    #[test]
-    fn a_service_that_cannot_be_read_is_no_claim_and_never_red() {
-        // No systemd and no pgrep: shares exist, but nothing says the server is down.
-        let blind = Script(Box::new(|cmd, args| match (cmd, args[0]) {
-            ("uname", _) => out("Linux\n", "", 0),
-            ("zfs", _) => out(ONE_NFS, "", 0),
-            ("systemctl", _) => out("", "System has not been booted with systemd", 1),
-            ("pgrep", _) => out("", "sh: pgrep: not found", 127),
-            other => panic!("{other:?}"),
-        }));
-        let result = checked(check_host(&blind, at(NOW)));
-        assert!(result.nfs_running && result.samba_running, "unknown is not 'not running'");
-        let mut file = SharesFile::default();
-        file.hosts.insert("alpine".into(), result);
-        assert!(problems(&file).is_empty());
-    }
-
-    #[test]
-    fn on_linux_and_illumos_sudo_refusing_zfs_is_silent_and_a_dropped_ssh_on_a_service_is_failed() {
-        let denied = Script(Box::new(|cmd, _| if cmd == "uname" { out("Linux\n", "", 0) } else { out("", "sudo: a password is required", 1) }));
-        assert_eq!(check_host(&denied, at(NOW)), Outcome::Silent);
-        let dropped = Script(Box::new(|cmd, args| match (cmd, args[0]) {
-            ("uname", _) => out("Linux\n", "", 0),
-            ("zfs", _) => out(ONE_NFS, "", 0),
-            _ => out("", "ssh: Connection reset by peer", 255),
-        }));
-        assert!(matches!(check_host(&dropped, at(NOW)), Outcome::Failed(_)));
-    }
-
-    #[test]
-    fn a_freebsd_host_and_one_with_an_odd_uname_are_still_checked() {
-        for uname in ["FreeBSD\n", "Darwin\n", ""] {
+    fn a_freebsd_host_and_one_whose_uname_is_unreadable_are_still_checked() {
+        for uname in ["FreeBSD\n", ""] {
             let runner = Script(Box::new(move |cmd, args| match (cmd, args[0]) {
                 ("uname", _) => out(uname, "", 0),
                 ("service", "nfsd") => out(UP.0, "", UP.1),

@@ -71,7 +71,7 @@ fn short_names_keep_the_default_split() {
 #[test]
 fn a_dimmed_section_says_why_in_its_body() {
     let mut app = linux_host_app();
-    for (section, text) in [(Section::BootEnvs, "Boot Envs is not supported on Linux hosts yet.")] {
+    for (section, text) in [(Section::BootEnvs, "Boot Envs needs a FreeBSD host.")] {
         app.selected_section = app.sections.iter().position(|s| *s == section).unwrap();
         let screen = render(&mut app, 120, 20).join("\n");
         assert!(screen.contains(text), "{screen}");

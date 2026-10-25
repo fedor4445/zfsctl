@@ -90,8 +90,6 @@ A fifteenth binary, `ls`, is needed only to look inside snapshots (`zfsctl print
 
 A sixteenth binary, `cp`, is needed only to copy a file out of a snapshot (`zfsctl print-sudoers HOST --with restore`; off by default). Its entry is pinned to one form, `cp -p -n -- * *`. `-p` keeps times and modes (run as root on FreeBSD it also keeps file flags and ACLs), and `-n` never overwrites an existing file. Sudo matches the words as one string, so it cannot confine the paths: with this entry the account can copy any file the host can read to any new path, which `zfs` and `zpool` already allow.
 
-The code still carries sudoers entries for hosts that are not FreeBSD. They are not supported and are due to be removed with that code: `/usr/sbin/beadm`, the `ls` forms `ls -lAQ --time-style +%s -- *`, `ls -lAQ --time-style +%s --time ctime -- *`, `ls -lAQ --time-style +%s --time birth -- *`, `ls -lAbE -- *` and `ls -lAbEc -- *`, and `cp -p -n -T -- * *`.
-
 ```sh
 which zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee
 ```

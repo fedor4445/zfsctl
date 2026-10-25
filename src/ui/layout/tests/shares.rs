@@ -3,19 +3,6 @@
 use super::*;
 
 #[test]
-fn the_shares_title_names_the_services_of_the_hosts_os() {
-    let mut app = linux_host_app();
-    app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
-    (app.nfs_available, app.samba_available) = (Some(false), Some(false));
-    let screen = render(&mut app, 160, 12).join("\n");
-    assert!(screen.contains("NFS unavailable: nfs-server not running") && screen.contains("read-only on Linux"), "{screen}");
-    assert!(!screen.contains("SMB unavailable"), "Samba shares are not listed on Linux, so its state says nothing here:\n{screen}");
-    app.selected_host = 0;
-    let screen = render(&mut app, 160, 12).join("\n");
-    assert!(screen.contains("NFS unavailable: nfsd not running"), "{screen}");
-}
-
-#[test]
 fn the_shares_section_shows_access_clients_and_space_for_nfs_and_smb() {
     use crate::zfs::metrics::{DatasetSpace, MetricsTarget, PoolSample, TargetSample};
     use crate::zfs::share::Share;
@@ -58,4 +45,14 @@ fn the_shares_section_shows_access_clients_and_space_for_nfs_and_smb() {
     for want in ["SMB share \\\\bee", "user=carol  rw", "unavailable"] {
         assert!(text.contains(want), "missing {want:?} in\n{text}");
     }
+}
+
+#[test]
+fn the_shares_title_names_the_services_of_a_freebsd_host() {
+    let mut app = linux_host_app();
+    app.selected_host = 0;
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Shares).unwrap();
+    (app.nfs_available, app.samba_available) = (Some(false), Some(false));
+    let screen = render(&mut app, 160, 12).join("\n");
+    assert!(screen.contains("NFS unavailable: nfsd not running") && screen.contains("SMB unavailable: smbd not running"), "{screen}");
 }

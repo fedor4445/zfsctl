@@ -82,7 +82,7 @@ fn pools_app_with_info(contents: Option<Result<crate::zfs::pool_info::PoolConten
 fn linux_host_app() -> App {
     use crate::zfs::host_health::HostOs;
     let mut app = App::new(vec!["local".to_string(), "ub24".to_string()]);
-    app.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Linux), ..Default::default() });
+    app.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Other), ..Default::default() });
     app.selected_host = 1;
     app
 }

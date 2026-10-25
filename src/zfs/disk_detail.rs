@@ -8,7 +8,6 @@
 use super::metrics::{ErrorCounts, PoolIo};
 use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
-use crate::zfs::host_health::HostOs;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DiskLive {
@@ -40,42 +39,6 @@ pub fn parse_iostat_x(output: &str, disk: &str) -> Option<(PoolIo, DiskLive)> {
     };
     let live = DiskLive { busy_percent: num(busy), queue: qlen.parse().ok(), ..DiskLive::default() };
     Some((io, live))
-}
-
-/// The last block of illumos `iostat -xn 1 2`, one row for `disk`.
-/// Columns: `r/s w/s kr/s kw/s wait actv wsvc_t asvc_t %w %b device`. The device keeps one service time (`asvc_t`),
-/// not separate read and write ones, so both latencies show it.
-pub fn parse_iostat_illumos(output: &str, disk: &str) -> Option<(PoolIo, DiskLive)> {
-    let lines: Vec<&str> = output.lines().collect();
-    let start = lines.iter().rposition(|l| l.trim_start().starts_with("r/s"))?;
-    let fields: Vec<&str> = lines.get(start + 1..)?.iter().map(|l| l.split_whitespace().collect::<Vec<_>>()).find(|f| f.last() == Some(&disk))?;
-    let [rs, ws, krs, kws, _, actv, _, asvc, _, busy, _] = fields.as_slice() else { return None };
-    let num = |s: &str| s.parse::<f64>().ok();
-    let (rs, ws, asvc) = (num(rs)?, num(ws)?, num(asvc)?);
-    let ns = |ops: f64| (ops > 0.0).then(|| to_u64(asvc * 1e6));
-    let io = PoolIo { read_ops: to_u64(rs), write_ops: to_u64(ws), read_bps: to_u64(num(krs)? * 1024.0), write_bps: to_u64(num(kws)? * 1024.0), read_latency_ns: ns(rs), write_latency_ns: ns(ws) };
-    Some((io, DiskLive { busy_percent: num(busy), queue: num(actv).map(to_u64), ..DiskLive::default() }))
-}
-
-/// The last block of Linux (sysstat) `iostat -dx 1 2`, one row for `disk`. The columns differ between sysstat versions,
-/// so they are found by the names in the header: `r/s w/s rkB/s wkB/s r_await w_await aqu-sz` (`avgqu-sz`) `%util`.
-pub fn parse_iostat_linux(output: &str, disk: &str) -> Option<(PoolIo, DiskLive)> {
-    let lines: Vec<&str> = output.lines().collect();
-    let start = lines.iter().rposition(|l| l.trim_start().starts_with("Device"))?;
-    let header: Vec<&str> = lines.get(start)?.split_whitespace().collect();
-    let fields: Vec<&str> = lines.get(start + 1..)?.iter().map(|l| l.split_whitespace().collect::<Vec<_>>()).find(|f| f.first() == Some(&disk))?;
-    let col = |names: &[&str]| names.iter().find_map(|n| header.iter().position(|h| h == n)).and_then(|i| fields.get(i)).and_then(|s| s.parse::<f64>().ok());
-    let (rs, ws) = (col(&["r/s"])?, col(&["w/s"])?);
-    let ns = |ms: Option<f64>, ops: f64| (ops > 0.0).then_some(ms).flatten().map(|ms| to_u64(ms * 1e6));
-    let io = PoolIo {
-        read_ops: to_u64(rs),
-        write_ops: to_u64(ws),
-        read_bps: to_u64(col(&["rkB/s"])? * 1024.0),
-        write_bps: to_u64(col(&["wkB/s"])? * 1024.0),
-        read_latency_ns: ns(col(&["r_await", "await"]), rs),
-        write_latency_ns: ns(col(&["w_await", "await"]), ws),
-    };
-    Some((io, DiskLive { busy_percent: col(&["%util"]), queue: col(&["aqu-sz", "avgqu-sz"]).map(to_u64), ..DiskLive::default() }))
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped non-negative display values
@@ -111,19 +74,12 @@ pub fn parse_leaf(status: &str, disk: &str) -> Option<(String, ErrorCounts)> {
     None
 }
 
-type IostatParser = fn(&str, &str) -> Option<(PoolIo, DiskLive)>;
-
 /// One refresh for `disk`, a member of `pool` if given. Blocks for about a
 /// second (the iostat window), so it belongs on a worker thread.
-pub fn sample_disk(runner: &dyn CommandRunner, disk: &str, pool: Option<&str>, os: Option<HostOs>) -> Result<(PoolIo, DiskLive)> {
-    // `iostat` is not the same tool everywhere: the FreeBSD one takes -w and -c, the others an interval and a count.
-    let (args, parse): (&[&str], IostatParser) = match os {
-        Some(HostOs::Illumos) => (&["-xn", "1", "2"], parse_iostat_illumos),
-        Some(HostOs::Linux) => (&["-dx", "1", "2"], parse_iostat_linux),
-        _ => (&["-x", "-d", "-w", "1", "-c", "2"], parse_iostat_x),
-    };
+pub fn sample_disk(runner: &dyn CommandRunner, disk: &str, pool: Option<&str>) -> Result<(PoolIo, DiskLive)> {
+    let args: &[&str] = &["-x", "-d", "-w", "1", "-c", "2"];
     let out = run_checked_unprivileged(runner, args)?;
-    let (io, mut live) = parse(&out, disk).ok_or_else(|| AppError::Parse(format!("{disk} not found in iostat output")))?;
+    let (io, mut live) = parse_iostat_x(&out, disk).ok_or_else(|| AppError::Parse(format!("{disk} not found in iostat output")))?;
     if let Some(pool) = pool {
         if let Some(status) = runner.run("zpool", &["status", "-p", "--", pool]).ok().filter(crate::exec::CommandOutput::success) {
             if let Some((state, errors)) = parse_leaf(&status.stdout, disk) {
@@ -185,7 +141,7 @@ mod tests {
     #[test]
     fn sample_disk_uses_unprivileged_iostat_and_the_pools_status() {
         let runner = FakeRunner::new("").route("iostat", "-x", IOSTAT).route("zpool", "status", STATUS);
-        let (io, live) = sample_disk(&runner, "ada1", Some("tpool"), None).unwrap();
+        let (io, live) = sample_disk(&runner, "ada1", Some("tpool")).unwrap();
         assert_eq!(io.write_ops, 4);
         assert_eq!((live.state.as_deref(), live.errors.map(ErrorCounts::total)), (Some("DEGRADED"), Some(6)));
         let unpriv = runner.unprivileged_calls.lock().unwrap();
@@ -196,44 +152,10 @@ mod tests {
     #[test]
     fn a_disk_outside_any_pool_skips_zpool_status_and_a_missing_disk_is_an_error() {
         let runner = FakeRunner::new("").route("iostat", "-x", IOSTAT);
-        let (_, live) = sample_disk(&runner, "ada0", None, None).unwrap();
+        let (_, live) = sample_disk(&runner, "ada0", None).unwrap();
         assert_eq!((live.state, live.errors), (None, None));
         assert!(runner.calls.lock().unwrap().iter().all(|(c, _)| c != "zpool"));
-        assert!(sample_disk(&runner, "ada9", None, None).is_err());
-        assert!(sample_disk(&FakeRunner::failing("no iostat", 1), "ada0", None, None).is_err());
-    }
-
-    // Captured from OmniOS r151058 (`iostat -xn 1 2`) and Ubuntu 24.04 (`iostat -dx 1 2`).
-    const IOSTAT_ILLUMOS: &str = "                    extended device statistics              \n    r/s    w/s   kr/s   kw/s wait actv wsvc_t asvc_t  %w  %b device\n    4.6    1.6   46.0   14.4  0.0  0.0    0.0    0.5   0   0 c2t0d0\n  208.2   32.9 5823.5   33.4  0.0  0.1    0.0    0.4   0   9 c1t1d0\n                    extended device statistics              \n    r/s    w/s   kr/s   kw/s wait actv wsvc_t asvc_t  %w  %b device\n    6.0    0.0   33.9    0.0  0.0  0.0    0.0    0.6   0   0 c2t0d0\n  208.2   32.9 5824.0   33.5  0.0  1.4    0.0    0.4   0   9 c1t1d0\n";
-    const IOSTAT_LINUX: &str = "Linux 6.8.0-146-generic (ub24) \t10/20/2026 \t_x86_64_\t(32 CPU)\n\nDevice            r/s     rkB/s   rrqm/s  %rrqm r_await rareq-sz     w/s     wkB/s   wrqm/s  %wrqm w_await wareq-sz     d/s     dkB/s   drqm/s  %drqm d_await dareq-sz     f/s f_await  aqu-sz  %util\nsda              9.00      9.00     0.00   0.00    9.00     9.00    9.00      9.00     0.00   0.00    9.00     9.00    0.00      0.00     0.00   0.00    0.00     0.00    0.00    0.00    9.00  99.00\n\nDevice            r/s     rkB/s   rrqm/s  %rrqm r_await rareq-sz     w/s     wkB/s   wrqm/s  %wrqm w_await wareq-sz     d/s     dkB/s   drqm/s  %drqm d_await dareq-sz     f/s f_await  aqu-sz  %util\nsda              2.00     16.00     0.00   0.00    1.50     8.00    0.00      0.00     0.00   0.00    0.00     0.00    0.00      0.00     0.00   0.00    0.00     0.00    0.00    0.00    3.40  12.50\n";
-
-    #[test]
-    fn illumos_iostat_reads_the_live_block_by_the_device_name_in_the_last_column() {
-        let (io, live) = parse_iostat_illumos(IOSTAT_ILLUMOS, "c1t1d0").unwrap();
-        assert_eq!((io.read_ops, io.write_ops, io.read_bps, io.write_bps), (208, 33, 5_963_776, 34_304));
-        assert_eq!((io.read_latency_ns, io.write_latency_ns), (Some(400_000), Some(400_000)));
-        assert_eq!((live.busy_percent, live.queue), (Some(9.0), Some(1)));
-        let (io, _) = parse_iostat_illumos(IOSTAT_ILLUMOS, "c2t0d0").unwrap();
-        assert_eq!(io.write_latency_ns, None, "no writes, so no write latency");
-        assert!(parse_iostat_illumos(IOSTAT_ILLUMOS, "c9t9d9").is_none() && parse_iostat_illumos("", "c1t1d0").is_none());
-    }
-
-    #[test]
-    fn linux_iostat_finds_its_columns_by_header_name_in_the_last_block() {
-        let (io, live) = parse_iostat_linux(IOSTAT_LINUX, "sda").unwrap();
-        assert_eq!((io.read_ops, io.write_ops, io.read_bps, io.write_bps), (2, 0, 16_384, 0));
-        assert_eq!((io.read_latency_ns, io.write_latency_ns), (Some(1_500_000), None));
-        assert_eq!((live.busy_percent, live.queue), (Some(12.5), Some(3)));
-        assert!(parse_iostat_linux(IOSTAT_LINUX, "sdb").is_none() && parse_iostat_linux("", "sda").is_none());
-    }
-
-    #[test]
-    fn each_os_gets_the_iostat_arguments_its_tool_accepts() {
-        let runner = FakeRunner::new("").route("iostat", "-xn", IOSTAT_ILLUMOS);
-        assert!(sample_disk(&runner, "c1t1d0", None, Some(HostOs::Illumos)).is_ok());
-        assert_eq!(runner.unprivileged_calls.lock().unwrap()[0].1, vec!["-xn", "1", "2"]);
-        let runner = FakeRunner::new("").route("iostat", "-dx", IOSTAT_LINUX);
-        assert!(sample_disk(&runner, "sda", None, Some(HostOs::Linux)).is_ok());
-        assert_eq!(runner.unprivileged_calls.lock().unwrap()[0].1, vec!["-dx", "1", "2"]);
+        assert!(sample_disk(&runner, "ada9", None).is_err());
+        assert!(sample_disk(&FakeRunner::failing("no iostat", 1), "ada0", None).is_err());
     }
 }

@@ -261,8 +261,8 @@ impl App {
                 let previous = self.shares_table.selected().and_then(|i| self.shares.get(i)).map(share_identity);
                 self.shares = snapshot.shares;
                 pin_selection(&mut self.shares_table, previous, &self.shares, share_identity);
-                self.nfs_available = Some(snapshot.nfs_available).filter(|_| !snapshot.nfs_unknown);
-                self.samba_available = Some(snapshot.samba_available).filter(|_| !snapshot.samba_unknown);
+                self.nfs_available = Some(snapshot.nfs_available);
+                self.samba_available = Some(snapshot.samba_available);
                 self.shares_loaded = true;
                 self.clear_status_after_refresh(quiet);
                 if let Some(e) = snapshot.smb_error {

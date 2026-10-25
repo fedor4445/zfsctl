@@ -45,7 +45,7 @@ fn the_sidebar_dims_unsupported_entries_for_the_selected_host() {
     let dim = app.theme.dim();
     let dimmed = |label: &str| style_of(label).0 == dim.fg.unwrap_or(ratatui::style::Color::Reset) && style_of(label).1.contains(dim.add_modifier | Modifier::empty());
     assert!(dimmed("Boot Envs"), "unsupported entries are dimmed");
-    assert!(!dimmed("Disks") && !dimmed("Shares") && !dimmed("Pools") && !dimmed("Jobs"), "supported ones are not");
+    assert!(dimmed("Disks") && dimmed("Shares") && !dimmed("Pools") && !dimmed("Jobs"), "the ones that need FreeBSD tools are dimmed too, the rest is not");
     app.selected_host = 0;
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let buf2 = terminal.backend().buffer().clone();

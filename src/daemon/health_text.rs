@@ -230,8 +230,7 @@ fn cut_list(mut lines: Vec<String>) -> Vec<String> {
 #[allow(clippy::too_many_arguments)]
 /// The daily report's lines for disks with a problem, from the daemon's `smart.json`: `fbsd16: da1 reallocated sectors 8 (checked ... UTC)`.
 pub fn disk_lines(file: &crate::daemon::smart_check::SmartFile, storage: &crate::daemon::storage_check::StorageFile) -> Vec<String> {
-    // The report does not know a host's OS, so a device name is matched by either OS's partition rule.
-    let role_of = |host: &str, dev: &str| crate::daemon::storage_check::role_of(storage, host, dev, None);
+    let role_of = |host: &str, dev: &str| crate::daemon::storage_check::role_of(storage, host, dev);
     crate::daemon::smart_check::problems_with(file, &role_of).iter().map(|p| format!("{}: {} (checked {})", p.host, p.disks, utc(p.checked_at))).collect()
 }
 
@@ -693,27 +692,27 @@ mod tests {
     }
 
     #[test]
-    fn the_daily_report_says_what_a_wearing_disk_is_for_when_the_storage_check_knows_on_any_os() {
+    fn the_daily_report_says_what_a_wearing_disk_is_for_when_the_storage_check_knows() {
         use crate::daemon::storage_check::{Integrity, StorageFile, StorageResult};
         use crate::zfs::pool_classes::{DeviceRole, PoolClasses};
         let disk = |dev: &str| crate::smart::Disk { dev: dev.into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "SSD wear 87%".into() }] };
         let mut smart = crate::daemon::smart_check::SmartFile::default();
-        smart.hosts.insert("ub24".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("nvme0n1"), disk("sdb")], error: None });
+                smart.hosts.insert("fbsd16t1".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("nvd0")], error: None });
         smart.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: t(0), disks: vec![disk("ada4")], error: None });
         let result = |device: &str, role: &str| StorageResult { checked_at: t(0), datasets: vec![], seen: vec![], pools: vec![PoolClasses { name: "tank".into(), roles: vec![DeviceRole { role: role.into(), device: device.into() }, DeviceRole { role: "cache".into(), device: "sdb1".into() }], ..PoolClasses::default() }], zfs_version: None, locked: vec![], integrity: Integrity::default(), integrity_stale: false, error: None };
         let mut storage = StorageFile::default();
-        storage.hosts.insert("ub24".into(), result("nvme0n1p1", "log"));
+        storage.hosts.insert("fbsd16t1".into(), result("nvd0p1", "log"));
         storage.hosts.insert("fbsd16".into(), result("ada4p1", "cache"));
         let lines = disk_lines(&smart, &storage);
         assert!(lines.iter().any(|l| l.starts_with("fbsd16: ada4 (cache of tank) SSD wear 87%")), "{lines:?}");
-        assert!(lines.iter().any(|l| l.starts_with("ub24: nvme0n1 (log of tank) SSD wear 87%; sdb (cache of tank) SSD wear 87%")), "Linux partition names (nvme0n1p1, sdb1) are matched too: {lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("fbsd16t1: nvd0 (log of tank) SSD wear 87%")), "{lines:?}");
     }
 
     #[test]
     fn the_daily_report_lists_the_share_problems_after_the_disk_ones() {
         let dir = tempfile::tempdir().unwrap();
         let mut shares = crate::daemon::shares_check::SharesFile::default();
-        shares.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: t(0), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None, nfs_name: None, smb_name: None });
+        shares.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: t(0), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None});
         shares.save(&dir.path().join("shares.json")).unwrap();
         let lines = check_lines(dir.path());
         assert_eq!(lines.len(), 1);

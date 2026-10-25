@@ -330,7 +330,7 @@ pub struct HostProbeState {
     pub kind: Option<crate::zfs::host_health::HostKind>,
     /// The detected operating system, kept once seen (it is read with the type, in the first successful probe).
     pub os: Option<crate::zfs::host_health::HostOs>,
-    /// The short name for the Hosts table (`Linux 6.8 (Ubuntu 24)`), read with the OS.
+    /// The short name for the Hosts table (`FreeBSD 16.0`), read with the OS.
     pub os_name: Option<String>,
     /// The last two resource readings, oldest first: the CPU share is the difference between them.
     pub resources: Vec<crate::zfs::host_resources::Resources>,
@@ -780,11 +780,6 @@ impl App {
         crate::ui::support::shares_editable(self.host_os(self.selected_host))
     }
 
-    /// Whether `key` of the Boot Envs section is offered for the selected host's OS (see `ui::support`).
-    pub fn bootenv_key_offered(&self, key: char) -> bool {
-        crate::ui::support::bootenv_key_offered(self.host_os(self.selected_host), key)
-    }
-
     pub fn current_section_supported(&self) -> bool {
         self.section_supported(self.current_section())
     }
@@ -846,8 +841,8 @@ impl App {
     /// Why the ACL tab cannot edit the selected dataset, from its `acltype` property (only trusted when the
     /// loaded properties belong to this very dataset).
     pub fn acl_unsupported(&self) -> Option<String> {
-        if let (false, Some(os)) = (self.section_supported(Section::DatasetAcl), self.host_os(self.selected_host)) {
-            return Some(crate::ui::support::unsupported_text(os, Section::DatasetAcl));
+        if !self.section_supported(Section::DatasetAcl) {
+            return Some(crate::ui::support::unsupported_text(Section::DatasetAcl));
         }
         let name = self.selected_dataset_name()?;
         if self.dataset_properties_for.as_deref() != Some(name.as_str()) {
@@ -984,15 +979,15 @@ impl App {
     /// clears it on submit) — this only executes the mutation itself.
     pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
         let PendingAction { host, section, call } = action;
-        // The keys already hold back what a host's OS cannot do; this is the last gate before a command is sent, so a path
-        // that forgot one (or a host whose OS has not been read yet) still sends nothing FreeBSD-specific.
+        // The last gate before a command is sent: zfsctl changes FreeBSD hosts only, so nothing is sent to a host that answered
+        // as something else, and the share changes (which use FreeBSD's own tools) also wait until the OS has been read.
         let os = self.host_os(host);
-        let refused = match &call {
-            MutationCall::SetSmbShare { .. } | MutationCall::RemoveSmbShare { .. } => !crate::ui::support::shares_editable(os),
-            _ => section == Section::BootEnvs && !crate::ui::support::supports(os, Section::BootEnvs),
-        };
+        let refused = os == Some(crate::zfs::host_health::HostOs::Other) || (matches!(&call, MutationCall::SetSmbShare { .. } | MutationCall::RemoveSmbShare { .. }) && !crate::ui::support::shares_editable(os));
         if refused {
-            self.status_message = Some(format!("Not sent: this is not supported on {} hosts{}.", os.map_or("unread", crate::zfs::host_health::HostOs::word), if os.is_none() { " (the host's OS has not been read yet)" } else { "" }));
+            self.status_message = Some(match os {
+                Some(_) => "Not sent: this host is not FreeBSD, and zfsctl does not change it.".to_string(),
+                None => "Not sent: the host's OS has not been read yet.".to_string(),
+            });
             return;
         }
         if let Some(note) = call.done_note() {
@@ -1005,7 +1000,7 @@ impl App {
         if section == Section::BootEnvs {
             self.bootenv_busy = Some((bootenv_call_name(&call).to_string(), Instant::now()));
         }
-        let (tx, os) = (self.tx.clone(), self.host_os(host));
+        let tx = self.tx.clone();
         std::thread::spawn(move || {
             // A restore's success text carries what the engine verified, so it travels with the plain result.
             let message = match call.restore_outcome(runner.as_ref()) {
@@ -1017,7 +1012,7 @@ impl App {
                     };
                     WorkerMsg::RestoreDone(host, Err(sentence), Err(e))
                 }
-                None => WorkerMsg::MutationDone(host, section, call.run_on(runner.as_ref(), os)),
+                None => WorkerMsg::MutationDone(host, section, call.run(runner.as_ref())),
             };
             let _ = tx.send(message);
         });
@@ -1087,7 +1082,7 @@ fn clamp_table_selection(state: &mut TableState, len: usize) {
 
 fn about_text() -> String {
     format!(
-        "{}\n\nzfsctl v{}\n\nA terminal UI for managing ZFS storage: a FreeBSD hub that manages FreeBSD, Linux and illumos hosts over ssh.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
+        "{}\n\nzfsctl v{}\n\nA terminal UI for managing ZFS storage on FreeBSD.\n\nBuilt in collaboration with Claude (Anthropic).\n\nPress any key to close.",
         crate::ui::logo::wordmark().join("\n"),
         env!("CARGO_PKG_VERSION")
     )

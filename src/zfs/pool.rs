@@ -238,14 +238,7 @@ pub fn parse_pool_scan_status(output: &str) -> Option<ScanStatus> {
 /// call avoids a second round-trip for a second `zpool status` call
 /// that would return the very same text.
 pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<(Vec<VdevLine>, Option<ScanStatus>)> {
-    get_pool_vdevs_with(runner, pool, false)
-}
-
-/// `get_pool_vdevs`, optionally with `-L` (OpenZFS on Linux): the vdevs named by their real paths instead of symlinks such
-/// as `/dev/disk/by-id/...`.
-pub fn get_pool_vdevs_with(runner: &dyn CommandRunner, pool: &str, real_paths: bool) -> Result<(Vec<VdevLine>, Option<ScanStatus>)> {
-    let args: &[&str] = if real_paths { &["status", "-L", "--", pool] } else { &["status", "--", pool] };
-    let output = super::run_checked(runner, "zpool", args, &format!("zpool status {pool}"))?;
+    let output = super::run_checked(runner, "zpool", &["status", "--", pool], &format!("zpool status {pool}"))?;
     Ok((parse_pool_status_vdevs(&output.stdout), parse_pool_scan_status(&output.stdout)))
 }
 

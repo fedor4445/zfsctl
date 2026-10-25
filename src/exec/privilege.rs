@@ -2,7 +2,6 @@
 //! This table is the one source for the generated sudoers line, the host check and the drift guards.
 
 use crate::error::{AppError, Result};
-use crate::zfs::host_health::HostOs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
@@ -15,8 +14,6 @@ pub enum Feature {
     Restic,
     Rclone,
     Smart,
-    /// `beadm`, the boot environment tool of illumos (FreeBSD's is `bootenvs`/`bectl`).
-    Beadm,
     /// A read-only `ls` of a snapshot's folders (names and metadata, never contents); off by default everywhere.
     Browse,
     /// A `cp` that never overwrites, so a file can be copied out of a snapshot to a new path; off by default everywhere.
@@ -24,7 +21,7 @@ pub enum Feature {
 }
 
 impl Feature {
-    pub const ALL: [Feature; 12] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart, Feature::Beadm, Feature::Browse, Feature::Restore];
+    pub const ALL: [Feature; 11] = [Feature::Core, Feature::Acl, Feature::Disks, Feature::BootEnvs, Feature::Shares, Feature::Samba, Feature::Restic, Feature::Rclone, Feature::Smart, Feature::Browse, Feature::Restore];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -37,19 +34,8 @@ impl Feature {
             Feature::Restic => "restic",
             Feature::Rclone => "rclone",
             Feature::Smart => "smart",
-            Feature::Beadm => "beadm",
             Feature::Browse => "browse",
             Feature::Restore => "restore",
-        }
-    }
-
-    /// Whether the feature's tools exist (and its jobs run) on a host running `os`. On Linux only `core` (`zpool`, `zfs`), `smart`
-    /// (`smartctl`), `browse` (`ls`) and `restore` (`cp`) do; illumos adds `beadm`.
-    pub fn works_on(self, os: HostOs) -> bool {
-        match os {
-            HostOs::Linux => matches!(self, Feature::Core | Feature::Smart | Feature::Browse | Feature::Restore),
-            HostOs::Illumos => matches!(self, Feature::Core | Feature::Smart | Feature::Beadm | Feature::Browse | Feature::Restore),
-            HostOs::FreeBsd | HostOs::Other => self != Feature::Beadm,
         }
     }
 
@@ -79,26 +65,14 @@ pub struct Entry {
 
 const ANY: Kind = Kind::Privileged { pinned: &[], probe: "" };
 const SMARTCTL: Kind = Kind::Privileged { pinned: &[&["--scan", "-j"], &["-j", "-H", "-A", "-i", "/dev/*"]], probe: "" };
-/// The forms of `ls` that `browse` allows (escaped, so one line is one entry: `-b` on FreeBSD and illumos, `-Q` on GNU), one trio per OS family (FreeBSD, Linux, illumos); Linux's long options take their value as a separate word because sudoers needs `=` escaped. Each ends in `--` and a
-/// path. That does not keep options out (sudo matches the words as one string, so words can be merged), but `ls` has no option that
-/// writes or runs anything; an `ls` form for another OS is simply never used on a host.
-const BROWSE_FORMS: &[&[&str]] = &[
-    &["-lAb", "-D", "%s", "--", "*"],
-    &["-lAbc", "-D", "%s", "--", "*"],
-    &["-lAbU", "-D", "%s", "--", "*"],
-    &["-lAQ", "--time-style", "+%s", "--", "*"],
-    &["-lAQ", "--time-style", "+%s", "--time", "ctime", "--", "*"],
-    &["-lAQ", "--time-style", "+%s", "--time", "birth", "--", "*"],
-    &["-lAbE", "--", "*"],
-    &["-lAbEc", "--", "*"],
-];
+/// The forms of `ls` that `browse` allows (escaped with `-b`, so one line is one entry): modified, changed and created time.
+/// Each ends in `--` and a path. That does not keep options out (sudo matches the words as one string, so words can be merged),
+/// but `ls` has no option that writes or runs anything.
+const BROWSE_FORMS: &[&[&str]] = &[&["-lAb", "-D", "%s", "--", "*"], &["-lAbc", "-D", "%s", "--", "*"], &["-lAbU", "-D", "%s", "--", "*"]];
 const LS: Kind = Kind::Privileged { pinned: BROWSE_FORMS, probe: "" };
-/// The forms of `cp` that `restore` allows, one per OS family (see `pinned_forms`): `-p` keeps times and modes (and, on FreeBSD as
-/// root, file flags and ACLs), `-n` never overwrites an existing file (FreeBSD, GNU and illumos all have it; GNU's `--update=none`
-/// would need an `=`, which sudoers makes us escape), then `--`, the source and the destination. The Linux form is first and adds
-/// GNU's `-T` (the destination is a file, never a directory to copy into); FreeBSD and illumos `cp` have no `-T`. sudo matches the
-/// words as one string, so it cannot confine the paths.
-const RESTORE_FORMS: &[&[&str]] = &[&["-p", "-n", "-T", "--", "*", "*"], &["-p", "-n", "--", "*", "*"]];
+/// The form of `cp` that `restore` allows: `-p` keeps times and modes (and, as root, file flags and ACLs), `-n` never overwrites an
+/// existing file, then `--`, the source and the destination. sudo matches the words as one string, so it cannot confine the paths.
+const RESTORE_FORMS: &[&[&str]] = &[&["-p", "-n", "--", "*", "*"]];
 const CP: Kind = Kind::Privileged { pinned: RESTORE_FORMS, probe: "" };
 const SMB_CONF: Kind = Kind::Privileged { pinned: &[&[crate::zfs::smb::CONF_PATH]], probe: "/etc/master.passwd" };
 
@@ -120,9 +94,6 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "smartctl", features: &[Feature::Smart], kind: SMARTCTL },
     Entry { name: "ls", features: &[Feature::Browse], kind: LS },
     Entry { name: "cp", features: &[Feature::Restore], kind: CP },
-    // illumos zones: which zone a dataset is given to, read without sudo (the browser reads such a dataset through the zone's root).
-    Entry { name: "zoneadm", features: &[Feature::Browse], kind: Kind::Unprivileged },
-    Entry { name: "zonecfg", features: &[Feature::Browse], kind: Kind::Unprivileged },
     Entry { name: "getent", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "uname", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "date", features: &[Feature::Core], kind: Kind::Unprivileged },
@@ -130,14 +101,6 @@ pub const ENTRIES: &[Entry] = &[
     Entry { name: "sysctl", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "swapinfo", features: &[Feature::Core], kind: Kind::Unprivileged },
     Entry { name: "iostat", features: &[Feature::Core], kind: Kind::Unprivileged },
-    Entry { name: "lsblk", features: &[Feature::Disks], kind: Kind::Unprivileged },
-    // File sharing service state on Linux (systemd) and illumos (SMF): read without sudo.
-    Entry { name: "systemctl", features: &[], kind: Kind::Unprivileged },
-    Entry { name: "svcs", features: &[], kind: Kind::Unprivileged },
-    // Without systemd the NFS and Samba servers are looked for in the process list.
-    Entry { name: "pgrep", features: &[], kind: Kind::Unprivileged },
-    // illumos boot environments (the list is read through `sh`, without sudo; changes need this entry).
-    Entry { name: "beadm", features: &[Feature::Beadm], kind: ANY },
     Entry { name: "showmount", features: &[Feature::Shares], kind: Kind::Unprivileged },
     Entry { name: "stat", features: &[Feature::Restic], kind: Kind::Unprivileged },
     Entry { name: "true", features: &[], kind: Kind::Unprivileged },
@@ -151,23 +114,12 @@ pub(crate) fn privileged_names() -> Vec<&'static str> {
     ENTRIES.iter().filter(|e| matches!(e.kind, Kind::Privileged { .. })).map(|e| e.name).collect()
 }
 
-/// The pinned argument lists of `entry` that a host running `os` needs. An entry with forms for several operating systems (`ls`:
-/// FreeBSD's `-D`, GNU's `--time-style`, illumos's `-E`) keeps only that OS's, in the order modified, changed, created; every
-/// other entry keeps all of its forms. An unknown OS gets FreeBSD's, as everywhere else.
-pub fn pinned_forms(entry: &Entry, os: HostOs) -> Vec<&'static [&'static str]> {
-    let Kind::Privileged { pinned, .. } = &entry.kind else { return Vec::new() };
-    if entry.name == "cp" {
-        return pinned.get(usize::from(os != HostOs::Linux)).copied().into_iter().collect();
+/// The pinned argument lists of `entry`: empty for an entry that allows any arguments (or runs without sudo).
+pub fn pinned_forms(entry: &Entry) -> Vec<&'static [&'static str]> {
+    match &entry.kind {
+        Kind::Privileged { pinned, .. } => pinned.to_vec(),
+        Kind::Unprivileged => Vec::new(),
     }
-    if entry.name != "ls" {
-        return pinned.to_vec();
-    }
-    let (first, count) = match os {
-        HostOs::Linux => (3, 3),
-        HostOs::Illumos => (6, 2),
-        HostOs::FreeBsd | HostOs::Other => (0, 3),
-    };
-    pinned.iter().skip(first).take(count).copied().collect()
 }
 
 /// Whole `cp` argument lists that `restore` must never be able to run: they overwrite (`-f`) or copy a tree (`-R`). `check-host`
@@ -205,32 +157,7 @@ pub fn require_registered(name: &str, privileged: bool) -> Result<()> {
     }
 }
 
-/// `select` for a host running `os`: FreeBSD (and a host whose OS is unknown) as before; Linux starts from `core` alone and
-/// illumos from `core` and `bootenvs`, because the other features run FreeBSD's tools (`geom`, `bectl`, `service`, ...) or belong to jobs those hosts
-/// cannot run yet. Adding a feature the OS does not support is an error that names it; `smart` is allowed everywhere.
-pub fn select_for_os(os: HostOs, with: &[String], without: &[String]) -> Result<Vec<Feature>> {
-    if !matches!(os, HostOs::Linux | HostOs::Illumos) {
-        let features = select(with, without)?;
-        if features.contains(&Feature::Beadm) {
-            return Err(AppError::Config(format!("feature 'beadm' is not available on {} hosts", os.word())));
-        }
-        return Ok(features);
-    }
-    let parse = |name: &String| Feature::parse(name).ok_or_else(|| AppError::Config(format!("unknown feature '{name}'; valid features: {}", Feature::ALL.map(Feature::name).join(", "))));
-    let added: Vec<Feature> = with.iter().map(parse).collect::<Result<_>>()?;
-    let removed: Vec<Feature> = without.iter().map(parse).collect::<Result<_>>()?;
-    if let Some(f) = added.iter().find(|f| !f.works_on(os)) {
-        return Err(AppError::Config(format!("feature '{}' is not available on {} hosts", f.name(), os.word())));
-    }
-    if let Some(f) = added.iter().find(|f| removed.contains(f)) {
-        return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
-    }
-    // illumos also takes `bootenvs` by default (`beadm`); everything else there is opt-in or not available.
-    let default = |f: &Feature| *f == Feature::Core || (os == HostOs::Illumos && *f == Feature::Beadm);
-    Ok(Feature::ALL.into_iter().filter(|f| f.works_on(os) && (default(f) || added.contains(f)) && !removed.contains(f)).collect())
-}
-
-/// The features a run covers: all but `restic`, `rclone`, `smart`, `browse`, `restore` and `beadm` (illumos's), plus `with`, minus `without`.
+/// The features a run covers: all but `restic`, `rclone`, `smart`, `browse` and `restore`, plus `with`, minus `without`.
 pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     let parse = |name: &String| {
         Feature::parse(name).ok_or_else(|| {
@@ -243,7 +170,7 @@ pub fn select(with: &[String], without: &[String]) -> Result<Vec<Feature>> {
     if let Some(f) = added.iter().find(|f| removed.contains(f)) {
         return Err(AppError::Config(format!("feature '{}' is both added and removed", f.name())));
     }
-    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart | Feature::Beadm | Feature::Browse | Feature::Restore) || added.contains(f)) && !removed.contains(f)).collect())
+    Ok(Feature::ALL.into_iter().filter(|f| (!matches!(*f, Feature::Restic | Feature::Rclone | Feature::Smart | Feature::Browse | Feature::Restore) || added.contains(f)) && !removed.contains(f)).collect())
 }
 
 fn serving(entry: &Entry, features: &[Feature]) -> bool {
@@ -344,65 +271,25 @@ mod tests {
     }
 
     #[test]
-    fn select_for_os_defaults_linux_and_illumos_to_core_only_and_keeps_the_freebsd_defaults() {
-        use crate::zfs::host_health::HostOs;
-        assert_eq!(select_for_os(HostOs::Linux, &[], &[]).unwrap(), [Feature::Core]);
-        assert_eq!(select_for_os(HostOs::Illumos, &[], &[]).unwrap(), [Feature::Core, Feature::Beadm], "illumos also gets beadm");
-        for os in [HostOs::FreeBsd, HostOs::Other] {
-            assert_eq!(select_for_os(os, &["restic".to_string()], &["acl".to_string()]).unwrap(), select(&["restic".to_string()], &["acl".to_string()]).unwrap(), "{os:?}");
-        }
-    }
-
-    #[test]
-    fn browse_is_a_known_feature_and_off_by_default_on_every_os() {
-        use crate::zfs::host_health::HostOs;
+    fn browse_is_a_known_feature_and_off_by_default() {
         let browse = ["browse".to_string()];
         assert!(!select(&[], &[]).unwrap().contains(&Feature::Browse));
         assert!(select(&browse, &[]).unwrap().contains(&Feature::Browse));
-        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other] {
-            assert!(!select_for_os(os, &[], &[]).unwrap().contains(&Feature::Browse), "{os:?} default");
-            assert!(select_for_os(os, &browse, &[]).unwrap().contains(&Feature::Browse), "{os:?} with browse");
-        }
-    }
-
-    #[test]
-    fn the_zone_tools_are_unprivileged_entries_of_the_browse_feature() {
-        for name in ["zoneadm", "zonecfg"] {
-            let e = lookup(name).unwrap();
-            assert_eq!(e.features, [Feature::Browse], "{name}");
-            assert!(matches!(e.kind, Kind::Unprivileged), "{name} must run without sudo");
-            assert!(is_registered_as(name, false) && !is_registered_as(name, true));
-        }
     }
 
     #[test]
     fn the_ls_forms_are_the_escaped_one_line_per_entry_ones() {
         let Some(Entry { kind: Kind::Privileged { pinned, .. }, .. }) = lookup("ls") else { panic!("no ls entry") };
         for form in *pinned {
-            let word = form[0];
-            let gnu = form.contains(&"--time-style");
-            assert!(if gnu { word.contains('Q') } else { word.contains('b') }, "{form:?} must escape names (-Q on GNU, -b elsewhere)");
+            assert!(form[0].contains('b'), "{form:?} must escape names (-b)");
         }
-    }
-
-    #[test]
-    fn the_ls_forms_follow_the_hosts_operating_system() {
-        use crate::zfs::host_health::HostOs;
-        let ls = lookup("ls").unwrap();
-        let forms = |os| pinned_forms(ls, os).iter().map(|f| f.join(" ")).collect::<Vec<_>>();
-        assert_eq!(forms(HostOs::FreeBsd), ["-lAb -D %s -- *", "-lAbc -D %s -- *", "-lAbU -D %s -- *"]);
-        assert_eq!(forms(HostOs::Other), forms(HostOs::FreeBsd));
-        assert_eq!(forms(HostOs::Linux), ["-lAQ --time-style +%s -- *", "-lAQ --time-style +%s --time ctime -- *", "-lAQ --time-style +%s --time birth -- *"]);
-        assert_eq!(forms(HostOs::Illumos), ["-lAbE -- *", "-lAbEc -- *"]);
-        let smartctl = lookup("smartctl").unwrap();
-        assert_eq!(pinned_forms(smartctl, HostOs::Linux).len(), 2, "every other entry keeps all of its forms");
     }
 
     #[test]
     fn the_ls_entry_is_privileged_and_only_pinned_forms_with_a_double_dash() {
         let Some(Entry { features, kind: Kind::Privileged { pinned, .. }, .. }) = lookup("ls") else { panic!("ls is not a privileged entry") };
         assert_eq!(*features, [Feature::Browse]);
-        assert_eq!(pinned.len(), 8);
+        assert_eq!(pinned.len(), 3);
         for form in *pinned {
             assert_eq!(form[form.len() - 2..], ["--", "*"], "{form:?}");
             for banned in ["-R", "-L", "-H", "-e", "-d"] {
@@ -412,30 +299,18 @@ mod tests {
     }
 
     #[test]
-    fn restore_is_a_known_feature_off_by_default_on_every_os() {
-        use crate::zfs::host_health::HostOs;
+    fn restore_is_a_known_feature_and_off_by_default() {
         let restore = ["restore".to_string()];
         assert!(!select(&[], &[]).unwrap().contains(&Feature::Restore));
         assert!(select(&restore, &[]).unwrap().contains(&Feature::Restore));
-        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other] {
-            assert!(!select_for_os(os, &[], &[]).unwrap().contains(&Feature::Restore), "{os:?} default");
-            assert!(select_for_os(os, &restore, &[]).unwrap().contains(&Feature::Restore), "{os:?} with restore");
-        }
     }
 
     #[test]
     fn the_cp_entry_is_privileged_and_its_forms_never_allow_overwriting() {
-        use crate::zfs::host_health::HostOs;
         let Some(Entry { features, kind: Kind::Privileged { pinned, .. }, .. }) = lookup("cp") else { panic!("cp is not a privileged entry") };
         assert_eq!(*features, [Feature::Restore]);
-        let cp = lookup("cp").unwrap();
-        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other] {
-            let forms = pinned_forms(cp, os);
-            assert_eq!(forms.len(), 1, "{os:?}");
-            let want = if os == HostOs::Linux { "-p -n -T -- * *" } else { "-p -n -- * *" };
-            assert_eq!(forms[0].join(" "), want, "{os:?}: GNU -T only on Linux");
-        }
-        assert_eq!(pinned.len(), 2);
+        assert_eq!(pinned_forms(lookup("cp").unwrap())[0].join(" "), "-p -n -- * *");
+        assert_eq!(pinned.len(), 1);
         for form in *pinned {
             for banned in ["-f", "-i", "-r", "-R", "-a", "-l", "-s", "-u"] {
                 assert!(!form.contains(&banned), "{form:?} contains {banned}");
@@ -443,21 +318,6 @@ mod tests {
             assert!(form.contains(&"-n"), "{form:?} needs the no-clobber word");
             assert_eq!(form[form.len() - 3..], ["--", "*", "*"], "{form:?}");
         }
-    }
-
-    #[test]
-    fn with_a_feature_the_os_does_not_support_is_refused_with_its_name_and_smart_is_allowed() {
-        use crate::zfs::host_health::HostOs;
-        for name in ["bootenvs", "disks", "acl", "shares", "samba", "restic", "rclone", "beadm"] {
-            let err = select_for_os(HostOs::Linux, &[name.to_string()], &[]).unwrap_err().to_string();
-            assert!(err.contains(name) && err.contains("Linux"), "{err}");
-        }
-        let err = select_for_os(HostOs::Illumos, &["bootenvs".to_string()], &[]).unwrap_err().to_string();
-        assert!(err.contains("bootenvs") && err.contains("illumos"), "bectl's feature is not an illumos one: {err}");
-        let err = select_for_os(HostOs::FreeBsd, &["beadm".to_string()], &[]).unwrap_err().to_string();
-        assert!(err.contains("beadm") && err.contains("FreeBSD"), "{err}");
-        assert_eq!(select_for_os(HostOs::Illumos, &["smart".to_string()], &[]).unwrap(), [Feature::Core, Feature::Smart, Feature::Beadm]);
-        assert!(select_for_os(HostOs::Linux, &["nope".to_string()], &[]).unwrap_err().to_string().contains("unknown feature"));
     }
 
     #[test]

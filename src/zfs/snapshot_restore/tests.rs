@@ -5,8 +5,8 @@
         ListEntry { name: name.into(), kind: EntryKind::File, mode: "-rw-r--r--".into(), owner: "alice".into(), group: "alice".into(), size: 1234, time: None, link_target: None, ambiguous: false }
     }
 
-    fn source(mountpoint: &str, folder: &[&str], name: &str, os: HostOs) -> RestoreSource {
-        RestoreSource { dataset: "tank/data".into(), snapshot: "daily-1".into(), mountpoint: mountpoint.into(), folder: folder.iter().map(ToString::to_string).collect(), entry: entry(name), zone: None, os }
+    fn source(mountpoint: &str, folder: &[&str], name: &str) -> RestoreSource {
+        RestoreSource { dataset: "tank/data".into(), snapshot: "daily-1".into(), mountpoint: mountpoint.into(), folder: folder.iter().map(ToString::to_string).collect(), entry: entry(name) }
     }
 
     fn msg<T: std::fmt::Debug>(r: Result<T>) -> String {
@@ -42,31 +42,28 @@
 
     #[test]
     fn refusals_are_plain_sentences() {
-        let mut s = source("/tank/data", &[], "a.txt", HostOs::FreeBsd);
-        s.zone = Some("z1".into());
-        assert_eq!(msg(plan_restore(&s, "b.txt")), "restore from a dataset given to a zone must be done inside the zone");
-        let mut s = source("/tank/data", &[], "a", HostOs::FreeBsd);
+        let mut s = source("/tank/data", &[], "a");
         s.entry.kind = EntryKind::Directory;
         assert_eq!(msg(plan_restore(&s, "b")), "only a regular file can be restored: this is a folder");
         s.entry.kind = EntryKind::Symlink;
         assert_eq!(msg(plan_restore(&s, "b")), "only a regular file can be restored: this is a symlink");
-        let mut s = source("/tank/data", &[], "a", HostOs::Illumos);
+        let mut s = source("/tank/data", &[], "a");
         s.entry.ambiguous = true;
-        assert_eq!(msg(plan_restore(&s, "b")), "this name cannot be told apart from an escape sequence on this host, so it is not restored");
+        assert_eq!(msg(plan_restore(&s, "b")), "this name cannot be told apart from an escape sequence, so it is not restored");
         let bad = "that name cannot be used: it has a control character, a slash, is empty or too long";
-        let s = source("/tank/data", &[], "a", HostOs::Linux);
+        let s = source("/tank/data", &[], "a");
         for n in ["", "x\ny", "x\u{1b}y", "a/b", "..", ".", "x\u{fffd}", &"n".repeat(256)] {
             assert_eq!(msg(plan_restore(&s, n)), bad, "{n:?}");
         }
-        assert_eq!(msg(plan_restore(&source("/tank/data", &[], "a\nb", HostOs::Linux), "c")), bad);
-        assert_eq!(msg(plan_restore(&source("/tank/data", &["ok", "b\u{7}d"], "a", HostOs::Linux), "c")), bad);
-        assert_eq!(msg(plan_restore(&source("/tank/data", &[".."], "a", HostOs::Linux), "c")), bad);
+        assert_eq!(msg(plan_restore(&source("/tank/data", &[], "a\nb"), "c")), bad);
+        assert_eq!(msg(plan_restore(&source("/tank/data", &["ok", "b\u{7}d"], "a"), "c")), bad);
+        assert_eq!(msg(plan_restore(&source("/tank/data", &[".."], "a"), "c")), bad);
         assert_eq!(msg(plan_restore(&s, "a")), "choose a different name: the restore never replaces the original");
     }
 
     #[test]
     fn a_destination_name_with_a_slash_or_dotdot_is_refused() {
-        let s = source("/tank/data", &[], "a", HostOs::FreeBsd);
+        let s = source("/tank/data", &[], "a");
         for n in ["../x", "x/..", "/etc/passwd", "..", "a/b"] {
             assert!(plan_restore(&s, n).is_err(), "{n}");
         }
@@ -74,13 +71,13 @@
 
     #[test]
     fn the_command_is_the_pinned_form_with_the_two_paths() {
-        for os in [HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos] {
-            let s = source("/tank/data", &["docs", "2024"], "photo.jpg", os);
+        {
+            let s = source("/tank/data", &["docs", "2024"], "photo.jpg");
             let plan = plan_restore(&s, "photo.restored-daily-1.jpg").unwrap();
-            let head: &[&str] = if os == HostOs::Linux { &["-p", "-n", "-T", "--"] } else { &["-p", "-n", "--"] };
+            let head: &[&str] = &["-p", "-n", "--"];
             let want: Vec<String> = head.iter().copied().chain(["/tank/data/.zfs/snapshot/daily-1/docs/2024/photo.jpg", "/tank/data/docs/2024/photo.restored-daily-1.jpg"]).map(ToString::to_string).collect();
-            assert_eq!(plan.command, want, "{os:?}");
-            let forms = pinned_forms(lookup("cp").unwrap(), os);
+            assert_eq!(plan.command, want);
+            let forms = pinned_forms(lookup("cp").unwrap());
             assert_eq!(forms.len(), 1);
             let form = forms[0];
             assert_eq!(&form[form.len() - 2..], &["*", "*"]);
@@ -95,7 +92,7 @@
 
     #[test]
     fn the_destination_is_in_the_live_tree_not_in_dot_zfs() {
-        let plan = plan_restore(&source("/tank/data", &["d"], "a.txt", HostOs::Linux), "b.txt").unwrap();
+        let plan = plan_restore(&source("/tank/data", &["d"], "a.txt"), "b.txt").unwrap();
         assert!(!plan.destination.contains(".zfs"));
         assert!(plan.source.contains("/.zfs/snapshot/daily-1/"));
         assert_eq!(plan.destination, "/tank/data/d/b.txt");
@@ -103,20 +100,20 @@
 
     #[test]
     fn a_root_mountpoint_has_no_extra_slash() {
-        let plan = plan_restore(&source("/", &["docs"], "x.jpg", HostOs::FreeBsd), "y.jpg").unwrap();
+        let plan = plan_restore(&source("/", &["docs"], "x.jpg"), "y.jpg").unwrap();
         assert_eq!(plan.destination, "/docs/x.jpg".replace("x.jpg", "y.jpg"));
         assert_eq!(plan.source, "/.zfs/snapshot/daily-1/docs/x.jpg");
         assert_eq!(plan.dest_folder, "/docs");
-        let top = plan_restore(&source("/", &[], "x.jpg", HostOs::FreeBsd), "y.jpg").unwrap();
+        let top = plan_restore(&source("/", &[], "x.jpg"), "y.jpg").unwrap();
         assert_eq!(top.destination, "/y.jpg");
         assert_eq!(top.dest_folder, "/");
     }
 
     #[test]
     fn unmounted_and_overlong_paths_are_refused() {
-        assert!(plan_restore(&source("legacy", &[], "a", HostOs::Linux), "b").is_err());
+        assert!(plan_restore(&source("legacy", &[], "a"), "b").is_err());
         let deep: Vec<String> = (0..20).map(|_| "d".repeat(250)).collect();
-        let mut s = source("/tank/data", &[], "a", HostOs::Linux);
+        let mut s = source("/tank/data", &[], "a");
         s.folder = deep;
         assert!(plan_restore(&s, "b").is_err());
     }
@@ -135,8 +132,6 @@
         CopyOtherMode,
         /// cp exits 0 and the new name shows up twice (a decoy that decodes to the same name).
         CopyTwice,
-        /// cp exits 0 and the new name shows up only in a form that cannot be decoded with certainty.
-        CopyAmbiguous,
         /// cp writes the new name, then dies with status 255 (a dropped ssh).
         FailPartial,
         /// cp copies and exits 0, but the listing then holds a line that cannot be read.
@@ -152,7 +147,6 @@
     }
 
     struct Fake {
-        os: HostOs,
         tables: Mutex<HashMap<String, Vec<Ent>>>,
         listed: Mutex<Vec<String>>,
         cps: Mutex<Vec<Vec<String>>>,
@@ -178,14 +172,11 @@
 
     impl Fake {
         fn new(mode: CpMode) -> Self {
-            Self::on(HostOs::FreeBsd, mode)
-        }
-        fn on(os: HostOs, mode: CpMode) -> Self {
             let mut t: HashMap<String, Vec<Ent>> = HashMap::new();
             t.insert("/tank/data/.zfs/snapshot/daily-1/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
             t.insert("/tank/data".into(), vec![ent("drwxr-xr-x", 2, "docs")]);
             t.insert("/tank/data/docs".into(), vec![ent("-rw-r--r--", 1234, "a.txt")]);
-            Self { os, tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false, fail_status: 1, normalization: Some("none".into()), children: Some(vec![]) }
+            Self { tables: Mutex::new(t), listed: Mutex::new(vec![]), cps: Mutex::new(vec![]), mode, stderr: String::new(), cancel_at_cp: None, cancel_at_list: None, huge: vec![], broken_after_cp: None, cp_errors: false, fail_status: 1, normalization: Some("none".into()), children: Some(vec![]) }
         }
         fn set(&self, dir: &str, lines: Vec<Ent>) {
             self.tables.lock().unwrap().insert(dir.into(), lines);
@@ -200,11 +191,7 @@
             out
         }
         fn render(&self, e: &Ent) -> String {
-            if self.os == HostOs::Illumos {
-                format!("{}  1 alice alice {} 2023-11-14 22:13:20.000000000 +0000 {}", e.0, e.1, e.2)
-            } else {
-                format!("{}  1 alice alice {} 1700000000 {}", e.0, e.1, e.2)
-            }
+            format!("{}  1 alice alice {} 1700000000 {}", e.0, e.1, e.2)
         }
     }
 
@@ -247,7 +234,6 @@
                     tables.get_mut(folder).unwrap().push(ent("-rw-r--r--", 1234, name));
                     tables.get_mut(folder).unwrap().push(ent("-rw-r--r--", 1234, name));
                 }
-                CpMode::CopyAmbiguous => tables.get_mut(folder).unwrap().push(ent("-rw-r--r--", 1234, &name.replace("txt", "\\164xt"))),
                 CpMode::CopyBigger => tables.get_mut(folder).unwrap().push(ent("-rw-r--r--", 99, name)),
                 CpMode::CopyOtherMode => tables.get_mut(folder).unwrap().push(ent("-rw-------", 1234, name)),
                 CpMode::Nothing => {}
@@ -298,7 +284,7 @@
     }
 
     fn pick() -> RestoreSource {
-        source("/tank/data", &["docs"], "a.txt", HostOs::FreeBsd)
+        source("/tank/data", &["docs"], "a.txt")
     }
 
     fn plan_for(src: &RestoreSource) -> RestorePlan {
@@ -508,19 +494,15 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
         let fake = Fake::new(CpMode::Copy);
         let c = AtomicBool::new(false);
         for d in ["tank", "/a//b", "/a/./b", "/a/../b", "/a/b/", "/a\nb", "/a\u{fffd}b", ""] {
-            assert!(read_live_folder(&fake, HostOs::FreeBsd, d, &BrowseLimits::default(), &c).is_err(), "{d:?}");
+            assert!(read_live_folder(&fake, d, &BrowseLimits::default(), &c).is_err(), "{d:?}");
         }
-        assert!(read_live_folder(&fake, HostOs::FreeBsd, "/", &BrowseLimits::default(), &c).is_ok());
+        assert!(read_live_folder(&fake, "/", &BrowseLimits::default(), &c).is_ok());
     }
 
     const TWICE: &str = "two entries in {} have the name {} once escapes are decoded, or one of them cannot be decoded with certainty, so the restore is refused";
 
     fn twice(folder: &str, name: &str) -> String {
         TWICE.replacen("{}", folder, 1).replacen("{}", name, 1)
-    }
-
-    fn illumos_pick() -> RestoreSource {
-        source("/tank/data", &["docs"], "a.txt", HostOs::Illumos)
     }
 
     fn go_on(fake: &Fake, src: &RestoreSource) -> Result<Restored> {
@@ -530,33 +512,24 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
     #[test]
     fn a_decoy_that_decodes_to_the_same_chain_name_is_refused_and_cp_never_runs() {
         // (a) a symlink called docs and a folder whose raw name is \144ocs (which decodes to docs).
-        let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
+        let fake = Fake::new(CpMode::Copy);
         fake.set("/tank/data", vec![ent("drwxr-xr-x", 2, "\\144ocs"), ent("lrwxrwxrwx", 9, "docs -> /etc")]);
-        assert_eq!(msg(go_on(&fake, &illumos_pick())), twice("/tank/data", "docs"));
+        assert_eq!(msg(go_on(&fake, &pick())), twice("/tank/data", "docs"));
         assert!(fake.cps.lock().unwrap().is_empty());
-        let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
+        let fake = Fake::new(CpMode::Copy);
         fake.set("/tank/data", vec![ent("lrwxrwxrwx", 9, "docs -> /etc"), ent("drwxr-xr-x", 2, "\\144ocs")]);
-        assert_eq!(msg(go_on(&fake, &illumos_pick())), twice("/tank/data", "docs"));
+        assert_eq!(msg(go_on(&fake, &pick())), twice("/tank/data", "docs"));
         assert!(fake.cps.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn a_single_ambiguous_chain_entry_is_refused() {
-        // (b)
-        let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
-        fake.set("/tank/data", vec![ent("drwxr-xr-x", 2, "\\144ocs")]);
-        assert_eq!(msg(go_on(&fake, &illumos_pick())), twice("/tank/data", "docs"));
-        assert!(fake.cps.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_duplicate_or_ambiguous_source_entry_is_refused() {
+    fn a_duplicate_source_entry_is_refused() {
         // (c)
         let snap = "/tank/data/.zfs/snapshot/daily-1/docs";
-        for rows in [vec![ent("-rw-r--r--", 1234, "a.txt"), ent("-rw-r--r--", 1234, "a.txt")], vec![ent("-rw-r--r--", 1234, "a.\\164xt")], vec![ent("-rw-r--r--", 1234, "a.txt"), ent("-rw-r--r--", 1234, "a.\\164xt")]] {
-            let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
+        for rows in [vec![ent("-rw-r--r--", 1234, "a.txt"), ent("-rw-r--r--", 1234, "a.txt")]] {
+            let fake = Fake::new(CpMode::Copy);
             fake.set(snap, rows);
-            assert_eq!(msg(go_on(&fake, &illumos_pick())), twice(snap, "a.txt"));
+            assert_eq!(msg(go_on(&fake, &pick())), twice(snap, "a.txt"));
             assert!(fake.cps.lock().unwrap().is_empty());
         }
     }
@@ -564,21 +537,19 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
     #[test]
     fn an_ambiguous_entry_with_the_new_name_makes_the_absence_check_refuse() {
         // (e)
-        let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
+        let fake = Fake::new(CpMode::Copy);
         fake.set("/tank/data/docs", vec![ent("-rw-r--r--", 1234, "a.txt"), ent("-rw-r--r--", 5, "a.restored-daily-1.\\164xt")]);
-        assert_eq!(msg(go_on(&fake, &illumos_pick())), "that name already exists in the folder: nothing was copied");
+        assert_eq!(msg(go_on(&fake, &pick())), "that name already exists in the folder: nothing was copied");
         assert!(fake.cps.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn a_duplicate_or_ambiguous_match_at_the_verify_step_is_not_verified() {
+    fn a_duplicate_match_at_the_verify_step_is_not_verified() {
         // (d) cp ran.
-        for mode in [CpMode::CopyTwice, CpMode::CopyAmbiguous] {
-            let fake = Fake::on(HostOs::Illumos, mode);
-            let m = msg(go_on(&fake, &illumos_pick()));
-            assert_eq!(m, format!("the copy ran (cp exited 0) but its result could not be checked: {}", twice("/tank/data/docs", "a.restored-daily-1.txt")));
-            assert_eq!(fake.cps.lock().unwrap().len(), 1);
-        }
+        let fake = Fake::new(CpMode::CopyTwice);
+        let m = msg(go_on(&fake, &pick()));
+        assert_eq!(m, format!("the copy ran (cp exited 0) but its result could not be checked: {}", twice("/tank/data/docs", "a.restored-daily-1.txt")));
+        assert_eq!(fake.cps.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -611,7 +582,7 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
         fake.set("/.zfs/snapshot/daily-1/docs", vec![ent("-rw-r--r--", 1234, "a.txt")]);
         fake.set("/", vec![ent("drwxr-xr-x", 2, "docs")]);
         fake.set("/docs", vec![ent("-rw-r--r--", 1234, "a.txt")]);
-        let src = source("/", &["docs"], "a.txt", HostOs::FreeBsd);
+        let src = source("/", &["docs"], "a.txt");
         let done = run_restore(&fake, "hub", &plan_for(&src), &src, &AtomicBool::new(false)).unwrap();
         assert_eq!(done.destination, "/docs/a.restored-daily-1.txt");
         assert_eq!(fake.directories(), vec!["<zfs get>", "/.zfs/snapshot/daily-1/docs", "/", "/docs", "<cp>", "/docs"]);
@@ -658,9 +629,9 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
 
     #[test]
     fn an_ambiguous_entry_that_differs_by_case_blocks_the_restore() {
-        let fake = Fake::on(HostOs::Illumos, CpMode::Copy);
+        let fake = Fake::new(CpMode::Copy);
         fake.set("/tank/data/docs", vec![ent("-rw-r--r--", 1234, "a.txt"), ent("drwxr-xr-x", 2, "A.RESTORED-DAILY-1.\\164xt")]);
-        assert_eq!(msg(go_on(&fake, &illumos_pick())), format!("{CASE}A.RESTORED-DAILY-1.txt"));
+        assert_eq!(msg(go_on(&fake, &pick())), format!("{CASE}A.RESTORED-DAILY-1.txt"));
         assert!(fake.cps.lock().unwrap().is_empty());
     }
 
@@ -721,24 +692,5 @@ fn a_cp_that_could_not_be_started_says_so_and_does_not_verify() {
             fake.normalization = value;
             assert_eq!(msg(go(&fake)), "could not read the dataset's name normalization, so the restore is refused");
             assert!(fake.cps.lock().unwrap().is_empty());
-        }
-    }
-
-    #[test]
-    fn a_backslash_in_the_new_name_is_refused_on_illumos_only() {
-        let msg_want = "a backslash in a name cannot be told apart from an escape sequence on this host, so choose another name";
-        assert_eq!(msg(plan_restore(&source("/tank/data", &[], "a.txt", HostOs::Illumos), "b\\n.txt")), msg_want);
-        for os in [HostOs::FreeBsd, HostOs::Linux] {
-            assert!(plan_restore(&source("/tank/data", &[], "a.txt", os), "b\\n.txt").is_ok(), "{os:?}");
-        }
-    }
-
-    #[test]
-    fn the_linux_plan_uses_t_and_the_others_do_not() {
-        let linux = plan_restore(&source("/tank/data", &[], "a.txt", HostOs::Linux), "b.txt").unwrap();
-        assert_eq!(linux.command[..4], ["-p", "-n", "-T", "--"]);
-        for os in [HostOs::FreeBsd, HostOs::Illumos, HostOs::Other] {
-            let plan = plan_restore(&source("/tank/data", &[], "a.txt", os), "b.txt").unwrap();
-            assert_eq!(plan.command[..3], ["-p", "-n", "--"], "{os:?}");
         }
     }
