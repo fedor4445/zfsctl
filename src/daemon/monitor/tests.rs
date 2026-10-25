@@ -876,3 +876,23 @@ fn when_every_host_is_quiet_nothing_is_judged_for_mail_at_all() {
     m.observe(t(0), local(0), &[host("a")], &[probed_ok("a")], &[], &[], &mut sink);
     assert!(m.unprotected.is_empty() && protection_mail(&sink).is_empty());
 }
+
+#[test]
+fn a_dataset_that_is_ignored_while_alerted_is_forgotten_silently_never_protected_again() {
+    let (mut m, dir) = guarding(EmailTiming::Immediate);
+    write_storage(&dir, &[("a", &["tank/x", "tank/x/child", "tank/y"])], week());
+    let hosts = [host("a")];
+    let mut sink = FakeSink::new();
+    for i in 0..2 {
+        m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+    }
+    assert_eq!(protection_mail(&sink).len(), 1);
+    let settings = toml::from_str::<crate::config::Config>("[protection]\nignore = [\"a:tank/x\"]\n").unwrap().protection_settings().0;
+    m.set_protection(ProtectionSettings { email: EmailTiming::Immediate, ..settings });
+    for i in 2..8 {
+        m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+    }
+    let mail = protection_mail(&sink);
+    assert_eq!(mail.len(), 1, "no 'protected again' for what was only ignored: {:?}", sink.sent);
+    assert!(m.unprotected.iter().all(|u| u.dataset == "tank/y"), "the dataset and its child are out of the list: {:?}", m.unprotected);
+}

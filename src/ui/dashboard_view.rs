@@ -319,6 +319,9 @@ fn component_lines(d: &Dashboard, selected: Option<usize>, width: usize, compact
         let marked = selected.is_some_and(|s| d.is_safety(s));
         let line = Line::styled(cut(&format!(" {} {glyph} {}{}", if marked { "▸" } else { " " }, label("", "safety  "), safety.text), width), level_style(theme, safety.level));
         lines.push(if marked { line.patch_style(theme.selected_row()) } else { line });
+        if !d.ignored.is_empty() {
+            lines.push(Line::styled(cut(&format!("     ignored by choice: {} (and everything below; Settings)", d.ignored.join(", ")), width), theme.dim()));
+        }
     }
     section(&mut lines, "DAEMON AND JOBS");
     lines.push(status_line(d.daemon.level, "daemon  ", &d.daemon.text, width, theme));
@@ -483,6 +486,18 @@ mod tests {
         assert!(head.contains("Load"), "{head}");
         let row = text.lines().find(|l| l.contains("web (3)")).unwrap();
         assert!(row.contains("0.05") || row.contains("0.1"), "the group's load is the highest of its hosts: {row}");
+    }
+
+    #[test]
+    fn the_datasets_left_out_on_purpose_are_named_under_the_data_safety_line() {
+        let mut app = mixed_app();
+        app.dashboard_protection = toml::from_str::<crate::config::Config>("[protection]\nignore = [\"local:zroot/tmp\"]\n").unwrap().protection_settings().0;
+        let d = app.dashboard();
+        let text = screen_lines(&d, None, 140, 40, "Sat", &app.theme).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("ignored by choice: local:zroot/tmp (and everything below; Settings)"), "{text}");
+        let plain = mixed_app();
+        let d = plain.dashboard();
+        assert!(!screen_lines(&d, None, 140, 40, "Sat", &plain.theme).iter().map(ToString::to_string).any(|l| l.contains("ignored by choice")));
     }
 
     #[test]

@@ -804,3 +804,34 @@ fn adding_a_new_job_never_replaces_one_with_the_same_id() {
     assert!(err.to_string().contains("already exists"), "{err}");
     assert_eq!(crate::jobs::load(&path).unwrap().iter().map(|j| j.dataset.clone().unwrap()).collect::<Vec<_>>(), ["tank/x"]);
 }
+
+#[test]
+fn i_stops_checking_the_marked_datasets_after_a_confirmation_that_counts_what_it_hides_and_keeps_earlier_entries() {
+    use crate::daemon::protection::Gap;
+    let (mut app, dir) = dash_app();
+    app.config_path = dir.path().join("config.toml");
+    std::fs::write(&app.config_path, "# mine\n[protection]\nignore = [\"local:old\"]\n").unwrap();
+    app.modal = Some(markable(vec![unprotected(Some(Gap::Missing), None, "tank/tmp"), unprotected(Some(Gap::Missing), None, "tank/tmp/a"), unprotected(Some(Gap::Missing), None, "tank/keep")]));
+    app.handle_modal_key(KeyCode::Char(' '));
+    app.handle_modal_key(KeyCode::Char('i'));
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.starts_with("Stop checking 1 dataset, and everything below it? This hides 2 of the datasets in this list."), "{prompt}");
+    assert!(prompt.contains("fbsd16:tank/tmp") && prompt.contains("Settings, Ignored datasets, undoes it"), "{prompt}");
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter applies");
+    action.call.run(&crate::exec::test_support::FakeRunner::new("")).unwrap();
+    let text = std::fs::read_to_string(&app.config_path).unwrap();
+    assert!(text.starts_with("# mine\n") && text.contains("local:old") && text.contains("fbsd16:tank/tmp"), "{text}");
+    let (settings, problems) = crate::config::Config::load(&app.config_path).unwrap().protection_settings();
+    assert!(problems.is_empty() && settings.is_ignored("fbsd16", "tank/tmp/a/b") && settings.is_ignored("local", "old") && !settings.is_ignored("fbsd16", "tank/keep"));
+}
+
+#[test]
+fn ignoring_what_is_already_ignored_says_so_and_changes_nothing() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.dashboard_protection = toml::from_str::<crate::config::Config>("[protection]\nignore = [\"fbsd16:tank\"]\n").unwrap().protection_settings().0;
+    app.modal = Some(markable(vec![unprotected(Some(Gap::Missing), None, "tank/a")]));
+    app.handle_modal_key(KeyCode::Char('i'));
+    assert!(matches!(app.modal, Some(Modal::Choose { .. })) && app.status_message.as_deref().is_some_and(|m| m.contains("already ignored")), "{:?}", app.status_message);
+}

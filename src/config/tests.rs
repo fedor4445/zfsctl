@@ -40,7 +40,7 @@ fn documented_keys_match_the_serialised_fields() {
         scrub_crit_days: Some(90),
         scrub_ignore: vec!["scratch".into()],
     };
-    let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), domains: Some(2.into()), recent: Some("normal".into()), email: Some("report".into()), not_a_table: false };
+    let protection = ProtectionConfig { level: Some("custom".into()), copies: Some(2.into()), online: Some(1.into()), domains: Some(2.into()), recent: Some("normal".into()), email: Some("report".into()), ignore: Some(toml::Value::Array(vec!["local:tank/tmp".into()])), not_a_table: false };
     let notify = NotifyConfig {
         mail_to: Some("a@b".into()),
         mail_command: Some("c".into()),
@@ -273,13 +273,13 @@ fn every_notify_key_parses_and_round_trips() {
 }
 
 fn prot(level: Option<&str>, copies: Option<u8>, online: Option<u8>, recent: Option<&str>, email: Option<&str>) -> ProtectionConfig {
-    ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), domains: None, recent: recent.map(Into::into), email: email.map(Into::into), not_a_table: false }
+    ProtectionConfig { level: level.map(Into::into), copies: copies.map(Into::into), online: online.map(Into::into), domains: None, recent: recent.map(Into::into), email: email.map(Into::into), ignore: None, not_a_table: false }
 }
 
 #[test]
 fn protection_defaults_are_basic_normal_immediate() {
     let s = ProtectionConfig::default().resolve().unwrap();
-    assert_eq!(s, ProtectionSettings { copies: 1, online: 0, domains: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
+    assert_eq!(s, ProtectionSettings { copies: 1, online: 0, domains: 1, tolerance: 2, email: EmailTiming::Immediate, ignore: Vec::new(), groups: GroupRules::default() });
     assert_eq!(s, ProtectionSettings::default());
     assert_eq!(Config::default().protection.resolve().unwrap(), s);
 }
@@ -343,7 +343,7 @@ fn a_wrong_type_in_protection_loads_and_resolve_names_the_key() {
     assert_eq!(resolved("[protection]\nemail = \"of\"\n").unwrap_err(), "[protection] email must be immediate, report or off");
     assert_eq!(resolved("[protection]\nemail = [\"off\"]\n").unwrap_err(), "[protection] email must be immediate, report or off");
     assert_eq!(resolved("protection = 5\n").unwrap_err(), "[protection] must be a table of keys (level, copies, online, domains, recent, email)");
-    assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, domains: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() });
+    assert_eq!(resolved("[protection]\nlevel = \"custom\"\ncopies = 2\nonline = 1\n").unwrap(), ProtectionSettings { copies: 2, online: 1, domains: 1, tolerance: 2, email: EmailTiming::Immediate, ignore: Vec::new(), groups: GroupRules::default() });
     assert_eq!(resolved("[protection]\nlevel = \"careful\"\ncopies = \"x\"\n").unwrap().copies, 3, "copies only counts under custom");
 }
 
@@ -855,4 +855,19 @@ fn a_host_without_a_block_or_hosts_written_by_hand_is_refused_and_the_file_is_un
 fn a_file_with_no_final_newline_gets_its_new_line_on_its_own_line() {
     let out = set_host_keys("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"", &names(&["a"]), &KeyUpdate::Keep, &KeyUpdate::Set("r".into())).unwrap();
     assert_eq!(out, "[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\nsite = \"r\"\n");
+}
+
+#[test]
+fn ignore_entries_are_host_and_dataset_a_bad_one_is_named_and_left_out_and_the_rest_stand() {
+    let cfg = |t: &str| toml::from_str::<Config>(t).unwrap().protection_settings();
+    let (s, problems) = cfg("[protection]\nignore = [\"local:zroot/tmp\", \"fbsd16:tank\", \"local:zroot/tmp\"]\n");
+    assert_eq!((s.ignored_names(), problems.is_empty()), (vec!["local:zroot/tmp".to_string(), "fbsd16:tank".to_string()], true), "a repeated entry counts once");
+    assert!(s.is_ignored("local", "zroot/tmp") && s.is_ignored("local", "zroot/tmp/a/b") && !s.is_ignored("local", "zroot/tmpx") && !s.is_ignored("fbsd16", "zroot/tmp") && !s.is_ignored("local", "zroot"));
+    let (s, problems) = cfg("[protection]\nignore = [\"nohost\", \":x\", \"a:../x\", \"a:ok\", 5]\n");
+    assert_eq!(s.ignored_names(), ["a:ok"]);
+    assert_eq!(problems.len(), 4, "{problems:?}");
+    assert!(problems[0].contains("'nohost' is not host:dataset"), "{problems:?}");
+    let (s, problems) = cfg("[protection]\nignore = \"local:tank\"\n");
+    assert!(s.ignore.is_empty() && problems[0].contains("must be a list"), "{problems:?}");
+    assert_eq!(protection_problem_line(&problems[0]), problems[0], "an ignore problem does not say 'judging at Basic'");
 }

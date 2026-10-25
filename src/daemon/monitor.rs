@@ -44,7 +44,7 @@ pub struct Judged<'a> {
 impl Judged<'_> {
     /// The daily report's section; `bad_since` gives the `(for ...)` of a dataset key (`host\tdataset`) when known.
     pub fn section(&self, bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, now: DateTime<Utc>) -> ProtectionSection {
-        ProtectionSection { lines: protection_lines(&self.found, bad_since, now), judged: self.known.len(), unchecked: self.unchecked.clone(), safety: Vec::new() }
+        ProtectionSection { lines: protection_lines(&self.found, bad_since, now), judged: self.known.len(), unchecked: self.unchecked.clone(), safety: Vec::new(), ignored: Vec::new() }
     }
 }
 
@@ -340,7 +340,7 @@ impl Monitor {
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
             let since = self.last_report_at.unwrap_or(now - chrono::Duration::hours(24));
-            let protection = (!self.protection_quiet(&rows)).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.unprotected_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone(), safety: super::safety::report_lines(jobs, runs, &self.protection_settings, now) });
+            let protection = (!self.protection_quiet(&rows)).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.unprotected_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone(), safety: super::safety::report_lines(jobs, runs, &self.protection_settings, now), ignored: self.protection_settings.ignored_names() });
             let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_ref());
             if sink.send(&msg) {
                 self.last_report_at = Some(now);
@@ -425,6 +425,10 @@ impl Monitor {
             let Some((host, dataset)) = key.split_once('\t') else { continue };
             // A host whose group is no longer mailed at once is forgotten without a word: that is not a recovery.
             if !configured.contains(host) || self.protection_settings.for_host(host).email != EmailTiming::Immediate {
+                continue;
+            }
+            // A dataset the operator told the check to leave out is forgotten without a word: it is not protected again.
+            if self.protection_settings.is_ignored(host, dataset) {
                 continue;
             }
             if !known.contains(host) {

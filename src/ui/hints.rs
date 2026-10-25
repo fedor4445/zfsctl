@@ -86,7 +86,7 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
             };
             let mut v = vec![h("↑/↓", "Move", 0), h("Enter", what, 0)];
             if matches!(then, crate::ui::modal::ChooseThen::Unprotected(_)) {
-                v.extend([h("Space", "Mark", 1), h("a", "Mark host", 2), h("s", "Snapshot jobs", 1)]);
+                v.extend([h("Space", "Mark", 1), h("a", "Mark host", 2), h("s", "Snapshot jobs", 1), h("i", "Ignore", 2)]);
             }
             v.push(h("Esc", "Close", 0));
             v

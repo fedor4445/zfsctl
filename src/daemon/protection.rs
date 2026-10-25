@@ -274,6 +274,9 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
         }
         for seen in &result.seen {
             let dataset = seen.name.as_str();
+            if settings.is_ignored(host, dataset) {
+                continue;
+            }
             // A missing or future creation time counts as old.
             if seen.created.and_then(|c| DateTime::from_timestamp(c, 0)).is_some_and(|created| created <= now && now - created < GRACE) {
                 continue;
@@ -1070,5 +1073,14 @@ mod tests {
         repl.recursive = true;
         assert!(covers(&repl, "local", "tank/data"));
         assert!(!covers(&repl, "local", "tank/data/child"), "the daemon never reads recursive for replication");
+    }
+
+    #[test]
+    fn an_ignored_dataset_and_everything_below_it_are_left_out_but_a_sibling_with_a_longer_name_is_not() {
+        let file = storage(&[("a", &["tank/tmp", "tank/tmp/x", "tank/tmpfile", "tank/keep"]), ("b", &["tank/tmp"])]);
+        let settings = grouped("[protection]\nignore = [\"a:tank/tmp\"]\n");
+        let found = judge(&file, &[], &[], &settings, now());
+        assert_eq!(places(&found), ["a:tank/keep", "a:tank/tmpfile", "b:tank/tmp"], "only a's tank/tmp and its child are out; b has its own tank/tmp");
+        assert!(judge(&file, &[], &[], &grouped(""), now()).len() == 5, "without the entry all five are listed");
     }
 }
