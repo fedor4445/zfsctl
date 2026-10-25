@@ -8,7 +8,7 @@ zfsctl and this book were written by fedor4445 in collaboration with Claude, an 
 
 ## Who this is for
 
-You run ZFS on FreeBSD, Linux or illumos, on one machine or several. The book assumes you can use a terminal and install a package. FreeBSD-specific parts (`rc.conf`, `geom`, `bectl`, `pkg`) are explained where they come up.
+You run ZFS on FreeBSD, on one machine or several. The book assumes you can use a terminal and install a package. FreeBSD-specific parts (`rc.conf`, `geom`, `bectl`, `pkg`) are explained where they come up.
 
 ## How to read it
 

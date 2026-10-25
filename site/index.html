@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zfsctl: ZFS management in your terminal</title>
-<meta name="description" content="zfsctl is a terminal UI and daemon for managing ZFS pools, datasets, snapshots, replication and backups on FreeBSD, Linux and illumos.">
+<meta name="description" content="zfsctl is a terminal UI and daemon for managing ZFS pools, datasets, snapshots, replication and backups on FreeBSD.">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <main>
-<div class="bar"><span><b>zfsctl</b> 0.2 · in development</span><span>BSD-2-Clause · FreeBSD · Linux · illumos</span></div>
+<div class="bar"><span><b>zfsctl</b> 0.2 · in development</span><span>BSD-2-Clause · FreeBSD</span></div>
 <nav><a href="book/index.html">book</a><a href="book/04-installing.html">install</a><a href="book/18-safety.html">safety</a><a href="book/20-reference-keys.html">keys</a></nav>
 
 <h1 class="prompt cursor">zfsctl</h1>
@@ -33,8 +33,6 @@
   fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.38  6 d ago   0
   fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.22  6 d ago   0
   fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.53  6 d ago   0
-  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.23  6 d ago   0
-  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     83.7%   ?                0.04  6 d ago   0
 
  DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
    ● daemon  running (pid 13609), heartbeat 1s ago
@@ -47,7 +45,7 @@
    ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 
  ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   ● monitor on · last alert ub24 2 datasets not protected (17m ago) · report 2026-10-24
+   ● monitor on · report 2026-10-24
 </pre>
 
 <h2 data-rule="──────────────────────────────">what it does</h2>
@@ -58,7 +56,7 @@
 <li>Alerts and a daily report by mail or hook, and a Dashboard that shows what needs attention first.</li>
 <li>A protection check: every dataset needs snapshots and a copy on another machine, or it is flagged on the Dashboard and by mail, with the form that fixes it one keystroke away.</li>
 <li>Every change asks twice (<code>y</code>, then <code>Enter</code>); what cannot be undone makes you type the name.</li>
-<li>Hosts run FreeBSD, Linux or illumos. Root only through a sudoers file you read first (<code>zfsctl print-sudoers</code>).</li>
+<li>Hosts are FreeBSD machines. Root only through a sudoers file you read first (<code>zfsctl print-sudoers</code>).</li>
 </ul>
 
 <h2 data-rule="──────────────────────────────">install</h2>
@@ -80,8 +78,6 @@ sudo zfsctl</pre>
 <p>zfsctl drives other people's work and bundles none of it:
 <a href="https://openzfs.org/">OpenZFS</a>,
 <a href="https://www.freebsd.org/">FreeBSD</a>,
-<a href="https://illumos.org/">illumos</a> (tested on <a href="https://omnios.org/">OmniOS</a>),
-<a href="https://www.kernel.org/">Linux</a>,
 <a href="https://www.rust-lang.org/">Rust</a>,
 <a href="https://ratatui.rs/">ratatui</a>,
 <a href="https://restic.net/">restic</a> and <a href="https://rclone.org/">rclone</a>. With thanks to all their authors.</p>
