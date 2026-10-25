@@ -5,6 +5,7 @@ use super::forms::{
     build_create_encrypted, build_key_action, irreversible_prompt,
 };
 use super::{App, Instant, Modal, MutationCall, PaneFocus, PendingAction, Section, Wanted};
+use std::fmt::Write as _;
 use crate::ui::modal::{ChooseLook, ChooseThen, FormField, FormKind};
 use crate::ui::picker::build_picker_state;
 use crossterm::event::KeyCode;
@@ -77,8 +78,42 @@ impl App {
     /// A list to choose from: the arrows move, Esc closes, Enter acts on the row, and every other key does nothing.
     fn choose_key(&mut self, key: KeyCode, parts: ChooseParts) -> Option<PendingAction> {
         const PAGE: usize = 10;
-        let ChooseParts { title, note, rows, selected, then, look } = parts;
+        let ChooseParts { title, note, rows, selected, then, mut look } = parts;
         let last = rows.len().saturating_sub(1);
+        if !look.marked.is_empty() {
+            if let ChooseThen::Unprotected(gaps) = &then {
+                match key {
+                    KeyCode::Char(' ') => {
+                        if let Some(flag) = look.marked.get_mut(selected) {
+                            *flag = !*flag;
+                        }
+                        self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
+                        return None;
+                    }
+                    // Every row of the selected row's host that lacks a snapshot job: marked, or all unmarked when they all are.
+                    KeyCode::Char('a') => {
+                        if let Some(host) = gaps.get(selected).map(|g| g.host.clone()) {
+                            let wanted: Vec<usize> = gaps.iter().enumerate().filter(|(_, g)| g.host == host && g.snapshots == Some(crate::daemon::protection::Gap::Missing)).map(|(i, _)| i).collect();
+                            let all = wanted.iter().all(|i| look.marked.get(*i) == Some(&true));
+                            for i in wanted {
+                                if let Some(flag) = look.marked.get_mut(i) {
+                                    *flag = !all;
+                                }
+                            }
+                        }
+                        self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
+                        return None;
+                    }
+                    KeyCode::Char('s') => {
+                        let picked: Vec<usize> = if look.marked.iter().any(|m| *m) { look.marked.iter().enumerate().filter(|(_, m)| **m).map(|(i, _)| i).collect() } else { vec![selected] };
+                        let back = Modal::Choose { title, note, rows, selected, then: then.clone(), look };
+                        self.confirm_batch_snapshot_jobs(gaps, &picked, back);
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+        }
         let selected = match key {
             KeyCode::Esc => return None,
             KeyCode::Enter => {
@@ -95,6 +130,61 @@ impl App {
         };
         self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
         None
+    }
+
+    /// `s` in the unprotected list: one snapshot job (hourly, prefix auto, newest 24 kept) for each picked dataset that has no
+    /// snapshot job at all, after one confirmation that names them and says what was left out and why. Declining returns to
+    /// the list with the marks.
+    fn confirm_batch_snapshot_jobs(&mut self, gaps: &[crate::daemon::protection::Unprotected], picked: &[usize], back: Modal) {
+        use crate::daemon::protection::Gap;
+        let now = chrono::Utc::now();
+        let mut taken: Vec<String> = self.jobs_view.jobs.iter().map(|j| j.id.clone()).collect();
+        let (mut made, mut skipped): (Vec<crate::jobs::Job>, Vec<String>) = (Vec::new(), Vec::new());
+        for gap in picked.iter().filter_map(|i| gaps.get(*i)) {
+            let name = format!("{}:{}", gap.host, gap.dataset);
+            if gap.snapshots != Some(Gap::Missing) {
+                skipped.push(format!("{name} (snapshots are not what it lacks)"));
+            } else if !self.hosts.contains(&gap.host) || !crate::jobs::valid_dataset(&gap.dataset) {
+                skipped.push(format!("{name} (not a name a job can use)"));
+            } else if !matches!(crate::daemon::protection::fix_for(gap, &self.jobs_view.jobs), crate::daemon::protection::Fix::NewSnapshotJob) {
+                skipped.push(format!("{name} (it has a job: see Jobs)"));
+            } else {
+                let job = crate::ui::jobs::default_snapshot_job(&gap.host, &gap.dataset, &taken, now);
+                let all: Vec<crate::jobs::Job> = self.jobs_view.jobs.iter().chain(&made).cloned().collect();
+                if let Some(other) = crate::jobs::clashing_job(&all, &job) {
+                    skipped.push(format!("{name} (job '{}' already uses the prefix)", other.id));
+                } else {
+                    taken.push(job.id.clone());
+                    made.push(job);
+                }
+            }
+        }
+        if made.is_empty() {
+            self.set_error(if skipped.is_empty() { "Nothing is marked".to_string() } else { format!("No snapshot job to create: {}", skipped.join("; ")) });
+            self.modal = Some(back);
+            return;
+        }
+        let list = |items: Vec<String>| {
+            let more = items.len().saturating_sub(8);
+            let mut shown: Vec<String> = items.into_iter().take(8).map(|i| format!("  {i}")).collect();
+            if more > 0 {
+                shown.push(format!("  and {more} more"));
+            }
+            shown.join("\n")
+        };
+        let mut prompt = format!(
+            "Create {} snapshot job{}? Each: every hour, prefix auto, newest 24 kept, caught up after downtime; snapshots only, nothing is destroyed but older auto snapshots of that job.\n{}",
+            made.len(),
+            if made.len() == 1 { "" } else { "s" },
+            list(made.iter().map(|j| format!("{}:{}", j.host, j.dataset.as_deref().unwrap_or(""))).collect())
+        );
+        if !skipped.is_empty() {
+            let _ = write!(prompt, "\nLeft out ({}):\n{}", skipped.len(), list(skipped));
+        }
+        prompt.push_str("\n(y/n)");
+        let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Jobs, call: MutationCall::SaveJobs { state_dir: self.state_dir.clone(), jobs: made } };
+        self.confirm_restore = Some((prompt.clone(), back));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
     }
 
     /// The fix for one unprotected dataset: open the form that makes the missing job, ask which kind of copy, or go to the

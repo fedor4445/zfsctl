@@ -26,7 +26,7 @@ fn the_help_screens_section_titles_use_the_header_style_and_its_keys_do_not() {
 fn a_choose_list_draws_host_headings_in_the_header_style_and_rows_in_their_level_colour() {
     use crate::ui::dashboard::Level;
     let mut app = App::new(vec!["local".to_string()]);
-    let look = crate::ui::modal::ChooseLook { heads: vec![(0, "alphahost  (2 datasets)".into()), (2, "betahost  (1 dataset)".into())], levels: vec![Level::Issue, Level::Watch, Level::Issue] };
+    let look = crate::ui::modal::ChooseLook { heads: vec![(0, "alphahost  (2 datasets)".into()), (2, "betahost  (1 dataset)".into())], levels: vec![Level::Issue, Level::Watch, Level::Issue], marked: vec![] };
     let rows = vec!["issue  tank/one  no snapshots".to_string(), "watch  zroot/var  no copy".to_string(), "issue  tank/two  no snapshots".to_string()];
     app.modal = Some(Modal::Choose { title: "Unprotected data".into(), note: "3 datasets".into(), rows, selected: 2, then: crate::ui::modal::ChooseThen::Copy { host: "h".into(), dataset: "d".into() }, look });
     let buf = render_buffer(&mut app, 100, 24);

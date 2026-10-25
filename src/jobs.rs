@@ -501,6 +501,17 @@ fn no_such_job(id: &str) -> AppError {
     AppError::Config(format!("no job '{id}'"))
 }
 
+/// Adds `job` as a new job: refused when a job with its id exists (it would be replaced), so a batch never overwrites.
+pub fn add_new(path: &Path, job: Job) -> Result<()> {
+    edit(path, |list| {
+        if list.iter().any(|j| j.id == job.id) {
+            return Err(AppError::Config(format!("job '{}' already exists", job.id)));
+        }
+        list.push(job);
+        Ok(())
+    })
+}
+
 /// Adds `job`, or replaces the job with the same id in place.
 pub fn upsert(path: &Path, job: Job) -> Result<()> {
     edit(path, |list| {
