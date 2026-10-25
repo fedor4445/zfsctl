@@ -59,26 +59,28 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 21:59                                                                                                  ✖ 4 issues
+┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 23:11                                                                                                  ✖ 4 issues
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ✖ issue fbsd16:zroot      no copy job
 │Datasets              │   ✖ issue fbsd16:zroot/ho…  no copy job
-│Snapshots             │   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
-│Disks                 │   ✖ issue protection        and 121 more not protected (64 of your data)
+│Snapshots             │   ✖ issue fbsd16:zroot/ho…  no copy job
+│Disks                 │   ✖ issue protection        and 88 more not protected (64 of your data)
 │Shares                │
 │Boot Envs             │ GROUPS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Jobs                  │  Group         State       Pools  Capacity             Memory             CPU              Load  Scrub    Errors
-│Cloud                 │  illumos (1)   ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.02  7 d ago  0
-│Alerts                │  linux (1)     ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      ?                0.00  6 d ago  0
-│Settings              │  (no tag) (4)  ● ok        8      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 28%     ?                0.46  6 d ago  0
+│Jobs                  │  Group         State       Pools  Capacity             Memory             CPU              Load  Scrub     Errors
+│Cloud                 │  freebsd (3)   ● ok        5      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 28%     ?                0.76  7 d ago   0
+│Alerts                │  illumos (1)   ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.04  7 d ago   0
+│Settings              │  linux (1)     ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      ?                0.00  7 d ago   0
+│                      │  (no tag) (1)  ● ok        3      ━━━━━╌╌╌╌╌ 45%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.16  16 d ago  0
 │                      │
 │                      │ DATA SAFETY ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 29 min · 1 data set has copies
+│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 41 min · 1 data set has copies
+│                      │     ignored by choice: local:zroot/ROOT, local:zroot/ROOT/default, local:zroot/tmp, local:zroot/usr/ports, local:zroot/usr/src, local:zroo…
 │                      │
 │                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 39561), heartbeat 1s ago
-│                      │   ● jobs    scrub 2/2 ok  snapshot 5/5 ok  replicate 1/1 ok
+│                      │   ● daemon  running (pid 45678), heartbeat 1s ago
+│                      │   ● jobs    scrub 2/2 ok  snapshot 82/82 ok  replicate 1/1 ok
 │                      │
 │                      │ CLOUD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
@@ -87,9 +89,7 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 │                      │
 │                      │ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert ub24 2 datasets not protected (1h ago) · report 2026-10-24
-│                      │
-│                      │
+│                      │   ● monitor on · last alert ub24 2 datasets not protected (2h ago) · report 2026-10-24
 │                      │
 │                      │
 │                      │
@@ -264,6 +264,7 @@ The last section of the sidebar edits the parts of `config.toml` that no other s
 │                      ││  Level                    basic   (default)                              │
 │                      ││  Failure domains (1 to 3) 1   (default)                                  │
 │                      ││  How recent (strict, normal, relaxed) normal   (default)                 │
+│                      ││  Ignored datasets         local:zroot/ROOT, local:zroot/ROOT/default, lo…│
 │                      ││  Email (immediate, report, off) report                                   │
 │                      ││                                                                          │
 │                      ││Cloud caps                                                                │

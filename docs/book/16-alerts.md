@@ -47,7 +47,7 @@ DATA SAFETY
 ## The Alerts screen
 
 ```screen
-┌zfsctl────────────────┐┌Alerts — daemon running (pid 39561)───────────────────────────────────────────────────────────┐
+┌zfsctl────────────────┐┌Alerts — daemon running (pid 45678)───────────────────────────────────────────────────────────┐
 │Dashboard             ││Settings (config.toml)                                                                        │
 │Hosts                 ││Email to       you@example.com                                                             │
 │Pools                 ││Mail command   msmtp -a default -t                                                            │
@@ -61,6 +61,10 @@ DATA SAFETY
 │Alerts                ││Last report sent 2026-10-24                                                                   │
 │Settings              ││                                                                                              │
 │                      ││Recent events                                                                                 │
+│                      ││10-24 23:07  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-24 22:45  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-24 22:20  fb  daemon-started  zfsctl daemon started                                        │
+│                      ││10-24 22:05  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 21:55  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 21:06  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 20:38  fb  daemon-started  zfsctl daemon started                                        │
@@ -72,10 +76,6 @@ DATA SAFETY
 │                      ││10-24 20:35  fbsd16  alert  4 datasets not protected                                          │
 │                      ││10-24 20:30  fb  daemon-started  zfsctl daemon started                                        │
 │                      ││10-24 19:15  ub24  alert  2 datasets not protected                                            │
-│                      ││10-24 19:15  omnios  alert  40 datasets not protected                                         │
-│                      ││10-24 19:15  local  alert  11 datasets not protected                                          │
-│                      ││10-24 19:15  fbsd16t2  alert  5 datasets not protected                                        │
-│                      ││10-24 19:15  fbsd16t1  alert  6 datasets not protected                                        │
 │                      ││                                                                                              │
 │                      ││                                                                                              │
 │                      ││                                                                                              │
