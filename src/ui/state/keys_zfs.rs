@@ -129,7 +129,7 @@ impl App {
                     title: "Create Pool".to_string(),
                     fields: vec![
                         FormField { label: "Name".to_string(), value: String::new() },
-                        FormField { label: "Vdev spec (e.g. mirror da0 da1)".to_string(), value: String::new() },
+                        FormField { label: "Vdev spec (e.g. mirror da0 da1, or -o ashift=12 mirror da0 da1)".to_string(), value: String::new() },
                     ],
                     focused: 0,
                     description: None,

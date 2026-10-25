@@ -248,15 +248,47 @@ pub fn get_pool_vdevs(runner: &dyn CommandRunner, pool: &str) -> Result<(Vec<Vde
 /// inventory feature not built yet, so it is out of scope here — this
 /// function takes an already-built spec.
 pub fn create_pool(runner: &dyn CommandRunner, name: &str, vdev_spec: &[&str]) -> Result<()> {
-    let mut args = vec!["create", "--", name];
-    args.extend_from_slice(vdev_spec);
-    super::run_checked(
-        runner,
-        "zpool",
-        &args,
-        &format!("zpool create {name} {}", vdev_spec.join(" ")),
-    )?;
+    check_create_options(vdev_spec).map_err(crate::error::AppError::Config)?;
+    let (flags, rest) = split_leading_flags(vdev_spec);
+    let mut args = vec!["create"];
+    args.extend_from_slice(flags);
+    args.extend(["--", name]);
+    args.extend_from_slice(rest);
+    super::run_checked(runner, "zpool", &args, &create_command_text(name, vdev_spec))?;
     Ok(())
+}
+
+/// What may come before the vdevs of a new pool: only `-o PROPERTY=VALUE` (a pool property such as `ashift=12`) and
+/// `-O PROPERTY=VALUE` (a property of the pool's root dataset). Every other flag is refused: `-f` would overwrite disks that
+/// belong to another pool, `-n` would make the command do nothing, and `-R`, `-m` and the rest change where the pool lives.
+pub fn check_create_options(spec: &[&str]) -> std::result::Result<(), String> {
+    let (flags, rest) = split_leading_flags(spec);
+    let mut words = flags.iter();
+    while let Some(word) = words.next() {
+        match *word {
+            "-o" | "-O" => {
+                let ok = words.next().is_some_and(|v| v.split_once('=').is_some_and(|(k, val)| !k.is_empty() && !val.is_empty() && !val.starts_with('-')));
+                if !ok {
+                    return Err(format!("{word} needs PROPERTY=VALUE, for example {word} ashift=12"));
+                }
+            }
+            other => return Err(format!("Only -o and -O options may come before the disks (not {other}); use the shell for anything else")),
+        }
+    }
+    if rest.is_empty() {
+        return Err("Name the disks (for example mirror da0 da1) after the options".to_string());
+    }
+    Ok(())
+}
+
+/// The `zpool create` command as a person would type it: the options, the name, then the vdevs.
+pub fn create_command_text(name: &str, spec: &[&str]) -> String {
+    let (flags, rest) = split_leading_flags(spec);
+    let mut words = vec!["zpool", "create"];
+    words.extend_from_slice(flags);
+    words.push(name);
+    words.extend_from_slice(rest);
+    words.join(" ")
 }
 
 /// Splits a raw vdev spec into the options typed before the vdevs (`-f`, `-o ashift=12`) and the vdevs themselves: the options
@@ -650,6 +682,25 @@ errors: No known data errors
             calls[0],
             ("zpool".to_string(), vec!["create".to_string(), "--".to_string(), "tank".to_string(), "mirror".to_string(), "da0".to_string(), "da1".to_string()])
         );
+    }
+
+    #[test]
+    fn create_pool_puts_the_options_before_the_name_and_shows_the_command_as_typed() {
+        let runner = FakeRunner::new("");
+        create_pool(&runner, "tank", &["-o", "ashift=12", "-O", "compression=zstd", "mirror", "da0", "da1"]).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[0].1, ["create", "-o", "ashift=12", "-O", "compression=zstd", "--", "tank", "mirror", "da0", "da1"].map(String::from));
+        assert_eq!(create_command_text("tank", &["-o", "ashift=12", "mirror", "da0", "da1"]), "zpool create -o ashift=12 tank mirror da0 da1");
+        assert_eq!(create_command_text("tank", &["mirror", "da0", "da1"]), "zpool create tank mirror da0 da1");
+    }
+
+    #[test]
+    fn create_pool_refuses_every_other_flag_before_anything_runs() {
+        let runner = FakeRunner::new("");
+        for spec in [&["-f", "da0"][..], &["-n", "da0"], &["-R", "/mnt", "da0"], &["-o", "ashift", "da0"], &["-o", "ashift=12"], &["-o"]] {
+            assert!(create_pool(&runner, "tank", spec).is_err(), "{spec:?}");
+        }
+        assert!(runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]

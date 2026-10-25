@@ -7,6 +7,11 @@ use super::{App, FormField, FormKind, Modal, MutationCall, PendingAction, Permis
 /// selection: `disks` verbatim (each disk becomes its own top-level
 /// vdev — a stripe) when `redundancy` is blank, or `[redundancy] +
 /// disks` (one mirror/raidz group over every selected disk) otherwise.
+/// `Some(())` when the options typed before the disks of a new pool are only `-o` and `-O` ones.
+fn create_options_ok(spec: &[String]) -> Option<()> {
+    crate::zfs::pool::check_create_options(&spec.iter().map(String::as_str).collect::<Vec<_>>()).ok()
+}
+
 pub(super) fn build_vdev_spec_from_selection(redundancy: &str, disks: &[String]) -> Vec<String> {
     if redundancy.is_empty() {
         disks.to_vec()
@@ -683,7 +688,7 @@ pub(super) fn irreversible_prompt(hosts: &[String], action: &PendingAction) -> O
     let ask = |command: String, why: &str| Some(format!("On {host}:\n  {command}\n\n{why} (y/n)"));
     match &action.call {
         MutationCall::CreatePool { name, vdev_spec } => ask(
-            format!("zpool create {name} {}", vdev_spec.join(" ")),
+            crate::zfs::pool::create_command_text(name, &vdev_spec.iter().map(String::as_str).collect::<Vec<_>>()),
             "This overwrites whatever is on those disks. Create the pool?",
         ),
         MutationCall::AddVdev { pool, vdev_spec } => {
@@ -844,6 +849,7 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
                 return None;
             }
             let vdev_spec: Vec<String> = vdev_spec_raw.split_whitespace().map(String::from).collect();
+            create_options_ok(&vdev_spec)?;
             Some(PendingAction {
                 host: *host,
                 section: Section::Pools,
@@ -856,11 +862,10 @@ pub(super) fn build_pending_action(kind: &FormKind, fields: &[FormField]) -> Opt
                 return None;
             }
             let redundancy = field_value(fields, 1).trim();
-            Some(PendingAction {
-                host: *host,
-                section: Section::Pools,
-                call: MutationCall::CreatePool { name: name.to_string(), vdev_spec: build_vdev_spec_from_selection(redundancy, disks) },
-            })
+            let options = field_value(fields, 2).split_whitespace().map(String::from);
+            let vdev_spec: Vec<String> = options.chain(build_vdev_spec_from_selection(redundancy, disks)).collect();
+            create_options_ok(&vdev_spec)?;
+            Some(PendingAction { host: *host, section: Section::Pools, call: MutationCall::CreatePool { name: name.to_string(), vdev_spec } })
         }
         FormKind::AddVdev { host, .. } | FormKind::AddVdevFromDisks { host, .. } => {
             let (pool, vdev_spec, _) = add_vdev_request(kind, fields).ok()?;
@@ -1312,6 +1317,16 @@ pub(super) fn perms_problem(s: &str) -> String {
 pub(super) fn form_problem(kind: &FormKind, fields: &[FormField]) -> String {
     let value = |i: usize| field_value(fields, i);
     match kind {
+        FormKind::CreatePool { .. } | FormKind::CreatePoolFromDisks { .. } => {
+            if value(0).trim().is_empty() {
+                "Name: required".to_string()
+            } else if matches!(kind, FormKind::CreatePool { .. }) && value(1).trim().is_empty() {
+                "Vdev spec: required (for example mirror da0 da1)".to_string()
+            } else {
+                let spec: Vec<&str> = if matches!(kind, FormKind::CreatePool { .. }) { value(1).split_whitespace().collect() } else { value(2).split_whitespace().collect() };
+                crate::zfs::pool::check_create_options(&spec).err().unwrap_or_else(|| "Could not submit".to_string())
+            }
+        }
         FormKind::GrantPermission { .. } => {
             if parse_recipient_field(value(0)).is_none() {
                 "Recipient: use everyone, user:<name> or group:<name>".to_string()

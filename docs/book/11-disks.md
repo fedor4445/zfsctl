@@ -65,7 +65,7 @@ Select a disk and the panel shows what you need to identify it: its **model** an
 
 Instead of typing disk names, select them. `Space` toggles the mark on the selected disk (`[x]`), `Esc` clears all marks, and then:
 
-- `n` **creates a pool** from the marked disks. A form asks for the pool's name and the **redundancy**: leave it blank for a simple stripe, or type `mirror`, `raidz1`, `raidz2` or `raidz3` (`F2` lists the choices). zfsctl works out the command and shows it, and the two-key question warns that the disks will be overwritten.
+- `n` **creates a pool** from the marked disks. A form asks for the pool's name, the **redundancy** (leave it blank for a simple stripe, or type `mirror`, `raidz1`, `raidz2` or `raidz3`; `F2` lists the choices) and, optionally, **options** such as `-o ashift=12` (chapter 8 lists what is accepted). zfsctl works out the command and shows it, and the two-key question warns that the disks will be overwritten.
 - `a` **adds a vdev** to an existing pool from the marked disks, with a form that asks which pool, the **role** (data, log, cache, special, dedup or spare) and the redundancy of the new vdev. Special and dedup default to a mirror and refuse a single disk; cache and spare take each marked disk as a device of its own. See chapter 8 for what each role is.
 
 A disk that already belongs to a pool cannot be marked: a message tells you which pool it is in. Both forms show the model and serial number of every marked disk, so you can check them one more time before the question.

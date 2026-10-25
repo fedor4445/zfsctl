@@ -815,7 +815,31 @@ fn each_form_problem_says_which_field_is_wrong() {
     assert!(submit_problem(acl(), &["nobody", "read_data", "", "allow"]).contains("Recipient"));
     assert!(submit_problem(acl(), &["owner", "read_data", "", "maybe"]).contains("Type"));
     // A form with no specific rule still says something useful.
-    assert!(submit_problem(FormKind::CreatePool { host: 0 }, &["", ""]).contains("Could not submit"));
+    assert!(submit_problem(FormKind::CreateDataset { host: 0 }, &[""]).contains("Could not submit"));
+    assert!(submit_problem(FormKind::CreatePool { host: 0 }, &["", ""]).contains("Name"));
+}
+
+#[test]
+fn create_pool_options_are_o_and_capital_o_only_and_the_form_says_what_is_wrong() {
+    let create = || FormKind::CreatePool { host: 0 };
+    let built = |spec: &str| build_pending_action(&create(), &[FormField { label: String::new(), value: "tank".into() }, FormField { label: String::new(), value: spec.into() }]);
+    let call = built("-o ashift=12 -O compression=zstd mirror da0 da1").unwrap().call;
+    assert_eq!(call, MutationCall::CreatePool { name: "tank".into(), vdev_spec: ["-o", "ashift=12", "-O", "compression=zstd", "mirror", "da0", "da1"].map(String::from).to_vec() });
+    for bad in ["-f mirror da0 da1", "-n mirror da0 da1", "-R /mnt mirror da0 da1", "-o ashift mirror da0 da1", "-o mirror", "-o ashift=12"] {
+        assert!(built(bad).is_none(), "{bad}");
+        assert!(submit_problem(create(), &["tank", bad]).len() > 5, "{bad}");
+    }
+    assert!(submit_problem(create(), &["tank", "-f mirror da0 da1"]).contains("-f"));
+    assert!(submit_problem(create(), &["tank", ""]).contains("Vdev spec"));
+}
+
+#[test]
+fn the_create_from_disks_form_takes_the_options_in_its_last_field() {
+    let kind = FormKind::CreatePoolFromDisks { host: 0, disks: vec!["da0".into(), "da1".into()] };
+    let fields = |options: &str| vec![FormField { label: String::new(), value: "tank".into() }, FormField { label: String::new(), value: "mirror".into() }, FormField { label: String::new(), value: options.into() }];
+    assert_eq!(build_pending_action(&kind, &fields("-o ashift=12")).unwrap().call, MutationCall::CreatePool { name: "tank".into(), vdev_spec: ["-o", "ashift=12", "mirror", "da0", "da1"].map(String::from).to_vec() });
+    assert!(build_pending_action(&kind, &fields("")).is_some());
+    assert!(build_pending_action(&kind, &fields("-f")).is_none());
 }
 
 #[test]

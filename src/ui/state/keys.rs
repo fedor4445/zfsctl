@@ -263,6 +263,7 @@ impl App {
                     fields: vec![
                         FormField { label: "Name".to_string(), value: String::new() },
                         FormField { label: "Redundancy (blank=stripe, or mirror/raidz1/raidz2/raidz3)".to_string(), value: String::new() },
+                        FormField { label: "Options (blank, or for example -o ashift=12)".to_string(), value: String::new() },
                     ],
                     focused: 0,
                     description: Some(self.selected_disk_identities(&disks)),
