@@ -977,7 +977,7 @@ fn the_list_moves_with_the_arrows_stays_in_range_and_ignores_other_keys() {
 #[test]
 fn a_dataset_that_needs_a_copy_asks_which_kind_and_opens_that_form_filled_in() {
     use crate::daemon::protection::{CopyGap, Gap};
-    let copies = Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, worst: Gap::Missing });
+    let copies = Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst: Gap::Missing });
     for (row, title, host_label, dataset_label) in [(0, "New replication job", "Source host", "Source dataset"), (1, "New backup job", "Host (where restic runs)", "Dataset"), (2, "New cloud mirror job", "Host (where rclone runs)", "Dataset")] {
         let (mut app, _dir) = dash_app();
         app.modal = Some(list_of(vec![unprotected(None, copies, "tank/photos")]));
