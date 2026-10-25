@@ -451,6 +451,8 @@ pub struct App {
     pub host_addresses: Vec<String>,
     /// The tag of each host (index-aligned with `hosts`; empty = none).
     pub host_tags: Vec<String>,
+    /// The site of each host (index-aligned with `hosts`; empty = none).
+    pub host_sites: Vec<String>,
     /// Hosts marked with Space in Hosts, by name, for one edit of their tag and site.
     pub marked_hosts: std::collections::BTreeSet<String>,
     /// Tags typed in the Add Host form, by lowercase host name, until the host is confirmed reachable.
@@ -628,6 +630,7 @@ impl App {
             shares_table: TableState::default(),
             jobs_view: crate::ui::jobs::JobsView::default(),
             host_tags: vec![String::new(); hosts_for_addr.len()],
+            host_sites: vec![String::new(); hosts_for_addr.len()],
             marked_hosts: std::collections::BTreeSet::new(),
             new_host_tags: HashMap::new(),
             host_filter: String::new(),
@@ -1177,7 +1180,7 @@ Global
 
 Hosts
   Up / Down        select the active host
-  /                filter the host list by name, address, tag or type (Enter keeps it, Esc clears it)
+  /                filter the host list by name, address, tag, site or type (Enter keeps it, Esc clears it)
   c                check the selected host's disks (smartctl) and shares (NFS, Samba) now; the result joins the Dashboard (read-only)
   Space            mark or unmark the selected host for one edit of several (Esc unmarks all)
   e                edit the tag and site of the marked hosts, or of the selected one

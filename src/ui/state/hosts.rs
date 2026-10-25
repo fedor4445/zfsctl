@@ -58,12 +58,12 @@ impl App {
         self.host_addresses = addresses;
     }
 
-    /// Whether host `index` matches `needle` (case-insensitive substring of its name, address, tag or type word).
+    /// Whether host `index` matches `needle` (case-insensitive substring of its name, address, tag, site or type word).
     pub fn host_matches(&self, index: usize, needle: &str) -> bool {
         let needle = needle.to_lowercase();
         let Some(name) = self.hosts.get(index) else { return false };
         let kind = self.host_probes.get(name).and_then(|s| s.kind.as_ref()).map_or("", |k| if matches!(k, crate::zfs::host_health::HostKind::Unknown) { "" } else { k.word() });
-        [name.as_str(), self.host_address(index), self.host_tag(index), kind].iter().any(|f| f.to_lowercase().contains(&needle))
+        [name.as_str(), self.host_address(index), self.host_tag(index), self.host_site(index), kind].iter().any(|f| f.to_lowercase().contains(&needle))
     }
 
     /// Global indices of the hosts the filter lets through, in order (all of them when there is no filter).
@@ -166,6 +166,18 @@ impl App {
 
     pub fn set_host_tags(&mut self, tags: Vec<String>) {
         self.host_tags = tags;
+    }
+
+    pub fn host_site(&self, index: usize) -> &str {
+        self.host_sites.get(index).map_or("", String::as_str)
+    }
+
+    /// Reads the tag and site of every host from `config.toml` as it is now (a host without a block has none).
+    pub fn reload_host_labels(&mut self) {
+        let Ok(config) = crate::config::Config::load(&self.config_path) else { return };
+        let of = |name: &String| config.hosts.iter().find(|h| &h.name == name);
+        self.host_tags = self.hosts.iter().map(|n| of(n).and_then(|h| h.tag.as_deref()).and_then(crate::config::clean_tag).unwrap_or_default()).collect();
+        self.host_sites = self.hosts.iter().map(|n| of(n).and_then(|h| h.site.as_deref()).and_then(crate::config::clean_tag).unwrap_or_default()).collect();
     }
 
     pub fn host_tag(&self, index: usize) -> &str {

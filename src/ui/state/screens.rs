@@ -213,10 +213,7 @@ impl App {
     /// site, read from the file as it is now. The marks are spent.
     pub fn apply_saved_hosts(&mut self) {
         self.marked_hosts.clear();
-        if let Ok(config) = crate::config::Config::load(&self.config_path) {
-            let tags: Vec<String> = self.hosts.iter().map(|name| config.hosts.iter().find(|h| &h.name == name).and_then(|h| h.tag.as_deref()).and_then(crate::config::clean_tag).unwrap_or_default()).collect();
-            self.set_host_tags(tags);
-        }
+        self.reload_host_labels();
         self.refresh_dashboard();
     }
 
