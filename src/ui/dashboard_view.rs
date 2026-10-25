@@ -297,6 +297,9 @@ fn group_lines(groups: &[crate::ui::dashboard::Group], selected: Option<usize>, 
     lines
 }
 
+/// How many ignored datasets the Dashboard names before it says how many more there are.
+const IGNORED_SHOWN: usize = 3;
+
 fn status_line(level: Level, label: &str, text: &str, width: usize, theme: &Theme) -> Line<'static> {
     let (glyph, _) = glyph_word(level);
     Line::styled(cut(&format!("   {glyph} {label}{text}"), width), level_style(theme, level))
@@ -319,8 +322,13 @@ fn component_lines(d: &Dashboard, selected: Option<usize>, width: usize, compact
         let marked = selected.is_some_and(|s| d.is_safety(s));
         let line = Line::styled(cut(&format!(" {} {glyph} {}{}", if marked { "▸" } else { " " }, label("", "safety  "), safety.text), width), level_style(theme, safety.level));
         lines.push(if marked { line.patch_style(theme.selected_row()) } else { line });
-        if !d.ignored.is_empty() {
-            lines.push(Line::styled(cut(&format!("     ignored by choice: {} (and everything below; Settings)", d.ignored.join(", ")), width), theme.dim()));
+        if d.has_ignored_line() {
+            let marked = selected.is_some_and(|s| d.is_ignored(s));
+            let more = d.ignored.len().saturating_sub(IGNORED_SHOWN);
+            let names = d.ignored.iter().take(IGNORED_SHOWN).cloned().collect::<Vec<_>>().join(", ");
+            let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+            let line = Line::styled(cut(&format!(" {}   ignored by choice: {names}{tail} (and everything below; Enter lists them)", if marked { "▸" } else { " " }), width), theme.dim());
+            lines.push(if marked { line.patch_style(theme.selected_row()) } else { line });
         }
     }
     section(&mut lines, "DAEMON AND JOBS");
@@ -494,10 +502,27 @@ mod tests {
         app.dashboard_protection = toml::from_str::<crate::config::Config>("[protection]\nignore = [\"local:zroot/tmp\"]\n").unwrap().protection_settings().0;
         let d = app.dashboard();
         let text = screen_lines(&d, None, 140, 40, "Sat", &app.theme).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("ignored by choice: local:zroot/tmp (and everything below; Settings)"), "{text}");
+        assert!(text.contains("ignored by choice: local:zroot/tmp (and everything below; Enter lists them)"), "{text}");
         let plain = mixed_app();
         let d = plain.dashboard();
         assert!(!screen_lines(&d, None, 140, 40, "Sat", &plain.theme).iter().map(ToString::to_string).any(|l| l.contains("ignored by choice")));
+    }
+
+    #[test]
+    fn many_ignored_datasets_are_cut_to_the_first_three_and_a_count_and_the_line_can_be_selected() {
+        let mut app = mixed_app();
+        let list = (1..=6).map(|i| format!("\"local:zroot/d{i}\"")).collect::<Vec<_>>().join(", ");
+        app.dashboard_protection = toml::from_str::<crate::config::Config>(&format!("[protection]\nignore = [{list}]\n")).unwrap().protection_settings().0;
+        let d = app.dashboard();
+        assert!(d.has_ignored_line());
+        let text = |selected: Option<usize>| screen_lines(&d, selected, 180, 40, "Sat", &app.theme).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let line = text(None).lines().find(|l| l.contains("ignored by choice")).unwrap().to_string();
+        assert!(line.contains("local:zroot/d1, local:zroot/d2, local:zroot/d3 and 3 more") && !line.contains("d4"), "{line}");
+        let last = d.selectable() - 1;
+        assert!(d.is_ignored(last) && !d.is_safety(last) && d.is_safety(last - 1));
+        let marked = text(Some(last)).lines().find(|l| l.contains("ignored by choice")).unwrap().to_string();
+        assert!(marked.contains('▸'), "{marked}");
+        assert!(!text(Some(last - 1)).lines().find(|l| l.contains("ignored by choice")).unwrap().contains('▸'));
     }
 
     #[test]

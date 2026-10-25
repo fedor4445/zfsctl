@@ -83,8 +83,12 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
                 crate::ui::modal::ChooseThen::Unprotected(_) => "Fix",
                 crate::ui::modal::ChooseThen::Copy { .. } => "Open form",
                 crate::ui::modal::ChooseThen::Provider => "Show steps",
+                crate::ui::modal::ChooseThen::Ignored(_) => "Check again",
             };
             let mut v = vec![h("↑/↓", "Move", 0), h("Enter", what, 0)];
+            if matches!(then, crate::ui::modal::ChooseThen::Ignored(_)) {
+                v.push(h("Space", "Mark", 1));
+            }
             if matches!(then, crate::ui::modal::ChooseThen::Unprotected(_)) {
                 v.extend([h("Space", "Mark", 1), h("a", "Mark host", 2), h("s", "Snapshot jobs", 1), h("i", "Ignore", 2)]);
             }

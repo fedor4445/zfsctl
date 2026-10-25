@@ -835,3 +835,64 @@ fn ignoring_what_is_already_ignored_says_so_and_changes_nothing() {
     app.handle_modal_key(KeyCode::Char('i'));
     assert!(matches!(app.modal, Some(Modal::Choose { .. })) && app.status_message.as_deref().is_some_and(|m| m.contains("already ignored")), "{:?}", app.status_message);
 }
+
+fn ignored_app(entries: &[&str]) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = dash_app();
+    app.config_path = dir.path().join("config.toml");
+    let list = entries.iter().map(|e| format!("\"{e}\"")).collect::<Vec<_>>().join(", ");
+    std::fs::write(&app.config_path, format!("# mine\n[protection]\nignore = [{list}]\n")).unwrap();
+    app.dashboard_protection = crate::config::Config::load(&app.config_path).unwrap().protection_settings().0;
+    app.jobs_view.loaded = true;
+    (app, dir)
+}
+
+fn open_ignored_list(app: &mut App) {
+    let last = app.dashboard().selectable() - 1;
+    app.dashboard_table.select(Some(last));
+    app.handle_key(KeyCode::Enter);
+}
+
+#[test]
+fn enter_on_the_ignored_line_lists_the_ignored_datasets_and_u_checks_the_marked_ones_again_after_a_confirmation() {
+    let (mut app, _dir) = ignored_app(&["local:old", "fbsd16:tank/tmp", "fbsd16:tank/scratch"]);
+    assert!(app.dashboard().has_ignored_line(), "the ignored line hangs under the data-safety line: {:?}", app.dashboard().safety);
+    open_ignored_list(&mut app);
+    let Some(Modal::Choose { title, rows, then, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!((title.as_str(), rows.len()), ("Ignored datasets", 3));
+    assert!(matches!(then, crate::ui::modal::ChooseThen::Ignored(_)));
+    app.handle_modal_key(KeyCode::Down);
+    app.handle_modal_key(KeyCode::Char(' '));
+    app.handle_modal_key(KeyCode::Char('u'));
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.starts_with("Check 1 dataset again, and everything below it?") && prompt.contains("fbsd16:tank/tmp") && prompt.contains("Nothing on the hosts is touched"), "{prompt}");
+    // Two steps, as every confirmation: y selects, Enter applies.
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter applies");
+    action.call.run(&crate::exec::test_support::FakeRunner::new("")).unwrap();
+    let text = std::fs::read_to_string(&app.config_path).unwrap();
+    assert!(text.starts_with("# mine\n") && text.contains("local:old") && text.contains("fbsd16:tank/scratch") && !text.contains("fbsd16:tank/tmp"), "{text}");
+}
+
+#[test]
+fn enter_in_the_ignored_list_with_nothing_marked_checks_the_chosen_one_and_n_returns_to_the_list() {
+    let (mut app, _dir) = ignored_app(&["local:old", "fbsd16:tank/tmp"]);
+    assert!(app.dashboard().has_ignored_line());
+    open_ignored_list(&mut app);
+    app.handle_modal_key(KeyCode::Enter);
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("local:old") && !prompt.contains("tank/tmp"), "{prompt}");
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Choose { .. })), "declining returns to the list: {:?}", app.modal);
+    assert!(std::fs::read_to_string(&app.config_path).unwrap().contains("fbsd16:tank/tmp"));
+}
+
+#[test]
+fn checking_every_ignored_dataset_again_leaves_an_empty_list_the_config_still_loads() {
+    let (app, _dir) = ignored_app(&["local:old"]);
+    let call = crate::ui::modal::MutationCall::UnignoreDatasets { config_path: app.config_path.clone(), entries: vec!["local:old".to_string()] };
+    call.run(&crate::exec::test_support::FakeRunner::new("")).unwrap();
+    let (settings, problems) = crate::config::Config::load(&app.config_path).unwrap().protection_settings();
+    assert!(problems.is_empty() && !settings.is_ignored("local", "old"), "{problems:?}");
+}
