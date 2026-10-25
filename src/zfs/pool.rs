@@ -325,6 +325,64 @@ pub fn removable_device(lines: &[VdevLine], index: usize) -> Option<(String, &'s
     Some((line.name.clone(), class))
 }
 
+/// What `zpool attach` does to the vdev it is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachKind {
+    /// A lone disk becomes a two-way mirror.
+    Single,
+    /// A disk becomes another side of a mirror.
+    Mirror,
+    /// A raidz vdev gets one more disk (raidz expansion, OpenZFS 2.3).
+    Raidz,
+}
+
+/// What `zpool attach` should be given for the selected row of the vdev tree, and what it will do: a raidz group row
+/// (`raidz2-0`), a bare disk at the top level, a disk of a mirror, or a mirror row (its first disk). Anything else is explained
+/// instead: log, cache, spare, special and dedup devices are for Add vdev, a draid vdev cannot be widened, and the disks of a
+/// raidz group are not attached to (the group is).
+pub fn attach_target(lines: &[VdevLine], index: usize) -> std::result::Result<(String, AttachKind), String> {
+    let line = lines.get(index).ok_or_else(|| "select a mirror, a raidz group or a disk first".to_string())?;
+    let pool_line = lines.iter().position(|l| l.depth == 0).unwrap_or(0);
+    if line.depth == 0 || index == pool_line {
+        return Err("select a mirror, a raidz group or a disk of the pool's data".to_string());
+    }
+    if lines[..index].iter().enumerate().any(|(i, l)| l.depth == 0 && i > pool_line) {
+        return Err("attaching works on the data vdevs; use Add vdev (a) for log, cache, spare, special and dedup devices".to_string());
+    }
+    let is_group = |name: &str, prefix: &str| name.strip_prefix(prefix).is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+    let raidz = |name: &str| ["raidz1-", "raidz2-", "raidz3-"].iter().any(|p| is_group(name, p));
+    match line.depth {
+        1 if raidz(&line.name) => Ok((line.name.clone(), AttachKind::Raidz)),
+        1 if line.name.starts_with("draid") => Err("a draid vdev cannot be widened".to_string()),
+        1 if is_group(&line.name, "mirror-") => lines[index + 1..]
+            .iter()
+            .take_while(|l| l.depth >= 2)
+            .find(|l| l.depth == 2)
+            .map(|l| (l.name.clone(), AttachKind::Mirror))
+            .ok_or_else(|| "this mirror shows no disk to attach to; press r and try again".to_string()),
+        1 if is_group(&line.name, "replacing-") || is_group(&line.name, "spare-") => Err("this vdev is being replaced or spared: wait until it has finished".to_string()),
+        1 if is_leaf_disk(&line.name) => Ok((line.name.clone(), AttachKind::Single)),
+        1 => Err("this vdev cannot be attached to".to_string()),
+        2 => {
+            let parent = lines[..index].iter().rev().find(|l| l.depth == 1).map(|l| l.name.as_str()).unwrap_or("");
+            if is_group(parent, "mirror-") {
+                Ok((line.name.clone(), AttachKind::Mirror))
+            } else if raidz(parent) {
+                Err("select the raidz group itself (not one of its disks) to widen it".to_string())
+            } else {
+                Err("this disk cannot be attached to".to_string())
+            }
+        }
+        _ => Err("this row cannot be attached to".to_string()),
+    }
+}
+
+/// `zpool attach`: `new_disk` joins `target` (a mirror's disk, a lone disk, or a raidz group).
+pub fn attach_disk(runner: &dyn CommandRunner, pool: &str, target: &str, new_disk: &str) -> Result<()> {
+    super::run_checked(runner, "zpool", &["attach", "--", pool, target, new_disk], &format!("zpool attach {pool} {target} {new_disk}"))?;
+    Ok(())
+}
+
 /// `zpool remove`: takes a log, cache or spare device out of the pool.
 pub fn remove_vdev(runner: &dyn CommandRunner, pool: &str, device: &str) -> Result<()> {
     super::run_checked(runner, "zpool", &["remove", "--", pool, device], &format!("zpool remove {pool} {device}"))?;
@@ -701,6 +759,36 @@ errors: No known data errors
             assert!(create_pool(&runner, "tank", spec).is_err(), "{spec:?}");
         }
         assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    fn vdev_tree(rows: &[(usize, &str)]) -> Vec<VdevLine> {
+        rows.iter().map(|(depth, name)| VdevLine { depth: *depth, name: (*name).to_string(), health: PoolHealth::Online }).collect()
+    }
+
+    #[test]
+    fn attach_targets_are_a_raidz_group_a_lone_disk_or_a_disk_of_a_mirror() {
+        let tree = vdev_tree(&[(0, "tank"), (1, "raidz2-0"), (2, "da0"), (2, "da1"), (2, "da2"), (2, "da3"), (1, "mirror-1"), (2, "da4"), (2, "da5"), (1, "da6"), (0, "logs"), (1, "da7"), (0, "cache"), (1, "da8")]);
+        let at = |i: usize| attach_target(&tree, i);
+        assert_eq!(at(1), Ok(("raidz2-0".to_string(), AttachKind::Raidz)));
+        assert!(at(2).unwrap_err().contains("raidz group itself"), "a disk of a raidz group is not attached to");
+        assert_eq!(at(6), Ok(("da4".to_string(), AttachKind::Mirror)), "a mirror row means its first disk");
+        assert_eq!(at(8), Ok(("da5".to_string(), AttachKind::Mirror)));
+        assert_eq!(at(9), Ok(("da6".to_string(), AttachKind::Single)));
+        assert!(at(0).is_err(), "the pool row");
+        assert!(at(11).unwrap_err().contains("Add vdev"), "a log device");
+        assert!(at(13).unwrap_err().contains("Add vdev"), "a cache device");
+        assert!(at(99).is_err());
+        let other = vdev_tree(&[(0, "tank"), (1, "draid1:2d:5c:0s-0"), (2, "da0"), (1, "replacing-1"), (2, "da1"), (2, "da2")]);
+        assert!(attach_target(&other, 1).unwrap_err().contains("draid"));
+        assert!(attach_target(&other, 3).unwrap_err().contains("replaced"));
+        assert!(attach_target(&other, 4).is_err());
+    }
+
+    #[test]
+    fn attach_disk_runs_zpool_attach_with_the_pool_the_target_and_the_new_disk_and_never_force() {
+        let runner = FakeRunner::new("");
+        attach_disk(&runner, "tank", "raidz2-0", "da9").unwrap();
+        assert_eq!(runner.calls.lock().unwrap()[0].1, ["attach", "--", "tank", "raidz2-0", "da9"].map(String::from));
     }
 
     #[test]

@@ -618,3 +618,59 @@ fn the_raw_add_form_refuses_a_lone_special_disk_and_queues_the_dry_run_otherwise
     assert!(prompt.contains("zpool add tank special mirror da6 da7"), "{prompt}");
     assert_eq!(app.pending_add_checks[0].role, crate::zfs::vdev_role::Role::Special);
 }
+
+fn raidz_app() -> App {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+    app.handle_key(KeyCode::Tab);
+    app.pools_table.select(Some(0));
+    app.drilled_pool = Some("tank".to_string());
+    let line = |depth: usize, name: &str| VdevLine { depth, name: name.to_string(), health: crate::zfs::pool::PoolHealth::Online };
+    app.vdevs = vec![line(0, "tank"), line(1, "raidz1-0"), line(2, "da0"), line(2, "da1"), line(2, "da2"), line(0, "logs"), line(1, "da7")];
+    app
+}
+
+#[test]
+fn plus_on_a_raidz_group_asks_for_the_new_disk_then_shows_the_command_and_what_widening_means_and_runs_zpool_attach() {
+    let mut app = raidz_app();
+    app.vdevs_table.select(Some(1));
+    app.handle_key(KeyCode::Char('+'));
+    let Some(crate::ui::modal::Modal::Form { title, kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(title.starts_with("Widen raidz vdev 'raidz1-0'"), "{title}");
+    assert!(matches!(kind, crate::ui::modal::FormKind::AttachDisk { target, .. } if target == "raidz1-0"));
+    for c in "da3".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    app.handle_modal_key(KeyCode::Enter);
+    let Some(crate::ui::modal::Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.contains("zpool attach tank raidz1-0 da3") && prompt.contains("raidz expansion") && prompt.contains("never shrinks") && prompt.contains("older software can no longer import"), "{prompt}");
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter applies");
+    assert_eq!(action.call, crate::ui::modal::MutationCall::AttachDisk { pool: "tank".into(), target: "raidz1-0".into(), new_disk: "da3".into(), kind: crate::zfs::pool::AttachKind::Raidz });
+    let runner = FakeRunner::new("");
+    action.call.run(&runner).unwrap();
+    assert_eq!(runner.calls.lock().unwrap()[0].1, ["attach", "--", "tank", "raidz1-0", "da3"].map(String::from));
+}
+
+#[test]
+fn plus_on_a_log_device_or_a_disk_of_a_raidz_group_explains_instead_of_opening_a_form() {
+    let mut app = raidz_app();
+    for (row, word) in [(6, "Add vdev"), (2, "raidz group itself"), (0, "select")] {
+        app.vdevs_table.select(Some(row));
+        app.handle_key(KeyCode::Char('+'));
+        assert!(app.modal.is_none(), "row {row}");
+        assert!(app.status_message.as_deref().is_some_and(|m| m.contains(word)), "{row}: {:?}", app.status_message);
+    }
+}
+
+#[test]
+fn a_new_disk_that_looks_like_a_flag_is_not_submitted() {
+    let mut app = raidz_app();
+    app.vdevs_table.select(Some(1));
+    app.handle_key(KeyCode::Char('+'));
+    for c in "-f".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    assert!(submit_and_confirm(&mut app).is_none());
+    assert!(!matches!(app.modal, Some(crate::ui::modal::Modal::Confirm { .. })), "{:?}", app.modal);
+}

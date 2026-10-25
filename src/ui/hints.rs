@@ -145,6 +145,9 @@ fn context_hints(app: &App) -> Vec<Hint> {
         if app.vdevs_table.selected().is_some_and(|i| crate::zfs::pool::removable_device(&app.vdevs, i).is_some()) {
             v.push(h("X", "Remove", 2));
         }
+        if app.vdevs_table.selected().is_some_and(|i| crate::zfs::pool::attach_target(&app.vdevs, i).is_ok()) {
+            v.push(h("+", "Attach disk", 3));
+        }
         v.push(h("a", "Add vdev", 3));
         v.push(h("r", "Refresh", 4));
         v.push(h("Esc", "Back", 1));
