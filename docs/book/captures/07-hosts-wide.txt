@@ -1,12 +1,12 @@
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │Dashboard             ││Name       Address            State                                    Type   Tag     Used  Pools Scrub         Jobs  Rtt   │
-│Hosts                 ││● local    local              ok                                       vm             42%   3     Oct 8 2026    0/2   19ms  │
-│Pools                 ││● fbsd16   172.16.10.60       ok                                       vm             61%   1     Oct 17 2026   -     246ms │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                                       vm             53%   2     Oct 17 2026   -     317ms │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                                       vm             74%   2     Oct 17 2026   -     323ms │
-│Disks                 ││● ub24     172.16.10.52       ok                                       -      linux   0%    1     Oct 17 2026   -     404ms │
-│Shares                ││● omnios   172.16.10.80       ok                                       -      illumos 49%   3     Oct 17 2026   -     421ms │
+│Hosts                 ││● local    local              ok                                       vm             45%   3     Oct 8 2026    0/4   19ms  │
+│Pools                 ││● fbsd16   172.16.10.60       ok                                       vm             62%   1     Oct 17 2026   0/3   72ms  │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                                       vm             53%   2     Oct 17 2026   -     68ms  │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                                       vm             79%   2     Oct 17 2026   -     59ms  │
+│Disks                 ││● ub24     172.16.10.52       ok                                       vm     linux   0%    1     Oct 17 2026   -     73ms  │
+│Shares                ││● omnios   172.16.10.80       ok                                       vm     illumos 52%   3     Oct 17 2026   0/2   128ms │
 │Boot Envs             ││                                                                                                                            │
 │Jobs                  ││                                                                                                                            │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Host  c Check disks and shares  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Host  c Check disks and shares  Space Mark  e Edit tag and site  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit

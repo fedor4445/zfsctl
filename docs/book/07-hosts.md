@@ -13,16 +13,16 @@ The Hosts section is where zfsctl opens. Every host in your configuration is pro
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │Dashboard             ││Name       Address            State                                    Type   Tag     Used  Pools Scrub         Jobs  Rtt   │
-│Hosts                 ││● local    local              ok                                       vm             42%   3     Oct 8 2026    0/2   19ms  │
-│Pools                 ││● fbsd16   172.16.10.60       ok                                       vm             61%   1     Oct 17 2026   -     246ms │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                                       vm             53%   2     Oct 17 2026   -     317ms │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                                       vm             74%   2     Oct 17 2026   -     323ms │
-│Disks                 ││● ub24     172.16.10.52       ok                                       -      linux   0%    1     Oct 17 2026   -     404ms │
-│Shares                ││● omnios   172.16.10.80       ok                                       -      illumos 49%   3     Oct 17 2026   -     421ms │
+│Hosts                 ││● local    local              ok                                       vm             45%   3     Oct 8 2026    0/4   19ms  │
+│Pools                 ││● fbsd16   172.16.10.60       ok                                       vm             62%   1     Oct 17 2026   0/3   72ms  │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                                       vm             53%   2     Oct 17 2026   -     68ms  │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                                       vm             79%   2     Oct 17 2026   -     59ms  │
+│Disks                 ││● ub24     172.16.10.52       ok                                       vm     linux   0%    1     Oct 17 2026   -     73ms  │
+│Shares                ││● omnios   172.16.10.80       ok                                       vm     illumos 52%   3     Oct 17 2026   0/2   128ms │
 │Boot Envs             ││                                                                                                                            │
 │Jobs                  ││                                                                                                                            │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Host  c Check disks and shares  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Host  c Check disks and shares  Space Mark  e Edit tag and site  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 (This capture is 150 columns wide so that every column fits; on a narrower terminal the columns on the right drop away, as described below.)
@@ -93,12 +93,12 @@ Select a host with `Up` and `Down` and the panel shows it. The first sample of a
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
 │Dashboard             ││Name       Address            State                       Type   Tag     Used  Pools│
-│Hosts                 ││● local    local              ok                          vm             42%   3    │
-│Pools                 ││● fbsd16   172.16.10.60       ok                          vm             61%   1    │
+│Hosts                 ││● local    local              ok                          vm             45%   3    │
+│Pools                 ││● fbsd16   172.16.10.60       ok                          vm             62%   1    │
 │Datasets              ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                          vm             74%   2    │
-│Disks                 ││● ub24     172.16.10.52       ok                          -      linux   0%    1    │
-│Shares                ││● omnios   172.16.10.80       ok                          -      illumos 49%   3    │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                          vm             79%   2    │
+│Disks                 ││● ub24     172.16.10.52       ok                          vm     linux   0%    1    │
+│Shares                ││● omnios   172.16.10.80       ok                          vm     illumos 52%   3    │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
 │Cloud                 ││                                                                                    │
@@ -109,24 +109,24 @@ Select a host with `Up` and `Down` and the panel shows it. The first sample of a
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — host fbsd16 (all pools)───────────────────────────────────────────────────┐
-│                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.99-1149-FreeBSD.g1f380a4f3   │
-│                      ││OS      FreeBSD 16.0-CURRENT               Pools   1 (all ONLINE)                   │
-│                      ││Up      46m   rtt 210ms                    Space   61%  4.6G / 7.5G                 │
-│                      ││Load    0.45 0.71 0.43                     ARC     57.0M / 2.9G  hit 99.5%          │
-│                      ││CPU     4 cores  6%                        Status  all pools are healthy            │
+│                      │┌Metrics — host local (all pools)────────────────────────────────────────────────────┐
+│                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
+│                      ││OS      FreeBSD 15.1-RELEASE-p4            Pools   3 (all ONLINE)                   │
+│                      ││Up      13d 12h   rtt 2ms                  Space   31%  19.2G / 62.2G               │
+│                      ││Load    0.06 0.34 0.28                     ARC     5.1G / 18.9G  hit 100.0%         │
+│                      ││CPU     36 cores  0%                       Status  all pools are healthy            │
 │                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
-│                      ││Memory  3.9G  free 2.6G  wired 920M                                                 │
+│                      ││Memory  19.9G  free 8.4G  wired 7.8G                                                │
 │                      ││Swap    0B / 2.0G                                                                   │
-│                      ││zroot         61% frag 30% ONLINE   scrub Oct 17 22:07:45 2026                      │
-│                      ││                                                                                    │
-│                      ││                                                                                    │
+│                      ││scratch       45% frag 48% ONLINE   scrub Oct  8 19:48:07 2026                      │
+│                      ││tpool         41% frag  2% ONLINE   scrub Oct 18 03:00:30 2026                      │
+│                      ││zroot         26% frag 41% ONLINE   scrub Oct 18 03:00:22 2026                      │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 │                      ││                                                                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Host  c Check disks and shares  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Host  c Check disks and shares  Space Mark  e Edit tag and site  n Add host  / Filter  ? Help  q Quit
 ```
 
 On the left is the system: operating system, uptime and round trip, load averages, CPU (cores, current use and the processor model), memory (physical, free, wired) and swap. On the right is ZFS: version, how many pools and whether all are healthy, total space used, the ARC (ZFS's memory cache: its size, its ceiling and its hit rate), and a status line from `zpool status -x`. That line takes the color of the host's State in the table above (yellow for a warning, red for a critical state or an unreachable host), and when zfsctl found the problem rather than ZFS (a pool 86% full, a failed job) the reason is written under it: ZFS can say "all pools are healthy" about a pool that is nearly full. Below are one row per pool with its fullness, fragmentation, health and last scrub.

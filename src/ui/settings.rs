@@ -52,7 +52,7 @@ const CAPS: &str = "Cloud caps";
 const PROTECTION: &str = "Data protection";
 const PROT_COPIES: &str = "Copies on other machines (1 to 3)";
 const PROT_ONLINE: &str = "Online copies (0 to 2)";
-const PROT_DOMAINS: &str = "Failure domains the copies must span (1 to 3)";
+const PROT_DOMAINS: &str = "Failure domains (1 to 3)";
 const PROT_RECENT: &str = "How recent (strict, normal, relaxed)";
 const PROT_EMAIL: &str = "Email (immediate, report, off)";
 
@@ -311,7 +311,7 @@ mod tests {
     fn load_lists_the_groups_in_order_with_defaults_marked() {
         let v = view("", &[], false);
         let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "Failure domains the copies must span (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
+        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "Failure domains (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
         assert!(v.loaded && v.problem.is_none() && v.rows.iter().all(|r| r.is_default), "{v:?}");
         assert_eq!(row(&v, "Theme").value, "ansi");
         assert_eq!(row(&v, "Auto-refresh").value, "10 s");
@@ -431,7 +431,7 @@ mod tests {
     fn the_protection_rows_show_the_effective_values() {
         let v = view("", &[], false);
         let prot: Vec<(&str, &str, bool)> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| (r.label.as_str(), r.value.as_str(), r.is_default)).collect();
-        assert_eq!(prot, [("Level", "basic", true), ("Failure domains the copies must span (1 to 3)", "1", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true)]);
+        assert_eq!(prot, [("Level", "basic", true), ("Failure domains (1 to 3)", "1", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true)]);
         assert!(v.rows.iter().all(|r| !r.label.starts_with("Copies") && !r.label.starts_with("Online")));
         let v = view("[protection]\nlevel = \"careful\"\nrecent = \"strict\"\n", &[], false);
         assert_eq!(row(&v, "Level").value, "careful");
@@ -460,7 +460,7 @@ mod tests {
     fn custom_adds_its_two_rows() {
         let v = view("[protection]\nlevel = \"custom\"\ncopies = 2\n", &[], false);
         let labels: Vec<&str> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "Failure domains the copies must span (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
+        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "Failure domains (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
         let copies = row(&v, "Copies on other machines (1 to 3)");
         assert_eq!((copies.value.as_str(), copies.is_default, copies.raw.as_slice()), ("2", false, &["2".to_string()][..]));
         let online = row(&v, "Online copies (0 to 2)");
