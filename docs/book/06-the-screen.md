@@ -59,26 +59,26 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 13:40                                                                                                  ✖ 4 issues
+┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 19:10                                                                                                  ✖ 4 issues
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Pools                 │   ✖ issue fbsd16:zroot      no snapshot job; no copy job
-│Datasets              │   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
+│Pools                 │   ✖ issue fbsd16:zroot      no copy job
+│Datasets              │   ✖ issue fbsd16:zroot/ho…  no copy job
 │Snapshots             │   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
 │Disks                 │   ✖ issue protection        and 122 more not protected (65 of your data)
 │Shares                │
-│Boot Envs             │ HOSTS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Jobs                  │  Host      State       Pools  Capacity             Memory             ARC     CPU              Load  Scrub     Errors
-│Cloud                 │  local     ● ok        3      ━━━━╌╌╌╌╌╌ 44%       ━━╌╌╌╌╌╌╌╌ 16%     100.0%  ?                2.65  15 d ago  0
-│Alerts                │  fbsd16    ● ok        1      ━━━━━━╌╌╌╌ 61%       ━━━╌╌╌╌╌╌╌ 27%     99.9%   ?                0.38  6 d ago   0
-│Settings              │  fbsd16t1  ● ok        2      ━━━━━╌╌╌╌╌ 53%       ━━━╌╌╌╌╌╌╌ 25%     99.9%   ?                0.22  6 d ago   0
-│                      │  fbsd16t2  ● ok        2      ━━━━━━━━╌╌ 79%       ━━╌╌╌╌╌╌╌╌ 24%     99.9%   ?                0.53  6 d ago   0
-│                      │  ub24      ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      100.0%  ?                0.23  6 d ago   0
-│                      │  omnios    ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     83.7%   ?                0.04  6 d ago   0
+│Boot Envs             │ GROUPS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│Jobs                  │  Group         State       Pools  Capacity             Memory             CPU              Load  Scrub    Errors
+│Cloud                 │  illumos (1)   ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.03  7 d ago  0
+│Alerts                │  linux (1)     ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      ?                0.07  6 d ago  0
+│Settings              │  (no tag) (4)  ● ok        8      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 27%     ?                2.01  6 d ago  0
+│                      │
+│                      │ DATA SAFETY ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│                      │   ○ no dataset has a copy yet
 │                      │
 │                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 13609), heartbeat 1s ago
-│                      │   ● jobs    scrub 2/2 ok  snapshot 3/3 ok
+│                      │   ● daemon  running (pid 33754), heartbeat 1s ago
+│                      │   ● jobs    scrub 2/2 ok  snapshot 5/5 ok
 │                      │
 │                      │ CLOUD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
@@ -87,14 +87,14 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 │                      │
 │                      │ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert ub24 2 datasets not protected (17m ago) · report 2026-10-24
+│                      │   ● monitor on · last alert ub24 2 datasets not protected (23m ago) · report 2026-10-24
 │                      │
 │                      │
 │                      │
 │                      │
 │                      │
 └──────────────────────┘
-↑↓ Move  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
+↑↓ Move  e All hosts  r Refresh  Tab Section  ! Shell  A About  ? Help  q Quit
 ```
 
 - **The header** names the screen and gives the verdict on the right: `all quiet`, or how many things need attention (`1 issue, 1 to watch`). Until every host has answered its first probe it says `checking...`, because a screen that does not know yet must not say all is quiet.
