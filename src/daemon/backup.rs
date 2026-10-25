@@ -358,6 +358,28 @@ pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_fo
                     Forgot::Failed(e) => return failed(format!("backed up {snapshot} but forget failed: {e}")),
                 }
             }
+            // The repository is checked now and then, after a backup that has just worked: a backup nobody can restore from is
+            // the one failure that stays silent until the day it is needed.
+            let days = crate::jobs::check_days_of(job);
+            let state_path = env.check_state();
+            if super::restic_check::due(super::restic_check::read_state(&state_path).get(&job.id), days, ctx.clock.now()) {
+                let args = restic::check_args(&repo, &password_file);
+                let result = run_retention(env, runner, &repo, &args);
+                let record = |ok: bool| {
+                    let _ = super::restic_check::record(&state_path, &job.id, super::restic_check::Checked { at: ctx.clock.now(), ok });
+                };
+                match result {
+                    Forgot::Done => {
+                        record(true);
+                        return finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{message}; restic check: the repository is sound"), slot);
+                    }
+                    Forgot::Cancelled => return finish(ctx, job, run_id, EventKind::Finished, RunResult::Cancelled, format!("{message}; the repository check was cancelled, it runs after the next successful backup"), slot),
+                    Forgot::Failed(e) => {
+                        record(false);
+                        return failed(format!("{message}; restic check found a problem: {e}. The backup itself ran; check the repository before you rely on it"));
+                    }
+                }
+            }
             finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, message, slot)
         }
     }

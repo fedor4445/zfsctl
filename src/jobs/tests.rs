@@ -18,7 +18,7 @@ fn scrub(id: &str) -> Job {
         dest_host: None,
         dest_dataset: None,
         dest_dir: None,
-        dest_keep: None,
+        dest_keep: None, check_days: None,
         remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
     }
 }

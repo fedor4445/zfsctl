@@ -112,6 +112,12 @@ pub fn forget_args(repo: &str, password_file: &str, host: &str, job_id: &str, re
     args
 }
 
+/// `restic check`: verifies the repository's structure (index, snapshots, trees), without reading every stored byte.
+pub fn check_args(repo: &str, password_file: &str) -> Vec<String> {
+    let [r, p] = repo_flags(repo, password_file);
+    vec!["check".to_string(), r, p, RETRY_LOCK.to_string()]
+}
+
 /// `restic unlock`: removes only stale locks (restic's own test: a dead process on the same host, or
 /// a lock nobody has refreshed for 30 minutes). Never `--remove-all`, which would remove a live one.
 pub fn unlock_args(repo: &str, password_file: &str) -> Vec<String> {

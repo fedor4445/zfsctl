@@ -10,7 +10,7 @@ fn backup_err(values: [&str; 10]) -> String {
 fn big_b_in_jobs_opens_the_backup_form_with_sensible_defaults() {
     let (mut app, _dir) = app_with_jobs(&[]);
     app.handle_key(KeyCode::Char('B'));
-    assert_eq!(form_values(&app), ["local", "", "", "new", "", "", "", "", "30 3 * * *", "y"]);
+    assert_eq!(form_values(&app), ["local", "", "", "new", "", "", "", "", "30 3 * * *", "y", ""]);
     assert!(matches!(&app.modal, Some(Modal::Form { kind: FormKind::BackupJob { .. }, .. })));
 }
 
@@ -81,7 +81,7 @@ fn enter_on_a_backup_job_edits_it_in_the_backup_form_and_keeps_its_id_and_state(
     app.refresh_jobs();
     app.handle_key(KeyCode::Down);
     app.handle_key(KeyCode::Enter);
-    assert_eq!(form_values(&app), ["local", "tank/data", "", "hourly", "", "/mnt/usb/restic", "/root/pw", "7d", "0 3 * * *", "y"]);
+    assert_eq!(form_values(&app), ["local", "tank/data", "", "hourly", "", "/mnt/usb/restic", "/root/pw", "7d", "0 3 * * *", "y", ""]);
     let kind = backup_kind(Some(job.clone()), vec![job]);
     let mut values = BACKUP_GOOD;
     values[5] = "/mnt/other";
@@ -373,4 +373,22 @@ fn a_failed_measurement_keeps_the_last_good_numbers_and_says_why() {
     fresh.tx.send(WorkerMsg::CloudSize("m".into(), failed.clone())).unwrap();
     fresh.drain_worker_messages();
     assert_eq!(fresh.cloud_sizes["m"], failed);
+}
+
+#[test]
+fn the_check_interval_field_is_blank_for_the_default_a_number_of_days_or_zero_for_never_and_nothing_else() {
+    let build = |value: &str| {
+        let mut fields = backup_fields(BACKUP_GOOD);
+        fields.push(FormField { label: "Check".into(), value: value.into() });
+        build_backup_job_action(&backup_kind(None, vec![]), &fields, std::path::Path::new("/x"), chrono::Utc::now()).map(|a| match a.call {
+            MutationCall::SaveJob { job, .. } => job.check_days,
+            other => panic!("{other:?}"),
+        })
+    };
+    assert_eq!(build("").unwrap(), None);
+    assert_eq!(build(" 7 ").unwrap(), Some(7));
+    assert_eq!(build("0").unwrap(), Some(0));
+    for bad in ["x", "-1", "1.5", "3651"] {
+        assert!(build(bad).unwrap_err().contains("Check every"), "{bad}");
+    }
 }

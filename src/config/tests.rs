@@ -51,7 +51,7 @@ fn documented_keys_match_the_serialised_fields() {
     };
     let job = crate::jobs::Job {
         id: "i".into(), host: "local".into(), kind: "backup".into(), pool: Some("p".into()), dataset: Some("d".into()), recursive: true,
-        prefix: Some("x".into()), keep: Some(1), dest_host: Some("h".into()), dest_dataset: Some("d".into()), dest_dir: Some("/d".into()), dest_keep: Some(2), remote: Some("aws:b".into()), bwlimit: Some("5M".into()),
+        prefix: Some("x".into()), keep: Some(1), dest_host: Some("h".into()), dest_dataset: Some("d".into()), dest_dir: Some("/d".into()), dest_keep: Some(2), check_days: Some(30), remote: Some("aws:b".into()), bwlimit: Some("5M".into()),
         force: true, raw: false, repository: Some("r".into()), password_file: Some("/p".into()), retention: Some("7d".into()), source: Some("new".into()), snapshot: Some("s".into()), path: Some("p".into()), schedule: "* * * * *".into(),
         catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
     };

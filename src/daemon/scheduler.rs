@@ -152,7 +152,7 @@ mod tests {
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            dest_keep: None,
+            dest_keep: None, check_days: None,
             remote: None,
 
             bwlimit: None,

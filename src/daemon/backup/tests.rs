@@ -49,6 +49,8 @@ struct Host {
     forget_fails: bool,
     /// What a successful `restic forget` does.
     forget_script: String,
+    /// What `restic check` does.
+    check_script: String,
     /// While true `restic forget` fails like a repository with a stale lock; `restic unlock` clears it.
     forget_locked: Mutex<bool>,
     unlock_fails: bool,
@@ -79,6 +81,7 @@ impl Host {
             destroy_fails: false,
             forget_fails: false,
             forget_script: "exit 0".to_string(),
+            check_script: "echo 'no errors were found'".to_string(),
             forget_locked: Mutex::new(false),
             unlock_fails: false,
             hostname: Some("fb"),
@@ -178,7 +181,9 @@ impl CommandRunner for Host {
     fn command(&self, cmd: &str, args: &[&str]) -> Result<Command> {
         assert_eq!(cmd, "restic");
         self.calls.lock().unwrap().push(format!("restic {}", args.join(" ")));
-        let script = if args.first() == Some(&"forget") {
+        let script = if args.first() == Some(&"check") {
+            self.check_script.clone()
+        } else if args.first() == Some(&"forget") {
             if *self.forget_locked.lock().unwrap() {
                 "echo 'unable to create lock in backend: repository is already locked by PID 14568 on fb by root' >&2; exit 1".to_string()
             } else if self.forget_fails {
@@ -223,7 +228,10 @@ impl Rig {
 }
 
 fn job() -> Job {
-    Job::test_backup("job", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw")
+    // The repository check has tests of its own; the others leave it off so that they see only what they are about.
+    let mut j = Job::test_backup("job", "tank/data", "hourly", "/mnt/usb/restic", "/root/pw");
+    j.check_days = Some(0);
+    j
 }
 
 #[test]
@@ -259,6 +267,64 @@ fn a_run_clones_the_newest_snapshot_backs_up_the_clone_destroys_it_and_reports_t
     assert!(!host.called("restic forget"), "no retention, no forget");
     assert_eq!((history.len(), history[0].result), (1, Some(RunResult::Ok)));
     assert!(crate::daemon::progress::read_all(&rig.state.path().join("progress")).is_empty());
+}
+
+fn checking_job(days: Option<u32>) -> Job {
+    let mut j = job();
+    j.check_days = days;
+    j
+}
+
+#[test]
+fn the_first_successful_backup_checks_the_repository_and_the_next_ones_leave_it_alone_for_thirty_days() {
+    let rig = Rig::new();
+    let host = Host::new();
+    let (first, _) = rig.run(&host, &checking_job(None));
+    assert_eq!(first.result, RunResult::Ok, "{}", first.message);
+    assert!(first.message.ends_with("; restic check: the repository is sound"), "{}", first.message);
+    let check = host.calls().into_iter().find(|c| c.starts_with("restic check")).expect("restic check ran");
+    assert_eq!(check, "restic check --repo=/mnt/usb/restic --password-file=/root/pw --retry-lock=10m");
+    assert!(host.backup_args.lock().unwrap().len() == 1, "the check is not a backup");
+    let state = crate::daemon::restic_check::read_state(&rig.state.path().join("restic-checks.json"));
+    assert_eq!((state["job"].at, state["job"].ok), (now(), true));
+    // The same snapshot is up to date next time; a later backup within the interval does not check again.
+    let mut later = Host::new();
+    later.restic_snapshots = Ok("[]\n".into());
+    let (second, _) = rig.run(&later, &checking_job(None));
+    assert_eq!(second.result, RunResult::Ok, "{}", second.message);
+    assert!(!later.called("restic check") && !second.message.contains("restic check"), "{}", second.message);
+}
+
+#[test]
+fn a_check_that_finds_a_problem_fails_the_run_and_is_repeated_at_the_next_backup() {
+    let rig = Rig::new();
+    let mut host = Host::new();
+    host.check_script = "echo 'error for tree 1a2b: id not found in repository' >&2; exit 1".into();
+    let (outcome, history) = rig.run(&host, &checking_job(Some(30)));
+    assert_eq!(outcome.result, RunResult::Failed);
+    assert!(outcome.message.starts_with("backed up ") && outcome.message.contains("restic check found a problem") && outcome.message.contains("id not found"), "{}", outcome.message);
+    assert_eq!(history[0].result, Some(RunResult::Failed));
+    let state = crate::daemon::restic_check::read_state(&rig.state.path().join("restic-checks.json"));
+    assert!(!state["job"].ok);
+    let fixed = Host::new();
+    let (next, _) = rig.run(&fixed, &checking_job(Some(30)));
+    assert_eq!(next.result, RunResult::Ok, "{}", next.message);
+    assert!(fixed.called("restic check"), "a failed check does not wait for the interval");
+    assert!(crate::daemon::restic_check::read_state(&rig.state.path().join("restic-checks.json"))["job"].ok);
+}
+
+#[test]
+fn a_job_with_check_days_zero_never_checks_and_a_skipped_run_does_not_either() {
+    let rig = Rig::new();
+    let host = Host::new();
+    let (outcome, _) = rig.run(&host, &checking_job(Some(0)));
+    assert_eq!(outcome.result, RunResult::Ok);
+    assert!(!host.called("restic check"));
+    let mut done = Host::new();
+    done.restic_snapshots = Ok("[{\"id\":\"abc\"}]\n".into());
+    let (skipped, _) = rig.run(&done, &checking_job(Some(30)));
+    assert_eq!(skipped.result, RunResult::Skipped, "{}", skipped.message);
+    assert!(!done.called("restic check"), "a run that backed nothing up leaves the repository as it was");
 }
 
 const FRESH: &str = "zit-job-20261008T233000Z";
