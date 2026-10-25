@@ -22,6 +22,13 @@ pub struct Env<'a> {
     pub replication_state: &'a Path,
 }
 
+impl Env<'_> {
+    /// `restic-checks.json`, next to `replication.json` in the state directory: when each backup job last checked its repository.
+    pub fn check_state(&self) -> std::path::PathBuf {
+        self.replication_state.with_file_name("restic-checks.json")
+    }
+}
+
 /// What a run decided to send.
 struct Chosen {
     send: Vec<String>,

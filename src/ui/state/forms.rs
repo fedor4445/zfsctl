@@ -120,7 +120,7 @@ impl App {
 impl App {
     pub(super) fn backup_job_form(&self, existing: Option<crate::jobs::Job>) -> Modal {
         let yn = |b: bool| if b { "y" } else { "n" }.to_string();
-        let (title, host, dataset, path, source, fresh_keep, repository, password_file, keep, schedule, catch_up) = match &existing {
+        let (title, host, dataset, path, source, fresh_keep, repository, password_file, keep, schedule, catch_up, check_days) = match &existing {
             Some(j) => (
                 format!("Edit backup job '{}'", j.id),
                 j.host.clone(),
@@ -133,8 +133,9 @@ impl App {
                 j.retention.clone().unwrap_or_default(),
                 j.schedule.clone(),
                 j.catch_up,
+                j.check_days.map(|d| d.to_string()).unwrap_or_default(),
             ),
-            None => ("New backup job".to_string(), self.active_host_name().to_string(), String::new(), String::new(), crate::jobs::SOURCE_NEW.to_string(), String::new(), String::new(), String::new(), String::new(), "30 3 * * *".to_string(), true),
+            None => ("New backup job".to_string(), self.active_host_name().to_string(), String::new(), String::new(), crate::jobs::SOURCE_NEW.to_string(), String::new(), String::new(), String::new(), String::new(), "30 3 * * *".to_string(), true, String::new()),
         };
         Modal::Form {
             title,
@@ -149,6 +150,7 @@ impl App {
                 FormField { label: "Keep (e.g. 7d 4w 12m 3y 5l; blank = keep everything)".to_string(), value: keep },
                 FormField { label: "Schedule".to_string(), value: schedule },
                 FormField { label: "Catch up (y/n)".to_string(), value: yn(catch_up) },
+                FormField { label: format!("Check the repository every N days (blank = {}, 0 = never)", crate::jobs::DEFAULT_CHECK_DAYS), value: check_days },
             ],
             focused: 0,
             description: Some("Backs up a read-only clone of a snapshot. Source: new = take a fresh snapshot each run and keep the last few of those; a prefix = the newest <prefix>-<timestamp> (it takes none); @name = always that one snapshot. The repository must already exist (restic init).".to_string()),
@@ -186,6 +188,10 @@ pub(super) fn build_backup_job_action(kind: &FormKind, fields: &[FormField], sta
     let schedule = field_value(fields, 8).trim();
     crate::daemon::cron::Schedule::parse(schedule).map_err(|e| format!("Schedule: {e}"))?;
     let catch_up = yes_no("Catch up", field_value(fields, 9), true)?;
+    let check_days = match field_value(fields, 10).trim() {
+        "" => None,
+        n => Some(n.parse::<u32>().ok().filter(|d| *d <= 3650).ok_or_else(|| "Check every must be a whole number of days (0 = never, at most 3650), or blank".to_string())?),
+    };
     let taken: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
     let base = crate::jobs::Job {
         id: String::new(),
@@ -199,7 +205,7 @@ pub(super) fn build_backup_job_action(kind: &FormKind, fields: &[FormField], sta
         dest_host: None,
         dest_dataset: None,
         dest_dir: None,
-        dest_keep: None,
+        dest_keep: None, check_days,
         remote: None,
         bwlimit: None,
         force: false, raw: false,
@@ -311,7 +317,7 @@ pub(super) fn build_mirror_job_action(kind: &FormKind, fields: &[FormField], sta
         dest_host: None,
         dest_dataset: None,
         dest_dir: None,
-        dest_keep: None,
+        dest_keep: None, check_days: None,
         remote: Some(remote.to_string()),
         bwlimit: (!limit.is_empty()).then(|| limit.to_string()),
         force: false, raw: false,
@@ -394,6 +400,7 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
         dest_dataset: (!to_file).then(|| dest.to_string()),
         dest_dir: to_file.then(|| dest.to_string()),
         dest_keep,
+        check_days: None,
         remote: None,
         bwlimit: None,
         force,
@@ -462,7 +469,7 @@ pub(super) fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], s
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            dest_keep: None,
+            dest_keep: None, check_days: None,
             remote: None,
             bwlimit: None,
             force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,
@@ -515,7 +522,7 @@ pub(super) fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir:
             dest_host: None,
             dest_dataset: None,
             dest_dir: None,
-            dest_keep: None,
+            dest_keep: None, check_days: None,
             remote: None,
             bwlimit: None,
             force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None,

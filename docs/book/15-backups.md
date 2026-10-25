@@ -109,6 +109,7 @@ Press `F2` on Source to see what the dataset has: `new`, then the prefixes in us
 - **Repository**: restic's `-r` value: a path (`/mnt/usb/restic-tank`), `sftp:user@host:/path`, or `rclone:remote:path`.
 - **Password file**: the absolute path of the file you made, on that host (the form asks for it after the repository).
 - **Keep**: how many backups to keep, in restic's words: `7d 4w 12m 3y` is "seven dailies, four weeklies, twelve monthlies, three yearlies"; blank keeps everything.
+- **Check the repository every N days** (the last field; blank = 30, `0` = never): see *Check the repository* below.
 - **Schedule** and **catch up**, as in chapter 14.
 
 ### Check before you save
@@ -253,9 +254,11 @@ restic restore latest --repo /mnt/usb/restic-tank --password-file /root/.restic-
 
 The backed-up path inside is `/var/run/zfsctl/<job id>`, followed by the job's **Path** if it has one. Test a restore of one file now and then; a backup you have never restored from is a hope, not a backup.
 
-## Check the repository now and then
+## Check the repository
 
-`restic check` verifies the structure of a repository, and `restic check --read-data` also reads every stored byte (`--read-data-subset=5%` samples a part of it). The full read takes a long time and, on a cloud repository, downloads everything. zfsctl does not run `restic check` for you: schedule it from cron on the host that owns the repository, and read its answer.
+A backup that cannot be restored is the failure that stays silent until the day you need it, so a backup job checks its repository now and then. After a backup that has just worked, if the job's last check is older than **Check every N days** (30 unless you change it) or failed, zfsctl runs `restic check`. That verifies the repository's structure (the index, the snapshots and the trees they point to). It does not read every stored byte; `restic check --read-data` does, takes a long time and, on a cloud repository, downloads everything, so run that one yourself now and then (`--read-data-subset=5%` samples a part of it).
+
+A good check adds `; restic check: the repository is sound` to the run's message. A check that finds a problem turns the run **red** (`restic check found a problem: …`; the backup itself did run) and is repeated at the next backup, so the job stays red until the repository is repaired (see restic's [troubleshooting guide](https://restic.readthedocs.io/en/stable/077_troubleshooting.html)). `0` turns the check off for that job. The outcome is remembered in `restic-checks.json` in the state directory. The first backup after an upgrade runs a check, since nothing is recorded yet.
 
 ## Cancelling
 
