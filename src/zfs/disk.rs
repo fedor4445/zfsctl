@@ -20,6 +20,8 @@ pub enum DiskMembership {
     #[default]
     Available,
     InPool { pool: String, vdev: String },
+    /// A filesystem, swap, LVM or the like is on the disk or one of its partitions (Linux, from `lsblk`); `what` says which.
+    InUse { what: String },
 }
 
 /// What `rotationrate:` says: `0` is non-rotating, a positive number is
@@ -162,7 +164,7 @@ fn parse_disk_list(output: &str) -> Vec<DiskInfo> {
 pub fn list_disks(runner: &dyn CommandRunner, os: Option<HostOs>) -> Result<Vec<DiskInfo>> {
     match os {
         Some(HostOs::Linux) => {
-            let args = ["-b", "-d", "-n", "-P", "-o", "NAME,SIZE,TYPE,MODEL,SERIAL,ROTA"];
+            let args = ["-b", "-n", "-P", "-o", "NAME,SIZE,TYPE,MODEL,SERIAL,ROTA,PKNAME,FSTYPE,MOUNTPOINT"];
             let out = runner.run_unprivileged("lsblk", &args)?;
             if !out.success() {
                 return Err(crate::error::AppError::CommandFailed { cmd: "lsblk".to_string(), status: out.status, stderr: out.stderr });
@@ -206,10 +208,28 @@ fn unescape_lsblk(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn lsblk_field<'a>(row: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
+    row.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+}
+
+/// The disk a row sits on: its own name for a disk, else its parent, then that one's parent (a partition, then LVM on it).
+fn lsblk_root<'a>(rows: &[Vec<(&'a str, &'a str)>], disk_names: &[&str], row: &[(&'a str, &'a str)]) -> &'a str {
+    let mut name = lsblk_field(row, "NAME").unwrap_or_default();
+    let mut parent = lsblk_field(row, "PKNAME").unwrap_or_default();
+    for _ in 0..8 {
+        if disk_names.contains(&name) || parent.is_empty() {
+            break;
+        }
+        name = parent;
+        parent = rows.iter().find(|r| lsblk_field(r, "NAME") == Some(name)).and_then(|r| lsblk_field(r, "PKNAME")).unwrap_or_default();
+    }
+    name
+}
+
 fn parse_lsblk(output: &str) -> Vec<DiskInfo> {
-    output
+    let rows: Vec<Vec<(&str, &str)>> = output
         .lines()
-        .filter_map(|line| {
+        .map(|line| {
             let mut pairs: Vec<(&str, &str)> = Vec::new();
             let mut rest = line.trim();
             while let Some(eq) = rest.find("=\"") {
@@ -218,19 +238,38 @@ fn parse_lsblk(output: &str) -> Vec<DiskInfo> {
                 pairs.push((rest[..eq].trim(), &after[..end]));
                 rest = &after[end + 1..];
             }
-            let get = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
-            let text = |key: &str| get(key).map(unescape_lsblk);
-            (get("TYPE")? == "disk").then(|| DiskInfo {
-                name: get("NAME").unwrap_or_default().to_string(),
-                size: get("SIZE").and_then(|s| s.parse().ok()).unwrap_or(0),
-                membership: DiskMembership::Available,
-                model: text("MODEL").and_then(|m| clean_identity(&m)),
-                serial: text("SERIAL").and_then(|s| clean_identity(&s)),
-                media: match get("ROTA") {
-                    Some("1") => DiskMedia::Hdd(0),
-                    Some("0") => DiskMedia::Ssd,
-                    _ => DiskMedia::Unknown,
-                },
+            pairs
+        })
+        .collect();
+    let disk_names: Vec<&str> = rows.iter().filter(|r| lsblk_field(r, "TYPE") == Some("disk")).filter_map(|r| lsblk_field(r, "NAME")).collect();
+    // What is on each disk: its own row and every row below it (partitions, then LVM or crypt devices on those).
+    let in_use = |disk: &str| {
+        let on_disk = || rows.iter().filter(|r| lsblk_root(&rows, &disk_names, r) == disk);
+        let mounted = on_disk().filter_map(|r| lsblk_field(r, "MOUNTPOINT")).filter(|m| !m.is_empty()).min_by_key(|m| (*m != "/", m.len()));
+        let kind = on_disk().filter_map(|r| lsblk_field(r, "FSTYPE")).find(|f| !f.is_empty() && *f != "zfs_member");
+        match (mounted, kind) {
+            (Some(m), _) => Some(format!("mounted at {m}")),
+            (None, Some(f)) => Some(format!("holds {f}")),
+            (None, None) => None,
+        }
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let text = |key: &str| lsblk_field(row, key).map(unescape_lsblk);
+            (lsblk_field(row, "TYPE")? == "disk").then(|| {
+                let name = lsblk_field(row, "NAME").unwrap_or_default().to_string();
+                DiskInfo {
+                    membership: in_use(&name).map_or(DiskMembership::Available, |what| DiskMembership::InUse { what }),
+                    name,
+                    size: lsblk_field(row, "SIZE").and_then(|s| s.parse().ok()).unwrap_or(0),
+                    model: text("MODEL").and_then(|m| clean_identity(&m)),
+                    serial: text("SERIAL").and_then(|s| clean_identity(&s)),
+                    media: match lsblk_field(row, "ROTA") {
+                        Some("1") => DiskMedia::Hdd(0),
+                        Some("0") => DiskMedia::Ssd,
+                        _ => DiskMedia::Unknown,
+                    },
+                }
             })
         })
         .filter(|d| !d.name.is_empty() && !is_virtual_block_device(&d.name))
@@ -463,6 +502,35 @@ Providers:
     const IOSTAT_EN_OMNIOS: &str = include_str!("disk_fixtures/iostat_en_omnios.txt");
 
     #[test]
+    fn a_linux_disk_with_a_mounted_or_foreign_filesystem_on_it_is_in_use_not_available() {
+        let text = concat!(
+            "NAME=\"vda\" SIZE=\"42949672960\" TYPE=\"disk\" PKNAME=\"\" FSTYPE=\"\" MOUNTPOINT=\"\"\n",
+            "NAME=\"vda1\" SIZE=\"1\" TYPE=\"part\" PKNAME=\"vda\" FSTYPE=\"vfat\" MOUNTPOINT=\"/boot/efi\"\n",
+            "NAME=\"vda2\" SIZE=\"1\" TYPE=\"part\" PKNAME=\"vda\" FSTYPE=\"ext4\" MOUNTPOINT=\"/\"\n",
+            "NAME=\"vdb\" SIZE=\"10\" TYPE=\"disk\" PKNAME=\"\" FSTYPE=\"\" MOUNTPOINT=\"\"\n",
+            "NAME=\"vdb1\" SIZE=\"10\" TYPE=\"part\" PKNAME=\"vdb\" FSTYPE=\"LVM2_member\" MOUNTPOINT=\"\"\n",
+            "NAME=\"vg-root\" SIZE=\"10\" TYPE=\"lvm\" PKNAME=\"vdb1\" FSTYPE=\"xfs\" MOUNTPOINT=\"/data\"\n",
+            "NAME=\"vdc\" SIZE=\"10\" TYPE=\"disk\" PKNAME=\"\" FSTYPE=\"\" MOUNTPOINT=\"\"\n",
+            "NAME=\"vdc1\" SIZE=\"10\" TYPE=\"part\" PKNAME=\"vdc\" FSTYPE=\"zfs_member\" MOUNTPOINT=\"\"\n",
+            "NAME=\"vdd\" SIZE=\"10\" TYPE=\"disk\" PKNAME=\"\" FSTYPE=\"swap\" MOUNTPOINT=\"[SWAP]\"\n",
+            "NAME=\"vde\" SIZE=\"10\" TYPE=\"disk\" PKNAME=\"\" FSTYPE=\"\" MOUNTPOINT=\"\"\n",
+            "NAME=\"loop0\" SIZE=\"1\" TYPE=\"loop\" PKNAME=\"\" FSTYPE=\"squashfs\" MOUNTPOINT=\"/snap/core\"\n",
+        );
+        let by_name: Vec<(String, DiskMembership)> = parse_lsblk(text).into_iter().map(|d| (d.name, d.membership)).collect();
+        let in_use = |what: &str| DiskMembership::InUse { what: what.to_string() };
+        assert_eq!(
+            by_name,
+            [
+                ("vda".to_string(), in_use("mounted at /")),
+                ("vdb".to_string(), in_use("mounted at /data")),
+                ("vdc".to_string(), DiskMembership::Available),
+                ("vdd".to_string(), in_use("mounted at [SWAP]")),
+                ("vde".to_string(), DiskMembership::Available),
+            ]
+        );
+    }
+
+    #[test]
     fn lsblk_hex_escapes_in_the_model_are_decoded() {
         let disks = parse_lsblk("NAME=\"sda\" SIZE=\"4000787030016\" TYPE=\"disk\" MODEL=\"WDC\\x20WD40EFRX\\x2d68N32N0\" SERIAL=\"WD-WCC7K1234567\" ROTA=\"1\"\n");
         assert_eq!(disks[0].model.as_deref(), Some("WDC WD40EFRX-68N32N0"));
@@ -643,6 +711,7 @@ Providers:
         let vdev = |i: usize| match &disks[i].membership {
             DiskMembership::InPool { vdev, .. } => vdev.clone(),
             DiskMembership::Available => "available".to_string(),
+            DiskMembership::InUse { .. } => unreachable!("only lsblk marks a disk in use"),
         };
         assert_eq!([vdev(0), vdev(1), vdev(2), vdev(3), vdev(4), vdev(5), vdev(6)], ["da0", "special mirror-1", "special mirror-1", "log", "cache", "spare", "available"]);
     }
