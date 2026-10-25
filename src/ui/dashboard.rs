@@ -671,7 +671,17 @@ pub struct ProtectionPopup {
 impl Dashboard {
     /// How many lines the selection moves through: the Needs attention lines, then one row per group.
     pub fn selectable(&self) -> usize {
-        self.attention.len() + self.groups.as_ref().map_or(0, Vec::len) + usize::from(self.safety.is_some())
+        self.attention.len() + self.groups.as_ref().map_or(0, Vec::len) + usize::from(self.safety.is_some()) + usize::from(self.has_ignored_line())
+    }
+
+    /// Whether the line that names the ignored datasets is drawn (under the data-safety line) and can be selected.
+    pub fn has_ignored_line(&self) -> bool {
+        self.safety.is_some() && !self.ignored.is_empty()
+    }
+
+    /// Whether a selection index stands for the ignored-datasets line (the one after the data-safety line).
+    pub fn is_ignored(&self, selection: usize) -> bool {
+        self.has_ignored_line() && selection == self.attention.len() + self.groups.as_ref().map_or(0, Vec::len) + 1
     }
 
     /// Whether a selection index stands for the data-safety line (the last line to move to).

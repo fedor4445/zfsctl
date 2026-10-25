@@ -1,0 +1,26 @@
+┌zfsctl────────────────┐┌Ignored datasets──────────────────────────────────────────────────────┐             ✖ 4 issues
+│Dashboard             ││44 datasets are ignored, with everything below.                       │
+│Hosts                 ││Space marks; Enter or u checks the marked ones (or this one) again.   │───────────────────────
+│Pools                 ││                                                                      │
+│Datasets              ││  local:zroot/ROOT                                                    │
+│Snapshots             ││  local:zroot/ROOT/default                                            │
+│Disks                 ││  local:zroot/tmp                                                     │
+│Shares                ││  local:zroot/usr/ports                                               │
+│Boot Envs             ││  local:zroot/usr/src                                                 │───────────────────────
+│Jobs                  ││  local:zroot/var                                                     │  Errors
+│Cloud                 ││  local:zroot/var/audit                                               │  0
+│Alerts                ││  local:zroot/var/crash                                               │  0
+│Settings              ││  local:zroot/var/log                                                 │copy 27 min · 1 data se…
+│                      ││  local:zroot/var/mail                                                │l:zroot/tmp and 41 more…
+│                      ││  local:zroot/var/tmp                                                 │
+│                      ││  fbsd16:zroot/ROOT                                                   │
+│                      ││  fbsd16:zroot/ROOT/default                                           │       Traffic  In buck…
+│                      ││  fbsd16:zroot/tmp                                                    │       -        -
+│                      ││  fbsd16:zroot/usr/ports                                              │       -        -
+│                      ││  fbsd16:zroot/usr/src                                                │       -        -
+│                      ││  fbsd16:zroot/var                                                    │ago) · report 2026-10-25
+│                      ││  fbsd16:zroot/var/audit                                              │
+│                      ││  fbsd16:zroot/var/crash                                              │
+│                      ││  fbsd16:zroot/var/log                                                │
+└──────────────────────┘│  fbsd16:zroot/var/mail                                               │
+↑/↓ Move  Enter Check ag└──────────────────────────────────────────────────────────────────────┘

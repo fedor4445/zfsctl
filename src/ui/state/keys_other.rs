@@ -150,6 +150,14 @@ impl App {
                     self.modal = Some(Modal::Info { title: "Data safety".to_string(), body: dashboard.safety_popup() });
                     return true;
                 }
+                // The ignored-datasets line opens the list of them, to check one again.
+                if self.dashboard_table.selected().is_some_and(|i| dashboard.is_ignored(i)) {
+                    let rows = dashboard.ignored.clone();
+                    let note = format!("{} dataset{} ignored, with everything below.\nSpace marks; Enter or u checks the marked ones (or this one) again.", rows.len(), if rows.len() == 1 { " is" } else { "s are" });
+                    let look = crate::ui::modal::ChooseLook { marked: vec![false; rows.len()], ..Default::default() };
+                    self.modal = Some(Modal::Choose { title: "Ignored datasets".to_string(), note, rows: rows.clone(), selected: 0, then: crate::ui::modal::ChooseThen::Ignored(rows), look });
+                    return true;
+                }
                 // A group row opens the Hosts list narrowed to that tag.
                 if let Some(group) = self.dashboard_table.selected().and_then(|i| dashboard.group_at(i)) {
                     let tag = group.tag.clone();

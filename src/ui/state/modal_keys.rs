@@ -80,6 +80,24 @@ impl App {
         const PAGE: usize = 10;
         let ChooseParts { title, note, rows, selected, then, mut look } = parts;
         let last = rows.len().saturating_sub(1);
+        if let ChooseThen::Ignored(entries) = &then {
+            match key {
+                KeyCode::Char(' ') => {
+                    if let Some(flag) = look.marked.get_mut(selected) {
+                        *flag = !*flag;
+                    }
+                    self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
+                    return None;
+                }
+                KeyCode::Enter | KeyCode::Char('u') => {
+                    let picked: Vec<usize> = if look.marked.iter().any(|m| *m) { look.marked.iter().enumerate().filter(|(_, m)| **m).map(|(i, _)| i).collect() } else { vec![selected] };
+                    let back = Modal::Choose { title, note, rows, selected, then: then.clone(), look };
+                    self.confirm_unignore_datasets(entries, &picked, back);
+                    return None;
+                }
+                _ => {}
+            }
+        }
         if !look.marked.is_empty() {
             if let ChooseThen::Unprotected(gaps) = &then {
                 match key {
@@ -172,6 +190,30 @@ impl App {
         self.modal = Some(Modal::Confirm { choice: None, prompt, action });
     }
 
+    /// Enter or `u` in the ignored-datasets list: check the picked datasets again, after one confirmation. Declining returns to the list.
+    fn confirm_unignore_datasets(&mut self, all: &[String], picked: &[usize], back: Modal) {
+        let entries: Vec<String> = picked.iter().filter_map(|i| all.get(*i).cloned()).collect();
+        if entries.is_empty() {
+            self.modal = Some(back);
+            return;
+        }
+        let more = entries.len().saturating_sub(8);
+        let mut shown: Vec<String> = entries.iter().take(8).map(|e| format!("  {e}")).collect();
+        if more > 0 {
+            shown.push(format!("  and {more} more"));
+        }
+        let prompt = format!(
+            "Check {} dataset{} again, and everything below {}?\n{}\nThey come back to the Dashboard, the alerts and the unprotected list of the daily report. Nothing on the hosts is touched.",
+            entries.len(),
+            if entries.len() == 1 { "" } else { "s" },
+            if entries.len() == 1 { "it" } else { "them" },
+            shown.join("\n")
+        );
+        let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Dashboard, call: MutationCall::UnignoreDatasets { config_path: self.config_path.clone(), entries } };
+        self.confirm_restore = Some((prompt.clone(), back));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
+    }
+
     /// `s` in the unprotected list: one snapshot job (hourly, prefix auto, newest 24 kept) for each picked dataset that has no
     /// snapshot job at all, after one confirmation that names them and says what was left out and why. Declining returns to
     /// the list with the marks.
@@ -258,6 +300,8 @@ impl App {
                     self.fix_unprotected(gap);
                 }
             }
+            // Enter is handled in `choose_key`, which has the marks.
+            ChooseThen::Ignored(_) => {}
             ChooseThen::Provider => {
                 if let Some(provider) = crate::ui::cloud_guide::PROVIDERS.get(row) {
                     self.info_scroll = 0;
