@@ -141,8 +141,7 @@ const ZFS_ALLOW_PERMISSIONS: &[&str] = &[
 ];
 
 /// The 14 `NFSv4` ACE permission names -- matches the vocabulary
-/// confirmed live against real `getfacl -v` output during the File
-/// ACLs feature (`docs/superpowers/specs/2026-10-03-file-acls-design.md`).
+/// confirmed live against real `getfacl -v` output on FreeBSD.
 const ACL_PERMISSIONS: &[&str] = &[
     "read_data", "write_data", "append_data", "read_xattr", "write_xattr", "execute", "delete_child",
     "read_attributes", "write_attributes", "delete", "read_acl", "write_acl", "write_owner", "synchronize",
