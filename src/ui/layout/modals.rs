@@ -67,7 +67,7 @@ pub(super) const CONFIRM_NONE: &str = "Press y for yes or n for no, then Enter."
 pub(super) const CONFIRM_YES: &str = "▶ YES selected: press Enter to run it (n or Esc to change).";
 pub(super) const CONFIRM_NO: &str = "▶ NO selected: press Enter to cancel (y to change).";
 
-pub(super) fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, info_scroll: u16, theme: &Theme, area: Rect) {
+pub(super) fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui::state::PreflightCheck>, info_scroll: u16, choose_top: &std::cell::Cell<usize>, theme: &Theme, area: Rect) {
     // Estimate the popup's eventual inner width (minus borders) so we
     // can reserve enough height up front — sizing the popup by a flat
     // percentage of the terminal's height let long prompts or the
@@ -213,10 +213,14 @@ pub(super) fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui:
             let mut lines: Vec<Line> = note.lines().map(|l| Line::raw(l.to_string())).collect();
             lines.push(Line::raw(""));
             let mut chosen_at = lines.len();
+            let mut chosen_top = usize::MAX;
             for (i, row) in rows.iter().enumerate() {
                 if let Some((_, head)) = look.heads.iter().find(|(at, _)| *at == i) {
                     if i > 0 {
                         lines.push(Line::raw(""));
+                    }
+                    if i == *selected {
+                        chosen_top = lines.len();
                     }
                     lines.push(Line::styled(head.clone(), theme.header()));
                 }
@@ -225,14 +229,22 @@ pub(super) fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui:
                 let text = if look.heads.is_empty() { format!("{mark}{row}") } else { format!("  {mark}{row}") };
                 if i == *selected {
                     chosen_at = lines.len();
+                    chosen_top = chosen_top.min(chosen_at);
                     lines.push(Line::styled(text, base.patch(theme.selected_row())));
                 } else {
                     lines.push(Line::styled(text, base));
                 }
             }
-            // Keep the chosen row in view: scroll just far enough that it is the last line shown.
+            // Keep the chosen row in view: the view stays put until the row (with its heading) leaves it, then moves just far enough.
             let visible = usize::from(popup_area.height.saturating_sub(2));
-            let scroll = u16::try_from((chosen_at + 1).saturating_sub(visible)).unwrap_or(u16::MAX);
+            let mut top = choose_top.get().min(lines.len().saturating_sub(visible));
+            if chosen_top < top {
+                top = chosen_top;
+            } else if chosen_at + 1 > top + visible {
+                top = chosen_at + 1 - visible;
+            }
+            choose_top.set(top);
+            let scroll = u16::try_from(top).unwrap_or(u16::MAX);
             let p = Paragraph::new(lines).scroll((scroll, 0)).block(Block::default().borders(Borders::ALL).title(title.as_str()));
             f.render_widget(p, popup_area);
         }
