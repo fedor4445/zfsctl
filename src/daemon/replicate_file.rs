@@ -11,7 +11,7 @@ use super::scrub::{event, finish, Outcome, Slot};
 use super::transfer::pump_to_file;
 use crate::exec::CommandRunner;
 use crate::jobs::{effective_prefix, Job};
-use crate::zfs::replication::{list_snapshot_infos, parse_send_size, plan, send_args, Plan, SnapInfo};
+use crate::zfs::replication::{list_snapshot_infos, parse_send_size, plan, send_args, Base, Plan, SnapInfo};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -106,8 +106,9 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     let (new, base) = match plan(&source, &known, &prefix) {
         Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
         Plan::UpToDate(name) => return skipped(format!("{UP_TO_DATE} ({name})")),
-        Plan::Send { new, base } => (new, base),
+        Plan::Send { new, base } => (new, base.map(|b| b.on_destination().to_string())),
     };
+    let base_ref = base.clone().map(Base::Snapshot);
     let Some(new_guid) = source.iter().find(|s| s.name == new).map(|s| s.guid) else { return failed(format!("snapshot {new} vanished from {dataset}")) };
 
     let name = stream_name(&dataset, &new, base.as_deref());
@@ -136,10 +137,10 @@ pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, schedul
     };
 
     // The size is only for the progress display; a failed or unparseable estimate is not an error.
-    let dry = send_args(&dataset, &new, base.as_deref(), true, job.raw);
+    let dry = send_args(&dataset, &new, base_ref.as_ref(), true, job.raw);
     let dry_refs: Vec<&str> = dry.iter().map(String::as_str).collect();
     let total = src.run("zfs", &dry_refs).ok().and_then(|out| parse_send_size(&out.stdout));
-    let send = send_args(&dataset, &new, base.as_deref(), false, job.raw);
+    let send = send_args(&dataset, &new, base_ref.as_ref(), false, job.raw);
     let send_refs: Vec<&str> = send.iter().map(String::as_str).collect();
     let send_cmd = match src.command("zfs", &send_refs) {
         Ok(c) => c,
