@@ -242,14 +242,7 @@ impl MutationCall {
 
     /// The single place that maps a `MutationCall` variant to its
     /// underlying `zfs::*` library call.
-    #[cfg(test)]
     pub fn run(&self, runner: &dyn CommandRunner) -> Result<()> {
-        self.run_on(runner, None)
-    }
-
-    /// `run` on a host whose OS is `os` (`None`: not known, treated as FreeBSD): the boot environment calls use the tool of
-    /// that OS.
-    pub fn run_on(&self, runner: &dyn CommandRunner, os: Option<crate::zfs::host_health::HostOs>) -> Result<()> {
         match self {
             MutationCall::ScrubPool { pool } => crate::zfs::pool::scrub_pool(runner, pool),
             MutationCall::ResilverPool { pool } => crate::zfs::pool::resilver_pool(runner, pool),
@@ -294,13 +287,13 @@ impl MutationCall {
             MutationCall::CreateEncryptedDataset { name, cipher, passphrase } => crate::zfs::encryption::create_encrypted(runner, name, cipher, &passphrase.0),
             MutationCall::UnloadKey { dataset } => crate::zfs::encryption::unload_key(runner, dataset),
             MutationCall::ChangeKey { dataset, passphrase } => crate::zfs::encryption::change_key(runner, dataset, &passphrase.0),
-            MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref(), os),
-            MutationCall::ActivateBootEnv { name, temporary } => crate::zfs::bootenv::activate(runner, name, *temporary, os),
-            MutationCall::ClearTemporaryBootEnv { name } => crate::zfs::bootenv::clear_temporary(runner, name, os),
-            MutationCall::RenameBootEnv { from, to } => crate::zfs::bootenv::rename(runner, from, to, os),
-            MutationCall::MountBootEnv { name } => crate::zfs::bootenv::mount(runner, name, os),
-            MutationCall::UnmountBootEnv { name } => crate::zfs::bootenv::unmount(runner, name, os),
-            MutationCall::DestroyBootEnv { name, origin } => crate::zfs::bootenv::destroy(runner, name, *origin, os),
+            MutationCall::CreateBootEnv { name, from } => crate::zfs::bootenv::create(runner, name, from.as_deref()),
+            MutationCall::ActivateBootEnv { name, temporary } => crate::zfs::bootenv::activate(runner, name, *temporary),
+            MutationCall::ClearTemporaryBootEnv { name } => crate::zfs::bootenv::clear_temporary(runner, name),
+            MutationCall::RenameBootEnv { from, to } => crate::zfs::bootenv::rename(runner, from, to),
+            MutationCall::MountBootEnv { name } => crate::zfs::bootenv::mount(runner, name),
+            MutationCall::UnmountBootEnv { name } => crate::zfs::bootenv::unmount(runner, name),
+            MutationCall::DestroyBootEnv { name, origin } => crate::zfs::bootenv::destroy(runner, name, *origin),
             MutationCall::SaveJob { state_dir, job } => crate::jobs::upsert(&state_dir.join("jobs.toml"), job.as_ref().clone()),
             MutationCall::IgnoreDatasets { config_path, entries } => {
                 let now: Vec<String> = crate::config::Config::load(config_path).ok().map(|c| crate::config::parse_ignore(c.protection.ignore.as_ref()).0).unwrap_or_default().into_iter().map(|(h, d)| format!("{h}:{d}")).collect();
@@ -810,7 +803,7 @@ mod tests {
     fn restore_call() -> MutationCall {
         use crate::zfs::snapshot_browse::{EntryKind, ListEntry};
         let entry = ListEntry { name: "a.txt".into(), kind: EntryKind::File, mode: "-rw-r--r--".into(), owner: "alice".into(), group: "alice".into(), size: 1234, time: None, link_target: None, ambiguous: false };
-        let source = crate::zfs::snapshot_restore::RestoreSource { dataset: "tank/data".into(), snapshot: "s1".into(), mountpoint: "/tank/data".into(), folder: vec![], entry, zone: None, os: crate::zfs::host_health::HostOs::FreeBsd };
+        let source = crate::zfs::snapshot_restore::RestoreSource { dataset: "tank/data".into(), snapshot: "s1".into(), mountpoint: "/tank/data".into(), folder: vec![], entry, };
         let plan = crate::zfs::snapshot_restore::plan_restore(&source, "a.restored-s1.txt").unwrap();
         MutationCall::RestoreFile { plan: Box::new(plan), source: Box::new(source), host: "hub".into() }
     }

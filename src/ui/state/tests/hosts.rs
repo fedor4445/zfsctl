@@ -8,8 +8,8 @@ fn a_mutation_the_hosts_os_cannot_serve_is_refused_before_anything_is_sent() {
     use crate::ui::modal::{MutationCall, PendingAction};
     let cases = [
         (Section::Shares, MutationCall::RemoveSmbShare { dataset: "tank/x".into() }, None),
-        (Section::Shares, MutationCall::RemoveSmbShare { dataset: "tank/x".into() }, Some(HostOs::Linux)),
-        (Section::BootEnvs, MutationCall::CreateBootEnv { name: "be".into(), from: None }, Some(HostOs::Linux)),
+        (Section::Shares, MutationCall::RemoveSmbShare { dataset: "tank/x".into() }, Some(HostOs::Other)),
+        (Section::BootEnvs, MutationCall::CreateBootEnv { name: "be".into(), from: None }, Some(HostOs::Other)),
     ];
     for (section, call, os) in cases {
         let mut app = App::new(vec!["local".to_string()]);
@@ -901,12 +901,12 @@ fn the_apps_host_os_follows_the_last_probe_that_detected_it() {
     let mut app = App::new(vec!["local".to_string(), "ub24".to_string()]);
     assert_eq!(app.host_os(1), None, "not probed yet");
     let reached = |os| HostProbe::Reached { rtt_ms: 1, pools: vec![], kind: None, os, os_name: None };
-    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(Some(HostOs::Linux)))).unwrap();
+    app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(Some(HostOs::Other)))).unwrap();
     app.drain_worker_messages();
-    assert_eq!(app.host_os(1), Some(HostOs::Linux));
+    assert_eq!(app.host_os(1), Some(HostOs::Other));
     app.tx.send(WorkerMsg::HostHealth("ub24".into(), reached(None))).unwrap();
     app.drain_worker_messages();
-    assert_eq!(app.host_os(1), Some(HostOs::Linux), "a later probe that did not ask does not make it forget");
+    assert_eq!(app.host_os(1), Some(HostOs::Other), "a later probe that did not ask does not make it forget");
     assert_eq!(app.host_os(0), None);
     assert_eq!(app.host_os(9), None, "no such host");
 }

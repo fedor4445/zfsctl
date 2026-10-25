@@ -226,15 +226,10 @@ pub fn sample_host(runner: &dyn CommandRunner, host_os: Option<crate::zfs::host_
     let started = Instant::now();
     let os = stdout_of(runner.run_unprivileged("uname", &["-sr"])).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let os = match host_os {
-        Some(crate::zfs::host_health::HostOs::Other) => os.map(|s| format!("{s} (unrecognised OS: FreeBSD tools are tried)")),
+        Some(crate::zfs::host_health::HostOs::Other) => os.map(|s| format!("{s} (not FreeBSD: zfsctl reads it but does not change it)")),
         _ => os,
     };
     let rtt_ms = os.is_some().then(|| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
-    // Linux and illumos have their own readers for the rest (no `sysctl` there).
-    if let Some(other @ (crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos)) = host_os {
-        let status = stdout_of(runner.run("zpool", &["status", "-x"])).and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
-        return Ok(crate::zfs::host_facts_os::finish(runner, other, HostSummary { os, pools, status, rtt_ms, pool_rows, ..HostSummary::default() }));
-    }
     let now = stdout_of(runner.run_unprivileged("date", &["+%s"])).and_then(|s| s.trim().parse::<u64>().ok());
     let boot = stdout_of(runner.run_unprivileged("sysctl", &["-n", "kern.boottime"])).and_then(|s| parse_boottime(&s));
     let core = stdout_of(runner.run_unprivileged(
@@ -472,31 +467,11 @@ mod tests {
     }
 
     #[test]
-    fn a_linux_host_is_sampled_from_proc_without_sysctl_or_swapinfo() {
-        use crate::zfs::host_health::HostOs;
-        let runner = Scripted::new()
-            .on("zpool list", LIST)
-            .on("zpool status", STATUS)
-            .on("zpool iostat", "scratch\t1\t2\t0\t0\t0\t0\n")
-            .on("uname", "Linux 6.8.0-45-generic\n")
-            .on("sh -c echo '== meminfo'", "== meminfo\nMemTotal:       32850256 kB\nMemAvailable:   31218412 kB\nSwapTotal:       2097152 kB\nSwapFree:        1572864 kB\n== stat\ncpu  1 2 3 4 5 0 0 0 0 0\n== load\n0.04 0.02 0.00 1/756 1\n== arc\n== cores\n32\n")
-            .on("sh -c echo '== uptime'", "== uptime\n598760.37\n== model\nmodel name\t: Xeon E5\n== meminfo\nMemFree:          858624 kB\n== arc\nsize 4 100\nc_max 4 200\nhits 4 30\nmisses 4 10\n== zfs\n2.2.2\n");
-        let (s, _) = sample_host(&runner, Some(HostOs::Linux)).unwrap();
-        assert_eq!((s.os.as_deref(), s.zfs_version.as_deref(), s.uptime_secs, s.load), (Some("Linux 6.8.0-45-generic"), Some("2.2.2"), Some(598_760), Some([0.04, 0.02, 0.0])));
-        assert_eq!(s.cpu.as_ref().map(|c| (c.model.as_str(), c.cores)), Some(("Xeon E5", 32)));
-        assert_eq!(s.memory.map(|m| (m.physical, m.free)), Some((32_850_256 * 1024, 858_624 * 1024)));
-        assert_eq!(s.swap, Some(Swap { total: 2_097_152 * 1024, used: 524_288 * 1024 }));
-        assert_eq!(s.arc.map(|a| (a.size, a.max)), Some((100, 200)));
-        let calls = runner.calls.lock().unwrap().clone();
-        assert!(calls.iter().all(|c| !c.starts_with("sysctl") && !c.starts_with("swapinfo")), "{calls:?}");
-    }
-
-    #[test]
     fn an_os_we_do_not_recognise_is_marked_in_the_panel() {
         use crate::zfs::host_health::HostOs;
         let runner = full_host().on("uname", "Darwin 23.1.0\n");
         let (s, _) = sample_host(&runner, Some(HostOs::Other)).unwrap();
-        assert_eq!(s.os.as_deref(), Some("Darwin 23.1.0 (unrecognised OS: FreeBSD tools are tried)"));
+        assert_eq!(s.os.as_deref(), Some("Darwin 23.1.0 (not FreeBSD: zfsctl reads it but does not change it)"));
         let (known, _) = sample_host(&full_host(), Some(HostOs::FreeBsd)).unwrap();
         assert_eq!(known.os.as_deref(), Some("FreeBSD 15.1-RELEASE-p4"));
     }

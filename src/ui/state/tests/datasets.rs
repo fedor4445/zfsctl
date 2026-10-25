@@ -1352,12 +1352,3 @@ fn c_while_a_read_is_running_starts_no_second_one() {
     app.handle_key(KeyCode::Char('C'));
     assert_eq!(app.pending_changes.len(), 1);
 }
-
-#[test]
-fn r_on_a_zoned_dataset_says_it_must_be_done_inside_the_zone_and_opens_nothing() {
-    let mut app = browsing_on_file();
-    app.browse_view.as_mut().unwrap().zone = Some("z1".to_string());
-    app.handle_key(KeyCode::Char('R'));
-    assert!(app.modal.is_none());
-    assert_eq!(app.status_message.as_deref(), Some("restore from a dataset given to a zone must be done inside the zone"));
-}

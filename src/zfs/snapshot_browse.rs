@@ -4,7 +4,6 @@ use crate::daemon::transfer::run_lines;
 use crate::error::{AppError, Result};
 use crate::exec::privilege::lookup;
 use crate::exec::CommandRunner;
-use crate::zfs::host_health::HostOs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -64,134 +63,19 @@ pub fn snapshot_dir(mountpoint: &str, snapshot: &str, relative: &[&str]) -> Resu
     Ok(dir)
 }
 
-/// Where the folders of a dataset's snapshots can be read: a directory path that holds `.zfs/snapshot`, and the zone it was
-/// found through (a dataset given to a zone is read through that zone's root directory).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrowseBase {
-    pub path: String,
-    pub zone: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ZoneRow {
-    name: String,
-    running: bool,
-    path: String,
-}
-
-/// A zone name as `zonecfg -z` takes it: 1 to 64 of letters, digits and `_ . -`, not starting with `-`.
-fn valid_zone_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 64 && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-}
-
-/// `zoneadm list -cp` lines (`id:name:state:path:uuid:brand:ip-type:id`), without the global zone, and how many other lines were
-/// skipped because their name or path would not be safe to use (a path must be absolute with plain steps) or the line was not in
-/// the eight-field format.
-fn parse_zoneadm_rows(stdout: &str) -> (Vec<ZoneRow>, usize) {
-    let mut skipped = 0;
-    let rows = stdout
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split(':').collect();
-            // Exactly the eight fields `zoneadm -p` prints: a line that is part of something else (a path with a newline or a
-            // colon in it) is not trusted.
-            let [id, name, state, path, _uuid, _brand, _ip, _zid] = fields.as_slice() else {
-                skipped += 1;
-                return None;
-            };
-            if *name == "global" {
-                return None;
-            }
-            let steps: Vec<&str> = path.strip_prefix('/').map(|p| p.split('/').collect()).unwrap_or_default();
-            let ok = !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit() || b == b'-') && valid_zone_name(name) && join_relative(&steps).is_some_and(|j| !j.is_empty());
-            if !ok {
-                skipped += 1;
-                return None;
-            }
-            Some(ZoneRow { name: (*name).to_string(), running: *state == "running", path: (*path).to_string() })
-        })
-        .collect();
-    (rows, skipped)
-}
-
-/// The running zones as `(name, zone path)`.
-#[cfg(test)]
-fn parse_zoneadm(stdout: &str) -> Vec<(String, String)> {
-    parse_zoneadm_rows(stdout).0.into_iter().filter(|z| z.running).map(|z| (z.name, z.path)).collect()
-}
-
-/// The zone that has `dataset` (or a dataset above it) given to it, as `(name, zone path)`. Asked with two commands that need no
-/// sudo: `zoneadm list -cp`, then `zonecfg -z NAME info dataset` for each zone. Several zones, none, or a stopped one is refused.
-pub fn zone_for_dataset(runner: &dyn CommandRunner, dataset: &str) -> Result<(String, String)> {
-    let listed = runner.run_unprivileged("zoneadm", &["list", "-cp"])?;
-    if !listed.success() {
-        return Err(AppError::CommandFailed { cmd: "zoneadm list -cp".to_string(), status: listed.status, stderr: listed.stderr });
-    }
-    let (mut running, mut stopped, mut unchecked) = (Vec::new(), Vec::new(), Vec::new());
-    let (zones, skipped) = parse_zoneadm_rows(&listed.stdout);
-    for zone in zones {
-        let info = match runner.run_unprivileged("zonecfg", &["-z", &zone.name, "info", "dataset"]) {
-            Ok(info) if info.success() => info,
-            _ => {
-                unchecked.push(zone.name);
-                continue;
-            }
-        };
-        let delegated = info.stdout.lines().filter_map(|l| l.trim().strip_prefix("name:")).map(str::trim).any(|d| dataset == d || dataset.strip_prefix(d).is_some_and(|rest| rest.starts_with('/')));
-        if delegated {
-            if zone.running { running.push(zone) } else { stopped.push(zone) }
-        }
-    }
-    // A zone that could not be asked (or a line that could not be used) might be the one that holds the dataset: refuse rather
-    // than pick another zone or say "no zone".
-    if !unchecked.is_empty() || skipped > 0 {
-        let mut parts = Vec::new();
-        if !unchecked.is_empty() {
-            parts.push(format!("zonecfg failed for {}", unchecked.join(", ")));
-        }
-        if skipped > 0 {
-            parts.push(format!("skipped {skipped} zone line(s) it could not use"));
-        }
-        return Err(AppError::Config(format!("could not check every zone ({}), so zfsctl cannot be sure which zone holds this dataset", parts.join("; "))));
-    }
-    match (running.as_slice(), stopped.as_slice()) {
-        ([one], _) => Ok((one.name.clone(), one.path.clone())),
-        ([], []) => Err(AppError::Config("no running zone is given this dataset, so its snapshots cannot be browsed from here".to_string())),
-        ([], [zone, ..]) => Err(AppError::Config(format!("the zone {} that holds this dataset is not running, so its snapshots cannot be browsed (start the zone first)", zone.name))),
-        (many, _) => Err(AppError::Config(format!("more than one zone ({}) is given this dataset, so zfsctl cannot tell which to read", many.iter().map(|z| z.name.as_str()).collect::<Vec<_>>().join(", ")))),
-    }
-}
-
 /// Where `dataset` can be browsed: its mountpoint, but only when ZFS says it is mounted there (an unmounted, `canmount=noauto`,
-/// key-not-loaded or `recv -u` dataset still reports a mountpoint, and another dataset may be mounted at that path). On illumos
-/// a dataset given to a zone is read through that zone's root directory (`<zone path>/root<mountpoint>`), because the global zone
-/// has no `.zfs` folder for it.
-pub fn browse_mountpoint(runner: &dyn CommandRunner, os: HostOs, dataset: &str) -> Result<BrowseBase> {
+/// key-not-loaded or `recv -u` dataset still reports a mountpoint, and another dataset may be mounted at that path).
+pub fn browse_mountpoint(runner: &dyn CommandRunner, dataset: &str) -> Result<String> {
     super::not_an_option(dataset)?;
-    let props = if os == HostOs::Illumos { "mounted,mountpoint,zoned" } else { "mounted,mountpoint" };
-    let out = super::run_checked(runner, "zfs", &["get", "-H", "-o", "property,value", props, dataset], &format!("zfs get {props} {dataset}"))?;
+    let out = super::run_checked(runner, "zfs", &["get", "-H", "-o", "property,value", "mounted,mountpoint", dataset], &format!("zfs get mounted,mountpoint {dataset}"))?;
     let raw = |name: &str| out.stdout.lines().filter_map(|l| l.split_once('\t')).find(|(k, _)| *k == name).map(|(_, v)| v.to_string());
-    let value = |name: &str| raw(name).map(|v| v.trim().to_string());
-    // A dataset given to a zone is looked up first: a halted zone has its datasets unmounted, and "the zone is not running" is the
-    // useful message, not "not mounted".
-    let zone = if os == HostOs::Illumos && value("zoned").as_deref() == Some("on") { Some(zone_for_dataset(runner, dataset)?) } else { None };
-    if value("mounted").as_deref() != Some("yes") {
+    if raw("mounted").map(|v| v.trim().to_string()).as_deref() != Some("yes") {
         return Err(AppError::Config("this dataset is not mounted, so there is no snapshot folder to browse".to_string()));
     }
-    let mountpoint = match raw("mountpoint") {
-        Some(m) if m.starts_with('/') => m,
-        _ => return Err(AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string())),
-    };
-    if let Some((zone, zone_path)) = zone {
-        // Everything after `<zone path>/root` is controlled by the zone's own root user (folders, symlinks, even this
-        // mountpoint), so the global zone's `ls` can be pointed elsewhere on the host by a hostile zone. What is shown is a
-        // hint, and a restore must never read or write through this path.
-        let inside = mountpoint.trim_start_matches('/');
-        let path = if inside.is_empty() { format!("{zone_path}/root") } else { format!("{zone_path}/root/{inside}") };
-        return Ok(BrowseBase { path, zone: Some(zone) });
+    match raw("mountpoint") {
+        Some(m) if m.starts_with('/') => Ok(m),
+        _ => Err(AppError::Config("this dataset is not mounted at a path (mountpoint none, legacy or -), so there is no snapshot folder to browse".to_string())),
     }
-    Ok(BrowseBase { path: mountpoint, zone: None })
 }
 
 /// Which of a file's times a listing prints.
@@ -202,15 +86,13 @@ pub enum Times {
     Created,
 }
 
-/// The listings to read for a host: illumos records no creation time that `ls` can print.
-pub fn times_for(os: HostOs) -> &'static [Times] {
-    if os == HostOs::Illumos { &[Times::Modified, Times::Changed] } else { &[Times::Modified, Times::Changed, Times::Created] }
-}
+/// The listings to read: modified, changed and created.
+pub const TIMES: [Times; 3] = [Times::Modified, Times::Changed, Times::Created];
 
 /// The arguments of one listing: a pinned `ls` form from the registry (so what is sent and what sudoers allows cannot drift),
-/// then `--` and the directory. `None` for a time the OS does not record.
-pub fn ls_args(os: HostOs, times: Times, dir: &str) -> Option<Vec<String>> {
-    let forms = crate::exec::privilege::pinned_forms(lookup("ls")?, os);
+/// then `--` and the directory.
+pub fn ls_args(times: Times, dir: &str) -> Option<Vec<String>> {
+    let forms = crate::exec::privilege::pinned_forms(lookup("ls")?);
     let offset = match times {
         Times::Modified => 0,
         Times::Changed => 1,
@@ -282,8 +164,8 @@ pub struct ListEntry {
     /// Seconds since 1970 (UTC) of the time this listing printed.
     pub time: Option<i64>,
     pub link_target: Option<String>,
-    /// The name (or link target) could not be decoded with certainty: illumos prints a backslash unescaped, so a name that holds
-    /// one may be an escape sequence or literal text. Such a name is shown but never opened or restored.
+    /// The name (or link target) could not be decoded with certainty (a symlink whose name or target holds ` -> ` itself). Such a
+    /// name is shown but never opened or restored.
     pub ambiguous: bool,
 }
 
@@ -356,48 +238,21 @@ fn decode_escapes(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The text between the opening double quote at the start of `text` and its closing quote (an escaped quote does not close it),
-/// and what follows the closing quote.
-fn split_quoted(text: &str) -> Option<(&str, &str)> {
-    let inner = text.strip_prefix('"')?;
-    let mut escaped = false;
-    for (i, c) in inner.char_indices() {
-        match c {
-            _ if escaped => escaped = false,
-            '\\' => escaped = true,
-            '"' => return Some((inner.get(..i)?, inner.get(i + 1..)?)),
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Name, symlink target and whether they are ambiguous, from the name part of an escaped `ls -l` line.
-fn split_name(os: HostOs, kind: EntryKind, text: &str) -> Option<(String, Option<String>, bool)> {
+fn split_name(kind: EntryKind, text: &str) -> Option<(String, Option<String>, bool)> {
     let is_link = kind == EntryKind::Symlink;
-    if os == HostOs::Linux {
-        // GNU `ls -Q`: "name", and for a symlink "name" -> "target".
-        let (name, rest) = split_quoted(text)?;
-        if !is_link {
-            return rest.is_empty().then(|| (decode_escapes(name), None, false));
-        }
-        let target = rest.strip_prefix(" -> ")?;
-        let (target, tail) = split_quoted(target)?;
-        return tail.is_empty().then(|| (decode_escapes(name), Some(decode_escapes(target)), false));
-    }
     // `ls -b`: the name as it is, with escapes. A symlink target follows ` -> `; a link whose name or target holds that arrow too
     // cannot be split with certainty.
-    let ambiguous_text = |s: &str| os == HostOs::Illumos && s.contains('\\');
     if !is_link {
-        return Some((decode_escapes(text), None, ambiguous_text(text)));
+        return Some((decode_escapes(text), None, false));
     }
     let arrows = text.matches(" -> ").count();
     let (name, target) = text.split_once(" -> ")?;
-    Some((decode_escapes(name), Some(decode_escapes(target)), arrows > 1 || ambiguous_text(name) || ambiguous_text(target)))
+    Some((decode_escapes(name), Some(decode_escapes(target)), arrows > 1))
 }
 
 /// Parses one `ls -lA` line as printed by [`ls_args`]. `None` for the `total` line and anything that is not an entry.
-pub fn parse_ls_line(os: HostOs, line: &str) -> Option<ListEntry> {
+pub fn parse_ls_line(line: &str) -> Option<ListEntry> {
     let (mode, rest) = word(line)?;
     let kind = EntryKind::from_mode_char(mode.chars().next()?);
     if mode.len() < 10 || (kind == EntryKind::Other && !mode.starts_with('?')) {
@@ -416,22 +271,14 @@ pub fn parse_ls_line(os: HostOs, line: &str) -> Option<ListEntry> {
     } else {
         size_word.parse::<u64>().ok()?
     };
-    let time = if os == HostOs::Illumos {
-        let (date, r1) = word(rest)?;
-        let (clock, r2) = word(r1)?;
-        let (zone, r3) = word(r2)?;
-        rest = r3;
-        chrono::DateTime::parse_from_str(&format!("{date} {clock} {zone}"), "%Y-%m-%d %H:%M:%S%.f %z").ok()?.timestamp()
-    } else {
-        let (epoch, r1) = word(rest)?;
-        rest = r1;
-        epoch.parse::<i64>().ok()?
-    };
+    let (epoch, r1) = word(rest)?;
+    rest = r1;
+    let time = epoch.parse::<i64>().ok()?;
     let text = rest.strip_prefix(' ').unwrap_or(rest);
     if text.is_empty() {
         return None;
     }
-    let (name, link_target, ambiguous) = split_name(os, kind, text)?;
+    let (name, link_target, ambiguous) = split_name(kind, text)?;
     Some(ListEntry { name, kind, mode: mode.to_string(), owner: owner.to_string(), group: group.to_string(), size, time: Some(time), link_target, ambiguous })
 }
 
@@ -476,7 +323,7 @@ struct Once {
 }
 
 /// Runs one `ls`, keeping at most `max_entries` parsed entries; the child is killed at the entry cap, the deadline or `cancel`.
-fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, deadline: Instant, os: HostOs, cancel: &AtomicBool) -> Result<Once> {
+fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, deadline: Instant, cancel: &AtomicBool) -> Result<Once> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let cmd = runner.command("ls", &words)?;
     let stop = AtomicBool::new(false);
@@ -504,7 +351,7 @@ fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, de
             if stop.load(Ordering::SeqCst) || line.starts_with("total ") {
                 return;
             }
-            match parse_ls_line(os, line) {
+            match parse_ls_line(line) {
                 Some(_) if once.entries.len() >= max_entries => {
                     once.truncated = true;
                     stop.store(true, Ordering::SeqCst);
@@ -533,27 +380,27 @@ fn list_once(runner: &dyn CommandRunner, args: &[String], max_entries: usize, de
 
 /// Reads one folder of a snapshot (`dir` comes from [`snapshot_dir`]): the modified-time listing decides the entries, the
 /// changed- and created-time listings are matched to them line by line and left unknown where they disagree.
-pub fn read_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
+pub fn read_folder(runner: &dyn CommandRunner, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
     if !dir.starts_with('/') || !dir.contains("/.zfs/snapshot/") || dir.len() > MAX_PATH || dir.chars().any(char::is_control) {
         return Err(AppError::Config("refusing to list a folder that is not inside a snapshot".to_string()));
     }
-    read_listing(runner, os, dir, limits, cancel)
+    read_listing(runner, dir, limits, cancel)
 }
 
 /// Reads one folder of the live tree (the restore's checks): the same listing as [`read_folder`], for an absolute path of at
 /// most 4096 bytes with no control character or U+FFFD and no empty, `.` or `..` step.
-pub fn read_live_folder(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
+pub fn read_live_folder(runner: &dyn CommandRunner, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
     let plain = dir.starts_with('/') && dir.len() <= MAX_PATH && !dir.chars().any(|c| c.is_control() || c == '\u{fffd}') && (dir == "/" || dir[1..].split('/').all(|s| !s.is_empty() && s != "." && s != ".."));
     if !plain {
         return Err(AppError::Config("refusing to list a folder whose path is not a plain absolute path".to_string()));
     }
-    read_listing(runner, os, dir, limits, cancel)
+    read_listing(runner, dir, limits, cancel)
 }
 
-fn read_listing(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
+fn read_listing(runner: &dyn CommandRunner, dir: &str, limits: &BrowseLimits, cancel: &AtomicBool) -> Result<Listing> {
     let deadline = Instant::now() + Duration::from_secs(limits.max_seconds);
-    let first_args = ls_args(os, Times::Modified, dir).ok_or_else(|| AppError::Config("no ls form for this host".to_string()))?;
-    let first = list_once(runner, &first_args, limits.max_entries, deadline, os, cancel)?;
+    let first_args = ls_args(Times::Modified, dir).ok_or_else(|| AppError::Config("no ls form for this host".to_string()))?;
+    let first = list_once(runner, &first_args, limits.max_entries, deadline, cancel)?;
     if let Some((status, stderr)) = &first.failure {
         if first.entries.is_empty() {
             return Err(AppError::CommandFailed { cmd: "ls".to_string(), status: *status, stderr: stderr.clone() });
@@ -562,9 +409,9 @@ fn read_listing(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &Brow
     let unreadable = first.unreadable + usize::from(first.failure.is_some());
     let mut rows: Vec<Row> = first.entries.into_iter().map(|entry| Row { entry, changed: None, created: None }).collect();
     let mut times_incomplete = false;
-    for times in times_for(os).iter().copied().filter(|t| *t != Times::Modified) {
-        let Some(args) = ls_args(os, times, dir) else { continue };
-        let other = list_once(runner, &args, limits.max_entries, deadline, os, cancel)?;
+    for times in TIMES.iter().copied().filter(|t| *t != Times::Modified) {
+        let Some(args) = ls_args(times, dir) else { continue };
+        let other = list_once(runner, &args, limits.max_entries, deadline, cancel)?;
         times_incomplete |= other.truncated;
         if other.failure.is_some() {
             continue;
@@ -579,7 +426,7 @@ fn read_listing(runner: &dyn CommandRunner, os: HostOs, dir: &str, limits: &Brow
             }
         }
     }
-    Ok(Listing { entries: rows, truncated: first.truncated, unreadable, has_created: times_for(os).contains(&Times::Created), times_incomplete })
+    Ok(Listing { entries: rows, truncated: first.truncated, unreadable, has_created: TIMES.contains(&Times::Created), times_incomplete })
 }
 
 /// What to tell the user about a failed listing on `host`: the sudoers entry that is missing, a snapshot folder that is not

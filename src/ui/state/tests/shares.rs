@@ -37,7 +37,7 @@ fn shares_result_for_a_stale_host_is_discarded() {
                 shares: vec![smb("tank/data")],
                 nfs_available: true,
                 samba_available: true,
-                smb_error: None, nfs_unknown: false, samba_unknown: false,
+                smb_error: None,
             }),
         ))
         .unwrap();
@@ -428,7 +428,7 @@ fn clearing_the_message_clears_the_error_state() {
 #[test]
 fn a_share_refresh_keeps_the_selection_on_the_same_share_and_protocol() {
     let nfs = |d: &str| crate::zfs::share::Share::Nfs { dataset: d.to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None };
-    let snapshot = |shares| crate::zfs::share::SharesSnapshot { shares, nfs_available: true, samba_available: true, smb_error: None, nfs_unknown: false, samba_unknown: false };
+    let snapshot = |shares| crate::zfs::share::SharesSnapshot { shares, nfs_available: true, samba_available: true, smb_error: None };
     let mut app = in_section(Section::Shares);
     app.shares = vec![nfs("tank/a"), smb("tank/b")];
     app.shares_table.select(Some(1)); // the SMB share on tank/b
@@ -448,8 +448,8 @@ fn a_quiet_shares_refresh_keeps_an_informational_status() {
 }
 
 #[test]
-fn the_share_keys_in_datasets_do_nothing_on_a_host_where_shares_are_read_only_and_are_not_advertised() {
-    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
+fn the_share_keys_in_datasets_do_nothing_on_a_host_that_is_not_freebsd_and_are_not_advertised() {
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Other);
     app.selected_host = 1;
     go_to(&mut app, Section::Datasets);
     app.datasets = vec![ds_named("tank/data", Some("/tank/data"))];
@@ -458,46 +458,9 @@ fn the_share_keys_in_datasets_do_nothing_on_a_host_where_shares_are_read_only_an
     (app.shares_loaded, app.nfs_available, app.samba_available) = (true, Some(true), Some(true));
     app.handle_key(KeyCode::Char('N'));
     app.handle_key(KeyCode::Char('M'));
-    assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "no share form, no zfs set sharenfs on an illumos host: {:?}", app.modal);
+    assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "no share form, no zfs set sharenfs on a host that is not FreeBSD: {:?}", app.modal);
     assert!(!crate::ui::hints::hints(&app).iter().any(|h| h.key == "N" || h.key == "M"), "the keys are not offered");
     // and the FreeBSD host still gets them
     app.selected_host = 0;
     assert!(crate::ui::hints::hints(&app).iter().any(|h| h.key == "N"));
-}
-
-#[test]
-fn shares_on_illumos_are_listed_read_only_with_the_service_state_and_no_freebsd_tool() {
-    let mut app = two_os_app(crate::zfs::host_health::HostOs::Illumos);
-    app.selected_host = 1;
-    go_to(&mut app, Section::Shares);
-    assert!(app.current_section_supported() && !app.shares_editable());
-    let zfs_get = "rpool/export/nfs-test\tsharenfs\ton\tlocal\ntank/alice\tsharesmb\tname=alice\tlocal\n";
-    let runner = crate::exec::test_support::FakeRunner::new("").route("zfs", "get", zfs_get).route("svcs", "-H", "online\n");
-    app.refresh_shares(std::sync::Arc::new(runner));
-    for _ in 0..100 {
-        app.drain_worker_messages();
-        if app.shares_loaded {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(app.shares.len(), 2, "{:?}", app.shares);
-    assert_eq!((app.nfs_available, app.samba_available), (Some(true), Some(true)));
-    app.shares_table.select(Some(0));
-    for key in [KeyCode::Enter, KeyCode::Char('d')] {
-        app.handle_key(key);
-        assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "{key:?} must not edit a share on illumos");
-    }
-    go_to(&mut app, Section::Datasets);
-    app.datasets = vec![ds_named("tank/alice", Some("/tank/alice"))];
-    app.datasets_table.select(Some(0));
-    for key in ['N', 'M'] {
-        app.handle_key(KeyCode::Char(key));
-        assert!(app.modal.is_none(), "{key} creates FreeBSD-style shares");
-    }
-    go_to(&mut app, Section::Shares);
-    let keys: Vec<&str> = crate::ui::hints::hints(&app).iter().map(|h| h.key).collect();
-    assert!(keys.contains(&"↑↓") && keys.contains(&"r") && !keys.contains(&"Enter") && !keys.contains(&"d"), "{keys:?}");
-    app.selected_host = 0;
-    assert!(app.shares_editable());
 }

@@ -99,20 +99,14 @@ impl App {
             KeyCode::Char('R') => {
                 if let Some(source) = view.restore_source() {
                     let host = view.host;
-                    if source.zone.is_some() {
-                        // A zoned dataset: the engine's own sentence, nothing opens.
-                        let why = crate::zfs::snapshot_restore::plan_restore(&source, "restore").err().map_or_else(|| "restore from a dataset given to a zone must be done inside the zone".to_string(), refusal_text);
-                        self.set_error(why);
-                    } else {
-                        let value = crate::zfs::snapshot_restore::default_destination_name(&source.entry.name, &source.snapshot);
-                        self.modal = Some(Modal::Form {
-                            title: "Restore as a copy".to_string(),
-                            fields: vec![FormField { label: "Restore as".to_string(), value }],
-                            focused: 0,
-                            description: Some("A new file next to the original; nothing is replaced.".to_string()),
-                            kind: FormKind::RestoreFile { host, source: Box::new(source) },
-                        });
-                    }
+                    let value = crate::zfs::snapshot_restore::default_destination_name(&source.entry.name, &source.snapshot);
+                    self.modal = Some(Modal::Form {
+                        title: "Restore as a copy".to_string(),
+                        fields: vec![FormField { label: "Restore as".to_string(), value }],
+                        focused: 0,
+                        description: Some("A new file next to the original; nothing is replaced.".to_string()),
+                        kind: FormKind::RestoreFile { host, source: Box::new(source) },
+                    });
                 }
             }
             KeyCode::Char('c' | 'C' | 'd' | 'b' | 'H' | 'f') => {}

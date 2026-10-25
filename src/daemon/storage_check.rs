@@ -444,9 +444,9 @@ pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16, now: DateTime
 
 /// What the disk `dev` of `host` is for, from the last storage check: `cache of tank`, `log of tank`. `None` for a data disk, a
 /// host the check has not answered for, and a device whose name cannot be tied to the disk (labels and ids are not guessed).
-pub fn role_of(file: &StorageFile, host: &str, dev: &str, os: Option<crate::zfs::host_health::HostOs>) -> Option<String> {
+pub fn role_of(file: &StorageFile, host: &str, dev: &str) -> Option<String> {
     file.hosts.get(host)?.pools.iter().find_map(|pool| {
-        pool.roles.iter().find(|r| crate::zfs::disk::disk_matches_vdev_for(os, dev, &r.device)).map(|r| format!("{} of {}", r.role, pool.name))
+        pool.roles.iter().find(|r| crate::zfs::disk::disk_matches_vdev(dev, &r.device)).map(|r| format!("{} of {}", r.role, pool.name))
     })
 }
 

@@ -24,7 +24,7 @@ pub(super) const POOLS_W: u16 = 5;
 pub(super) const SCRUB_W: u16 = 13;
 pub(super) const JOBS_W: u16 = 5;
 pub(super) const RTT_W: u16 = 6;
-/// "Linux 6.8 (Ubuntu 24)" is 21.
+/// "FreeBSD 16.0" is 13; a host that is not FreeBSD shows what `uname -s` says.
 pub(super) const OS_W: u16 = 22;
 pub(super) const ADDR_W: u16 = 18;
 pub(super) const STATE_MIN: u16 = 22;

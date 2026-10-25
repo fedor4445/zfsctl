@@ -4,7 +4,6 @@
 use crate::error::{AppError, Result};
 use crate::exec::privilege::{lookup, pinned_forms};
 use crate::exec::CommandRunner;
-use crate::zfs::host_health::HostOs;
 use crate::zfs::snapshot_browse::{explain, read_folder, read_live_folder, snapshot_dir, valid_component, BrowseLimits, EntryKind, Listing, ListEntry};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -20,9 +19,6 @@ pub struct RestoreSource {
     /// The folder steps below the dataset root, each one listed as a real folder.
     pub folder: Vec<String>,
     pub entry: ListEntry,
-    /// The zone a dataset was given to, if any: a restore is refused then.
-    pub zone: Option<String>,
-    pub os: HostOs,
 }
 
 /// A checked restore: the two paths, the new name and the `cp` argument list (no program name).
@@ -70,21 +66,15 @@ fn refuse<T>(text: &str) -> Result<T> {
 /// Checks the pick and the chosen name and builds the plan. The destination is in the live tree (no `.zfs`), the source is the
 /// snapshot's copy; the command is the registry's pinned `cp` form with the two operands in place of its two `*` words.
 pub fn plan_restore(src: &RestoreSource, dest_name: &str) -> Result<RestorePlan> {
-    if src.zone.is_some() {
-        return refuse("restore from a dataset given to a zone must be done inside the zone");
-    }
     if src.entry.kind != EntryKind::File {
         return Err(AppError::Config(format!("only a regular file can be restored: this is a {}", src.entry.kind.word())));
     }
     if src.entry.ambiguous {
-        return refuse("this name cannot be told apart from an escape sequence on this host, so it is not restored");
+        return refuse("this name cannot be told apart from an escape sequence, so it is not restored");
     }
     let bad_name = "that name cannot be used: it has a control character, a slash, is empty or too long";
     if !valid_component(&src.entry.name) || !valid_component(dest_name) || !src.folder.iter().all(|s| valid_component(s)) {
         return refuse(bad_name);
-    }
-    if src.os == HostOs::Illumos && dest_name.contains('\\') {
-        return refuse("a backslash in a name cannot be told apart from an escape sequence on this host, so choose another name");
     }
     if dest_name == src.entry.name {
         return refuse("choose a different name: the restore never replaces the original");
@@ -107,7 +97,7 @@ pub fn plan_restore(src: &RestoreSource, dest_name: &str) -> Result<RestorePlan>
         return refuse("that path is longer than 4096 bytes");
     }
     let Some(entry) = lookup("cp") else { return refuse("cp is not registered") };
-    let forms = pinned_forms(entry, src.os);
+    let forms = pinned_forms(entry);
     let [form] = forms.as_slice() else { return refuse("cp has no single pinned form on this host") };
     let Some(prefix) = form.strip_suffix(&["*", "*"]) else { return refuse("cp's pinned form does not end in two operands") };
     let mut command: Vec<String> = prefix.iter().map(ToString::to_string).collect();
@@ -130,9 +120,9 @@ fn check_cancel(cancel: &AtomicBool) -> Result<()> {
 }
 
 /// Lists a folder for a check; a host failure becomes the same plain sentence the browser shows.
-fn list(runner: &dyn CommandRunner, host: &str, os: HostOs, dir: &str, live: bool, cancel: &AtomicBool) -> Result<Listing> {
+fn list(runner: &dyn CommandRunner, host: &str, dir: &str, live: bool, cancel: &AtomicBool) -> Result<Listing> {
     let limits = BrowseLimits::default();
-    let read = if live { read_live_folder(runner, os, dir, &limits, cancel) } else { read_folder(runner, os, dir, &limits, cancel) };
+    let read = if live { read_live_folder(runner, dir, &limits, cancel) } else { read_folder(runner, dir, &limits, cancel) };
     read.map_err(|e| match e {
         AppError::CommandFailed { stderr, .. } => AppError::Config(explain(host, &stderr)),
         other => other,
@@ -156,8 +146,7 @@ fn twice<T>(folder: &str, name: &str) -> Result<T> {
 }
 
 /// The one entry called `name` in `listing` (of `folder`), or `None` when there is none. Every entry whose DECODED name equals
-/// `name` counts: more than one match, or a single match that cannot be decoded with certainty (`ambiguous`, as on illumos where
-/// `ls -b` prints a backslash as it is), is refused, so a decoy such as `\144ocs` cannot stand in for `docs`. A cut-off listing
+/// `name` counts: more than one match, or a single match that cannot be decoded with certainty (`ambiguous`), is refused, so a decoy such as `\144ocs` cannot stand in for `docs`. A cut-off listing
 /// cannot show that a name is absent.
 fn find_one<'a>(listing: &'a Listing, folder: &str, name: &str) -> Result<Option<&'a ListEntry>> {
     if listing.unreadable > 0 {
@@ -259,8 +248,7 @@ fn check_not_in_child_dataset(runner: &dyn CommandRunner, src: &RestoreSource, d
 /// - The dataset's mountpoint (it comes from the zfs property) and every path above it are trusted and not checked.
 /// - The same gap exists at the destination name: someone who can write to the destination folder can, between the absence check
 ///   and the copy, plant a directory or a symlink AT the new name, and the root `cp` then lands elsewhere on the host (copying
-///   into a directory works on every OS; on Linux `-T` stops the directory case; FreeBSD also writes through a dangling
-///   symlink). Restore only into folders you control when the dataset is shared with people you do not trust.
+///   into a directory is possible, and FreeBSD also writes through a dangling symlink). Restore only into folders you control when the dataset is shared with people you do not trust.
 /// - An entry that appears at the destination between the absence check and the verify would be seen by the verify as if it
 ///   were the copy (the size and mode check is what limits that).
 pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, src: &RestoreSource, cancel: &AtomicBool) -> Result<Restored> {
@@ -284,7 +272,7 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
 
     // 1. The source is still a regular file of the planned size in the snapshot.
     check_cancel(cancel)?;
-    let listing = list(runner, host, src.os, &source_folder, false, cancel)?;
+    let listing = list(runner, host, &source_folder, false, cancel)?;
     match find_one(&listing, &source_folder, &src.entry.name)? {
         None => return refuse("the file is no longer in the snapshot listing"),
         Some(e) if e.kind != EntryKind::File || e.size != plan.size => return refuse("the file in the snapshot is not a regular file of the expected size"),
@@ -295,7 +283,7 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
     for (pair, step) in chain.windows(2).zip(&src.folder) {
         check_cancel(cancel)?;
         let [parent, child] = pair else { return refuse("the destination folder could not be worked out: nothing was copied") };
-        let listing = list(runner, host, src.os, parent, true, cancel)?;
+        let listing = list(runner, host, parent, true, cancel)?;
         match find_one(&listing, parent, step)? {
             Some(e) if e.kind == EntryKind::Directory => {}
             _ => return Err(AppError::Config(format!("a folder on the way to the destination is a symlink or is gone: {}", crate::display_text::sanitise_for_display(child)))),
@@ -304,7 +292,7 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
 
     // 3. The new name is not in the destination folder (anything that decodes to it counts as there).
     check_cancel(cancel)?;
-    let listing = list(runner, host, src.os, &dest_folder, true, cancel)?;
+    let listing = list(runner, host, &dest_folder, true, cancel)?;
     match colliding(&listing, &dest_folder, &plan.dest_name)? {
         Some(hit) if hit == plan.dest_name => return refuse("that name already exists in the folder: nothing was copied"),
         Some(hit) => return Err(AppError::Config(format!("an entry whose name differs only by case already exists: {}", crate::display_text::sanitise_for_display(&hit)))),
@@ -329,7 +317,7 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
         }
         let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no message");
         let first = crate::display_text::sanitise_for_display(first);
-        let looked = list(runner, host, src.os, &dest_folder, true, &AtomicBool::new(false)).and_then(|l| find_one(&l, &dest_folder, &plan.dest_name).map(|f| f.map(|e| (e.size, e.mode.clone()))));
+        let looked = list(runner, host, &dest_folder, true, &AtomicBool::new(false)).and_then(|l| find_one(&l, &dest_folder, &plan.dest_name).map(|f| f.map(|e| (e.size, e.mode.clone()))));
         return Err(AppError::Config(match looked {
             Ok(None) => format!("the copy failed: {first}; nothing was found at the destination"),
             Ok(Some((size, mode))) => format!("the copy reported a failure ({first}) but a file of that name exists at the destination ({size} bytes, {mode}): it may be incomplete, check it before you use it"),
@@ -340,7 +328,7 @@ pub fn run_restore(runner: &dyn CommandRunner, host: &str, plan: &RestorePlan, s
     // 5. Verify, whatever cp said. The copy is done, so a cancel no longer cuts this check short. A result that cannot be read is
     //    reported as unchecked, never as "not copied".
     let unchecked = |why: String| AppError::Config(format!("the copy ran (cp exited 0) but its result could not be checked: {why}"));
-    let listing = list(runner, host, src.os, &dest_folder, true, &AtomicBool::new(false)).map_err(|e| unchecked(reason(&e)))?;
+    let listing = list(runner, host, &dest_folder, true, &AtomicBool::new(false)).map_err(|e| unchecked(reason(&e)))?;
     let Some(found) = find_one(&listing, &dest_folder, &plan.dest_name).map_err(|e| unchecked(reason(&e)))? else {
         return refuse("not copied: the file is not in the destination after the copy (a name the filesystem treats as an existing one, a full disk, or a refused copy)");
     };

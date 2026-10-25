@@ -57,8 +57,7 @@ impl HostKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOs {
     FreeBsd,
-    Linux,
-    Illumos,
+    /// Anything that is not FreeBSD: zfsctl reads such a host but never changes it.
     Other,
 }
 
@@ -66,93 +65,46 @@ impl HostOs {
     pub fn word(self) -> &'static str {
         match self {
             HostOs::FreeBsd => "FreeBSD",
-            HostOs::Linux => "Linux",
-            HostOs::Illumos => "illumos",
-            HostOs::Other => "unknown",
+            HostOs::Other => "not FreeBSD",
         }
     }
 }
 
-/// `uname -s`: `FreeBSD`, `Linux`, `SunOS` (illumos); anything else is `Other`.
+/// `uname -s`: `FreeBSD`; anything else is `Other`.
 pub fn host_os_from_uname(out: &str) -> HostOs {
     match out.lines().next().map(str::trim) {
         Some("FreeBSD") => HostOs::FreeBsd,
-        Some("Linux") => HostOs::Linux,
-        Some("SunOS") => HostOs::Illumos,
         _ => HostOs::Other,
     }
 }
 
 /// What the first probe asks, in one round trip: the OS, then (errors silenced) the guest kind and whether this is a jail
-/// (FreeBSD `sysctl`), and the `@@c`/`@@z`/`@@m`/`@@s` tags that say the same on Linux (`systemd-detect-virt`, the DMI vendor)
-/// and illumos (`zonename`, `smbios`). The trailing `true` keeps the exit status for ssh failures only: a missing `sysctl` is an answer.
-pub const DETECT_SCRIPT: &str = "uname -s; sysctl -n kern.vm_guest security.jail.jailed 2>/dev/null; echo \"@@r $(uname -r)\"; echo \"@@v $(uname -v | cut -c1-60)\"; \
-[ -r /etc/os-release ] && . /etc/os-release && echo \"@@d $NAME $VERSION_ID\"; \
-echo \"@@c $(systemd-detect-virt -c 2>/dev/null)\"; echo \"@@z $(zonename 2>/dev/null)\"; echo \"@@m $(systemd-detect-virt -v 2>/dev/null)\"; \
-echo \"@@s $( (cat /sys/class/dmi/id/sys_vendor || smbios -t SMB_TYPE_SYSTEM | sed -n 's/^ *Manufacturer: *//p') 2>/dev/null | head -1)\"; true";
+/// (FreeBSD `sysctl`), and the release. The trailing `true` keeps the exit status for ssh failures only: a missing `sysctl` is an answer.
+pub const DETECT_SCRIPT: &str = "uname -s; sysctl -n kern.vm_guest security.jail.jailed 2>/dev/null; echo \"@@r $(uname -r)\"; true";
 
-/// The short name the Hosts table shows, from the `@@` lines of `DETECT_SCRIPT`: `FreeBSD 16.0`, `Linux 6.8 (Ubuntu 24)`,
-/// `illumos omnios-r151058`. `None` when the host gave nothing to name it by (or the OS is not one we know).
+/// The short name the Hosts table shows, from the `@@` lines of `DETECT_SCRIPT`: `FreeBSD 16.0`. For a host that is not
+/// FreeBSD it is what `uname -s` said. `None` when the host gave nothing to name it by.
 pub fn os_name(os: HostOs, out: &str) -> Option<String> {
     let line = |tag: &str| out.lines().find_map(|l| l.strip_prefix(tag)).map(str::trim).filter(|s| !s.is_empty());
-    let release = line("@@r ");
-    // "6.8.0-45-generic" and "16.0-CURRENT" are "6.8" and "16.0".
-    let short = |r: &str, parts: usize| r.split(['-', ' ']).next().unwrap_or(r).split('.').take(parts).collect::<Vec<_>>().join(".");
     match os {
-        HostOs::FreeBsd => release.map(|r| format!("FreeBSD {}", short(r, 2))),
-        HostOs::Linux => {
-            let kernel = short(release?, 2);
-            // "Ubuntu 24.04" is "Ubuntu 24"; "Debian GNU/Linux 12" stays.
-            let distro = line("@@d ").map(|d| match d.rsplit_once(' ') {
-                Some((name, version)) if version.chars().next().is_some_and(|c| c.is_ascii_digit()) => format!("{name} {}", version.split('.').next().unwrap_or(version)),
-                _ => d.to_string(),
-            });
-            Some(match distro {
-                Some(d) => format!("Linux {kernel} ({d})"),
-                None => format!("Linux {kernel}"),
-            })
+        HostOs::FreeBsd => {
+            // "16.0-CURRENT" is "16.0".
+            let release = line("@@r ")?;
+            Some(format!("FreeBSD {}", release.split(['-', ' ']).next().unwrap_or(release).split('.').take(2).collect::<Vec<_>>().join(".")))
         }
-        // "omnios-r151058-3b4c5d6e7f": the distribution and its release.
-        HostOs::Illumos => line("@@v ").map(|v| format!("illumos {}", v.split('-').take(2).collect::<Vec<_>>().join("-"))),
-        HostOs::Other => None,
+        HostOs::Other => out.lines().next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
     }
 }
 
-/// The OS and the host type from `DETECT_SCRIPT`'s output: FreeBSD from `sysctl`, Linux and illumos from the `@@` tags.
+/// The OS and the host type from `DETECT_SCRIPT`'s output: FreeBSD from `sysctl`; a host that is not FreeBSD has no type.
 fn parse_detection(out: &str) -> (HostOs, HostKind) {
     let os = host_os_from_uname(out);
     let rest = out.split_once('\n').map_or("", |(_, rest)| rest);
     let kind = match os {
         HostOs::FreeBsd => host_kind_from_sysctl(rest),
-        HostOs::Linux | HostOs::Illumos => host_kind_from_tags(rest),
         HostOs::Other => HostKind::Unknown,
     };
     (os, kind)
-}
-
-/// System manufacturers (DMI/SMBIOS) that only ever name a virtual machine, matched case-insensitively as a substring.
-const VIRTUAL_VENDORS: [&str; 10] = ["qemu", "vmware", "innotek", "virtualbox", "xen", "bochs", "parallels", "bhyve", "amazon ec2", "google"];
-
-/// Reads the `@@c` (systemd container), `@@z` (illumos zone), `@@m` (systemd hypervisor) and `@@s` (system manufacturer)
-/// lines. A container or a non-global zone is a `Jail`; a hypervisor name is a `Vm`; otherwise the manufacturer decides
-/// (a virtual vendor is a `Vm`, any other name is `Metal`); nothing readable is `Unknown`.
-pub fn host_kind_from_tags(out: &str) -> HostKind {
-    let tag = |t: &str| out.lines().find_map(|l| l.strip_prefix(t)).map_or("", str::trim);
-    let (container, zone, vm, vendor) = (tag("@@c"), tag("@@z"), tag("@@m"), tag("@@s"));
-    if (!container.is_empty() && container != "none") || (!zone.is_empty() && zone != "global") {
-        return HostKind::Jail;
-    }
-    if !vm.is_empty() && vm != "none" {
-        return HostKind::Vm(vm.to_string());
-    }
-    let lower = vendor.to_lowercase();
-    if VIRTUAL_VENDORS.iter().any(|v| lower.contains(v)) {
-        HostKind::Vm(vendor.to_string())
-    } else if !vendor.is_empty() || vm == "none" {
-        HostKind::Metal
-    } else {
-        HostKind::Unknown
-    }
 }
 
 /// Reads `sysctl -n kern.vm_guest security.jail.jailed`: line 1 the guest kind, line 2 whether this is a jail.
@@ -618,23 +570,20 @@ mod tests {
     }
 
     #[test]
-    fn the_short_os_name_comes_from_uname_and_os_release() {
+    fn the_short_os_name_comes_from_uname_and_the_release() {
         let name = |os, text: &str| os_name(os, text);
-        assert_eq!(name(HostOs::FreeBsd, "FreeBSD\nbhyve\n0\n@@r 16.0-CURRENT\n@@v FreeBSD 16.0-CURRENT #3: Sat\n"), Some("FreeBSD 16.0".into()));
-        assert_eq!(name(HostOs::Linux, "Linux\n@@r 6.8.0-45-generic\n@@v #45-Ubuntu SMP\n@@d Ubuntu 24.04\n"), Some("Linux 6.8 (Ubuntu 24)".into()));
-        assert_eq!(name(HostOs::Linux, "Linux\n@@r 6.8.0-45-generic\n"), Some("Linux 6.8".into()), "no os-release");
-        assert_eq!(name(HostOs::Linux, "Linux\n@@r 6.1.0\n@@d Debian GNU/Linux 12\n"), Some("Linux 6.1 (Debian GNU/Linux 12)".into()));
-        assert_eq!(name(HostOs::Illumos, "SunOS\n@@r 5.11\n@@v omnios-r151058-3b4c5d6e7f\n"), Some("illumos omnios-r151058".into()));
-        assert_eq!(name(HostOs::Other, "Darwin\n@@r 23.1\n"), None);
-        assert_eq!(name(HostOs::Linux, "Linux\n"), None, "nothing to name it by");
+        assert_eq!(name(HostOs::FreeBsd, "FreeBSD\nbhyve\n0\n@@r 16.0-CURRENT\n"), Some("FreeBSD 16.0".into()));
+        assert_eq!(name(HostOs::FreeBsd, "FreeBSD\n"), None, "nothing to name it by");
+        assert_eq!(name(HostOs::Other, "Darwin\n@@r 23.1\n"), Some("Darwin".into()), "a host that is not FreeBSD shows what uname said");
+        assert_eq!(name(HostOs::Other, ""), None);
     }
 
     #[test]
     fn the_detection_asks_for_the_release_in_the_same_round_trip() {
         let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
-        runner.sysctl = out("Linux\n@@r 6.8.0-45-generic\n@@d Ubuntu 24.04\n", "", 0);
+        runner.sysctl = out("FreeBSD\nnone\n0\n@@r 15.1-RELEASE\n", "", 0);
         let HostProbe::Reached { os_name, .. } = probe_host(&runner, true) else { panic!() };
-        assert_eq!(os_name.as_deref(), Some("Linux 6.8 (Ubuntu 24)"));
+        assert_eq!(os_name.as_deref(), Some("FreeBSD 15.1"));
         assert_eq!(runner.unprivileged.lock().unwrap().len(), 1);
         assert!(DETECT_SCRIPT.starts_with("uname -s;"), "the first line stays the OS word");
     }
@@ -652,53 +601,24 @@ mod tests {
     }
 
     #[test]
-    fn linux_and_illumos_say_metal_vm_or_container_from_the_probe_tags() {
-        // @@c systemd's container, @@z the illumos zone, @@m systemd's hypervisor, @@s the system manufacturer.
-        for (tags, want) in [
-            ("@@c none\n@@z \n@@m kvm\n@@s QEMU\n", HostKind::Vm("kvm".into())),
-            ("@@c none\n@@z \n@@m none\n@@s Dell Inc.\n", HostKind::Metal),
-            ("@@c lxc\n@@z \n@@m none\n@@s \n", HostKind::Jail),
-            ("@@c \n@@z sparse\n@@m \n@@s QEMU\n", HostKind::Jail),
-            ("@@c \n@@z global\n@@m \n@@s QEMU\n", HostKind::Vm("QEMU".into())),
-            ("@@c \n@@z global\n@@m \n@@s Supermicro\n", HostKind::Metal),
-            ("@@c \n@@z \n@@m \n@@s VMware, Inc.\n", HostKind::Vm("VMware, Inc.".into())),
-            ("@@c none\n@@z \n@@m none\n@@s \n", HostKind::Metal),
-            ("@@c \n@@z \n@@m \n@@s \n", HostKind::Unknown),
-            ("@@c\n@@z\n@@m\n@@s", HostKind::Unknown),
-            ("", HostKind::Unknown),
-        ] {
-            assert_eq!(host_kind_from_tags(tags), want, "{tags:?}");
-        }
-    }
-
-    #[test]
-    fn a_hypervisor_name_from_systemd_wins_over_the_manufacturer_and_a_container_over_both() {
-        assert_eq!(host_kind_from_tags("@@c docker\n@@m kvm\n@@s QEMU\n"), HostKind::Jail);
-        assert_eq!(host_kind_from_tags("@@c none\n@@m microsoft\n@@s Microsoft Corporation\n"), HostKind::Vm("microsoft".into()));
-        assert_eq!(host_kind_from_tags("@@m none\n@@s QEMU\n"), HostKind::Vm("QEMU".into()), "systemd says none but the board says QEMU");
-    }
-
-    #[test]
-    fn the_first_probe_names_a_linux_vm_and_an_illumos_zone() {
+    fn the_first_probe_names_a_freebsd_vm_and_a_host_that_is_not_freebsd_has_no_type() {
         for (said, os, want) in [
-            ("Linux\n@@r 6.8.0\n@@c none\n@@z \n@@m kvm\n@@s QEMU\n", HostOs::Linux, HostKind::Vm("kvm".into())),
-            ("SunOS\n@@r 5.11\n@@c \n@@z sparse\n@@m \n@@s \n", HostOs::Illumos, HostKind::Jail),
-            ("FreeBSD\nbhyve\n0\n@@r 15.1\n@@c \n@@z \n@@m \n@@s \n", HostOs::FreeBsd, HostKind::Vm("bhyve".into())),
+            ("FreeBSD\nbhyve\n0\n@@r 15.1\n", HostOs::FreeBsd, HostKind::Vm("bhyve".into())),
+            ("Linux\n@@r 6.8.0\n", HostOs::Other, HostKind::Unknown),
         ] {
             let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
             runner.sysctl = out(said, "", 0);
             let HostProbe::Reached { kind, os: found, .. } = probe_host(&runner, true) else { panic!() };
             assert_eq!((kind, found), (Some(want), Some(os)), "{said:?}");
         }
-        assert!(["systemd-detect-virt", "zonename", "smbios", "sys_vendor"].iter().all(|w| DETECT_SCRIPT.contains(w)), "{DETECT_SCRIPT}");
     }
 
     #[test]
     fn uname_output_maps_to_the_os() {
-        for (text, os) in [("FreeBSD\n", HostOs::FreeBsd), ("Linux\n", HostOs::Linux), ("SunOS\n", HostOs::Illumos), ("Darwin\n", HostOs::Other), ("", HostOs::Other), ("what is this", HostOs::Other)] {
+        for (text, os) in [("FreeBSD\n", HostOs::FreeBsd), ("Linux\n", HostOs::Other), ("SunOS\n", HostOs::Other), ("Darwin\n", HostOs::Other), ("", HostOs::Other), ("what is this", HostOs::Other)] {
             assert_eq!(host_os_from_uname(text), os, "{text:?}");
         }
-        assert_eq!([HostOs::FreeBsd, HostOs::Linux, HostOs::Illumos, HostOs::Other].map(HostOs::word), ["FreeBSD", "Linux", "illumos", "unknown"]);
+        assert_eq!([HostOs::FreeBsd, HostOs::Other].map(HostOs::word), ["FreeBSD", "not FreeBSD"]);
     }
 
     #[test]
@@ -713,16 +633,6 @@ mod tests {
         let HostProbe::Reached { kind, os, .. } = probe_host(&runner, false) else { panic!() };
         assert_eq!((kind, os), (None, None));
         assert_eq!(runner.unprivileged.lock().unwrap().len(), 1, "not asked, not run");
-    }
-
-    #[test]
-    fn on_linux_and_illumos_a_probe_without_the_tags_leaves_the_type_unknown() {
-        for (said, os) in [("Linux\n", HostOs::Linux), ("SunOS\n", HostOs::Illumos)] {
-            let mut runner = answers(out(LIST, "", 0), out(STATUS, "", 0));
-            runner.sysctl = out(said, "", 0);
-            let HostProbe::Reached { kind, os: found, .. } = probe_host(&runner, true) else { panic!() };
-            assert_eq!((kind, found), (Some(HostKind::Unknown), Some(os)), "{said:?}");
-        }
     }
 
     #[test]

@@ -381,17 +381,15 @@ fn context_hints(app: &App) -> Vec<Hint> {
                     v.push(h("T", "Clear next-boot", 2));
                 }
                 v.push(h("R", "Rename", 3));
-                if be.can_mount() && app.bootenv_key_offered('m') {
+                if be.can_mount() {
                     v.push(h("m", "Mount", 3));
                 }
-                if be.can_unmount() && app.bootenv_key_offered('u') {
+                if be.can_unmount() {
                     v.push(h("u", "Unmount", 3));
                 }
                 if be.can_destroy() {
                     v.push(h("d", "Destroy", 2).tone(Tone::Danger));
-                    if app.bootenv_key_offered('D') {
-                        v.push(h("D", "Destroy + origin", 3).tone(Tone::Danger));
-                    }
+                    v.push(h("D", "Destroy + origin", 3).tone(Tone::Danger));
                 }
             }
             if app.bootenvs_unavailable.is_none() {

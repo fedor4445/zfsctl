@@ -35,11 +35,10 @@ pub(super) fn draw_disks(f: &mut Frame, app: &mut App, area: Rect) {
         let status = match &d.membership {
             DiskMembership::Available => "available".to_string(),
             DiskMembership::InPool { pool, vdev } => format!("in {pool} ({vdev})"),
-            DiskMembership::InUse { what } => format!("in use: {what}"),
         };
         let style = match &d.membership {
             DiskMembership::Available => Style::default(),
-            DiskMembership::InPool { .. } | DiskMembership::InUse { .. } => theme.dim(),
+            DiskMembership::InPool { .. } => theme.dim(),
         };
         let mut cells = vec![format!("{marker} {}", d.name), human_size(d.size)];
         if show_type {

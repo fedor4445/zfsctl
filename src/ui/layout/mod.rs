@@ -341,7 +341,7 @@ fn read_only_property_style(theme: &Theme, prop: &Property) -> Style {
 fn draw_unsupported(f: &mut Frame, app: &App, area: Rect, section: Section) {
     let os = app.host_os(app.selected_host).map_or("this", crate::zfs::host_health::HostOs::word);
     let text = match app.host_os(app.selected_host) {
-        Some(os) => crate::ui::support::unsupported_text(os, section),
+        Some(_) => crate::ui::support::unsupported_text(section),
         None => format!("{} is not supported on {os} hosts yet.", crate::ui::support::section_label(section)),
     };
     let title = format!("{} — {}", crate::ui::support::section_label(section), app.active_host_name());

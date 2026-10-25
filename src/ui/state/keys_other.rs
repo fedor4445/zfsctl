@@ -243,8 +243,6 @@ impl App {
     #[allow(clippy::match_same_arms)]
     pub(super) fn key_bootenvs(&mut self, key: KeyCode) -> bool {
         match key {
-            // A key `beadm` cannot serve (see `ui::support::bootenv_key_offered`): nothing happens, and it is not advertised.
-            KeyCode::Char(c) if self.current_section() == Section::BootEnvs && !self.bootenv_key_offered(c) => {}
             KeyCode::Char('n' | 'a' | 't' | 'T' | 'R' | 'm' | 'u' | 'd' | 'D') if self.current_section() == Section::BootEnvs && self.bootenv_busy_name().is_some() => {
                 let name = self.bootenv_busy_name().unwrap_or_default().to_string();
                 self.status_message = Some(format!("Still working on '{name}'… wait for it to finish"));

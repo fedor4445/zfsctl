@@ -311,7 +311,7 @@ fn a_hung_manual_check_gives_up_at_its_deadline_and_frees_c_and_the_marker() {
 
 #[test]
 fn a_dimmed_section_runs_no_command_when_refreshed_and_shows_no_stale_rows() {
-    let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Other);
     app.selected_host = 1;
     app.bootenvs = vec![be("left-from-the-hub", true, true, false, None)];
     let runner: std::sync::Arc<dyn crate::exec::CommandRunner> = std::sync::Arc::new(NoCalls);
@@ -320,7 +320,7 @@ fn a_dimmed_section_runs_no_command_when_refreshed_and_shows_no_stale_rows() {
     std::thread::sleep(Duration::from_millis(100));
     app.drain_worker_messages();
     assert!(app.bootenvs.is_empty(), "the other host's rows are gone");
-    assert!(app.acl_unsupported().is_none() || app.acl_unsupported().is_some_and(|t| t.contains("Linux")));
+    assert!(app.acl_unsupported().is_none() || app.acl_unsupported().is_some_and(|t| t.contains("FreeBSD")));
 }
 
 #[test]

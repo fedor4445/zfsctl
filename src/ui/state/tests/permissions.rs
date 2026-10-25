@@ -702,13 +702,13 @@ fn the_confirmation_names_the_host_puts_the_command_on_its_own_line_and_names_wh
 
 #[test]
 fn the_acl_tab_says_why_on_linux_and_keys_of_a_dimmed_section_are_inert() {
-    let mut app = two_os_app(crate::zfs::host_health::HostOs::Linux);
+    let mut app = two_os_app(crate::zfs::host_health::HostOs::Other);
     app.selected_host = 1;
     go_to(&mut app, Section::Datasets);
     app.datasets = vec![ds_named("ztest/data", Some("/ztest/data"))];
     app.datasets_table.select(Some(0));
     app.dataset_properties_for = Some("ztest/data".into());
-    assert!(app.acl_unsupported().is_some_and(|t| t.contains("Linux")), "{:?}", app.acl_unsupported());
+    assert!(app.acl_unsupported().is_some_and(|t| t.contains("FreeBSD")), "{:?}", app.acl_unsupported());
     go_to(&mut app, Section::BootEnvs);
     app.handle_key(KeyCode::Char('n'));
     assert!(app.modal.is_none(), "n in Boot Envs needs no selection, so only the guard stops it");

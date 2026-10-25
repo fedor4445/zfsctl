@@ -26,18 +26,11 @@ pub(super) fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     });
     let widths = [Constraint::Length(24), Constraint::Length(8), Constraint::Min(20)];
     let mut hints = Vec::new();
-    // The services' own names: FreeBSD's `nfsd` and `smbd`, `nfs-server` and `smbd` on Linux, SMF's `nfs/server` and `smb/server`.
-    let (nfs, smb) = match app.host_os(app.selected_host) {
-        Some(os @ (crate::zfs::host_health::HostOs::Linux | crate::zfs::host_health::HostOs::Illumos)) => (crate::zfs::share::nfs_name(os), crate::zfs::share::smb_name(os)),
-        _ => ("nfsd", "smbd"),
-    };
-    let (nfs_text, smb_text) = (format!("NFS unavailable: {nfs} not running"), format!("SMB unavailable: {smb} not running"));
     if app.nfs_available == Some(false) {
-        hints.push(nfs_text.as_str());
+        hints.push("NFS unavailable: nfsd not running");
     }
-    let samba_listed = app.host_os(app.selected_host) != Some(crate::zfs::host_health::HostOs::Linux);
-    if app.samba_available == Some(false) && samba_listed {
-        hints.push(smb_text.as_str());
+    if app.samba_available == Some(false) {
+        hints.push("SMB unavailable: smbd not running");
     }
     let hint_suffix = if hints.is_empty() { String::new() } else { format!(" [{}]", hints.join("; ")) };
     let actions = match app.host_os(app.selected_host) {

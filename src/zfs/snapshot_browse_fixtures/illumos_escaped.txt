@@ -1,8 +1,0 @@
--rw-r--r--   1 omni     other          1 2026-10-21 17:07:21.303240268 -0400 arrow -> name
--rw-r--r--   1 omni     other          1 2026-10-21 17:07:21.299364487 -0400 back\slash
--rw-r--r--   1 omni     other          1 2026-10-21 17:07:21.299833356 -0400 caf\351
-lrwxrwxrwx   1 omni     other         17 2026-10-21 17:07:21.302418499 -0400 lnk -> target with space
--rw-r--r--   1 omni     other          1 2026-10-21 17:07:21.299974549 -0400 nl\012x
--rw-r--r--   1 omni     other          1 2026-10-21 17:07:21.299454827 -0400 quo"te
--rw-r--r--   1 omni     other          1 2026-10-21 17:07:21.299906094 -0400 sp ace
--rw-r--r--   1 omni     other          1 2026-10-21 17:07:21.299525875 -0400 tab\011tab

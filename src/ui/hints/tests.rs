@@ -226,7 +226,7 @@ fn a_dimmed_section_offers_only_the_global_hints() {
     use crate::zfs::host_health::HostOs;
     let mut a = base();
     a.hosts = vec!["local".to_string(), "ub24".to_string()];
-    a.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Linux), ..Default::default() });
+    a.host_probes.insert("ub24".to_string(), crate::ui::state::HostProbeState { os: Some(HostOs::Other), ..Default::default() });
     a.selected_host = 1;
     go(&mut a, Section::BootEnvs);
     let keys: Vec<&str> = hints(&a).iter().map(|h| h.key).collect();
@@ -687,13 +687,13 @@ fn hints_in_the_changes_view_offer_what_works_in_each_phase() {
 fn browsing(rows: &[(&str, crate::zfs::snapshot_browse::EntryKind)], path: &[&str]) -> App {
     use crate::ui::browse::{BrowseOutcome, BrowseView, PendingBrowse};
     use crate::zfs::snapshot_browse::{ListEntry, Listing, Row};
-    let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s1".to_string(), path: path.iter().map(|s| (*s).to_string()).collect(), mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::FreeBsd, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+    let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s1".to_string(), path: path.iter().map(|s| (*s).to_string()).collect(), mountpoint: None, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
     let mut view = BrowseView::new(&pending, Some(0));
     let entries = rows
         .iter()
         .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "o".to_string(), group: "g".to_string(), size: 5, time: Some(1), link_target: None, ambiguous: false }, changed: None, created: None })
         .collect();
-    view.apply("h", Ok(BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/m".to_string(), zone: None }));
+    view.apply("h", Ok(BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/m".to_string() }));
     let mut a = snapshots();
     a.browse_view = Some(view);
     a
@@ -712,7 +712,7 @@ fn hints_in_the_browser_offer_what_works_in_each_state() {
     use crate::zfs::snapshot_browse::EntryKind::{Directory, File};
     let keys = |a: &App| -> Vec<&'static str> { keys(a).into_iter().filter(|k| !["Tab", "!", "A", "?", "q"].contains(k)).collect() };
     let mut reading = snapshots();
-    let pending = crate::ui::browse::PendingBrowse { host: 0, request: 1, dataset: "d".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::Other, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+    let pending = crate::ui::browse::PendingBrowse { host: 0, request: 1, dataset: "d".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
     reading.browse_view = Some(crate::ui::browse::BrowseView::new(&pending, Some(0)));
     assert_eq!(keys(&reading), ["Esc"]);
     let top = browsing(&[("pics", Directory), ("a", File)], &[]);
@@ -742,9 +742,6 @@ fn restore_is_offered_only_on_a_regular_file_that_can_be_restored() {
     odd.browse_view.as_mut().unwrap().rows[0].entry.name = "a".to_string();
     odd.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
     assert!(!keys(&odd).contains(&"R"));
-    let mut zoned = browsing(&[("a", File)], &[]);
-    zoned.browse_view.as_mut().unwrap().zone = Some("z".to_string());
-    assert!(!keys(&zoned).contains(&"R"), "refused inside a zone, so not offered");
     let mut typing = browsing(&[("a", File)], &[]);
     typing.browse_view.as_mut().unwrap().start_input(crate::ui::browse::InputKind::Name);
     assert!(!keys(&typing).contains(&"R"));
@@ -797,11 +794,6 @@ fn every_key_the_browser_advertises_does_something_and_unadvertised_ones_do_noth
         ("ambiguous file selected", Box::new(|| {
             let mut a = browsing(&[("a\\b", File)], &[]);
             a.browse_view.as_mut().unwrap().rows[0].entry.ambiguous = true;
-            a
-        })),
-        ("zoned file selected", Box::new(|| {
-            let mut a = browsing(&[("a", File)], &[]);
-            a.browse_view.as_mut().unwrap().zone = Some("z1".to_string());
             a
         })),
     ];

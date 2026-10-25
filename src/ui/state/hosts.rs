@@ -18,7 +18,7 @@ impl App {
                 name: d.name.clone(),
                 pool: match &d.membership {
                     crate::zfs::disk::DiskMembership::InPool { pool, .. } => Some(pool.clone()),
-                    crate::zfs::disk::DiskMembership::Available | crate::zfs::disk::DiskMembership::InUse { .. } => None,
+                    crate::zfs::disk::DiskMembership::Available => None,
                 },
             }),
             Section::Shares => self.shares_table.selected().and_then(|i| self.shares.get(i)).map(|share| match share {
@@ -219,21 +219,15 @@ impl App {
         state.in_flight = true;
         state.started_at = Some(Instant::now());
         let detect_kind = state.kind.is_none();
-        let known_os = state.os;
         let want_offset = state.utc_offset_secs.is_none();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let probe = crate::zfs::host_health::probe_host_guarded(runner.as_ref(), detect_kind);
             let reached = matches!(probe, crate::zfs::host_health::HostProbe::Reached { .. });
-            // A probe that did not ask for the OS again (it is read once) leaves it to what the app already knows.
-            let os = match &probe {
-                crate::zfs::host_health::HostProbe::Reached { os, .. } => os.or(known_os),
-                _ => None,
-            };
             let _ = tx.send(WorkerMsg::HostHealth(name.clone(), probe));
             // The Dashboard's readings are TUI-only (the daemon's monitor probes without them) and only asked of a host that answered.
             let (resources, offset) = if reached {
-                (crate::zfs::host_resources::probe_resources(runner.as_ref(), os), want_offset.then(|| crate::zfs::host_resources::utc_offset_secs(runner.as_ref())).flatten())
+                (crate::zfs::host_resources::probe_resources(runner.as_ref()), want_offset.then(|| crate::zfs::host_resources::utc_offset_secs(runner.as_ref())).flatten())
             } else {
                 (None, None)
             };
@@ -343,7 +337,7 @@ impl App {
                 let _ = storage.join();
                 // Read after the storage pass has joined, so the roles are this check's.
                 let storage_file = crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE));
-                let role_of = |h: &str, dev: &str| crate::daemon::storage_check::role_of(&storage_file, h, dev, None);
+                let role_of = |h: &str, dev: &str| crate::daemon::storage_check::role_of(&storage_file, h, dev);
                 done.first().map_or_else(|| format!("{host}: nothing to check"), |(_, checks)| crate::daemon::checks::describe_with(&host, checks, &role_of))
             }))
             .unwrap_or_else(|_| format!("{host}: the check crashed; what it had found may not be saved"));

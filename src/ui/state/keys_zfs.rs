@@ -529,10 +529,17 @@ impl App {
                 if let Some(snap) = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)) {
                     use crate::ui::browse::{BrowseView, PendingBrowse};
                     let probe = self.hosts.get(self.selected_host).and_then(|name| self.host_probes.get(name));
-                    let Some(os) = probe.and_then(|p| p.os) else {
-                        self.set_error("this host has not been probed yet, so its type is not known; try again in a moment".to_string());
-                        return true;
-                    };
+                    match probe.and_then(|p| p.os) {
+                        None => {
+                            self.set_error("this host has not been probed yet, so its type is not known; try again in a moment".to_string());
+                            return true;
+                        }
+                        Some(crate::zfs::host_health::HostOs::FreeBsd) => {}
+                        Some(_) => {
+                            self.set_error("browsing a snapshot needs a FreeBSD host".to_string());
+                            return true;
+                        }
+                    }
                     let utc_offset = probe.and_then(|p| p.utc_offset_secs);
                     self.browse_request += 1;
                     let pending = PendingBrowse {
@@ -542,8 +549,6 @@ impl App {
                         name: snap.name.clone(),
                         path: Vec::new(),
                         mountpoint: None,
-                        zone: None,
-                        os,
                         cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     };
                     self.browse_view = Some(BrowseView::new(&pending, utc_offset));

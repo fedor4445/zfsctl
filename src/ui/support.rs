@@ -1,28 +1,20 @@
-//! What each host OS supports: the sections that work with FreeBSD's commands and have no equivalent built for Linux or
-//! illumos yet. The sidebar dims those entries for the selected host, the section says why, and nothing is run for them.
-//! A host whose OS is unknown, or not read yet, is treated as FreeBSD: a setup that worked before keeps working.
+//! What a host supports: zfsctl manages FreeBSD hosts. A host that answers as something else is read with `zpool` and `zfs`
+//! only: the sections that run FreeBSD's own tools are dimmed for it, the section says why, nothing is run for them, and
+//! nothing is ever changed on it. A host whose OS is not read yet is treated as FreeBSD for reading.
 
 use crate::ui::state::Section;
 use crate::zfs::host_health::HostOs;
 
-/// Whether `section` works on a host running `os` (`None`: not read yet).
+/// Whether `section` works on a host running `os` (`None`: not read yet). A host that is not FreeBSD is read with `zpool` and
+/// `zfs` only: the sections that run FreeBSD's own tools (`bectl`, `geom`, `service`, the ACL tools) are not offered for it.
 pub fn supports(os: Option<HostOs>, section: Section) -> bool {
-    match (os, section) {
-        (Some(HostOs::Linux), Section::BootEnvs | Section::DatasetAcl) | (Some(HostOs::Illumos), Section::DatasetAcl) => false,
-        _ => true,
-    }
+    !(os == Some(HostOs::Other) && matches!(section, Section::BootEnvs | Section::DatasetAcl | Section::Disks | Section::Shares))
 }
 
-/// Shares are listed everywhere but created, edited and removed only with FreeBSD's tools (the `exports(5)` syntax of
-/// `sharenfs`, the managed Samba block, `service`): on Linux and illumos the section is read-only.
+/// Shares are created, edited and removed with FreeBSD's tools (the `exports(5)` syntax of `sharenfs`, the managed Samba block,
+/// `service`), so only on a host whose OS has been read and is FreeBSD.
 pub fn shares_editable(os: Option<HostOs>) -> bool {
     os == Some(HostOs::FreeBsd)
-}
-
-/// Whether a key of the Boot Envs section is offered on a host running `os`: on illumos `beadm` has no equivalent of
-/// mounting (`m`, `u`) or of destroying together with the origin snapshot (`D`).
-pub fn bootenv_key_offered(os: Option<HostOs>, key: char) -> bool {
-    !(os == Some(HostOs::Illumos) && matches!(key, 'm' | 'u' | 'D'))
 }
 
 /// The name of a section as the sidebar and the messages call it.
@@ -48,9 +40,9 @@ pub fn section_label(section: Section) -> &'static str {
     }
 }
 
-/// `Boot Envs is not supported on Linux hosts yet.`
-pub fn unsupported_text(os: HostOs, section: Section) -> String {
-    format!("{} is not supported on {} hosts yet.", section_label(section), os.word())
+/// `Boot Envs needs a FreeBSD host.`
+pub fn unsupported_text(section: Section) -> String {
+    format!("{} needs a FreeBSD host.", section_label(section))
 }
 
 #[cfg(test)]
@@ -64,51 +56,29 @@ mod tests {
 
     #[test]
     fn unknown_and_freebsd_support_everything() {
-        for os in [None, Some(HostOs::FreeBsd), Some(HostOs::Other)] {
+        for os in [None, Some(HostOs::FreeBsd)] {
             assert!(ALL.iter().all(|s| supports(os, *s)), "{os:?}");
         }
     }
 
     #[test]
-    fn linux_supports_disks_and_shares_but_not_boot_envs_or_acl_and_illumos_adds_boot_envs() {
-        for os in [HostOs::Linux, HostOs::Illumos] {
-            assert!(supports(Some(os), Section::Disks) && supports(Some(os), Section::Shares), "{os:?}");
-            assert!(!supports(Some(os), Section::DatasetAcl), "{os:?}");
-        }
-        assert!(!supports(Some(HostOs::Linux), Section::BootEnvs));
-        assert!(supports(Some(HostOs::Illumos), Section::BootEnvs), "beadm list works on illumos");
-    }
-
-    #[test]
-    fn only_those_sections_are_ever_gated() {
-        let gated = |os| ALL.iter().copied().filter(|s| !supports(Some(os), *s)).collect::<Vec<Section>>();
-        assert_eq!(gated(HostOs::Linux), [Section::BootEnvs, Section::DatasetAcl]);
-        assert_eq!(gated(HostOs::Illumos), [Section::DatasetAcl]);
+    fn a_host_that_is_not_freebsd_is_read_with_zpool_and_zfs_only() {
+        let gated = ALL.iter().copied().filter(|s| !supports(Some(HostOs::Other), *s)).collect::<Vec<Section>>();
+        assert_eq!(gated, [Section::Disks, Section::Shares, Section::BootEnvs, Section::DatasetAcl]);
     }
 
     #[test]
     fn shares_can_be_changed_only_where_the_freebsd_tools_exist() {
         assert!(shares_editable(Some(HostOs::FreeBsd)));
         // Data safety: until the OS is read (the first probe, or one that failed) nothing FreeBSD-specific is sent.
-        for os in [None, Some(HostOs::Other), Some(HostOs::Linux), Some(HostOs::Illumos)] {
+        for os in [None, Some(HostOs::Other)] {
             assert!(!shares_editable(os), "{os:?}");
         }
     }
 
     #[test]
-    fn on_illumos_only_the_keys_beadm_cannot_serve_are_withheld() {
-        for key in ['n', 'a', 't', 'T', 'R', 'd'] {
-            assert!(bootenv_key_offered(Some(HostOs::Illumos), key), "{key}");
-        }
-        for key in ['m', 'u', 'D'] {
-            assert!(!bootenv_key_offered(Some(HostOs::Illumos), key), "{key}");
-            assert!(bootenv_key_offered(Some(HostOs::FreeBsd), key) && bootenv_key_offered(None, key) && bootenv_key_offered(Some(HostOs::Other), key), "{key}");
-        }
-    }
-
-    #[test]
-    fn the_text_names_the_section_and_the_os() {
-        assert_eq!(unsupported_text(HostOs::Linux, Section::BootEnvs), "Boot Envs is not supported on Linux hosts yet.");
-        assert_eq!(unsupported_text(HostOs::Illumos, Section::DatasetAcl), "Dataset ACL is not supported on illumos hosts yet.");
+    fn the_text_names_the_section() {
+        assert_eq!(unsupported_text(Section::BootEnvs), "Boot Envs needs a FreeBSD host.");
+        assert_eq!(unsupported_text(Section::DatasetAcl), "Dataset ACL needs a FreeBSD host.");
     }
 }

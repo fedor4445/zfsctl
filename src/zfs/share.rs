@@ -1,6 +1,5 @@
 use crate::error::Result;
 use crate::exec::CommandRunner;
-use crate::zfs::host_health::HostOs;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,10 +32,6 @@ pub struct SharesSnapshot {
     /// Set when the managed SMB block could not be read; NFS shares are
     /// still returned so one broken half never hides the other.
     pub smb_error: Option<String>,
-    /// The state could not be read (no systemd and no `pgrep`, an unreadable message): no claim is made, so the matching
-    /// `*_available` is true and the screen says nothing about it.
-    pub nfs_unknown: bool,
-    pub samba_unknown: bool,
 }
 
 /// Parses a `sharenfs` value using FreeBSD's **native `exports(5)`**
@@ -217,119 +212,6 @@ pub fn samba_available(runner: &dyn CommandRunner) -> Result<bool> {
     Ok(output.stdout.contains("smbd is running"))
 }
 
-/// Whether a file sharing service runs on a host that is not FreeBSD (where `service ... onestatus` says it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceState {
-    Running,
-    Stopped,
-    /// Nothing that answers (a host without systemd and without `pgrep`, a message that cannot be read): not a claim either way.
-    Unknown,
-    /// The unit or service does not exist on the host (a Samba or NFS server package that was never installed).
-    NotInstalled,
-}
-
-/// The NFS server's unit on Linux (systemd) and its service instance on illumos (SMF).
-pub fn nfs_unit(os: HostOs) -> &'static str {
-    if os == HostOs::Illumos { "svc:/network/nfs/server:default" } else { "nfs-server" }
-}
-
-/// The SMB server: Samba's `smbd` on Linux, the kernel SMB service on illumos.
-pub fn smb_unit(os: HostOs) -> &'static str {
-    if os == HostOs::Illumos { "svc:/network/smb/server:default" } else { "smbd" }
-}
-
-/// The names the Dashboard and the Shares title use for those services.
-pub fn nfs_name(os: HostOs) -> &'static str {
-    if os == HostOs::Illumos { "nfs/server" } else { "nfs-server" }
-}
-
-pub fn smb_name(os: HostOs) -> &'static str {
-    if os == HostOs::Illumos { "smb/server" } else { "smbd" }
-}
-
-/// One service's state with the OS's own tool, without sudo: `svcs -H -o state <fmri>` on illumos, `systemctl show -p
-/// LoadState -p ActiveState <unit>` on Linux. An ssh failure or an answer that cannot be read is an error; anything else
-/// that is not "running" is stopped.
-pub fn service_state(runner: &dyn CommandRunner, os: HostOs, unit: &str) -> Result<ServiceState> {
-    let fail = |cmd: &str, out: &crate::exec::CommandOutput| crate::error::AppError::CommandFailed { cmd: cmd.to_string(), status: out.status, stderr: out.stderr.clone() };
-    if os == HostOs::Illumos {
-        let out = runner.run_unprivileged("svcs", &["-H", "-o", "state", unit])?;
-        return match out.status {
-            // `degraded` is up but impaired; a state in transition is shown with a `*` (`online*`).
-            0 => Ok(if matches!(out.stdout.trim().trim_end_matches('*'), "online" | "degraded") { ServiceState::Running } else { ServiceState::Stopped }),
-            1 if out.stderr.contains("doesn't match any instances") => Ok(ServiceState::NotInstalled),
-            255 => Err(fail("svcs", &out)),
-            _ => Ok(ServiceState::Unknown),
-        };
-    }
-    let out = runner.run_unprivileged("systemctl", &["show", "-p", "LoadState", "-p", "ActiveState", unit])?;
-    if out.status == 255 {
-        return Err(fail("systemctl show", &out));
-    }
-    let value = |key: &str| out.stdout.lines().find_map(|l| l.strip_prefix(key)).map(str::trim).unwrap_or("");
-    // `systemctl show` always prints a LoadState, even for a unit that does not exist. Without one (no systemd: OpenRC, a
-    // container, a missing systemctl) the process list is asked instead; it is not an answer to read as "stopped".
-    if out.status != 0 || value("LoadState=").is_empty() {
-        return process_state(runner, unit);
-    }
-    Ok(if value("LoadState=") == "not-found" {
-        ServiceState::NotInstalled
-    } else if matches!(value("ActiveState="), "active" | "reloading" | "activating" | "refreshing") {
-        ServiceState::Running
-    } else {
-        ServiceState::Stopped
-    })
-}
-
-/// `pgrep -x` for the server's process (the kernel's `nfsd` threads, Samba's `smbd`): a host without systemd. A match is
-/// running, none is stopped (a server that was never installed is not told from one that is stopped), and anything else,
-/// such as no `pgrep`, is unknown.
-fn process_state(runner: &dyn CommandRunner, unit: &str) -> Result<ServiceState> {
-    let process = if unit == "nfs-server" { "nfsd" } else { unit };
-    let out = runner.run_unprivileged("pgrep", &["-x", process])?;
-    match out.status {
-        0 => Ok(ServiceState::Running),
-        1 => Ok(ServiceState::Stopped),
-        255 => Err(crate::error::AppError::CommandFailed { cmd: "pgrep".to_string(), status: out.status, stderr: out.stderr }),
-        _ => Ok(ServiceState::Unknown),
-    }
-}
-
-/// `zfs get -H -p -t filesystem sharesmb` (illumos's native SMB): one `Share::Smb` per dataset with the property set; the
-/// share's name from `name=`, `guestok=true` as guest access. There is no path or user to show.
-pub fn parse_sharesmb(output: &str) -> Vec<Share> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split('\t').collect();
-            let &[dataset, "sharesmb", value, _] = fields.as_slice() else { return None };
-            if value == "off" || value == "-" {
-                return None;
-            }
-            let option = |key: &str| value.split(',').find_map(|o| o.strip_prefix(key));
-            let name = option("name=").map_or_else(|| dataset.replace('/', "_"), str::to_string);
-            let read_only = option("ro=").is_some() && option("rw=").is_none();
-            Some(Share::Smb { dataset: dataset.to_string(), name, path: String::new(), valid_user: None, read_only, guest_ok: option("guestok=") == Some("true") })
-        })
-        .collect()
-}
-
-/// The Shares screen's data for a host running `os`: FreeBSD (and a host whose OS is not known) as before; on Linux and
-/// illumos the datasets with `sharenfs` (raw values), on illumos also `sharesmb`, and each service's state. Read-only: no
-/// FreeBSD tool (`service`, the Samba block of `smb4.conf`) is run.
-pub fn list_shares_for(runner: &dyn CommandRunner, os: Option<HostOs>) -> Result<SharesSnapshot> {
-    let Some(os @ (HostOs::Linux | HostOs::Illumos)) = os else { return list_shares_with_availability(runner) };
-    let mut shares = list_shares(runner)?;
-    if os == HostOs::Illumos {
-        let out = super::run_checked(runner, "zfs", &["get", "-H", "-p", "-t", "filesystem", "sharesmb"], "zfs get sharesmb")?;
-        shares.extend(parse_sharesmb(&out.stdout));
-    }
-    let nfs = service_state(runner, os, nfs_unit(os))?;
-    let smb = service_state(runner, os, smb_unit(os))?;
-    let up = |state: ServiceState| matches!(state, ServiceState::Running | ServiceState::Unknown);
-    Ok(SharesSnapshot { shares, nfs_available: up(nfs), samba_available: up(smb), smb_error: None, nfs_unknown: nfs == ServiceState::Unknown, samba_unknown: smb == ServiceState::Unknown })
-}
-
 /// Composes all three calls into one snapshot — avoids extra
 /// round-trips, mirrors `zfs::disk::list_disks_with_membership`.
 pub fn list_shares_with_availability(runner: &dyn CommandRunner) -> Result<SharesSnapshot> {
@@ -353,114 +235,13 @@ pub fn list_shares_with_availability(runner: &dyn CommandRunner) -> Result<Share
             Err(e) => smb_error = Some(e.to_string()),
         }
     }
-    Ok(SharesSnapshot { shares, nfs_available, samba_available, smb_error, nfs_unknown: false, samba_unknown: false })
+    Ok(SharesSnapshot { shares, nfs_available, samba_available, smb_error })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::exec::test_support::FakeRunner;
-
-    #[test]
-    fn linux_service_state_reads_systemctl_show() {
-        use crate::zfs::host_health::HostOs::Linux;
-        let r = |text: &str| FakeRunner::new("").route("systemctl", "show", text);
-        assert_eq!(service_state(&r("LoadState=loaded\nActiveState=active\n"), Linux, nfs_unit(Linux)).unwrap(), ServiceState::Running);
-        assert_eq!(service_state(&r("LoadState=loaded\nActiveState=inactive\n"), Linux, nfs_unit(Linux)).unwrap(), ServiceState::Stopped);
-        assert_eq!(service_state(&r("LoadState=loaded\nActiveState=failed\n"), Linux, smb_unit(Linux)).unwrap(), ServiceState::Stopped);
-        assert_eq!(service_state(&r("LoadState=not-found\nActiveState=inactive\n"), Linux, smb_unit(Linux)).unwrap(), ServiceState::NotInstalled, "a unit that does not exist is not installed, whatever ActiveState says");
-        // Transitions are not "stopped": a reload or a start must not turn the daily check red.
-        for active in ["reloading", "activating", "refreshing"] {
-            assert_eq!(service_state(&r(&format!("LoadState=loaded\nActiveState={active}\n")), Linux, nfs_unit(Linux)).unwrap(), ServiceState::Running, "{active}");
-        }
-        assert_eq!(service_state(&FakeRunner::new("").route_failure("systemctl", "show", "ssh: connection reset", 255), Linux, nfs_unit(Linux)).map_err(|_| ()), Err(()), "ssh down is an error");
-    }
-
-    #[test]
-    fn without_systemd_the_process_list_answers_and_failing_that_the_state_is_unknown() {
-        use crate::zfs::host_health::HostOs::Linux;
-        let no_systemd = |pgrep: FakeRunner| pgrep.route_failure("systemctl", "show", "System has not been booted with systemd as init system (PID 1). Can't operate.\n", 1);
-        let up = no_systemd(FakeRunner::new("").route("pgrep", "-x", "812\n"));
-        assert_eq!(service_state(&up, Linux, nfs_unit(Linux)).unwrap(), ServiceState::Running);
-        let calls = up.unprivileged_calls.lock().unwrap().clone();
-        assert_eq!(calls[1], ("pgrep".to_string(), vec!["-x".to_string(), "nfsd".to_string()]), "the kernel server's process name, not the unit's: {calls:?}");
-        let down = no_systemd(FakeRunner::new("").route_failure("pgrep", "-x", "", 1));
-        assert_eq!(service_state(&down, Linux, smb_unit(Linux)).unwrap(), ServiceState::Stopped);
-        let no_pgrep = no_systemd(FakeRunner::new("").route_failure("pgrep", "-x", "sh: pgrep: not found", 127));
-        assert_eq!(service_state(&no_pgrep, Linux, smb_unit(Linux)).unwrap(), ServiceState::Unknown);
-        let no_answer = FakeRunner::new("").route("systemctl", "show", "").route_failure("pgrep", "-x", "sh: pgrep: not found", 127);
-        assert_eq!(service_state(&no_answer, Linux, nfs_unit(Linux)).unwrap(), ServiceState::Unknown, "no LoadState line is not an answer");
-        let ssh = no_systemd(FakeRunner::new("").route_failure("pgrep", "-x", "ssh: connection reset", 255));
-        assert!(service_state(&ssh, Linux, nfs_unit(Linux)).is_err());
-    }
-
-    #[test]
-    fn an_unknown_service_state_keeps_the_share_list_and_makes_no_claim() {
-        use crate::zfs::host_health::HostOs::Linux;
-        let r = FakeRunner::new("")
-            .route("zfs", "get", "tank/data\tsharenfs\ton\tlocal\n")
-            .route_failure("systemctl", "show", "System has not been booted with systemd", 1)
-            .route_failure("pgrep", "-x", "sh: pgrep: not found", 127);
-        let snapshot = list_shares_for(&r, Some(Linux)).unwrap();
-        assert_eq!(snapshot.shares.len(), 1);
-        assert!(snapshot.nfs_unknown && snapshot.samba_unknown && snapshot.nfs_available && snapshot.samba_available, "no claim either way: {snapshot:?}");
-    }
-
-    #[test]
-    fn illumos_service_state_reads_svcs() {
-        use crate::zfs::host_health::HostOs::Illumos;
-        let ok = |text: &str| FakeRunner::new("").route("svcs", "-H", text);
-        assert_eq!(service_state(&ok("online\n"), Illumos, nfs_unit(Illumos)).unwrap(), ServiceState::Running);
-        for stopped in ["disabled\n", "offline\n", "maintenance\n"] {
-            assert_eq!(service_state(&ok(stopped), Illumos, smb_unit(Illumos)).unwrap(), ServiceState::Stopped, "{stopped:?}");
-        }
-        for running in ["degraded\n", "online*\n"] {
-            assert_eq!(service_state(&ok(running), Illumos, smb_unit(Illumos)).unwrap(), ServiceState::Running, "{running:?} is up (impaired, or just changing)");
-        }
-        let missing = FakeRunner::new("").route_failure("svcs", "-H", "svcs: Pattern 'svc:/network/nfs/server:default' doesn't match any instances\n", 1);
-        assert_eq!(service_state(&missing, Illumos, nfs_unit(Illumos)).unwrap(), ServiceState::NotInstalled);
-        let ssh = FakeRunner::new("").route_failure("svcs", "-H", "ssh: connection reset", 255);
-        assert!(service_state(&ssh, Illumos, nfs_unit(Illumos)).is_err());
-        let odd = FakeRunner::new("").route_failure("svcs", "-H", "svcs: something else went wrong", 2);
-        assert_eq!(service_state(&odd, Illumos, nfs_unit(Illumos)).unwrap(), ServiceState::Unknown, "a message we cannot read (another locale) must not hide the share list");
-    }
-
-    #[test]
-    fn the_service_names_are_each_oss_own() {
-        use crate::zfs::host_health::HostOs::{Illumos, Linux};
-        assert_eq!((nfs_name(Linux), smb_name(Linux)), ("nfs-server", "smbd"));
-        assert_eq!((nfs_name(Illumos), smb_name(Illumos)), ("nfs/server", "smb/server"));
-    }
-
-    const SHARESMB: &str = "rpool/export/nfs-test\tsharesmb\toff\tdefault\ntank/alice\tsharesmb\tname=alice\tlocal\ntank/carol\tsharesmb\tname=carol,guestok=true\tlocal\ntank\tsharesmb\t-\t-\n";
-
-    #[test]
-    fn illumos_native_smb_shares_come_from_sharesmb() {
-        let shares = parse_sharesmb(SHARESMB);
-        assert_eq!(shares.len(), 2, "{shares:?}");
-        let Share::Smb { dataset, name, guest_ok, .. } = &shares[1] else { panic!("{shares:?}") };
-        assert_eq!((dataset.as_str(), name.as_str(), *guest_ok), ("tank/carol", "carol", true));
-        assert!(parse_sharesmb("").is_empty() && parse_sharesmb("garbage").is_empty());
-        // No name=: illumos names the share after the whole dataset path, `/` becoming `_`; ro= makes it read-only.
-        let plain = parse_sharesmb("tank/media/tv\tsharesmb\ton\tlocal\ntank/ro\tsharesmb\tname=ro,ro=*\tlocal\ntank/mixed\tsharesmb\tname=mixed,ro=a,rw=b\tlocal\n");
-        let view = |s: &Share| match s { Share::Smb { name, read_only, .. } => (name.clone(), *read_only), _ => panic!() };
-        assert_eq!(plain.iter().map(view).collect::<Vec<_>>(), [("tank_media_tv".to_string(), false), ("ro".to_string(), true), ("mixed".to_string(), false)]);
-    }
-
-    #[test]
-    fn the_snapshot_on_linux_and_illumos_lists_nfs_and_service_state_without_freebsd_tools() {
-        use crate::zfs::host_health::HostOs::Illumos;
-        let r = FakeRunner::new("")
-            .route("zfs", "get", "tank/data\tsharenfs\trw=@10.0.0.0/24\tlocal\ntank/off\tsharenfs\toff\tdefault\n")
-            .route("svcs", "-H", "online\n");
-        let snapshot = list_shares_for(&r, Some(Illumos)).unwrap();
-        assert_eq!(snapshot.shares.len(), 1, "{:?}", snapshot.shares);
-        assert!(snapshot.nfs_available && snapshot.samba_available && snapshot.smb_error.is_none());
-        let calls: Vec<String> = r.calls.lock().unwrap().iter().map(|(c, _)| c.clone()).chain(r.unprivileged_calls.lock().unwrap().iter().map(|(c, _)| c.clone())).collect();
-        assert!(calls.iter().all(|c| matches!(c.as_str(), "zfs" | "svcs")), "no service/cat/smbpasswd: {calls:?}");
-        let freebsd = FakeRunner::new("").route("zfs", "get", "").route("service", "nfsd", "nfsd is running\n").route("service", "samba_server", "smbd is running\n").route("cat", crate::zfs::smb::CONF_PATH, "[global]\n");
-        assert!(list_shares_for(&freebsd, None).unwrap().nfs_available, "an unknown OS asks FreeBSD's tools");
-    }
 
     #[test]
     fn parse_sharenfs_fields_bare_on_means_no_restriction() {

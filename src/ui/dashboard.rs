@@ -99,7 +99,7 @@ pub struct HostInput<'a> {
     /// The newest resource reading and the one before it.
     pub resources: Option<(&'a Resources, Option<&'a Resources>)>,
     pub utc_offset_secs: Option<i32>,
-    /// The short OS name read by the first probe (`Linux 6.8 (Ubuntu 24)`).
+    /// The short OS name read by the first probe (`FreeBSD 16.0`).
     pub os_name: Option<&'a str>,
     /// The host's `tag` from `config.toml` (blank when it has none): the group it rolls up into.
     pub tag: &'a str,
@@ -573,13 +573,7 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     use crate::smart::Severity;
     let reached = |name: &str| inputs.hosts.iter().any(|h| h.name == name && matches!(h.probe, Some(HostProbe::Reached { .. })));
     let mut items = Vec::new();
-    let role_of = |host: &str, dev: &str| {
-        let os = inputs.hosts.iter().find(|h| h.name == host).and_then(|h| match h.probe {
-            Some(HostProbe::Reached { os, .. }) => *os,
-            _ => None,
-        });
-        crate::daemon::storage_check::role_of(inputs.storage, host, dev, os)
-    };
+    let role_of = |host: &str, dev: &str| crate::daemon::storage_check::role_of(inputs.storage, host, dev);
     for found in crate::daemon::smart_check::problems_with(inputs.smart, &role_of).into_iter().filter(|p| reached(&p.host)) {
         let level = if found.severity == Severity::Issue { Level::Issue } else { Level::Watch };
         let what = format!("{}   (checked {})", found.disks, age_text(inputs.now, found.checked_at));

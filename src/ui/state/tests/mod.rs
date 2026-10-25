@@ -841,7 +841,7 @@ fn browse_outcome(names: &[(&str, crate::zfs::snapshot_browse::EntryKind)]) -> c
         .iter()
         .map(|(n, kind)| Row { entry: ListEntry { name: (*n).to_string(), kind: *kind, mode: "drwxr-xr-x".to_string(), owner: "root".to_string(), group: "wheel".to_string(), size: 5, time: Some(1_700_000_000), link_target: None, ambiguous: false }, changed: None, created: None })
         .collect();
-    crate::ui::browse::BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/tank/data".to_string(), zone: None }
+    crate::ui::browse::BrowseOutcome { listing: Listing { entries, truncated: false, unreadable: 0, has_created: true, times_incomplete: false }, mountpoint: "/tank/data".to_string() }
 }
 
 fn deliver_browse(app: &mut App, host: usize, request: u64, outcome: crate::error::Result<crate::ui::browse::BrowseOutcome>) {

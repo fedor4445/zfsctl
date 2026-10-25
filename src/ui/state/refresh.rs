@@ -218,9 +218,9 @@ impl App {
             return;
         }
         self.begin_refresh(Section::Disks, host);
-        let (tx, os) = (self.tx.clone(), self.host_os(host));
+        let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = crate::zfs::disk::list_disks_with_membership(runner.as_ref(), os);
+            let result = crate::zfs::disk::list_disks_with_membership(runner.as_ref());
             let _ = tx.send(WorkerMsg::Disks(host, result));
         });
     }
@@ -240,9 +240,9 @@ impl App {
             return;
         }
         self.begin_refresh(Section::Shares, host);
-        let (tx, os) = (self.tx.clone(), self.host_os(host));
+        let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = crate::zfs::share::list_shares_for(runner.as_ref(), os);
+            let result = crate::zfs::share::list_shares_with_availability(runner.as_ref());
             let _ = tx.send(WorkerMsg::Shares(host, result));
         });
     }
@@ -260,9 +260,9 @@ impl App {
             return;
         }
         self.begin_refresh(Section::BootEnvs, host);
-        let (tx, os) = (self.tx.clone(), self.host_os(host));
+        let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = crate::zfs::bootenv::list_for(runner.as_ref(), os);
+            let result = crate::zfs::bootenv::list(runner.as_ref());
             let _ = tx.send(WorkerMsg::BootEnvs(host, result));
         });
     }

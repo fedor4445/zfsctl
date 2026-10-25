@@ -60,7 +60,7 @@ fn the_snapshots_section_shows_the_browser_in_place_of_the_list_and_only_for_its
     let mut app = App::new(vec!["local".to_string()]);
     app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
     app.snapshots = vec![crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: "s".to_string(), used: 1, holds: 0, written: 0 }];
-    let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, zone: None, os: crate::zfs::host_health::HostOs::FreeBsd, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+    let pending = PendingBrowse { host: 0, request: 1, dataset: "tank/a".to_string(), name: "s".to_string(), path: vec![], mountpoint: None, cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) };
     app.browse_view = Some(BrowseView::new(&pending, Some(0)));
     for (w, h) in [(100, 12), (70, 8)] {
         let shown = render(&mut app, w, h).join("\n");
