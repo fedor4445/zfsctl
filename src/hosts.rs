@@ -73,7 +73,7 @@ impl HostInventory {
             tag: tag.clone(),
         });
         // Only the new `[[hosts]]` block is written: the rest of config.toml (comments, order, other sections) stays.
-        crate::config::append_host_to_file(config_path, &HostConfig { name, ssh_target: Some(target), tag })
+        crate::config::append_host_to_file(config_path, &HostConfig { name, ssh_target: Some(target), tag, site: None })
     }
 }
 
@@ -94,8 +94,8 @@ mod tests {
     fn includes_configured_remote_hosts_in_order() {
         let config = Config {
             hosts: vec![
-                HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None },
-                HostConfig { name: "offsite".to_string(), ssh_target: Some("offsite.example.com".to_string()), tag: None },
+                HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None, site: None },
+                HostConfig { name: "offsite".to_string(), ssh_target: Some("offsite.example.com".to_string()), tag: None, site: None },
             ],
             ..Default::default()
         };
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn a_hand_edited_tag_is_cleaned_like_one_from_the_form() {
-        let tagged = |t: &str| HostConfig { name: "a".into(), ssh_target: Some("u@a".into()), tag: Some(t.into()) };
+        let tagged = |t: &str| HostConfig { name: "a".into(), ssh_target: Some("u@a".into()), tag: Some(t.into()), site: None };
         let config = Config { hosts: vec![tagged("   "), tagged(&"x".repeat(200))], ..Config::default() };
         let inv = HostInventory::from_config(&config);
         assert_eq!(inv.hosts[1].tag, None);
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn from_config_carries_the_tag_to_the_host() {
-        let config = Config { hosts: vec![HostConfig { name: "a".into(), ssh_target: Some("u@a".into()), tag: Some("backup".into()) }], ..Config::default() };
+        let config = Config { hosts: vec![HostConfig { name: "a".into(), ssh_target: Some("u@a".into()), tag: Some("backup".into()), site: None }], ..Config::default() };
         let inv = HostInventory::from_config(&config);
         assert_eq!((inv.hosts[0].tag.clone(), inv.hosts[1].tag.clone()), (None, Some("backup".to_string())));
     }
@@ -158,7 +158,7 @@ mod tests {
         let persisted = Config::load(&config_path).unwrap();
         assert_eq!(
             persisted.hosts,
-            vec![HostConfig { name: "newhost".to_string(), ssh_target: Some("newhost.example.com".to_string()), tag: Some("lab".to_string()) }]
+            vec![HostConfig { name: "newhost".to_string(), ssh_target: Some("newhost.example.com".to_string()), tag: Some("lab".to_string()), site: None }]
         );
     }
 
@@ -186,8 +186,8 @@ mod tests {
     fn hosts_remember_their_ssh_target_and_the_local_host_has_none() {
         let config = Config {
             hosts: vec![
-                HostConfig { name: "backup".to_string(), ssh_target: Some("fbsd@backup.example.com".to_string()), tag: None },
-                HostConfig { name: "alias".to_string(), ssh_target: None, tag: None },
+                HostConfig { name: "backup".to_string(), ssh_target: Some("fbsd@backup.example.com".to_string()), tag: None, site: None },
+                HostConfig { name: "alias".to_string(), ssh_target: None, tag: None, site: None },
             ],
             ..Default::default()
         };
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn get_finds_host_by_name_or_returns_none() {
         let config = Config {
-            hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None }],
+            hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None, site: None }],
             ..Default::default()
         };
         let inventory = HostInventory::from_config(&config);

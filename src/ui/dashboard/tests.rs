@@ -1199,3 +1199,20 @@ fn the_dashboard_says_where_the_weakest_data_stands_or_that_nothing_has_a_copy_a
     let unloaded = Fixture::new(JobsView::default()).build(vec![]);
     assert!(unloaded.safety.is_none() && unloaded.bodies.is_empty(), "no line while the jobs are not loaded");
 }
+
+#[test]
+fn hosts_that_share_a_site_are_one_failure_domain_on_the_data_safety_line() {
+    let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
+    let probe = reached(vec![pool("tank", 10, 0, Some(when(1)))]);
+    let jobs = vec![Job::test_replicate("r", "tank/data", "rep", "fbsd16", "tank/copy")];
+    let runs = [("r", RunResult::Ok, "")];
+    let mut fx = Fixture::new(view(jobs, &runs, beat(1)));
+    let apart = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+    assert!(apart.safety.as_ref().unwrap().text.contains("tolerates 1 failure"), "{:?}", apart.safety);
+    let host = |name: &str| crate::config::HostConfig { name: name.into(), ssh_target: Some("u@h".into()), tag: None, site: Some("rack1".into()) };
+    let config = crate::config::Config { hosts: vec![host("local"), host("fbsd16")], ..Default::default() };
+    fx.protection = config.protection_settings().0;
+    let together = fx.build(vec![fine_host("local", &probe, &r, &b)]);
+    assert!(together.safety.as_ref().unwrap().text.contains("tolerates no failure"), "{:?}", together.safety);
+    assert_eq!(together.safety.as_ref().unwrap().level, Level::Watch, "one failure takes the original and its only copy");
+}

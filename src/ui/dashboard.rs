@@ -744,7 +744,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
     let now = inputs.now;
     let hosts: Vec<HostRow> = inputs.hosts.iter().map(|h| host_row(h, inputs.thresholds, now)).collect();
     let groups = groups_of(&inputs.hosts, &hosts, inputs.expand_groups);
-    let bodies = if inputs.jobs.loaded { crate::daemon::safety::bodies(&inputs.jobs.jobs, &inputs.jobs.runs, inputs.protection, &|h| h.to_string(), now) } else { Vec::new() };
+    let bodies = if inputs.jobs.loaded { crate::daemon::safety::bodies(&inputs.jobs.jobs, &inputs.jobs.runs, inputs.protection, &|h| inputs.protection.domain_of(h), now) } else { Vec::new() };
     let safety = inputs.jobs.loaded.then(|| match crate::ui::safety_text::summary(&bodies, now) {
         Some((attention, text)) => Line { level: if attention { Level::Watch } else { Level::Fine }, text },
         None => Line { level: Level::Unknown, text: "no dataset has a copy yet".to_string() },

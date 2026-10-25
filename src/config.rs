@@ -8,7 +8,7 @@ use std::path::Path;
 #[cfg(test)]
 pub(crate) fn documented_config_keys() -> Vec<&'static str> {
     vec![
-        "name", "ssh_target", "tag",
+        "name", "ssh_target", "tag", "site",
         "theme", "auto_refresh_secs",
         "multiplex",
         "notify_command", "daily_check",
@@ -151,10 +151,16 @@ pub struct Effective {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupRules {
     host_tag: std::collections::BTreeMap<String, String>,
+    host_site: std::collections::BTreeMap<String, String>,
     by_tag: std::collections::BTreeMap<String, Effective>,
 }
 
 impl ProtectionSettings {
+    /// The failure domain of `host`: its `site` when the config names one, else the host itself.
+    pub fn domain_of(&self, host: &str) -> String {
+        self.groups.host_site.get(host).cloned().unwrap_or_else(|| host.to_string())
+    }
+
     /// The settings that apply to `host`: its group's, or the global ones (a host without a tag, or in a group that sets
     /// nothing, and `local`, the hub).
     pub fn for_host(&self, host: &str) -> Effective {
@@ -535,6 +541,9 @@ pub fn render_host_block(host: &HostConfig) -> String {
     if let Some(tag) = &host.tag {
         let _ = writeln!(out, "tag = {}", toml_string(tag));
     }
+    if let Some(site) = &host.site {
+        let _ = writeln!(out, "site = {}", toml_string(site));
+    }
     out
 }
 
@@ -825,6 +834,10 @@ pub struct HostConfig {
     /// A free label for this host (`backup`, `garage`), shown in the Hosts table and matched by its filter.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tag: Option<String>,
+    /// What this host shares its failure with (`rack1`, `office`): hosts with the same `site` count as one place when the
+    /// data-safety graph asks how many separate failures the data survives. Unset, a host is its own place.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub site: Option<String>,
 }
 
 /// A tag as stored: trimmed, at most 40 characters, `None` when blank.
@@ -874,6 +887,9 @@ impl Config {
         for host in &self.hosts {
             if let Some(tag) = host.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                 rules.host_tag.insert(host.name.clone(), tag.to_string());
+            }
+            if let Some(site) = host.site.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                rules.host_site.insert(host.name.clone(), site.to_string());
             }
         }
         for (tag, group) in groups {
