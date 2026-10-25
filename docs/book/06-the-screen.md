@@ -59,26 +59,26 @@ Here is the Pools section with nothing selected yet (a real capture; the pools b
 zfsctl opens on the **Dashboard**, the one screen that answers "is anything wrong, or about to be?". It has no boxes: just headings, aligned columns and colour.
 
 ```screen
-┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 19:10                                                                                                  ✖ 4 issues
+┌zfsctl────────────────┐ Dashboard  ·  Sat 24 Oct 21:59                                                                                                  ✖ 4 issues
 │Dashboard             │
 │Hosts                 │ NEEDS ATTENTION ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Pools                 │   ✖ issue fbsd16:zroot      no copy job
 │Datasets              │   ✖ issue fbsd16:zroot/ho…  no copy job
 │Snapshots             │   ✖ issue fbsd16:zroot/ho…  no snapshot job; no copy job
-│Disks                 │   ✖ issue protection        and 122 more not protected (65 of your data)
+│Disks                 │   ✖ issue protection        and 121 more not protected (64 of your data)
 │Shares                │
 │Boot Envs             │ GROUPS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │Jobs                  │  Group         State       Pools  Capacity             Memory             CPU              Load  Scrub    Errors
-│Cloud                 │  illumos (1)   ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.03  7 d ago  0
-│Alerts                │  linux (1)     ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      ?                0.07  6 d ago  0
-│Settings              │  (no tag) (4)  ● ok        8      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 27%     ?                2.01  6 d ago  0
+│Cloud                 │  illumos (1)   ● ok        3      ━━━━━╌╌╌╌╌ 52%       ━━╌╌╌╌╌╌╌╌ 16%     ?                0.02  7 d ago  0
+│Alerts                │  linux (1)     ● ok        1      ╌╌╌╌╌╌╌╌╌╌ 0%        ━╌╌╌╌╌╌╌╌╌ 5%      ?                0.00  6 d ago  0
+│Settings              │  (no tag) (4)  ● ok        8      ━━━━━━━━╌╌ 79%       ━━━╌╌╌╌╌╌╌ 28%     ?                0.46  6 d ago  0
 │                      │
 │                      │ DATA SAFETY ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ○ no dataset has a copy yet
+│                      │   ● weakest: local:scratch/data  tolerates 1 failure  · oldest copy 29 min · 1 data set has copies
 │                      │
 │                      │ DAEMON AND JOBS ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● daemon  running (pid 33754), heartbeat 1s ago
-│                      │   ● jobs    scrub 2/2 ok  snapshot 5/5 ok
+│                      │   ● daemon  running (pid 39561), heartbeat 1s ago
+│                      │   ● jobs    scrub 2/2 ok  snapshot 5/5 ok  replicate 1/1 ok
 │                      │
 │                      │ CLOUD ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │                      │     Provider          Remote      Jobs     Last run  Next run         Traffic  In bucket
@@ -87,7 +87,7 @@ zfsctl opens on the **Dashboard**, the one screen that answers "is anything wron
 │                      │   ○ Amazon S3 (etc.)  zfsctl-aws  no jobs  -         -                -        -
 │                      │
 │                      │ ALERTS ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│                      │   ● monitor on · last alert ub24 2 datasets not protected (23m ago) · report 2026-10-24
+│                      │   ● monitor on · last alert ub24 2 datasets not protected (1h ago) · report 2026-10-24
 │                      │
 │                      │
 │                      │
