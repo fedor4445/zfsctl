@@ -35,6 +35,7 @@ The Hosts section is where zfsctl opens. Every host in your configuration is pro
 | **OS** | the short OS name, read once with the first probe: `FreeBSD 16.0`, `Linux 6.8 (Ubuntu 24)`, `illumos omnios-r151058`; `-` when it cannot be read. It is the first column to go on a narrow terminal |
 | **Type** | `metal`, `vm` or `jail`, read once from the host: on FreeBSD with `sysctl kern.vm_guest` and `security.jail.jailed`, on Linux with `systemd-detect-virt` (or the DMI vendor when there is no systemd), on illumos with `zonename` and `smbios`; a container or a non-global zone shows as `jail`; `-` when it cannot be read |
 | **Tag** | your own label from `config.toml` or the Add Host form; shown only if some host has one |
+| **Site** | what the host shares a failure with, from `config.toml` or `e`; shown only if some host has one, after Tag, and the first of the two to drop on a narrow terminal |
 | **Used** | the fullest pool on the host (yellow from 80%, red from 90%) |
 | **Pools** | how many pools |
 | **Scrub** | what is happening or the oldest last scrub: `running 34%`, `paused`, `never`, or the date |
@@ -69,7 +70,7 @@ The colour is the worst level that applies; the text is the first reason at that
 
 The tag is also how the Dashboard groups a long fleet: hosts with the same tag roll up into one row there (chapter 6), so tag by what you would want to look at together (`web`, `db`, `lab`).
 
-With a long list, press `/` and type part of a name, address, tag or type (`t1`, `172.16.10`, `backup`, `vm`): the list narrows as you type, and the title shows how many match.
+With a long list, press `/` and type part of a name, address, tag, site or type (`t1`, `172.16.10`, `backup`, `vm`): the list narrows as you type, and the title shows how many match.
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts (filter: t1_ — 1/6)───────────────────────────────────────────────────────────┐

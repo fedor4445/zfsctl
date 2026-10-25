@@ -9,6 +9,7 @@ pub struct HostColumns {
     pub addr: bool,
     pub type_: bool,
     pub tag: bool,
+    pub site: bool,
     pub used: bool,
     pub pools: bool,
     pub scrub: bool,
@@ -31,15 +32,23 @@ pub(super) const STATE_MIN: u16 = 22;
 /// The optional columns are added in the reverse of their drop order (Type, Used, Tag, Pools, Scrub, Jobs, Rtt, OS name)
 /// while they fit, stopping at the first that does not, so a narrower column can never outlive a wider one that
 /// goes before it. `tag_w` is the longest tag (0 = no host has one, so no Tag column).
+#[cfg(test)]
 pub fn fit_host_columns(inner: u16, name_w: u16, tag_w: u16) -> HostColumns {
+    fit_host_columns_with_site(inner, name_w, tag_w, 0)
+}
+
+/// `fit_host_columns` with a Site column, right after Tag, when `site_w` (the longest site) is not 0.
+pub fn fit_host_columns_with_site(inner: u16, name_w: u16, tag_w: u16, site_w: u16) -> HostColumns {
     let addr = inner >= 16 + STATE_MIN + ADDR_W + 2;
     let mut rest = inner.saturating_sub(name_w + 1 + STATE_MIN + if addr { ADDR_W + 1 } else { 0 });
-    let mut c = HostColumns { addr, type_: false, tag: false, used: false, pools: false, scrub: false, jobs: false, rtt: false, os: false };
+    let mut c = HostColumns { addr, type_: false, tag: false, site: false, used: false, pools: false, scrub: false, jobs: false, rtt: false, os: false };
     let tag_cols = tag_w.clamp(3, 14);
-    let steps: [Step; 8] = [
+    let site_cols = site_w.clamp(4, 14);
+    let steps: [Step; 9] = [
         (TYPE_W, |c| c.type_ = true),
         (USED_W, |c| c.used = true),
         (tag_cols, |c| c.tag = true),
+        (site_cols, |c| c.site = true),
         (POOLS_W, |c| c.pools = true),
         (SCRUB_W, |c| c.scrub = true),
         (JOBS_W, |c| c.jobs = true),
@@ -47,7 +56,7 @@ pub fn fit_host_columns(inner: u16, name_w: u16, tag_w: u16) -> HostColumns {
         (OS_W, |c| c.os = true),
     ];
     for (i, (w, set)) in steps.into_iter().enumerate() {
-        if i == 2 && tag_w == 0 {
+        if (i == 2 && tag_w == 0) || (i == 3 && site_w == 0) {
             continue;
         }
         if rest < w + 1 {
@@ -68,7 +77,8 @@ pub(super) fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     let longest = app.hosts.iter().map(|h| h.chars().count()).max().unwrap_or(0);
     let name_w = u16::try_from(longest + 2).unwrap_or(16).clamp(8, 16);
     let tag_w = u16::try_from(app.host_tags.iter().map(|t| t.chars().count()).max().unwrap_or(0)).unwrap_or(14).min(14);
-    let cols = fit_host_columns(inner, name_w, tag_w);
+    let site_w = u16::try_from(app.host_sites.iter().map(|t| t.chars().count()).max().unwrap_or(0)).unwrap_or(14).min(14);
+    let cols = fit_host_columns_with_site(inner, name_w, tag_w, site_w);
     let visible = app.visible_hosts();
     let rows: Vec<Row> = visible
         .iter()
@@ -106,6 +116,9 @@ pub(super) fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
             if cols.tag {
                 cells.push(Cell::from(app.host_tag(i).to_string()));
             }
+            if cols.site {
+                cells.push(Cell::from(app.host_site(i).to_string()));
+            }
             if cols.used {
                 let (text, level) = reached.map_or(("-".to_string(), Level::Ok), |(_, pools)| used_cell(pools));
                 let style = match level {
@@ -141,7 +154,7 @@ pub(super) fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
     }
     widths.push(Constraint::Min(8));
     headers.push("State");
-    for (on, w, h) in [(cols.type_, TYPE_W, "Type"), (cols.os, OS_W, "OS"), (cols.tag, tag_w.max(3), "Tag"), (cols.used, USED_W, "Used"), (cols.pools, POOLS_W, "Pools"), (cols.scrub, SCRUB_W, "Scrub"), (cols.jobs, JOBS_W, "Jobs"), (cols.rtt, RTT_W, "Rtt")] {
+    for (on, w, h) in [(cols.type_, TYPE_W, "Type"), (cols.os, OS_W, "OS"), (cols.tag, tag_w.max(3), "Tag"), (cols.site, site_w.max(4), "Site"), (cols.used, USED_W, "Used"), (cols.pools, POOLS_W, "Pools"), (cols.scrub, SCRUB_W, "Scrub"), (cols.jobs, JOBS_W, "Jobs"), (cols.rtt, RTT_W, "Rtt")] {
         if on {
             widths.push(Constraint::Length(w));
             headers.push(h);

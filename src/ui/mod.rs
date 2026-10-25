@@ -86,6 +86,7 @@ pub fn run_app(mut inventory: HostInventory, config_path: &std::path::Path, reso
             app.status_message = resolved.note;
             app.set_host_addresses(inventory.hosts.iter().map(|h| state::address_of(h.ssh_target.as_deref())).collect());
             app.set_host_tags(inventory.hosts.iter().map(|h| h.tag.clone().unwrap_or_default()).collect());
+            app.reload_host_labels();
             app.open_dashboard();
             if let Some(first_host) = inventory.hosts.first() {
                 app.refresh_pools(first_host.runner.clone());
@@ -116,6 +117,7 @@ fn apply_pending_new_hosts(app: &mut App, inventory: &mut HostInventory, config_
         app.host_addresses.push(state::address_of(Some(&target)));
         let tag = app.new_host_tags.remove(&name.to_lowercase());
         app.host_tags.push(tag.clone().unwrap_or_default());
+        app.host_sites.push(String::new());
         if let Err(e) = inventory.apply_new_host(config_path, name, target, tag) {
             app.set_error(format!("Host added, but could not save it to config.toml (it will not survive a restart): {e}"));
         }

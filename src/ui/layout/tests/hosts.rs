@@ -201,3 +201,29 @@ fn a_long_cpu_model_is_cut_before_it_reaches_the_zfs_column() {
     let at = status_row.find("Status").unwrap();
     assert!(status_row[..at].ends_with("  "), "the ZFS column keeps a gutter: {status_row}");
 }
+
+#[test]
+fn the_site_column_follows_tag_only_when_some_host_has_a_site_and_goes_before_tag_when_narrow() {
+    assert!(!fit_host_columns_with_site(200, 10, 8, 0).site, "no site configured: no Site column");
+    assert!(fit_host_columns_with_site(200, 10, 8, 6).site);
+    for w in 30..200 {
+        let c = fit_host_columns_with_site(w, 10, 8, 6);
+        assert!(!c.site || c.tag, "width {w}: a Site column never outlives the Tag column");
+    }
+    assert!((30..200).any(|w| {
+        let c = fit_host_columns_with_site(w, 10, 8, 6);
+        c.tag && !c.site
+    }), "there is a width with Tag but no Site");
+    assert_eq!(fit_host_columns(120, 10, 8), fit_host_columns_with_site(120, 10, 8, 0));
+}
+
+#[test]
+fn the_hosts_table_shows_each_hosts_site_and_the_filter_finds_it() {
+    let mut app = hosts_app();
+    app.host_sites = vec![String::new(), "rack1".to_string(), "rack1".to_string()];
+    let text = render(&mut app, 190, 30).join("\n");
+    assert!(text.contains("Site") && text.contains("rack1"), "{text}");
+    assert!(app.host_matches(1, "RACK") && !app.host_matches(0, "rack"));
+    app.host_sites.clear();
+    assert!(!render(&mut app, 190, 30).join("\n").contains("Site"), "no site on any host: no column");
+}
