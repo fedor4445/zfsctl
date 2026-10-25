@@ -29,13 +29,13 @@
 
 ## Habits that matter
 
-1. **Redundancy.** Mirror or raidz for anything you care about.
+1. **Redundancy.** Mirror or raidz for anything you care about; with very large disks prefer mirrors or raidz2.
 2. **Scrub monthly**, and read the alerts.
 3. **Snapshot often**, destroy rarely.
 4. **Follow 3-2-1**: three copies, two kinds of storage, one off-site (restic, chapter 15).
-5. **Test a restore.** Once.
+5. **Test a restore**, and again after you change the setup.
 6. **Check serial numbers** before touching a disk.
-7. **Keep pools below 80%.**
+7. **Do not run pools nearly full.** Free space gets harder to find as a pool fills and writes slow down; 80% is a common guideline, not a cliff.
 8. **Keep the passwords** for your repositories somewhere safe, apart from the machine.
 
 > **Safety:** root on the hub controls every host in the lab: guard the hub's ssh keys, and do not enable ssh login as root on any machine; zfsctl never needs it (chapter 5).

@@ -64,7 +64,7 @@ The colour is the worst level that applies; the text is the first reason at that
 | red | `ssh login refused` | the host answered but refused your key |
 | red | `host key not accepted` | the host's key is new or has changed |
 
-> **Safety:** a pool above about 80% full is a warning for a reason: ZFS slows down and fragments badly as it fills. Act on yellow before it turns red.
+> **Safety:** the fuller a pool gets, the harder it is for ZFS to find free space ([zpoolprops(7)](https://openzfs.github.io/openzfs-docs/man/master/7/zpoolprops.7.html): "As the amount of space allocated increases, it becomes more difficult to locate free space"), and writes slow down; the `Frag` figure shows how scattered the free space is. 80% is a conservative guideline and the right limit depends on the workload. Act on yellow before it turns red.
 
 ## The filter
 

@@ -9,7 +9,7 @@
 
 ## Why another layer
 
-Snapshots live in the same pool as the data: if the pool dies, so do they. Replication ([chapter 14](14-jobs.md)) puts a copy on another machine, which is good, but it copies your mistakes too. A real backup is **a separate copy, in a different place, in a different format, that you can restore from by itself**. zfsctl's backup job uses [restic](https://restic.net), a well-regarded open-source backup tool: encrypted, deduplicated, and able to store its repository on a USB disk, another machine over sftp, or a cloud service.
+Snapshots live in the same pool as the data: if the pool dies, so do they. Replication ([chapter 14](14-jobs.md)) puts a copy on another machine, which is good, and with older snapshots kept on the destination it is a versioned copy. But both sides run the same software, usually under the same administrator keys and habits, so one bug, one mistake (a `-F` receive, a destroy) or one stolen key can reach both. What makes something a backup is not its format: it is **a separate copy, in a separate place, behind separate credentials, with older versions kept, that you have restored from at least once**. A restic repository adds different software, encryption you control and deduplicated versions, which is why zfsctl's backup job uses [restic](https://restic.net), a well-regarded open-source backup tool that can store its repository on a USB disk, another machine over sftp, or a cloud service.
 
 ## One-time setup
 
@@ -252,6 +252,10 @@ restic restore latest --repo /mnt/usb/restic-tank --password-file /root/.restic-
 ```
 
 The backed-up path inside is `/var/run/zfsctl/<job id>`, followed by the job's **Path** if it has one. Test a restore of one file now and then; a backup you have never restored from is a hope, not a backup.
+
+## Check the repository now and then
+
+`restic check` verifies the structure of a repository, and `restic check --read-data` also reads every stored byte (`--read-data-subset=5%` samples a part of it). The full read takes a long time and, on a cloud repository, downloads everything. zfsctl does not run `restic check` for you: schedule it from cron on the host that owns the repository, and read its answer.
 
 ## Cancelling
 

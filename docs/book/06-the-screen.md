@@ -155,7 +155,7 @@ A copy counts when a job makes it on **another machine**, for the **whole datase
 | Job | Counts as a copy when | Kind |
 |---|---|---|
 | Replication to a host | the destination host is not the host the job runs on | on-premises |
-| Replication to a file | the job runs on another host (the file lands on the hub) | on-premises |
+| Replication to a file | the job runs on another host (the file lands on the hub); a stream file is a weaker copy, see chapter 14 | on-premises |
 | Backup (restic) | the repository starts with `sftp:` or `rest:` (counted as on-premises, even if the server is far away) | on-premises |
 | Backup (restic) | the repository starts with `s3:`, `b2:`, `azure:`, `gs:`, `swift:` or `rclone:` | **online** |
 | Cloud mirror (rclone) | the remote is a real `name:path` remote | **online** |
@@ -430,7 +430,7 @@ A form is a small window of fields. `Tab` or `Down` moves to the next field, `Sh
 
 Headings are set apart from the body: section headings (`HOSTS`, `NEEDS ATTENTION`, a Settings group, the sections of Help) and the column titles of every table are drawn in bold in the theme's accent colour (blue in the Solarized themes, cyan in `ansi`); the thin rule after a Dashboard heading stays dim, and in the `mono` theme the headings are simply bold.
 
-Colour is never the only signal: pool health is shown as `● ONLINE` (green), `▲ DEGRADED` (yellow), `✖ FAULTED`, `UNAVAIL` or `REMOVED` (red) and `○ OFFLINE` (grey), so it still reads on a monochrome terminal. Capacity bars turn yellow at 70% full and red above 85%.
+Colour is never the only signal: pool health is shown as `● ONLINE` (green), `▲ DEGRADED` (yellow), `✖ FAULTED`, `UNAVAIL` or `REMOVED` (red) and `○ OFFLINE` (grey), so it still reads on a monochrome terminal. Capacity bars in the lists turn yellow at 70% full and red above 85%; those are display colours, while the host State and the Dashboard judge by 80% and 90% (see the table above).
 
 Choose a theme in `config.toml`: `ansi` (the default: it uses only your terminal's own 16 colours, so your terminal theme applies), `mono` (no colour; chosen automatically when `NO_COLOR` is set), `solarized-dark` or `solarized-light` (best on a truecolor terminal). An unknown name is a startup error that lists the valid ones.
 
