@@ -22,7 +22,7 @@ fn the_old_smart_check_key_is_still_read_and_daily_check_wins_when_both_are_ther
 
 #[test]
 fn documented_keys_match_the_serialised_fields() {
-    let host = HostConfig { name: "n".into(), ssh_target: Some("u@h".into()), tag: Some("t".into()) };
+    let host = HostConfig { name: "n".into(), ssh_target: Some("u@h".into()), tag: Some("t".into()), site: Some("s".into()) };
     let ui = UiConfig { theme: Some("mono".into()), auto_refresh_secs: Some(5) };
     let daemon = DaemonConfig { notify_command: Some("true".into()), daily_check: Some("03:30".into()), smart_check: None };
     let cloud = CloudConfig { caps: [("b2".to_string(), "10G".to_string())].into() };
@@ -211,11 +211,12 @@ fn save_then_load_round_trips() {
     let path = dir.path().join("nested").join("config.toml");
     let config = Config {
         hosts: vec![
-            HostConfig { name: "local".to_string(), ssh_target: None, tag: None },
+            HostConfig { name: "local".to_string(), ssh_target: None, tag: None, site: None },
             HostConfig {
                 name: "backup".to_string(),
                 ssh_target: Some("backup.example.com".to_string()),
                 tag: None,
+                site: None,
             },
         ],
         ..Default::default()
@@ -390,7 +391,7 @@ fn bad_notify_values_are_refused_with_the_reason() {
 }
 
 fn host(name: &str, target: &str, tag: Option<&str>) -> HostConfig {
-    HostConfig { name: name.into(), ssh_target: Some(target.into()), tag: tag.map(str::to_string) }
+    HostConfig { name: name.into(), ssh_target: Some(target.into()), tag: tag.map(str::to_string), site: None }
 }
 
 #[test]
@@ -675,7 +676,7 @@ fn ui_theme_survives_a_save_load_round_trip_with_hosts() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     let config = Config {
-        hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None }],
+        hosts: vec![HostConfig { name: "backup".to_string(), ssh_target: Some("backup.example.com".to_string()), tag: None, site: None }],
         ui: UiConfig { theme: Some("mono".to_string()), auto_refresh_secs: None },
         ..Default::default()
     };
@@ -791,4 +792,15 @@ fn a_bad_group_address_is_a_named_problem_and_that_group_keeps_the_global_recipi
     assert_eq!(problems.len(), 2, "{problems:?}");
     assert!(problems.iter().any(|p| p.starts_with("[groups.db.notify] mail_to: 'not an address' is not a plain address")), "{problems:?}");
     assert!(problems.iter().any(|p| p == "[groups.web.notify] mail_to must be an address, or several separated by commas"), "{problems:?}");
+}
+
+#[test]
+fn hosts_with_the_same_site_are_one_failure_domain_and_a_host_without_one_is_its_own() {
+    let host = |name: &str, site: Option<&str>| HostConfig { name: name.into(), ssh_target: Some("u@h".into()), tag: None, site: site.map(str::to_string) };
+    let config = Config { hosts: vec![host("a", Some("rack1")), host("b", Some(" rack1 ")), host("c", None), host("d", Some(" "))], ..Config::default() };
+    let (settings, _) = config.protection_settings();
+    assert_eq!((settings.domain_of("a"), settings.domain_of("b")), ("rack1".to_string(), "rack1".to_string()));
+    assert_eq!((settings.domain_of("c"), settings.domain_of("d"), settings.domain_of("local")), ("c".to_string(), "d".to_string(), "local".to_string()));
+    let text = render_host_block(&host("a", Some("rack1")));
+    assert!(text.contains("site = \"rack1\""), "{text}");
 }

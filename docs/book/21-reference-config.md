@@ -18,6 +18,7 @@ The file is `/usr/local/etc/zfsctl/config.toml`. It has up to eight parts: any n
 | `name` | text | (required) | the label shown everywhere; the hub is always present as `local` |
 | `ssh_target` | text | none | `user@address` of the unprivileged account, or an alias from `~/.ssh/config` |
 | `tag` | text | none | your own label (at most 40 characters), shown in Hosts and matched by its filter |
+| `site` | text | none | what this host shares its failure with (`rack1`, `office`). Hosts with the same `site` count as one place when the data-safety line counts how many separate failures the data survives; without it a host is its own place |
 
 ### `[ui]`
 

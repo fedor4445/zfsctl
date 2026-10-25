@@ -1,6 +1,6 @@
 # The data-safety graph: design
 
-Status: slice 1 (the model) built 2026-10-24; slices 2 to 4 not built.
+Status: slices 1 (model), 2 (Dashboard pop-up) built and installed 2026-10-24; slice 3 half built (the host `site` key); the minimum-domains requirement and slice 4 not built.
 
 ## Intent
 
