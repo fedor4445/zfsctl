@@ -251,6 +251,9 @@ impl App {
                             crate::zfs::disk::DiskMembership::InPool { pool, .. } => {
                                 self.status_message = Some(format!("disk '{}' already in pool '{pool}'", disk.name));
                             }
+                            crate::zfs::disk::DiskMembership::InUse { what } => {
+                                self.status_message = Some(format!("disk '{}' is in use ({what}): not a disk to build a pool on", disk.name));
+                            }
                         }
                     }
                 }

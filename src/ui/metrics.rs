@@ -239,6 +239,7 @@ fn disk_lines(info: Option<&DiskInfo>, live: &DiskLive, theme: &Theme) -> Vec<Li
     let membership = match &info.membership {
         DiskMembership::Available => "available (not in a pool)".to_string(),
         DiskMembership::InPool { pool, vdev } => format!("{pool} / {vdev}"),
+        DiskMembership::InUse { what } => format!("in use, {what}"),
     };
     let health = match (&live.state, live.errors) {
         (Some(state), Some(e)) => {

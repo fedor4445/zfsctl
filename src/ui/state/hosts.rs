@@ -18,7 +18,7 @@ impl App {
                 name: d.name.clone(),
                 pool: match &d.membership {
                     crate::zfs::disk::DiskMembership::InPool { pool, .. } => Some(pool.clone()),
-                    crate::zfs::disk::DiskMembership::Available => None,
+                    crate::zfs::disk::DiskMembership::Available | crate::zfs::disk::DiskMembership::InUse { .. } => None,
                 },
             }),
             Section::Shares => self.shares_table.selected().and_then(|i| self.shares.get(i)).map(|share| match share {
