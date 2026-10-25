@@ -189,6 +189,39 @@ pub fn parse_source(text: &str) -> std::result::Result<SourceFields, String> {
 }
 
 /// `snap-<host>-<dataset>-<prefix>`, made safe the same way.
+/// The snapshot job the Needs attention fix makes for a dataset when nothing is typed: hourly, prefix `auto`, the newest 24
+/// kept, caught up after downtime, not recursive. `taken` are the ids already in use.
+pub fn default_snapshot_job(host: &str, dataset: &str, taken: &[String], now: chrono::DateTime<chrono::Utc>) -> Job {
+    Job {
+        id: new_snapshot_job_id(host, dataset, jobs::DEFAULT_PREFIX, taken),
+        host: host.to_string(),
+        kind: jobs::KIND_SNAPSHOT.to_string(),
+        pool: None,
+        dataset: Some(dataset.to_string()),
+        recursive: false,
+        prefix: Some(jobs::DEFAULT_PREFIX.to_string()),
+        keep: Some(24),
+        dest_host: None,
+        dest_dataset: None,
+        dest_dir: None,
+        dest_keep: None,
+        remote: None,
+        bwlimit: None,
+        force: false,
+        raw: false,
+        repository: None,
+        password_file: None,
+        retention: None,
+        source: None,
+        snapshot: None,
+        path: None,
+        schedule: "0 * * * *".to_string(),
+        catch_up: true,
+        enabled: true,
+        created_at: Some(now),
+    }
+}
+
 pub fn new_snapshot_job_id(host: &str, dataset: &str, prefix: &str, existing: &[String]) -> String {
     unique(&format!("snap-{}-{}-{}", safe_key(host), safe_key(dataset), safe_key(prefix)), existing)
 }

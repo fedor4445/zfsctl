@@ -707,7 +707,7 @@ impl Dashboard {
         }
         let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
         let note = format!(
-            "{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine. A new job counts once it has run.\nEnter fixes the selected one.",
+            "{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine. A new job counts once it has run.\nEnter fixes the selected one.\nSpace marks, a marks a host's rows with no snapshot job, s makes a snapshot job for each marked row.",
             if self.unprotected.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", self.unprotected.len()) }
         );
         // Grouped by host, the hub first and then by name; inside a host your data before the operating system's.
@@ -727,7 +727,7 @@ impl Dashboard {
         let levels = found.iter().map(|(_, _, item)| item.level).collect();
         let selected = found.iter().position(|(i, _, _)| *i >= PROTECTION_NAMED).unwrap_or(0);
         let gaps = found.iter().map(|(_, g, _)| (*g).clone()).collect();
-        Some(ProtectionPopup { note, rows, gaps, selected, look: crate::ui::modal::ChooseLook { heads, levels } })
+        Some(ProtectionPopup { note, rows, gaps, selected, look: crate::ui::modal::ChooseLook { heads, levels, marked: vec![false; found.len()] } })
     }
 }
 

@@ -711,3 +711,96 @@ fn esc_cancels_a_running_read_and_closes_the_view() {
     assert!(app.browse_view.is_none());
     assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
 }
+
+fn markable(gaps: Vec<crate::daemon::protection::Unprotected>) -> Modal {
+    let Modal::Choose { title, note, rows, selected, then, mut look } = list_of(gaps) else { unreachable!() };
+    look.marked = vec![false; rows.len()];
+    Modal::Choose { title, note, rows, selected, then, look }
+}
+
+fn marks(app: &App) -> Vec<bool> {
+    match &app.modal {
+        Some(Modal::Choose { look, .. }) => look.marked.clone(),
+        other => panic!("expected the list, got {other:?}"),
+    }
+}
+
+#[test]
+fn marked_datasets_get_one_snapshot_job_each_after_one_confirmation_and_a_dataset_with_a_job_is_left_out() {
+    use crate::daemon::protection::Gap;
+    let (mut app, dir) = dash_app();
+    app.state_dir = dir.path().to_path_buf();
+    let mut covered = crate::jobs::Job::test_snapshot("snap-c", "tank/c", "auto", 24);
+    covered.host = "fbsd16".into();
+    app.jobs_view.jobs = vec![covered];
+    app.modal = Some(markable(vec![unprotected(Some(Gap::Missing), None, "tank/a"), unprotected(Some(Gap::Missing), None, "tank/b"), unprotected(Some(Gap::Failing), None, "tank/c"), unprotected(None, None, "tank/d")]));
+    for _ in 0..4 {
+        app.handle_modal_key(KeyCode::Char(' '));
+        app.handle_modal_key(KeyCode::Down);
+    }
+    assert_eq!(marks(&app), [true, true, true, true]);
+    app.handle_modal_key(KeyCode::Char('s'));
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.starts_with("Create 2 snapshot jobs?") && prompt.contains("fbsd16:tank/a") && prompt.contains("fbsd16:tank/b"), "{prompt}");
+    assert!(prompt.contains("Left out (2):") && prompt.contains("tank/c (snapshots are not what it lacks)") && prompt.contains("tank/d"), "{prompt}");
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "Enter alone does nothing");
+    app.handle_modal_key(KeyCode::Char('y'));
+    let action = app.handle_modal_key(KeyCode::Enter).expect("y then Enter applies");
+    assert_eq!(action.section, Section::Jobs);
+    let MutationCall::SaveJobs { state_dir, jobs } = &action.call else { panic!("{:?}", action.call) };
+    assert_eq!(jobs.iter().map(|j| (j.host.as_str(), j.dataset.as_deref().unwrap(), j.schedule.as_str(), j.keep, j.prefix.as_deref())).collect::<Vec<_>>(), [("fbsd16", "tank/a", "0 * * * *", Some(24), Some("auto")), ("fbsd16", "tank/b", "0 * * * *", Some(24), Some("auto"))]);
+    assert_ne!(jobs[0].id, jobs[1].id);
+    action.call.run(&crate::exec::test_support::FakeRunner::new("")).unwrap();
+    let saved = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap();
+    assert_eq!(saved.len(), 2, "both new jobs are in the file");
+    assert!(saved.iter().all(|j| j.enabled && j.kind == crate::jobs::KIND_SNAPSHOT));
+}
+
+#[test]
+fn s_without_marks_acts_on_the_selected_row_and_declining_returns_to_the_list_with_its_marks() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(markable(vec![unprotected(Some(Gap::Missing), None, "tank/a"), unprotected(Some(Gap::Missing), None, "tank/b")]));
+    app.handle_modal_key(KeyCode::Down);
+    app.handle_modal_key(KeyCode::Char('s'));
+    let Some(Modal::Confirm { prompt, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(prompt.starts_with("Create 1 snapshot job?") && prompt.contains("tank/b") && !prompt.contains("tank/a"), "{prompt}");
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    assert_eq!(marks(&app), [false, false], "back in the list");
+    app.handle_modal_key(KeyCode::Char(' '));
+    assert_eq!(marks(&app), [false, true]);
+}
+
+#[test]
+fn a_marks_every_row_of_that_host_lacking_a_snapshot_job_and_a_again_unmarks_them() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    let mut other = unprotected(Some(Gap::Missing), None, "tank/z");
+    other.host = "local".into();
+    app.modal = Some(markable(vec![unprotected(Some(Gap::Missing), None, "tank/a"), unprotected(None, None, "tank/b"), unprotected(Some(Gap::Missing), None, "tank/c"), other]));
+    app.handle_modal_key(KeyCode::Char('a'));
+    assert_eq!(marks(&app), [true, false, true, false], "only fbsd16's rows that lack a snapshot job");
+    app.handle_modal_key(KeyCode::Char('a'));
+    assert_eq!(marks(&app), [false, false, false, false]);
+}
+
+#[test]
+fn nothing_to_create_is_said_and_the_list_stays_open() {
+    use crate::daemon::protection::Gap;
+    let (mut app, _dir) = dash_app();
+    app.modal = Some(markable(vec![unprotected(Some(Gap::Failing), None, "tank/a")]));
+    app.handle_modal_key(KeyCode::Char('s'));
+    assert!(matches!(app.modal, Some(Modal::Choose { .. })));
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("No snapshot job to create")), "{:?}", app.status_message);
+}
+
+#[test]
+fn adding_a_new_job_never_replaces_one_with_the_same_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jobs.toml");
+    crate::jobs::add_new(&path, crate::jobs::Job::test_snapshot("a", "tank/x", "auto", 24)).unwrap();
+    let err = crate::jobs::add_new(&path, crate::jobs::Job::test_snapshot("a", "tank/y", "auto", 5)).unwrap_err();
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert_eq!(crate::jobs::load(&path).unwrap().iter().map(|j| j.dataset.clone().unwrap()).collect::<Vec<_>>(), ["tank/x"]);
+}

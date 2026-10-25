@@ -84,7 +84,12 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
                 crate::ui::modal::ChooseThen::Copy { .. } => "Open form",
                 crate::ui::modal::ChooseThen::Provider => "Show steps",
             };
-            vec![h("↑/↓", "Move", 0), h("Enter", what, 0), h("Esc", "Close", 0)]
+            let mut v = vec![h("↑/↓", "Move", 0), h("Enter", what, 0)];
+            if matches!(then, crate::ui::modal::ChooseThen::Unprotected(_)) {
+                v.extend([h("Space", "Mark", 1), h("a", "Mark host", 2), h("s", "Snapshot jobs", 1)]);
+            }
+            v.push(h("Esc", "Close", 0));
+            v
         }
         // Two steps for both outcomes: y / n / Esc select, Enter applies. Enter alone does nothing, so
         // it is only advertised once there is a selection for it to apply.

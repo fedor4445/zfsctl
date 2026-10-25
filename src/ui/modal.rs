@@ -52,6 +52,8 @@ pub enum MutationCall {
     DestroyBootEnv { name: String, origin: bool },
     /// Creates or replaces a scheduled job in `<state_dir>/jobs.toml`. Local file edits: the runner is not used.
     SaveJob { state_dir: std::path::PathBuf, job: Box<crate::jobs::Job> },
+    /// Adds several new jobs to `jobs.toml` in one go (one snapshot job for each marked dataset). A local file edit.
+    SaveJobs { state_dir: std::path::PathBuf, jobs: Vec<crate::jobs::Job> },
     DeleteJob { state_dir: std::path::PathBuf, id: String },
     SetJobEnabled { state_dir: std::path::PathBuf, id: String, enabled: bool },
     /// Replaces the `[notify]` section of `config.toml`, nothing else in the file. A local file edit: the
@@ -103,6 +105,7 @@ impl MutationCall {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
             MutationCall::SaveSettings { .. } => Some("Saved to config.toml".to_string()),
+            MutationCall::SaveJobs { jobs, .. } => Some(format!("Created {} snapshot job{}", jobs.len(), if jobs.len() == 1 { "" } else { "s" })),
             MutationCall::SaveHostKeys { names, .. } => Some(format!("Saved to config.toml for {}", if names.len() == 1 { names.join("") } else { format!("{} hosts", names.len()) })),
             MutationCall::HoldSnapshot { dataset, name } => Some(format!("Protected {dataset}@{name}")),
             MutationCall::ReleaseSnapshot { dataset, name } => Some(format!("Released the zfsctl hold on {dataset}@{name}")),
@@ -148,6 +151,7 @@ impl MutationCall {
             | MutationCall::AddAclEntry { .. }
             | MutationCall::SetPoolProperty { .. }
             | MutationCall::SaveJob { .. }
+            | MutationCall::SaveJobs { .. }
             | MutationCall::SaveNotify { .. }
             | MutationCall::SaveSettings { .. }
             | MutationCall::SaveHostKeys { .. }
@@ -205,6 +209,7 @@ impl MutationCall {
             MutationCall::UnmountBootEnv { .. } => "UNMOUNT BOOT ENV",
             MutationCall::DestroyBootEnv { .. } => "DESTROY BOOT ENV",
             MutationCall::SaveJob { .. } => "SAVE JOB",
+            MutationCall::SaveJobs { .. } => "SAVE JOBS",
             MutationCall::DeleteJob { .. } => "DELETE JOB",
             MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
             MutationCall::SaveNotify { .. } => "SAVE ALERT SETTINGS",
@@ -292,6 +297,7 @@ impl MutationCall {
             MutationCall::UnmountBootEnv { name } => crate::zfs::bootenv::unmount(runner, name, os),
             MutationCall::DestroyBootEnv { name, origin } => crate::zfs::bootenv::destroy(runner, name, *origin, os),
             MutationCall::SaveJob { state_dir, job } => crate::jobs::upsert(&state_dir.join("jobs.toml"), job.as_ref().clone()),
+            MutationCall::SaveJobs { state_dir, jobs } => jobs.iter().try_for_each(|job| crate::jobs::add_new(&state_dir.join("jobs.toml"), job.clone())),
             MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
             MutationCall::SaveNotify { config_path, section } => crate::config::save_notify_section(config_path, section),
@@ -499,6 +505,8 @@ pub struct ChooseLook {
     pub heads: Vec<(usize, String)>,
     /// One level per row (red, amber...), or empty for plain rows.
     pub levels: Vec<crate::ui::dashboard::Level>,
+    /// One flag per row when rows can be marked with Space (the unprotected list), or empty when they cannot.
+    pub marked: Vec<bool>,
 }
 
 /// What Enter does with the chosen row of a `Modal::Choose`.

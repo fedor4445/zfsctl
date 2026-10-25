@@ -763,6 +763,7 @@ fn a_named_line_goes_straight_to_its_fix_and_the_folded_line_opens_the_list_at_t
     assert_eq!(note[0], "5 datasets are not protected (4 of your data)");
     assert!(note[1].starts_with("Protected means snapshots plus a copy on another machine"), "{}", note[1]);
     assert_eq!(note[2], "Enter fixes the selected one.");
+    assert!(note[3].starts_with("Space marks, a marks"), "{}", note[3]);
     assert_eq!(popup.rows.len(), 5);
     assert!(popup.rows[0].starts_with("issue") && popup.rows[0].contains("tank/a") && popup.rows[0].ends_with("no snapshot job; no copy job"), "{}", popup.rows[0]);
     assert!(popup.rows[4].starts_with("watch") && popup.rows[4].contains("zroot/var"), "{}", popup.rows[4]);

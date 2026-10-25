@@ -221,7 +221,8 @@ pub(super) fn draw_modal(f: &mut Frame, modal: &Modal, check: Option<&crate::ui:
                     lines.push(Line::styled(head.clone(), theme.header()));
                 }
                 let base = look.levels.get(i).map_or_else(Style::default, |level| crate::ui::dashboard_view::level_style(theme, *level));
-                let text = if look.heads.is_empty() { row.clone() } else { format!("  {row}") };
+                let mark = if look.marked.is_empty() { "" } else if look.marked.get(i) == Some(&true) { "+ " } else { "  " };
+                let text = if look.heads.is_empty() { format!("{mark}{row}") } else { format!("  {mark}{row}") };
                 if i == *selected {
                     chosen_at = lines.len();
                     lines.push(Line::styled(text, base.patch(theme.selected_row())));
