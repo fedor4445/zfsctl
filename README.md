@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/logo/zfsctl-logo.svg" alt="zfsctl" width="360"></h1>
 
-A terminal UI and daemon for managing ZFS storage: a FreeBSD hub that manages FreeBSD, Linux and illumos hosts over ssh.
+A terminal UI and daemon for managing ZFS storage on FreeBSD: one hub that manages itself and any number of other FreeBSD hosts over ssh.
 
 > **Built with Claude.** zfsctl was written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code): the design, code, tests and documentation were produced in conversation with it, and directed and tested by the author on real machines.
 
@@ -8,7 +8,7 @@ A terminal UI and daemon for managing ZFS storage: a FreeBSD hub that manages Fr
 
 ## Requirements
 
-- A FreeBSD machine as the hub, where zfsctl runs (it uses `zpool`/`zfs`). The hosts it manages over ssh may run FreeBSD, Linux (tested on Ubuntu 24 with OpenZFS) or illumos (tested on OmniOS)
+- A FreeBSD machine as the hub, where zfsctl runs (it uses `zpool`/`zfs`). The hosts it manages over ssh run FreeBSD too
 - Root privileges
 - `ssh` configured (with working host keys / `~/.ssh/config` entries) for any remote hosts you add to the config
 
@@ -65,7 +65,7 @@ auto_refresh_secs = 10   # seconds between refreshes; 0 turns it off
 
 ### Remote host setup: unprivileged SSH + sudo
 
-`ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (the exceptions are read-only lookups that need no privilege and run over SSH without sudo: `getent passwd` / `getent group` for the F2 picker, and `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` for the metrics panel, and `zoneadm` / `zonecfg` on illumos to find the zone that holds a dataset for the snapshot browser, plus `sh`, `lsblk`, `systemctl`, `svcs`, `pgrep` and `stat` where the host's OS or a feature needs them; if the SSH key is locked to a forced command, that command must allow them too) (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the commands `zfsctl` ever runs, not full root. A port or other ssh option does not go in `ssh_target` (it is passed to ssh as one argument); put it in `~/.ssh/config` under the same host name.
+`ssh_target` should be an **unprivileged** user, not `root` — `zfsctl` connects over SSH as whatever user `ssh_target` names, then runs every remote command through `sudo -n` (the exceptions are read-only lookups that need no privilege and run over SSH without sudo: `getent passwd` / `getent group` for the F2 picker, and `uname`, `date`, `hostname`, `sysctl`, `swapinfo`, `iostat` and `showmount` for the metrics panel, plus `sh` and `stat` where a feature needs them; if the SSH key is locked to a forced command, that command must allow them too) (non-interactive: it fails immediately with a clear error if the sudoers entry below is missing or wrong, instead of hanging on a password prompt that can never arrive). This keeps a stolen SSH key scoped to exactly the commands `zfsctl` ever runs, not full root. A port or other ssh option does not go in `ssh_target` (it is passed to ssh as one argument); put it in `~/.ssh/config` under the same host name.
 The `!` shell is deliberately the plain unprivileged login: it adds no sudoers requirement and no path to root.
 
 **Let zfsctl write and check the entry.** On the hub, as root:
@@ -84,11 +84,13 @@ A twelfth binary, `/usr/local/bin/restic`, is needed only on a host that runs ba
 
 A thirteenth binary, `/usr/local/bin/rclone`, is needed only on a host that runs cloud mirror jobs (jobs on the hub itself run as root and need nothing): add it with `zfsctl print-sudoers HOST --with rclone`. It is as broad as `restic`: rclone as root can read any file and write to any remote its `rclone.conf` names.
 
-On an illumos host the boot environment tool is `/usr/sbin/beadm`, allowed with any arguments (`zfsctl print-sudoers HOST` includes it by default there; listing needs no sudo). A fourteenth binary, `/usr/local/sbin/smartctl` (from `pkg install smartmontools`), is needed only for the daily disk health check (`zfsctl print-sudoers HOST --with smart`). Its entry is pinned to two forms, `smartctl --scan -j` and `smartctl -j -H -A -i /dev/*`; sudo's `*` also matches spaces, so the second cannot stop an extra flag, but the account already holds `zfs` and `zpool`, which are as powerful as root, and zfsctl only ever sends the read-only flags.
+A fourteenth binary, `/usr/local/sbin/smartctl` (from `pkg install smartmontools`), is needed only for the daily disk health check (`zfsctl print-sudoers HOST --with smart`). Its entry is pinned to two forms, `smartctl --scan -j` and `smartctl -j -H -A -i /dev/*`; sudo's `*` also matches spaces, so the second cannot stop an extra flag, but the account already holds `zfs` and `zpool`, which are as powerful as root, and zfsctl only ever sends the read-only flags.
 
-A fifteenth binary, `ls`, is needed only to look inside snapshots (`zfsctl print-sudoers HOST --with browse`; off by default on every OS). Its entry is pinned to forms that all end in `-- *` (print-sudoers writes the three for the host's own OS, two on illumos; all eight are: (sudo matches the words as one string, so this does not keep an extra option or path out, but `ls` has no option that writes or runs anything; the worst is a recursive listing): `ls -lAb -D %s -- *`, `ls -lAbc -D %s -- *`, `ls -lAbU -D %s -- *` (FreeBSD), `ls -lAQ --time-style +%s -- *`, `ls -lAQ --time-style +%s --time ctime -- *`, `ls -lAQ --time-style +%s --time birth -- *` (Linux), `ls -lAbE -- *` and `ls -lAbEc -- *` (illumos); the `b` and `Q` make `ls` print a newline or an escape character in a name as an escape sequence, so one line is always one entry). It lists names and metadata, never file contents. Sudo's `*` also matches spaces and `/`, so the path cannot be confined to `.zfs/snapshot`, but the account already holds `zfs` and `zpool`, which can read every dataset. A host set up before the escaped listings (the forms were `-lA...` before they became `-lAb`, `-lAQ` and `-lAbE`) needs the browse entry installed again: run `zfsctl print-sudoers HOST --with browse` and install the new file. For a dataset given to an illumos zone it reads through `<zone path>/root`, which that zone's own root user controls (a hostile zone could make the path lead elsewhere on the host), so that listing is a hint only; it finds the zone with `zoneadm list -cp` and `zonecfg -z NAME info dataset`, which need no sudo. The browser treats a snapshot's file names as untrusted text: listings are escaped (`ls -b`, `ls -Q`), so one line is always one entry and a crafted name cannot forge extra entries; a name with a control character, a byte that is not UTF-8 or, on illumos, a backslash is shown but never opened.
+A fifteenth binary, `ls`, is needed only to look inside snapshots (`zfsctl print-sudoers HOST --with browse`; off by default). Its entry is pinned to forms that all end in `-- *` (sudo matches the words as one string, so this does not keep an extra option or path out, but `ls` has no option that writes or runs anything; the worst is a recursive listing): `ls -lAb -D %s -- *`, `ls -lAbc -D %s -- *` and `ls -lAbU -D %s -- *`; the `b` makes `ls` print a newline or an escape character in a name as an escape sequence, so one line is always one entry). It lists names and metadata, never file contents. Sudo's `*` also matches spaces and `/`, so the path cannot be confined to `.zfs/snapshot`, but the account already holds `zfs` and `zpool`, which can read every dataset. A host set up before the escaped listings (the forms were `-lA...` before they became `-lAb`, `-lAQ` and `-lAbE`) needs the browse entry installed again: run `zfsctl print-sudoers HOST --with browse` and install the new file. The browser treats a snapshot's file names as untrusted text: listings are escaped (`ls -b`), so one line is always one entry and a crafted name cannot forge extra entries; a name with a control character, or a byte that is not UTF-8 is shown but never opened.
 
-A sixteenth binary, `cp`, is needed only to copy a file out of a snapshot (`zfsctl print-sudoers HOST --with restore`; off by default on every OS). Its entry is pinned to one form per OS: `cp -p -n -T -- * *` on Linux and `cp -p -n -- * *` on FreeBSD and illumos. `-p` keeps times and modes (run as root on FreeBSD it also keeps file flags and ACLs), `-n` never overwrites an existing file, and GNU's `-T` (Linux only; FreeBSD and illumos have no such option) makes an existing directory at the destination an error instead of a copy into it. Sudo matches the words as one string, so it cannot confine the paths: with this entry the account can copy any file the host can read to any new path, which `zfs` and `zpool` already allow.
+A sixteenth binary, `cp`, is needed only to copy a file out of a snapshot (`zfsctl print-sudoers HOST --with restore`; off by default). Its entry is pinned to one form, `cp -p -n -- * *`. `-p` keeps times and modes (run as root on FreeBSD it also keeps file flags and ACLs), and `-n` never overwrites an existing file. Sudo matches the words as one string, so it cannot confine the paths: with this entry the account can copy any file the host can read to any new path, which `zfs` and `zpool` already allow.
+
+The code still carries sudoers entries for hosts that are not FreeBSD. They are not supported and are due to be removed with that code: `/usr/sbin/beadm`, the `ls` forms `ls -lAQ --time-style +%s -- *`, `ls -lAQ --time-style +%s --time ctime -- *`, `ls -lAQ --time-style +%s --time birth -- *`, `ls -lAbE -- *` and `ls -lAbEc -- *`, and `cp -p -n -T -- * *`.
 
 ```sh
 which zpool zfs getfacl setfacl geom bectl service smbpasswd smbstatus cat tee
@@ -151,7 +153,7 @@ The Hosts list is a table: `● Name | Address | State | Type | Tag | Used | Poo
 
 State also tells a network failure (`unreachable`) from an ssh refusal (`ssh login refused`, `host key not accepted`). The other columns:
 
-- **Type**: `metal`, `vm` or `jail`, read once per host without sudo: FreeBSD `sysctl -n kern.vm_guest security.jail.jailed`, Linux `systemd-detect-virt` (or the DMI vendor in `/sys/class/dmi/id/sys_vendor`), illumos `zonename` and `smbios` (a container or a non-global zone shows as `jail`; a host where nothing can be read shows `-`). `vm` is coloured cyan and `jail` magenta, apart from the health colours.
+- **Type**: `metal`, `vm` or `jail`, read once per host without sudo: `sysctl -n kern.vm_guest security.jail.jailed` (a jail shows as `jail`; a host where nothing can be read shows `-`). `vm` is coloured cyan and `jail` magenta, apart from the health colours.
 - **Tag**: a free label per host, `tag = "backup"` under its `[[hosts]]` entry in `config.toml` or the optional third field of the Add Host form (change it later by editing `config.toml` and restarting). Shown only when some host has one.
 - **Used**: the fullest pool's capacity, yellow from 80%, red from 90%. **Pools**: how many. **Scrub**: `running 34%` or `paused` if any pool is, else `never` if any pool never scrubbed, else the date of the oldest last scrub.
 - **Jobs**: `failed/total` of the host's enabled jobs (a job counts as failed when its latest run failed).
@@ -309,10 +311,6 @@ The Jobs section lists the scheduled jobs of every host (it is global, not per h
 ### Settings
 
 The last sidebar section edits the rest of `config.toml` in place: the theme and auto-refresh (`[ui]`), the Dashboard thresholds (`[dashboard]`) and the cloud caps (`[cloud.caps]`). `Enter` on a row opens a form (a blank field means the default; a warn/crit pair needs both numbers, warn above 0 and below crit), then the usual two-key confirmation. Only that key is written, through the same safe write as the Alerts screen (backup `config.toml.bak`, private temporary file, same owner and mode, rename), so comments, hosts and other sections stay as they are; the change applies at once, with no restart. Alerts keep the notify settings and the hook command stays in the file.
-
-### Linux and illumos hosts
-
-Managed hosts may run Linux (Ubuntu 24 tested) or illumos (OmniOS tested); the hub stays FreeBSD. The first probe of a host also reads its OS (`uname -s`, in the same round trip as the host type). Pools, Datasets, Snapshots and the Hosts and Dashboard rows work as they are, since `zpool` and `zfs` print the same columns everywhere. Disks uses `lsblk` (Linux) or `iostat -En` (illumos). Boot Envs on illumos lists the boot environments with `beadm list -H` (no sudo) and changes them with `beadm` (create, activate, next-boot-only, rename, destroy; the `beadm` sudoers entry is part of the default `print-sudoers` there; mount and destroy-with-origin are not offered); Boot Envs on Linux and the dataset ACL tab on both are dimmed in the sidebar for such a host and say they are not supported yet; their keys do nothing, and no FreeBSD-only command is run on those hosts. Shares is listed read-only there (the datasets with `sharenfs`, illumos's native `sharesmb`, and the NFS and SMB service state from `systemctl` or `svcs`), and the daily shares check uses the same states, so a stopped `nfs-server` or `nfs/server` with shares is a red Dashboard line. `print-sudoers` and `check-host` default to the `core` entry (`zpool`, `zfs`) on those hosts, refuse features that run FreeBSD tools, and print `/etc/sudoers.d/zfsctl` as the install path. The Dashboard's Memory, CPU, load and swap come from `/proc` (Linux) or `kstat`, `swap -l` and `uptime` (illumos), in one unprivileged call per probe; the bottom panel of Hosts reads uptime, CPU, memory, swap, load and the ZFS cache the same way (the ZFS version stays `-` on illumos). An unknown or unread OS behaves as FreeBSD.
 
 ### Cloud
 
@@ -517,7 +515,6 @@ Tested:
 - **Live on real machines:** a FreeBSD 15 hub and three FreeBSD VMs (one on 16.0), with real pools, snapshots, replication between hosts, restic backups and rclone mirrors to Backblaze B2 and S3, boot environments including real reboots, and encryption keys loaded, changed and unloaded through the TUI.
 
 Tested less, or not live:
-- **Linux and illumos hosts:** checked on Ubuntu 24 and OmniOS, but far less than FreeBSD. Sections a host's OS cannot support are dimmed rather than half-working. Expect rough edges there.
 - **Raw replication of encrypted datasets:** the `zfs send -w` flow was verified by hand on FreeBSD, and the job logic is covered by tests with fake hosts. It has not run as a long-lived daemon job.
 - **Restic backups of remote hosts:** local hub backups were verified live; remote hosts were not.
 - **Not security-audited.** zfsctl runs commands as root through sudoers rules you install yourself. Read what `zfsctl print-sudoers` generates before installing it.
@@ -532,8 +529,6 @@ zfsctl is a thin layer over other people's work. None of it is bundled; all of i
 
 - [OpenZFS](https://openzfs.org/): the file system, volume manager and the `zpool`/`zfs` tools that zfsctl drives.
 - [FreeBSD](https://www.freebsd.org/): the operating system of the hub, and of most of the test machines.
-- [illumos](https://illumos.org/) and [OmniOS](https://omnios.org/): the descendant of OpenSolaris, where ZFS was born at Sun; OmniOS is the distribution used for testing.
-- [Linux](https://www.kernel.org/) (tested on [Ubuntu](https://ubuntu.com/)) with [OpenZFS on Linux](https://openzfs.github.io/openzfs-docs/).
 - [Rust](https://www.rust-lang.org/): the language, with [ratatui](https://ratatui.rs/) for the screen and [crossterm](https://github.com/crossterm-rs/crossterm) for the terminal.
 - [restic](https://restic.net/) and [rclone](https://rclone.org/): backups and cloud mirrors, when you use those job kinds.
 

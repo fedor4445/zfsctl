@@ -126,7 +126,7 @@ Terms are in alphabetical order.
 
 **rtt**: round-trip time of a host's last health probe.
 
-**Samba**: the software that provides SMB sharing on FreeBSD and Linux.
+**Samba**: the software that provides SMB sharing on FreeBSD.
 
 **scrub**: reading all data and checking it against the checksums, repairing from redundancy; chapter 8.
 

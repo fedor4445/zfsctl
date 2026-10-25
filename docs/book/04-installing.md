@@ -8,7 +8,7 @@
 
 ## What you need
 
-- A **FreeBSD machine with ZFS** to be the hub. zfsctl runs on FreeBSD and uses its `zpool` and `zfs`. The hosts it manages over ssh may also run Linux or illumos (chapter 5).
+- A **FreeBSD machine with ZFS** to be the hub. zfsctl runs on FreeBSD and uses its `zpool` and `zfs`.
 - **Root.** The screen and the daemon both run as root on the hub, because they run ZFS commands.
 - **ssh set up for any other host** you want to manage (chapter 5): keys and host keys that work from the hub's root account.
 - A Rust toolchain to build it (`pkg install rust`), or a binary someone built for you.

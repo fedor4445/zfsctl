@@ -8,7 +8,6 @@
 
 ## The list
 
-(On a Linux or illumos host the list comes from `lsblk` or `iostat -En` instead of `geom`, and the live activity of a selected disk from that system's own `iostat`; see chapter 5. The columns are the same, but a rotating disk shows `HDD` without a speed, and illumos shows no Type.)
 
 The Disks section lists every disk the host has, and which pool each belongs to:
 
