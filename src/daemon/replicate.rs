@@ -8,7 +8,7 @@ use super::transfer::pump;
 use crate::exec::CommandRunner;
 use crate::error::AppError;
 use crate::jobs::{effective_prefix, valid_dataset, valid_snapshot_name, Job, DEST_FILE};
-use crate::zfs::replication::{list_snapshot_infos, list_snapshot_infos_or_empty, parse_send_size, plan, prune_selection, receive_args, resume_send_args, resume_token, send_args, Plan};
+use crate::zfs::replication::{keep_bookmark, list_bookmark_infos_or_empty, list_snapshot_infos, list_snapshot_infos_or_empty, own_bookmarks, parse_send_size, plan_with_bookmarks, prune_selection, receive_args, resume_send_args, resume_token, send_args, Base, Plan, SnapInfo};
 use chrono::{DateTime, Utc};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -33,6 +33,8 @@ struct Chosen {
     /// Destination snapshots the prune must not destroy whatever their age: the base of this transfer and
     /// the snapshot it brings (or, when up to date, the one both sides share).
     protect: Vec<String>,
+    /// The source snapshot this run brings to the destination (none for a resume): its bookmark is kept afterwards.
+    new_snapshot: Option<SnapInfo>,
 }
 
 /// A command's stderr as one line: its lines joined, without the sender's `warning:` noise (the
@@ -149,7 +151,7 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
                 Err(e) => return failed(format!("could not check whether {dataset} is encrypted: {e}")),
             }
         }
-        Chosen { send: resume_send_args(&token, false), dry: resume_send_args(&token, true), label: "resumed an interrupted transfer".to_string(), resumed: true, incremental: false, protect: Vec::new() }
+        Chosen { send: resume_send_args(&token, false), dry: resume_send_args(&token, true), label: "resumed an interrupted transfer".to_string(), resumed: true, incremental: false, protect: Vec::new(), new_snapshot: None }
     } else {
         let source = match list_snapshot_infos(src, &dataset) {
             Ok(s) => s,
@@ -159,24 +161,29 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
             Ok(d) => d,
             Err(e) => return failed(e.to_string()),
         };
-        match plan(&source, &destination, &prefix) {
+        let bookmarks = own_bookmarks(&list_bookmark_infos_or_empty(src, &dataset), &job.id);
+        match plan_with_bookmarks(&source, &destination, &bookmarks, &prefix) {
             Plan::NoSnapshots => return skipped(format!("skipped: no snapshots with prefix '{prefix}' on {dataset}")),
             Plan::UpToDate(name) => {
+                // The newest snapshot is on the destination: keep its bookmark, so that this state survives the snapshot's deletion.
+                let kept = source.iter().find(|s| s.name == name).map_or_else(String::new, |snap| keep_bookmark(src, &dataset, &job.id, snap));
                 return match prune_after(dst, job, &dest_host, &dest_ds, &prefix, &[name.clone()], false) {
-                    Ok(note) => skipped(format!("{UP_TO_DATE} ({name}){note}")),
+                    Ok(note) => skipped(format!("{UP_TO_DATE} ({name}){note}{kept}")),
                     Err(e) => failed(format!("up to date ({name}); {e}")),
                 };
             }
             Plan::Send { new, base } => Chosen {
-                send: send_args(&dataset, &new, base.as_deref(), false, job.raw),
-                dry: send_args(&dataset, &new, base.as_deref(), true, job.raw),
+                send: send_args(&dataset, &new, base.as_ref(), false, job.raw),
+                dry: send_args(&dataset, &new, base.as_ref(), true, job.raw),
                 label: match &base {
-                    Some(base) => format!("sent {new} (incremental from {base})"),
+                    Some(Base::Snapshot(base)) => format!("sent {new} (incremental from {base})"),
+                    Some(Base::Bookmark { on_destination, .. }) => format!("sent {new} (incremental from {on_destination}, kept as a bookmark: its snapshot is gone from the source)"),
                     None => format!("sent {new} (full)"),
                 },
                 resumed: false,
                 incremental: base.is_some(),
-                protect: base.iter().cloned().chain([new.clone()]).collect(),
+                protect: base.iter().map(|b| b.on_destination().to_string()).chain([new.clone()]).collect(),
+                new_snapshot: source.iter().find(|s| s.name == new).cloned(),
             },
         }
     };
@@ -226,7 +233,9 @@ pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner
     if chosen.resumed {
         return finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{}, {}", chosen.label, progress::human_bytes(transfer.bytes)), slot);
     }
-    let sent = format!("{}, {}", chosen.label, progress::human_bytes(transfer.bytes));
+    // The snapshot that has just arrived is the base of the next run; keep a bookmark of it on the source.
+    let kept = chosen.new_snapshot.as_ref().map_or_else(String::new, |snap| keep_bookmark(src, &dataset, &job.id, snap));
+    let sent = format!("{}, {}{kept}", chosen.label, progress::human_bytes(transfer.bytes));
     match prune_after(dst, job, &dest_host, &dest_ds, &prefix, &chosen.protect, true) {
         Ok(note) => finish(ctx, job, run_id, EventKind::Finished, RunResult::Ok, format!("{sent}{note}"), slot),
         Err(e) => failed(format!("{sent}; {e}")),
@@ -273,20 +282,30 @@ mod tests {
         keystatus: Option<&'static str>,
         /// What `zfs send -nv -t <token>` prints (the decoded resume token).
         token_decode: String,
+        /// What `zfs list -t bookmark` prints (name, guid, createtxg).
+        bookmarks: String,
         queries: Mutex<Vec<Vec<String>>>,
         commands: Mutex<Vec<Vec<String>>>,
     }
 
     impl Host {
         fn new(listing: &str) -> Self {
-            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], held: vec![], check_fails: false, keystatus: None, token_decode: String::new(), queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
+            Host { listing: listing.into(), token: "-".into(), size_output: "size\t11\n".into(), send_script: "printf 'STREAMDATA'".into(), recv_script: "cat > /dev/null".into(), later_listing: None, destroy_fails: vec![], held: vec![], check_fails: false, keystatus: None, token_decode: String::new(), bookmarks: String::new(), queries: Mutex::new(vec![]), commands: Mutex::new(vec![]) }
         }
         fn commands(&self) -> Vec<Vec<String>> {
             self.commands.lock().unwrap().clone()
         }
         /// Every `zfs destroy` query, as the arguments after `destroy`.
         fn destroys(&self) -> Vec<Vec<String>> {
-            self.queries.lock().unwrap().iter().filter(|q| q[0] == "destroy").map(|q| q[1..].to_vec()).collect()
+            self.queries.lock().unwrap().iter().filter(|q| q[0] == "destroy" && !q.last().is_some_and(|t| t.contains('#'))).map(|q| q[1..].to_vec()).collect()
+        }
+        /// Every bookmark created (`zfs bookmark SNAPSHOT BOOKMARK`), as `(snapshot, bookmark)`.
+        fn bookmarks_made(&self) -> Vec<(String, String)> {
+            self.queries.lock().unwrap().iter().filter(|q| q[0] == "bookmark").map(|q| (q[1].clone(), q[2].clone())).collect()
+        }
+        /// Every bookmark destroyed, by full name.
+        fn bookmarks_destroyed(&self) -> Vec<String> {
+            self.queries.lock().unwrap().iter().filter(|q| q[0] == "destroy" && q.last().is_some_and(|t| t.contains('#'))).map(|q| q[1].clone()).collect()
         }
     }
 
@@ -294,8 +313,10 @@ mod tests {
         fn run(&self, _cmd: &str, args: &[&str]) -> Result<CommandOutput> {
             self.queries.lock().unwrap().push(args.iter().map(|a| (*a).to_string()).collect());
             let ok = |stdout: &str| Ok(CommandOutput { stdout: stdout.to_string(), stderr: String::new(), status: 0 });
-            let lists = self.queries.lock().unwrap().iter().filter(|q| q[0] == "list").count();
+            let lists = self.queries.lock().unwrap().iter().filter(|q| q[0] == "list" && !q.contains(&"bookmark".to_string())).count();
             match args.first().copied() {
+                Some("list") if args.contains(&"bookmark") => ok(&self.bookmarks),
+                Some("bookmark") => ok(""),
                 Some("list") if lists > 1 && self.later_listing.is_some() => ok(self.later_listing.as_deref().unwrap()),
                 Some("list") => ok(&self.listing),
                 Some("destroy") => {
@@ -557,6 +578,51 @@ mod tests {
         assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
         assert!(outcome.message.contains(&format!("incremental from {A}")), "{}", outcome.message);
         assert_eq!(src.commands()[0], vec!["send".to_string(), "-i".into(), format!("@{A}"), "--".into(), format!("tank/data@{B}")]);
+    }
+
+    #[test]
+    fn after_a_send_the_new_snapshot_is_bookmarked_on_the_source_and_older_bookmarks_beyond_two_are_dropped() {
+        let rig = Rig::new();
+        let mut src = Host::new(&src_listing());
+        src.bookmarks = "tank/data#zfsctl-r-X1\t7\t1\ntank/data#zfsctl-r-X2\t8\t2\ntank/data#zfsctl-r-X3\t9\t3\ntank/data#mine\t10\t4\n".into();
+        let dst = Host::new(&format!("backup/data@{A}\t1\t5\n"));
+        let (outcome, _) = rig.run(&src, &dst, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert_eq!(src.bookmarks_made(), vec![(format!("tank/data@{B}"), format!("tank/data#zfsctl-r-{B}"))]);
+        assert_eq!(src.bookmarks_destroyed(), vec!["tank/data#zfsctl-r-X1".to_string()], "only the job's own, oldest first, and never `mine`");
+        assert!(dst.bookmarks_made().is_empty(), "bookmarks are for the source");
+    }
+
+    #[test]
+    fn a_bookmark_is_the_base_when_the_sources_snapshot_was_deleted_before_the_next_run() {
+        let rig = Rig::new();
+        let mut src = Host::new(&format!("tank/data@{B}\t2\t20\n"));
+        src.bookmarks = format!("tank/data#zfsctl-r-{A}\t1\t10\n");
+        let dst = Host::new(&format!("backup/data@{A}\t1\t5\n"));
+        let (outcome, _) = rig.run(&src, &dst, &job());
+        assert_eq!(outcome.result, RunResult::Ok, "{}", outcome.message);
+        assert!(outcome.message.contains(&format!("incremental from {A}, kept as a bookmark")), "{}", outcome.message);
+        assert_eq!(src.commands()[0], vec!["send".to_string(), "-i".into(), format!("#zfsctl-r-{A}"), "--".into(), format!("tank/data@{B}")]);
+        assert_eq!(dst.commands()[0][..3], ["receive", "-s", "-u"].map(String::from), "received as any incremental, never forced");
+    }
+
+    #[test]
+    fn without_the_bookmark_the_same_situation_is_a_full_send_that_zfs_refuses_so_the_bookmark_is_what_saves_the_chain() {
+        let rig = Rig::new();
+        let src = Host::new(&format!("tank/data@{B}\t2\t20\n"));
+        let dst = Host::new(&format!("backup/data@{A}\t1\t5\n"));
+        let (_, _) = rig.run(&src, &dst, &job());
+        assert_eq!(src.commands()[0], vec!["send".to_string(), "--".into(), format!("tank/data@{B}")], "a full stream: there is no base");
+        assert!(!dst.commands()[0].contains(&"-F".to_string()), "a full stream is never forced onto an existing dataset");
+    }
+
+    #[test]
+    fn an_up_to_date_run_still_keeps_the_bookmark_of_the_shared_snapshot() {
+        let rig = Rig::new();
+        let (src, dst) = (Host::new(&src_listing()), Host::new(&format!("backup/data@{B}\t2\t6\n")));
+        let (outcome, _) = rig.run(&src, &dst, &job());
+        assert_eq!(outcome.result, RunResult::Skipped);
+        assert_eq!(src.bookmarks_made(), vec![(format!("tank/data@{B}"), format!("tank/data#zfsctl-r-{B}"))]);
     }
 
     #[test]
