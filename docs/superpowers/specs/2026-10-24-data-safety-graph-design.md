@@ -1,6 +1,6 @@
 # The data-safety graph: design
 
-Status: slices 1 (model), 2 (Dashboard pop-up) built and installed 2026-10-24; slice 3 built (the host `site` key and the `domains` requirement, default 1 = off, per group, the original's group decides); slice 4 not built.
+Status: slices 1 (model), 2 (Dashboard pop-up) built and installed 2026-10-24; slice 3 built (the host `site` key and the `domains` requirement, default 1 = off, per group, the original's group decides); slice 4 (the daily report block, weakest five) built 2026-10-25.
 
 ## Intent
 
