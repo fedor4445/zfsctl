@@ -12,13 +12,13 @@ The Hosts section is where zfsctl opens. Every host in your configuration is pro
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│Dashboard             ││Name       Address            State                                    Type   Tag     Used  Pools Scrub         Jobs  Rtt   │
-│Hosts                 ││● local    local              ok                                       vm             45%   3     Oct 8 2026    0/4   19ms  │
-│Pools                 ││● fbsd16   172.16.10.60       ok                                       vm             62%   1     Oct 17 2026   0/3   72ms  │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                                       vm             53%   2     Oct 17 2026   -     68ms  │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                                       vm             79%   2     Oct 17 2026   -     59ms  │
-│Disks                 ││● ub24     172.16.10.52       ok                                       vm     linux   0%    1     Oct 17 2026   -     73ms  │
-│Shares                ││● omnios   172.16.10.80       ok                                       vm     illumos 52%   3     Oct 17 2026   0/2   128ms │
+│Dashboard             ││Name       Address            State                            Type   Tag     Site    Used  Pools Scrub         Jobs  Rtt   │
+│Hosts                 ││● local    local              ok                               vm                     45%   3     Oct 8 2026    0/11  17ms  │
+│Pools                 ││● fbsd16   172.16.10.60       ok                               vm     freebsd lab-box 62%   1     Oct 17 2026   0/4   74ms  │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                               vm     freebsd lab-box 53%   2     Oct 17 2026   0/17  63ms  │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                               vm     freebsd lab-box 79%   2     Oct 17 2026   -     58ms  │
+│Disks                 ││● ub24     172.16.10.52       ok                               vm     linux   lab-box 0%    1     Oct 17 2026   -     74ms  │
+│Shares                ││● omnios   172.16.10.80       ok                               vm     illumos lab-box 52%   3     Oct 17 2026   0/53  151ms │
 │Boot Envs             ││                                                                                                                            │
 │Jobs                  ││                                                                                                                            │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -74,8 +74,8 @@ With a long list, press `/` and type part of a name, address, tag, site or type 
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts (filter: t1_ — 1/6)───────────────────────────────────────────────────────────┐
-│Dashboard             ││Name       Address            State                       Type   Tag     Used  Pools│
-│Hosts                 ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
+│Dashboard             ││Name       Address            State                     Type   Tag     Site    Used │
+│Hosts                 ││● fbsd16t1 172.16.10.61       ok                        vm     freebsd lab-box 53%  │
 │Pools                 ││                                                                                    │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
@@ -93,13 +93,13 @@ Select a host with `Up` and `Down` and the panel shows it. The first sample of a
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
-│Dashboard             ││Name       Address            State                       Type   Tag     Used  Pools│
-│Hosts                 ││● local    local              ok                          vm             45%   3    │
-│Pools                 ││● fbsd16   172.16.10.60       ok                          vm             62%   1    │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                          vm             79%   2    │
-│Disks                 ││● ub24     172.16.10.52       ok                          vm     linux   0%    1    │
-│Shares                ││● omnios   172.16.10.80       ok                          vm     illumos 52%   3    │
+│Dashboard             ││Name       Address            State                     Type   Tag     Site    Used │
+│Hosts                 ││● local    local              ok                        vm                     45%  │
+│Pools                 ││● fbsd16   172.16.10.60       ok                        vm     freebsd lab-box 62%  │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                        vm     freebsd lab-box 53%  │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                        vm     freebsd lab-box 79%  │
+│Disks                 ││● ub24     172.16.10.52       ok                        vm     linux   lab-box 0%   │
+│Shares                ││● omnios   172.16.10.80       ok                        vm     illumos lab-box 52%  │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
 │Cloud                 ││                                                                                    │
@@ -113,8 +113,8 @@ Select a host with `Up` and `Down` and the panel shows it. The first sample of a
 │                      │┌Metrics — host local (all pools)────────────────────────────────────────────────────┐
 │                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
 │                      ││OS      FreeBSD 15.1-RELEASE-p4            Pools   3 (all ONLINE)                   │
-│                      ││Up      13d 12h   rtt 2ms                  Space   31%  19.2G / 62.2G               │
-│                      ││Load    0.06 0.34 0.28                     ARC     5.1G / 18.9G  hit 100.0%         │
+│                      ││Up      13d 13h   rtt 3ms                  Space   31%  19.3G / 62.2G               │
+│                      ││Load    0.17 0.47 0.40                     ARC     5.1G / 18.9G  hit 100.0%         │
 │                      ││CPU     36 cores  0%                       Status  all pools are healthy            │
 │                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
 │                      ││Memory  19.9G  free 8.4G  wired 7.8G                                                │

@@ -1,11 +1,11 @@
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│Dashboard             ││Name       Address            State                                    Type   Tag     Used  Pools Scrub         Jobs  Rtt   │
-│Hosts                 ││● local    local              ok                                       vm             45%   3     Oct 8 2026    0/4   19ms  │
-│Pools                 ││● fbsd16   172.16.10.60       ok                                       vm             62%   1     Oct 17 2026   0/3   72ms  │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                                       vm             53%   2     Oct 17 2026   -     68ms  │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                                       vm             79%   2     Oct 17 2026   -     59ms  │
-│Disks                 ││● ub24     172.16.10.52       ok                                       vm     linux   0%    1     Oct 17 2026   -     73ms  │
-│Shares                ││● omnios   172.16.10.80       ok                                       vm     illumos 52%   3     Oct 17 2026   0/2   128ms │
+│Dashboard             ││Name       Address            State                            Type   Tag     Site    Used  Pools Scrub         Jobs  Rtt   │
+│Hosts                 ││● local    local              ok                               vm                     45%   3     Oct 8 2026    0/11  17ms  │
+│Pools                 ││● fbsd16   172.16.10.60       ok                               vm     freebsd lab-box 62%   1     Oct 17 2026   0/4   74ms  │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                               vm     freebsd lab-box 53%   2     Oct 17 2026   0/17  63ms  │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                               vm     freebsd lab-box 79%   2     Oct 17 2026   -     58ms  │
+│Disks                 ││● ub24     172.16.10.52       ok                               vm     linux   lab-box 0%    1     Oct 17 2026   -     74ms  │
+│Shares                ││● omnios   172.16.10.80       ok                               vm     illumos lab-box 52%   3     Oct 17 2026   0/53  151ms │
 │Boot Envs             ││                                                                                                                            │
 │Jobs                  ││                                                                                                                            │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -93,13 +93,13 @@ When you start zfsctl you land on the Hosts section. This is a real capture from
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
-│Dashboard             ││Name       Address            State                       Type   Tag     Used  Pools│
-│Hosts                 ││● local    local              ok                          vm             44%   3    │
-│Pools                 ││● fbsd16   172.16.10.60       ok                          vm             62%   1    │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                          vm             53%   2    │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                          vm             79%   2    │
-│Disks                 ││● ub24     172.16.10.52       ok                          vm     linux   0%    1    │
-│Shares                ││● omnios   172.16.10.80       ok                          vm     illumos 52%   3    │
+│Dashboard             ││Name       Address            State                     Type   Tag     Site    Used │
+│Hosts                 ││● local    local              ok                        vm                     45%  │
+│Pools                 ││● fbsd16   172.16.10.60       ok                        vm     freebsd lab-box 62%  │
+│Datasets              ││● fbsd16t1 172.16.10.61       ok                        vm     freebsd lab-box 53%  │
+│Snapshots             ││● fbsd16t2 172.16.10.62       ok                        vm     freebsd lab-box 79%  │
+│Disks                 ││● ub24     172.16.10.52       ok                        vm     linux   lab-box 0%   │
+│Shares                ││● omnios   172.16.10.80       ok                        vm     illumos lab-box 52%  │
 │Boot Envs             ││                                                                                    │
 │Jobs                  ││                                                                                    │
 │Cloud                 ││                                                                                    │
@@ -107,11 +107,11 @@ When you start zfsctl you land on the Hosts section. This is a real capture from
 │Settings              ││                                                                                    │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
 │                      │┌Metrics — host local (all pools)────────────────────────────────────────────────────┐
-│                      ││I/O     read 0B/s  write 0B/s              ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
+│                      ││I/O     read 0B/s  write 933K/s            ZFS     2.4.2-1-FreeBSD_g6330a45b0       │
 │                      ││OS      FreeBSD 15.1-RELEASE-p4            Pools   3 (all ONLINE)                   │
-│                      ││Up      13d 12h   rtt 2ms                  Space   31%  19.2G / 62.2G               │
-│                      ││Load    0.08 0.35 0.29                     ARC     5.1G / 18.9G  hit 100.0%         │
-│                      ││CPU     36 cores  0%                       Status  all pools are healthy            │
+│                      ││Up      13d 13h   rtt 3ms                  Space   31%  19.3G / 62.2G               │
+│                      ││Load    0.22 0.50 0.41                     ARC     5.1G / 18.9G  hit 100.0%         │
+│                      ││CPU     36 cores  2%                       Status  all pools are healthy            │
 │                      ││        Intel(R) Xeon(R) CPU E5-2660 0 @…                                           │
 │                      ││Memory  19.9G  free 8.4G  wired 7.8G                                                │
 │                      ││Swap    0B / 2.0G                                                                   │
