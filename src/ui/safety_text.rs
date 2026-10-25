@@ -21,7 +21,7 @@ fn kind_word(kind: PlaceKind) -> &'static str {
         PlaceKind::Replica => "replica",
         PlaceKind::Backup => "backup",
         PlaceKind::Mirror => "mirror",
-        PlaceKind::File => "file",
+        PlaceKind::File => "stream file (weak)",
     }
 }
 

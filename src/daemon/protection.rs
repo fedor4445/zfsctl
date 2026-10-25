@@ -49,6 +49,9 @@ pub(crate) fn gives_snapshots(job: &Job) -> bool {
 pub(crate) enum CopyKind {
     OnPremises,
     Online,
+    /// A replication into stream files on the hub: only a stream that has to be received before anything can be read, and a
+    /// chain of increments. It satisfies the Basic level (one copy elsewhere) and counts for nothing above it.
+    StreamFile,
 }
 
 /// The copy an enabled job makes on another machine, with a string saying where it writes; `None` for anything else.
@@ -63,7 +66,7 @@ pub(crate) fn copy_of(job: &Job) -> Option<(CopyKind, String)> {
                 if job.host == "local" {
                     return None;
                 }
-                Some((CopyKind::OnPremises, format!("{}/{}", jobs::DEST_FILE, job.dest_dir.as_deref()?)))
+                Some((CopyKind::StreamFile, format!("{}/{}", jobs::DEST_FILE, job.dest_dir.as_deref()?)))
             } else if dest != job.host {
                 Some((CopyKind::OnPremises, format!("{dest}/{}", job.dest_dataset.as_deref()?)))
             } else {
@@ -155,6 +158,8 @@ pub struct CopyGap {
     /// With no current copy: `Missing` when no copy job covers the dataset, else the state of the worst-off covering job
     /// (failing first, then the most recently stopped). With some current copies: `Missing`.
     pub worst: Gap,
+    /// How many current stream-file copies were left out of `have` because the level asks for more than one copy.
+    pub files_ignored: u8,
 }
 
 /// One dataset that is not protected, and what it lacks (at least one of the two halves is `Some`).
@@ -241,10 +246,10 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
     };
     // The copies of one body of data: its replicas, plus every other current copy job of any of its datasets. A place that
     // two of them write to counts once. Cached by the original, since every replica asks the same question.
-    let mut bodies: HashMap<Node, (u8, u8, Gap, u8)> = HashMap::new();
-    let mut body_copies = |root: &Node, members: &[Node]| -> (u8, u8, Gap, u8) {
+    let mut bodies: HashMap<Node, (u8, u8, Gap, u8, u8)> = HashMap::new();
+    let mut body_copies = |root: &Node, members: &[Node], need: u8| -> (u8, u8, Gap, u8, u8) {
         *bodies.entry(root.clone()).or_insert_with(|| {
-            let (mut counted, mut online_have, mut worst) = (Vec::<usize>::new(), 0usize, Gap::Missing);
+            let (mut counted, mut online_have, mut worst, mut files_ignored) = (Vec::<usize>::new(), 0usize, Gap::Missing, 0usize);
             // The failure domains holding the data: the original's, every replica's and every counted copy job's place.
             let mut domains: Vec<String> = std::iter::once(root).chain(members).map(|n| settings.domain_of(&n.0)).collect();
             for copy in copy_jobs.iter().enumerate().filter(|(i, _)| !links.iter().any(|l| l.2 == *i)).map(|(_, c)| c) {
@@ -252,6 +257,8 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
                     continue;
                 }
                 match copy.standing {
+                    // A stream file is a weak copy: it is enough for the Basic level, never for a higher one.
+                    None if copy.kind == CopyKind::StreamFile && need > 1 => files_ignored += 1,
                     None if !counted.contains(&copy.place) => {
                         counted.push(copy.place);
                         domains.extend(crate::daemon::safety::copy_domain(copy.job, &|h| settings.domain_of(h)));
@@ -263,7 +270,7 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
             }
             domains.sort();
             domains.dedup();
-            (small(members.len() + counted.len()), small(online_have), worst, small(domains.len()))
+            (small(members.len() + counted.len()), small(online_have), worst, small(domains.len()), small(files_ignored))
         })
     };
 
@@ -315,10 +322,10 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
                 Tier::Data => (settings.for_host(&root.0).copies, settings.for_host(&root.0).online),
                 Tier::Os => (1, 0),
             };
-            let (have, online_have, worst, domains_have) = body_copies(&root, &members);
+            let (have, online_have, worst, domains_have, files_ignored) = body_copies(&root, &members, need);
             let domains_need = if tier_of(&root.1, root_is_volume) == Tier::Data { settings.for_host(&root.0).domains } else { 1 };
             let domains = (have > 0 && domains_have < domains_need).then_some((domains_have, domains_need));
-            let copies = (have < need || online_have < online_need || domains.is_some()).then_some(CopyGap { have, need, online_have, online_need, domains, worst: if have == 0 { worst } else { Gap::Missing } });
+            let copies = (have < need || online_have < online_need || domains.is_some()).then_some(CopyGap { have, need, online_have, online_need, domains, worst: if have == 0 { worst } else { Gap::Missing }, files_ignored });
 
             if snapshots.is_some() || copies.is_some() {
                 out.push(Unprotected { host: host.clone(), dataset: seen.name.clone(), tier, snapshots, copies });
@@ -407,6 +414,9 @@ impl Unprotected {
             if let Some((have, need)) = c.domains {
                 parts.push(if have == 1 { "all copies share one failure domain".into() } else { format!("copies in {have} of {need} failure domains") });
             }
+            if c.files_ignored > 0 && c.have < c.need {
+                parts.push(format!("{} stream file{} do{} not count at this level (a weak copy)", c.files_ignored, if c.files_ignored == 1 { "" } else { "s" }, if c.files_ignored == 1 { "es" } else { "" }));
+            }
             if c.online_have < c.online_need {
                 parts.push(if c.online_need == 1 { "no online copy".into() } else { format!("{} of {} online copies", c.online_have, c.online_need) });
             }
@@ -492,7 +502,7 @@ mod tests {
 
         let only_snap = vec![snap("s", "tank/data")];
         let found = judge(&file, &only_snap, &ok_runs(&only_snap), &level(1, 0), now());
-        assert_eq!(found, vec![Unprotected { host: "local".into(), dataset: "tank/data".into(), tier: Tier::Data, snapshots: None, copies: Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst: Gap::Missing }) }]);
+        assert_eq!(found, vec![Unprotected { host: "local".into(), dataset: "tank/data".into(), tier: Tier::Data, snapshots: None, copies: Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst: Gap::Missing, files_ignored: 0 }) }]);
         assert_eq!(words(&found), ["local: tank/data: no copy job"]);
 
         let only_copy = vec![repl("r", "tank/data", "fbsd16", "tank/copy")];
@@ -518,10 +528,31 @@ mod tests {
         let file = storage(&[("local", &["tank/data"])]);
         let mut jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy"), bk("b", "tank/data", "sftp:nas:/restic")];
         let found = judge(&file, &jobs, &ok_runs(&jobs), &level(3, 1), now());
-        assert_eq!(found[0].copies, Some(CopyGap { have: 2, need: 3, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing }));
+        assert_eq!(found[0].copies, Some(CopyGap { have: 2, need: 3, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing, files_ignored: 0 }));
         assert_eq!(words(&found), ["local: tank/data: 2 of 3 copies on other machines; no online copy"]);
         jobs.push(Job::test_mirror("m", "tank/data", "m", "b2:bucket/data"));
         assert!(judge(&file, &jobs, &ok_runs(&jobs), &level(3, 1), now()).is_empty());
+    }
+
+    #[test]
+    fn a_stream_file_is_a_copy_for_basic_and_nothing_above_it() {
+        let file = storage(&[("fbsd16", &["tank/data"])]);
+        let mut snapshots = snap("s", "tank/data");
+        snapshots.host = "fbsd16".into();
+        let mut stream = Job::test_replicate("f", "tank/data", "rep", jobs::DEST_FILE, "-");
+        stream.host = "fbsd16".into();
+        stream.dest_dir = Some("/backup".into());
+        let jobs = vec![snapshots, stream];
+        assert!(judge(&file, &jobs, &ok_runs(&jobs), &level(1, 0), now()).is_empty(), "Basic: one copy elsewhere is enough");
+        let found = judge(&file, &jobs, &ok_runs(&jobs), &level(3, 1), now());
+        assert_eq!(found[0].copies.map(|c| (c.have, c.files_ignored)), Some((0, 1)), "Careful: the stream file does not count");
+        assert!(words(&found)[0].contains("1 stream file does not count at this level (a weak copy)"), "{:?}", words(&found));
+        // Beside a real copy it stays out of the count and says so.
+        let mut more = jobs.clone();
+        more.push(repl("r", "tank/data", "local", "tank/copy"));
+        more.last_mut().unwrap().host = "fbsd16".into();
+        let found = judge(&file, &more, &ok_runs(&more), &level(3, 1), now());
+        assert_eq!(found[0].copies.map(|c| (c.have, c.files_ignored)), Some((1, 1)));
     }
 
     #[test]
@@ -533,7 +564,7 @@ mod tests {
         assert!(judge(&file, &one, &ok_runs(&one), &level(1, 0), now()).is_empty());
         let three = vec![snap("s", "tank/data"), bk("b", "tank/data", "sftp:nas:/restic"), bk("b2", "tank/data", "s3:host/bucket"), repl("r", "tank/data", "fbsd16", "tank/copy")];
         let found = judge(&file, &three, &ok_runs(&three), &level(3, 2), now());
-        assert_eq!(found[0].copies, Some(CopyGap { have: 3, need: 3, online_have: 1, online_need: 2, domains: None, worst: Gap::Missing }));
+        assert_eq!(found[0].copies, Some(CopyGap { have: 3, need: 3, online_have: 1, online_need: 2, domains: None, worst: Gap::Missing, files_ignored: 0 }));
         assert_eq!(words(&found), ["local: tank/data: 1 of 2 online copies"]);
         assert!(judge(&file, &three, &ok_runs(&three), &level(3, 1), now()).is_empty());
     }
@@ -554,7 +585,7 @@ mod tests {
         let at = now() - Duration::days(3);
         let age = |t: DateTime<Utc>| if t == at { "3 days ago".to_string() } else { format!("wrong time {t}") };
         let item = |snapshots: Option<Gap>, copies: Option<CopyGap>| Unprotected { host: "h".into(), dataset: "tank/d".into(), tier: Tier::Data, snapshots, copies };
-        let none = |worst: Gap| Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst });
+        let none = |worst: Gap| Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst, files_ignored: 0 });
         assert_eq!(item(Some(Gap::Missing), None).describe(&age), "no snapshot job");
         assert_eq!(item(Some(Gap::Stopped { last_ok: at }), None).describe(&age), "snapshots stopped 3 days ago");
         assert_eq!(item(Some(Gap::Failing), None).describe(&age), "snapshot job failing");
@@ -564,10 +595,10 @@ mod tests {
         assert_eq!(item(Some(Gap::Missing), none(Gap::NotYet)).describe(&age), "no snapshot job; copy job has not run yet");
         assert_eq!(item(None, none(Gap::Stopped { last_ok: at })).describe(&age), "copy on another machine stopped 3 days ago");
         assert_eq!(item(None, none(Gap::Failing)).describe(&age), "copy job failing");
-        assert_eq!(item(None, Some(CopyGap { have: 1, need: 3, online_have: 0, online_need: 0, domains: None, worst: Gap::Missing })).describe(&age), "1 of 3 copies on other machines");
-        assert_eq!(item(None, Some(CopyGap { have: 1, need: 1, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing })).describe(&age), "no online copy");
-        assert_eq!(item(None, Some(CopyGap { have: 3, need: 3, online_have: 0, online_need: 2, domains: None, worst: Gap::Missing })).describe(&age), "0 of 2 online copies");
-        assert_eq!(item(Some(Gap::Failing), Some(CopyGap { have: 0, need: 3, online_have: 0, online_need: 1, domains: None, worst: Gap::Stopped { last_ok: at } })).describe(&age), "snapshot job failing; copy on another machine stopped 3 days ago; no online copy");
+        assert_eq!(item(None, Some(CopyGap { have: 1, need: 3, online_have: 0, online_need: 0, domains: None, worst: Gap::Missing, files_ignored: 0 })).describe(&age), "1 of 3 copies on other machines");
+        assert_eq!(item(None, Some(CopyGap { have: 1, need: 1, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing, files_ignored: 0 })).describe(&age), "no online copy");
+        assert_eq!(item(None, Some(CopyGap { have: 3, need: 3, online_have: 0, online_need: 2, domains: None, worst: Gap::Missing, files_ignored: 0 })).describe(&age), "0 of 2 online copies");
+        assert_eq!(item(Some(Gap::Failing), Some(CopyGap { have: 0, need: 3, online_have: 0, online_need: 1, domains: None, worst: Gap::Stopped { last_ok: at }, files_ignored: 0 })).describe(&age), "snapshot job failing; copy on another machine stopped 3 days ago; no online copy");
 
         // Through the judging: each job state becomes its gap.
         let file = storage(&[("local", &["tank/data"])]);
@@ -610,7 +641,7 @@ mod tests {
         let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy")];
         let found = judge(&file, &jobs, &ok_runs(&jobs), &level(2, 1), now());
         assert_eq!(places(&found), ["fbsd16:tank/copy", "local:tank/data"]);
-        let gap = Some(CopyGap { have: 1, need: 2, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing });
+        let gap = Some(CopyGap { have: 1, need: 2, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing, files_ignored: 0 });
         assert!(found.iter().all(|u| u.copies == gap && u.snapshots.is_none()), "the same verdict for the data on both machines: {found:?}");
         assert_eq!(words(&found), ["fbsd16: tank/copy: 1 of 2 copies on other machines; no online copy", "local: tank/data: 1 of 2 copies on other machines; no online copy"]);
     }
@@ -820,7 +851,7 @@ mod tests {
             assert!(judge(&file, &jobs, &ok_runs(&jobs), &level(copies, online), now()).is_empty(), "{copies}/{online}");
         }
         let found = judge(&file, &jobs[..1], &ok_runs(&jobs[..1]), &level(3, 1), now());
-        assert_eq!((found[0].tier, found[0].copies), (Tier::Os, Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst: Gap::Missing })));
+        assert_eq!((found[0].tier, found[0].copies), (Tier::Os, Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst: Gap::Missing, files_ignored: 0 })));
         assert_eq!(words(&found), ["local: zroot/var/log: no copy job"]);
     }
 
@@ -950,7 +981,7 @@ mod tests {
         file.dest_dir = Some("/backup".into());
         assert_eq!(copy_of(&file), None, "a file on the hub itself is not another machine");
         file.host = "fbsd16".into();
-        assert_eq!(copy_of(&file), Some((CopyKind::OnPremises, "file//backup".into())));
+        assert_eq!(copy_of(&file), Some((CopyKind::StreamFile, "file//backup".into())));
         let mut other = repl("fbsd16");
         other.host = "fbsd16".into();
         assert_eq!(copy_of(&other), None, "same host");
@@ -989,7 +1020,7 @@ mod tests {
     }
 
     fn no_copy(worst: Gap) -> CopyGap {
-        CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst }
+        CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst, files_ignored: 0 }
     }
 
     #[test]
@@ -1016,7 +1047,7 @@ mod tests {
     #[test]
     fn a_dataset_that_needs_a_copy_is_asked_which_kind_unless_a_copy_job_is_already_its_problem() {
         assert_eq!(fix_for(&gap(None, Some(no_copy(Gap::Missing))), &[]), Fix::ChooseCopy);
-        let some = Some(CopyGap { have: 1, need: 3, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing });
+        let some = Some(CopyGap { have: 1, need: 3, online_have: 0, online_need: 1, domains: None, worst: Gap::Missing, files_ignored: 0 });
         let copies = vec![Job::test_replicate("r", "tank/data", "auto", "nas", "tank/copy")];
         assert_eq!(fix_for(&gap(None, some), &copies), Fix::ChooseCopy, "one copy is current: another is needed, not a repair");
     }

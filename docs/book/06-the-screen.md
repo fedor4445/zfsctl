@@ -155,12 +155,12 @@ A copy counts when a job makes it on **another machine**, for the **whole datase
 | Job | Counts as a copy when | Kind |
 |---|---|---|
 | Replication to a host | the destination host is not the host the job runs on | on-premises |
-| Replication to a file | the job runs on another host (the file lands on the hub); a stream file is a weaker copy, see chapter 14 | on-premises |
+| Replication to a file | the job runs on another host (the file lands on the hub) | **stream file**: counts for Basic only |
 | Backup (restic) | the repository starts with `sftp:` or `rest:` (counted as on-premises, even if the server is far away) | on-premises |
 | Backup (restic) | the repository starts with `s3:`, `b2:`, `azure:`, `gs:`, `swift:` or `rclone:` | **online** |
 | Cloud mirror (rclone) | the remote is a real `name:path` remote | **online** |
 
-Two jobs that write to the same place count as one copy.
+Two jobs that write to the same place count as one copy. A **stream file** is a weak copy: nothing can be read from it until it has been received in full, and a series of increments is a chain that needs every link (chapter 14). It is enough for the Basic level and counts for nothing above it; when it is left out, the line says so (`1 stream file does not count at this level (a weak copy)`), and the data-safety graph names the place `stream file (weak)`.
 
 #### Replicas and the chain: one body of data
 
