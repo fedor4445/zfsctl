@@ -283,6 +283,8 @@ pub struct ProtectionSection {
     pub lines: Vec<String>,
     pub judged: usize,
     pub unchecked: Vec<String>,
+    /// The DATA SAFETY lines (see `safety::report_lines`); empty leaves the block out.
+    pub safety: Vec<String>,
 }
 
 impl ProtectionSection {
@@ -398,6 +400,13 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
         for line in section.text() {
             body.push_str(&line);
             body.push('\n');
+        }
+        if !section.safety.is_empty() {
+            body.push_str("\nDATA SAFETY\n");
+            for line in &section.safety {
+                body.push_str(line);
+                body.push('\n');
+            }
         }
     }
 
@@ -634,7 +643,7 @@ mod tests {
         let lines = protection_lines(&items, &|k| (k == "fbsd16\ttank/photos").then_some(since), t(0));
         assert_eq!(lines[0], "  fbsd16:tank/photos (your data): no snapshot job (for 3d)");
         assert_eq!(lines[1], "  fbsd16:zroot/var/log (OS data): no snapshot job");
-        let section = ProtectionSection { lines: lines.clone(), judged: 1, unchecked: vec![] };
+        let section = ProtectionSection { lines: lines.clone(), judged: 1, unchecked: vec![], safety: vec![] };
         let m = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&section));
         let (a, u) = (m.body.find("NEEDS ATTENTION").unwrap(), m.body.find("\nUNPROTECTED DATA\n").unwrap());
         assert!(a < u && u < m.body.find("EVENTS since").unwrap(), "{}", m.body);
@@ -643,7 +652,7 @@ mod tests {
     }
 
     fn section_of(lines: &[&str], judged: usize, unchecked: &[&str]) -> String {
-        let section = ProtectionSection { lines: lines.iter().map(|l| (*l).to_string()).collect(), judged, unchecked: unchecked.iter().map(|u| (*u).to_string()).collect() };
+        let section = ProtectionSection { lines: lines.iter().map(|l| (*l).to_string()).collect(), judged, unchecked: unchecked.iter().map(|u| (*u).to_string()).collect(), safety: vec![] };
         let body = report_message(t(60), "2026-10-11 07:00", "hub", &[row("hub", Level::Ok, "ok")], &|_| None, t(0), &[], &[], &[], &[], Some(&section)).body;
         let start = body.find("UNPROTECTED DATA\n").unwrap();
         body[start..body.find("\nEVENTS since").unwrap()].to_string()
@@ -793,5 +802,18 @@ mod tests {
         assert!(all.len() <= 2200 && all.len() >= 2000, "{}", all.len());
         assert_eq!(all.last().unwrap().text, "n2299");
         assert_eq!(EventLog::new(dir.path().join("none")).read(), Vec::<HealthEvent>::new());
+    }
+
+    #[test]
+    fn the_report_shows_the_data_safety_block_after_the_unprotected_data_and_not_without_a_protection_section() {
+        let section = ProtectionSection { lines: vec![], judged: 1, unchecked: vec![], safety: vec!["  a:tank/data: tolerates 1 failure, oldest copy 3 h".to_string()] };
+        let rows = [row("hub", Level::Ok, "ok")];
+        let body = report_message(t(60), "2026-10-11 07:00", "hub", &rows, &|_| None, t(0), &[], &[], &[], &[], Some(&section)).body;
+        let (unprotected, safety, events) = (body.find("UNPROTECTED DATA").unwrap(), body.find("\nDATA SAFETY\n").unwrap(), body.find("\nEVENTS since").unwrap());
+        assert!(unprotected < safety && safety < events, "{body}");
+        assert!(body.contains("DATA SAFETY\n  a:tank/data: tolerates 1 failure, oldest copy 3 h\n"), "{body}");
+        let none = ProtectionSection { safety: vec![], ..section };
+        assert!(!report_message(t(60), "2026-10-11 07:00", "hub", &rows, &|_| None, t(0), &[], &[], &[], &[], Some(&none)).body.contains("DATA SAFETY"));
+        assert!(!report_message(t(60), "2026-10-11 07:00", "hub", &rows, &|_| None, t(0), &[], &[], &[], &[], None).body.contains("DATA SAFETY"), "email off: no protection section, no block");
     }
 }

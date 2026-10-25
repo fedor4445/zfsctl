@@ -9,6 +9,7 @@ use crate::daemon::history::Run;
 use crate::daemon::protection::{copy_of, job_state, CopyKind, JobState};
 use crate::jobs::{self, Job};
 use chrono::{DateTime, Duration, Utc};
+use std::fmt::Write as _;
 
 /// What a place is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +141,37 @@ fn remote_domain(id: &str) -> String {
     let rest = id.strip_prefix("rclone:").unwrap_or(id);
     let rest = rest.strip_prefix("sftp:").or_else(|| rest.strip_prefix("rest:")).unwrap_or(rest);
     rest.split([':', '/']).next().unwrap_or(rest).to_string()
+}
+
+/// How many bodies the daily report names, the weakest first.
+const REPORT_SHOWN: usize = 5;
+
+/// The DATA SAFETY lines of the daily report: the weakest datasets, one line each (what it tolerates, how old its oldest
+/// copy is at most, and a place that is not current), then how many more there are. Never empty.
+pub fn report_lines(jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Vec<String> {
+    use crate::ui::safety_text::span;
+    let all = bodies(jobs, runs, settings, &|h| settings.domain_of(h), now);
+    if all.is_empty() {
+        return vec!["  No dataset has a copy yet: the data lives only where it is.".to_string()];
+    }
+    let mut lines: Vec<String> = all
+        .iter()
+        .take(REPORT_SHOWN)
+        .map(|b| {
+            let readings: Vec<(usize, Reading)> = (1..b.places.len()).map(|i| (i, b.reading(i, now))).collect();
+            let oldest = readings.iter().map(|(_, r)| r.age).try_fold(Duration::zero(), |acc, age| age.map(|a| acc.max(a)));
+            let tolerates = b.tolerates(now);
+            let mut line = format!("  {}: tolerates {} failure{}, oldest copy {}", b.places.first().map_or("?", |p| p.id.as_str()), tolerates, if tolerates == 1 { "" } else { "s" }, span(oldest));
+            if let Some(place) = readings.iter().find(|(_, r)| !r.current).and_then(|(i, _)| b.places.get(*i)) {
+                let _ = write!(line, " ({} is not current)", place.id);
+            }
+            line
+        })
+        .collect();
+    if all.len() > REPORT_SHOWN {
+        lines.push(format!("  and {} more with copies", all.len() - REPORT_SHOWN));
+    }
+    lines
 }
 
 /// The failure domain of the place a copy job writes to: the host it replicates to (through `domain_of`), the hub for a
@@ -340,5 +372,33 @@ mod tests {
         let runs = vec![ok_at("fresh", Duration::minutes(5)), ok_at("old", Duration::hours(30))];
         let all = graph(&jobs, &runs);
         assert_eq!(all.iter().map(|b| b.places[0].id.as_str()).collect::<Vec<_>>(), ["a:tank/c", "a:tank/b", "a:tank/a"]);
+    }
+
+    #[test]
+    fn the_report_names_the_weakest_five_with_what_each_tolerates_and_says_when_there_is_none() {
+        let settings = ProtectionSettings::default();
+        assert_eq!(report_lines(&[], &[], &settings, now()), ["  No dataset has a copy yet: the data lives only where it is."]);
+        let (jobs, runs) = chain();
+        assert_eq!(report_lines(&jobs, &runs, &settings, now()), ["  a:tank/data: tolerates 2 failures, oldest copy 3 h"]);
+        let stale = vec![ok_at("r", Duration::minutes(10)), ok_at("m", Duration::days(5))];
+        assert_eq!(report_lines(&jobs, &stale, &settings, now()), ["  a:tank/data: tolerates 1 failure, oldest copy 5 d (b2:bkt/x is not current)"]);
+        let never = vec![ok_at("r", Duration::minutes(10))];
+        assert_eq!(report_lines(&jobs, &never, &settings, now()), ["  a:tank/data: tolerates 1 failure, oldest copy unknown (b2:bkt/x is not current)"]);
+    }
+
+    #[test]
+    fn more_than_five_datasets_are_counted_not_listed() {
+        let jobs: Vec<Job> = (0..7).map(|i| on("a", Job::test_replicate(&format!("r{i}"), &format!("tank/d{i}"), "rep", "b", &format!("tank/d{i}")))).collect();
+        let runs: Vec<Run> = jobs.iter().map(|j| ok_at(&j.id, Duration::minutes(10))).collect();
+        let lines = report_lines(&jobs, &runs, &ProtectionSettings::default(), now());
+        assert_eq!((lines.len(), lines.last().map(String::as_str)), (6, Some("  and 2 more with copies")));
+    }
+
+    #[test]
+    fn hosts_sharing_a_site_are_one_domain_in_the_report_too() {
+        let (jobs, runs) = chain();
+        let config: crate::config::Config = toml::from_str("[[hosts]]\nname = \"a\"\nssh_target = \"u@a\"\nsite = \"r\"\n\n[[hosts]]\nname = \"b\"\nssh_target = \"u@b\"\nsite = \"r\"\n").unwrap();
+        let lines = report_lines(&jobs, &runs, &config.protection_settings().0, now());
+        assert_eq!(lines, ["  a:tank/data: tolerates 1 failure, oldest copy 3 h"], "a and b are one place, the cloud is the second");
     }
 }

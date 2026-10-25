@@ -31,6 +31,19 @@ UNPROTECTED DATA
 
 When all is well the section says `All datasets are protected.`, but only when every configured host was checked. A host that is unreachable, or whose dataset list is missing or more than two days old, is named instead: `All datasets on 2 hosts are protected; not checked: t2 (unreachable), omnios (no dataset list for 3d)` (or, under a list of datasets, `Not checked: ...`). Nothing is ever called protected on a host zfsctl could not see. The `zfsctl report` preview says the same. The setting **Email** (Settings, group Data protection, or `email` in `[protection]`) picks the timing: `immediate` (the default: the emails above plus the report section), `report` (only the report section, still with how long each dataset has been unprotected; the `zfsctl report` preview has no such memory and leaves the "for 3d" out) or `off` (the Dashboard only; no email at all about this check).
 
+### Data safety in the report
+
+Under the unprotected data, the report has a **DATA SAFETY** block: the same picture as the Dashboard's data-safety line (chapter 6), for the five datasets whose copies are weakest, one line each, and a count of the rest:
+
+```text
+DATA SAFETY
+  local:tank/photos: tolerates 1 failure, oldest copy 3 h
+  fbsd16:tank/vm: tolerates no failure, oldest copy 5 d (b2:bkt/vm is not current)
+  and 2 more with copies
+```
+
+`tolerates N failures` is how many separate failure domains (hosts, or hosts sharing a `site`, and cloud remotes) can be lost while the data survives. `oldest copy` is the age of the data in the least fresh place, and a place whose copy job has stopped or never ran is named as not current. With no copy job at all it says `No dataset has a copy yet`. The block follows the same **Email** setting as the unprotected data: with `off` (everywhere) there is neither. It is advice, not an alert: nothing is mailed about it between reports.
+
 ## The Alerts screen
 
 ```screen
