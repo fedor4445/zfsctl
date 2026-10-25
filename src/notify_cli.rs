@@ -82,6 +82,7 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
     let quiet = settings.email == EmailTiming::Off && rows.iter().all(|r| settings.for_host(&r.name).email == EmailTiming::Off);
     let protection = (!quiet).then(|| judge_reachable(&crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE)), &probed, &rows, &jobs, &runs, &settings, now).section(&|_| None, now)).map(|mut s| {
         s.safety = crate::daemon::safety::report_lines(&jobs, &runs, &settings, now);
+        s.ignored = settings.ignored_names();
         s
     });
     let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::check_lines(state_dir), protection.as_ref());

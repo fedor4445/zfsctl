@@ -15,7 +15,7 @@ pub(crate) fn documented_config_keys() -> Vec<&'static str> {
         "mail_to", "mail_command", "mail_from", "check_interval_minutes", "report_time", "remind_hours",
         "caps",
         "memory_warn", "memory_crit", "swap_warn", "swap_crit", "quota_warn", "quota_crit", "dedup_min_ratio", "cpu_warn", "scrub_warn_days", "scrub_crit_days", "scrub_ignore",
-        "level", "copies", "online", "domains", "recent", "email",
+        "level", "copies", "online", "domains", "recent", "email", "ignore",
         "id", "host", "kind", "pool", "dataset", "recursive", "prefix", "keep", "dest_host", "dest_dataset", "dest_dir", "dest_keep", "remote", "bwlimit", "force",
         "repository", "password_file", "retention", "source", "snapshot", "path", "schedule", "catch_up", "enabled", "created_at",
     ]
@@ -81,6 +81,9 @@ pub struct ProtectionConfig {
     pub recent: Option<toml::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub email: Option<toml::Value>,
+    /// Datasets the protection check leaves out, as `host:dataset` (each covers everything below it); see `parse_ignore`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ignore: Option<toml::Value>,
     /// `protection = 5`: the section is not a table at all.
     #[serde(skip)]
     pub not_a_table: bool,
@@ -138,6 +141,8 @@ pub struct ProtectionSettings {
     /// How many intervals old a copy may be and still count as recent.
     pub tolerance: i32,
     pub email: EmailTiming,
+    /// Datasets left out of the protection check on purpose, `(host, dataset)`; each covers its children too.
+    pub ignore: Vec<(String, String)>,
     /// Which group each host is in, and what each group sets for itself.
     pub groups: GroupRules,
 }
@@ -160,7 +165,43 @@ pub struct GroupRules {
     by_tag: std::collections::BTreeMap<String, Effective>,
 }
 
+/// The `ignore` list of `[protection]`: every `host:dataset` entry that is one, and a sentence for each that is not (the
+/// entry is left out, so a typo ignores nothing).
+pub fn parse_ignore(value: Option<&toml::Value>) -> (Vec<(String, String)>, Vec<String>) {
+    let (mut entries, mut problems) = (Vec::new(), Vec::new());
+    match value {
+        None => {}
+        Some(toml::Value::Array(items)) => {
+            for item in items {
+                let parsed = item.as_str().and_then(|s| s.split_once(':')).map(|(h, d)| (h.trim(), d.trim())).filter(|(h, d)| !h.is_empty() && crate::jobs::valid_dataset(d));
+                match (parsed, item.as_str()) {
+                    (Some((h, d)), _) => {
+                        let entry = (h.to_string(), d.to_string());
+                        if !entries.contains(&entry) {
+                            entries.push(entry);
+                        }
+                    }
+                    (None, Some(text)) => problems.push(format!("[protection] ignore: '{text}' is not host:dataset (such as local:tank/tmp); it is left out")),
+                    (None, None) => problems.push("[protection] ignore: every entry must be text like local:tank/tmp; one is left out".to_string()),
+                }
+            }
+        }
+        Some(_) => problems.push("[protection] ignore must be a list of host:dataset entries; nothing is ignored".to_string()),
+    }
+    (entries, problems)
+}
+
 impl ProtectionSettings {
+    /// Whether the check leaves `dataset` of `host` out: it is, or lies below, an ignored dataset.
+    pub fn is_ignored(&self, host: &str, dataset: &str) -> bool {
+        self.ignore.iter().any(|(h, d)| h == host && (dataset == d || dataset.strip_prefix(d.as_str()).is_some_and(|rest| rest.starts_with('/'))))
+    }
+
+    /// The ignored entries as written, `host:dataset`.
+    pub fn ignored_names(&self) -> Vec<String> {
+        self.ignore.iter().map(|(h, d)| format!("{h}:{d}")).collect()
+    }
+
     /// The failure domain of `host`: its `site` when the config names one, else the host itself.
     pub fn domain_of(&self, host: &str) -> String {
         self.groups.host_site.get(host).cloned().unwrap_or_else(|| host.to_string())
@@ -175,7 +216,7 @@ impl ProtectionSettings {
 
 impl Default for ProtectionSettings {
     fn default() -> Self {
-        ProtectionSettings { copies: 1, online: 0, domains: 1, tolerance: 2, email: EmailTiming::Immediate, groups: GroupRules::default() }
+        ProtectionSettings { copies: 1, online: 0, domains: 1, tolerance: 2, email: EmailTiming::Immediate, ignore: Vec::new(), groups: GroupRules::default() }
     }
 }
 
@@ -234,7 +275,7 @@ impl ProtectionConfig {
             "off" => EmailTiming::Off,
             _ => return Err(email_wrong.into()),
         };
-        Ok(ProtectionSettings { copies, online, domains, tolerance, email, groups: GroupRules::default() })
+        Ok(ProtectionSettings { copies, online, domains, tolerance, email, ignore: Vec::new(), groups: GroupRules::default() })
     }
 
     /// The settings to judge with on a screen: `resolve`, or Basic's defaults with the problem in words.
@@ -248,6 +289,9 @@ impl ProtectionConfig {
 
 /// How a screen states a wrong `[protection]`: `[protection]: email must be immediate, report or off; judging at Basic`.
 pub fn protection_problem_line(problem: &str) -> String {
+    if problem.starts_with("[protection] ignore") {
+        return problem.to_string();
+    }
     match problem.strip_prefix("[protection] ") {
         Some(rest) => format!("[protection]: {rest}; judging at Basic"),
         // A wrong group: its hosts are judged by the global settings meanwhile.
@@ -979,6 +1023,9 @@ impl Config {
     pub fn protection_settings(&self) -> (ProtectionSettings, Vec<String>) {
         let (mut settings, global_problem) = self.protection.resolve_or_basic();
         let mut problems: Vec<String> = global_problem.iter().cloned().collect();
+        let (ignored, ignore_problems) = parse_ignore(self.protection.ignore.as_ref());
+        settings.ignore = ignored;
+        problems.extend(ignore_problems);
         let (groups, group_problems) = self.group_entries();
         problems.extend(group_problems);
         let over = |mine: &Option<toml::Value>, base: &Option<toml::Value>| mine.clone().or_else(|| base.clone());
@@ -996,7 +1043,7 @@ impl Config {
             if g.is_default() {
                 continue;
             }
-            let merged = ProtectionConfig { level: over(&g.level, &b.level), copies: over(&g.copies, &b.copies), online: over(&g.online, &b.online), domains: over(&g.domains, &b.domains), recent: over(&g.recent, &b.recent), email: over(&g.email, &b.email), not_a_table: false };
+            let merged = ProtectionConfig { level: over(&g.level, &b.level), copies: over(&g.copies, &b.copies), online: over(&g.online, &b.online), domains: over(&g.domains, &b.domains), recent: over(&g.recent, &b.recent), email: over(&g.email, &b.email), ignore: None, not_a_table: false };
             match merged.resolve() {
                 Ok(s) => {
                     rules.by_tag.insert(tag, Effective { copies: s.copies, online: s.online, domains: s.domains, tolerance: s.tolerance, email: s.email });

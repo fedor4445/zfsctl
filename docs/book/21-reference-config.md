@@ -87,6 +87,7 @@ What counts as a protected dataset. All keys are optional, and the words are low
 | `copies` | number | `1` | with `level = "custom"`: how many copies a dataset needs, 1 to 3; ignored for the other levels |
 | `online` | number | `0` | with `level = "custom"`: how many of those copies must be online, 0 to 2 and never more than `copies`; ignored for the other levels |
 | `domains` | number | `1` | with any level: how many separate failure domains the copies must span, the original's included, 1 to 3. A host is a domain, hosts that share a `site` are one, and a cloud remote is its own. `1` asks nothing; `2` lists a dataset whose copies all sit in one domain (for example a replica on a VM of the same machine) |
+| `ignore` | list of text | none | datasets the protection check leaves out on purpose, each written `host:dataset` (`["local:zroot/tmp", "fbsd16:scratch"]`). An entry covers that dataset and everything below it. They are not listed as unprotected, not alerted and not in the daily report's list, but the Dashboard and the report name them, so nothing hides. A bad entry (no host, a wrong name) is named and left out, so a typo ignores nothing; the Settings row `Ignored datasets` and the `i` key in the unprotected list edit it |
 | `recent` | text | `normal` | how old a copy may be and still count: `strict` (one interval), `normal` (two) or `relaxed` (four) |
 | `email` | text | `immediate` | when an unprotected dataset is emailed: `immediate`, `report` (only in the daily report) or `off` |
 

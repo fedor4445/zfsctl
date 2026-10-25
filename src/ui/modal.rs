@@ -54,6 +54,8 @@ pub enum MutationCall {
     SaveJob { state_dir: std::path::PathBuf, job: Box<crate::jobs::Job> },
     /// Adds several new jobs to `jobs.toml` in one go (one snapshot job for each marked dataset). A local file edit.
     SaveJobs { state_dir: std::path::PathBuf, jobs: Vec<crate::jobs::Job> },
+    /// Adds `host:dataset` entries to `[protection] ignore` in `config.toml` (the ones already there stay). A local file edit.
+    IgnoreDatasets { config_path: std::path::PathBuf, entries: Vec<String> },
     DeleteJob { state_dir: std::path::PathBuf, id: String },
     SetJobEnabled { state_dir: std::path::PathBuf, id: String, enabled: bool },
     /// Replaces the `[notify]` section of `config.toml`, nothing else in the file. A local file edit: the
@@ -105,6 +107,7 @@ impl MutationCall {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
             MutationCall::SaveSettings { .. } => Some("Saved to config.toml".to_string()),
+            MutationCall::IgnoreDatasets { entries, .. } => Some(format!("Stopped checking {} dataset{} (Settings, Ignored datasets, lists them)", entries.len(), if entries.len() == 1 { "" } else { "s" })),
             MutationCall::SaveJobs { jobs, .. } => Some(format!("Created {} snapshot job{}", jobs.len(), if jobs.len() == 1 { "" } else { "s" })),
             MutationCall::SaveHostKeys { names, .. } => Some(format!("Saved to config.toml for {}", if names.len() == 1 { names.join("") } else { format!("{} hosts", names.len()) })),
             MutationCall::HoldSnapshot { dataset, name } => Some(format!("Protected {dataset}@{name}")),
@@ -152,6 +155,7 @@ impl MutationCall {
             | MutationCall::SetPoolProperty { .. }
             | MutationCall::SaveJob { .. }
             | MutationCall::SaveJobs { .. }
+            | MutationCall::IgnoreDatasets { .. }
             | MutationCall::SaveNotify { .. }
             | MutationCall::SaveSettings { .. }
             | MutationCall::SaveHostKeys { .. }
@@ -210,6 +214,7 @@ impl MutationCall {
             MutationCall::DestroyBootEnv { .. } => "DESTROY BOOT ENV",
             MutationCall::SaveJob { .. } => "SAVE JOB",
             MutationCall::SaveJobs { .. } => "SAVE JOBS",
+            MutationCall::IgnoreDatasets { .. } => "STOP CHECKING DATASETS",
             MutationCall::DeleteJob { .. } => "DELETE JOB",
             MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
             MutationCall::SaveNotify { .. } => "SAVE ALERT SETTINGS",
@@ -297,6 +302,16 @@ impl MutationCall {
             MutationCall::UnmountBootEnv { name } => crate::zfs::bootenv::unmount(runner, name, os),
             MutationCall::DestroyBootEnv { name, origin } => crate::zfs::bootenv::destroy(runner, name, *origin, os),
             MutationCall::SaveJob { state_dir, job } => crate::jobs::upsert(&state_dir.join("jobs.toml"), job.as_ref().clone()),
+            MutationCall::IgnoreDatasets { config_path, entries } => {
+                let now: Vec<String> = crate::config::Config::load(config_path).ok().map(|c| crate::config::parse_ignore(c.protection.ignore.as_ref()).0).unwrap_or_default().into_iter().map(|(h, d)| format!("{h}:{d}")).collect();
+                let mut all = now;
+                for entry in entries {
+                    if !all.contains(entry) {
+                        all.push(entry.clone());
+                    }
+                }
+                crate::config_edit::save(config_path, &[crate::config_edit::Change::set(&["protection", "ignore"], all.into_iter().collect::<toml_edit::Array>())])
+            }
             MutationCall::SaveJobs { state_dir, jobs } => jobs.iter().try_for_each(|job| crate::jobs::add_new(&state_dir.join("jobs.toml"), job.clone())),
             MutationCall::DeleteJob { state_dir, id } => crate::jobs::remove(&state_dir.join("jobs.toml"), id),
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),

@@ -104,6 +104,12 @@ impl App {
                         self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
                         return None;
                     }
+                    KeyCode::Char('i') => {
+                        let picked: Vec<usize> = if look.marked.iter().any(|m| *m) { look.marked.iter().enumerate().filter(|(_, m)| **m).map(|(i, _)| i).collect() } else { vec![selected] };
+                        let back = Modal::Choose { title, note, rows, selected, then: then.clone(), look };
+                        self.confirm_ignore_datasets(gaps, &picked, back);
+                        return None;
+                    }
                     KeyCode::Char('s') => {
                         let picked: Vec<usize> = if look.marked.iter().any(|m| *m) { look.marked.iter().enumerate().filter(|(_, m)| **m).map(|(i, _)| i).collect() } else { vec![selected] };
                         let back = Modal::Choose { title, note, rows, selected, then: then.clone(), look };
@@ -130,6 +136,40 @@ impl App {
         };
         self.modal = Some(Modal::Choose { title, note, rows, selected, then, look });
         None
+    }
+
+    /// `i` in the unprotected list: stop checking the picked datasets and everything below them, after one confirmation that
+    /// says how many of the listed datasets that hides. Nothing on the hosts is touched; Settings lists and removes the entries.
+    fn confirm_ignore_datasets(&mut self, gaps: &[crate::daemon::protection::Unprotected], picked: &[usize], back: Modal) {
+        let mut entries: Vec<String> = Vec::new();
+        for gap in picked.iter().filter_map(|i| gaps.get(*i)) {
+            let entry = format!("{}:{}", gap.host, gap.dataset);
+            if !self.dashboard_protection.is_ignored(&gap.host, &gap.dataset) && !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+        if entries.is_empty() {
+            self.set_error("Nothing to ignore: the picked datasets are already ignored".to_string());
+            self.modal = Some(back);
+            return;
+        }
+        let rules = crate::config::ProtectionSettings { ignore: crate::config::parse_ignore(Some(&toml::Value::Array(entries.iter().cloned().map(toml::Value::String).collect()))).0, ..crate::config::ProtectionSettings::default() };
+        let hidden = gaps.iter().filter(|g| rules.is_ignored(&g.host, &g.dataset)).count();
+        let more = entries.len().saturating_sub(8);
+        let mut shown: Vec<String> = entries.iter().take(8).map(|e| format!("  {e}")).collect();
+        if more > 0 {
+            shown.push(format!("  and {more} more"));
+        }
+        let prompt = format!(
+            "Stop checking {} dataset{}, and everything below {}? This hides {hidden} of the datasets in this list.\n{}\nThey leave the Dashboard, the alerts and the unprotected list of the daily report, which names what is ignored. Nothing on the hosts is touched; Settings, Ignored datasets, undoes it.\n(y/n)",
+            entries.len(),
+            if entries.len() == 1 { "" } else { "s" },
+            if entries.len() == 1 { "it" } else { "them" },
+            shown.join("\n")
+        );
+        let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Dashboard, call: MutationCall::IgnoreDatasets { config_path: self.config_path.clone(), entries } };
+        self.confirm_restore = Some((prompt.clone(), back));
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action });
     }
 
     /// `s` in the unprotected list: one snapshot job (hourly, prefix auto, newest 24 kept) for each picked dataset that has no

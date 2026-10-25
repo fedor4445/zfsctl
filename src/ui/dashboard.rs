@@ -402,6 +402,8 @@ pub struct Dashboard {
     pub groups: Option<Vec<Group>>,
     /// The one line about the data-safety graph (`weakest: ...`), when the jobs are loaded; Enter on it opens the pop-up.
     pub safety: Option<Line>,
+    /// The datasets the protection check is told to leave out (`host:dataset`, each with everything below it).
+    pub ignored: Vec<String>,
     /// Every body of the graph, the weakest first, for that pop-up.
     pub bodies: Vec<crate::daemon::safety::Body>,
     /// The time the graph was read at (the pop-up's ages are relative to it).
@@ -707,7 +709,7 @@ impl Dashboard {
         }
         let data = self.unprotected.iter().filter(|u| u.level == Level::Issue).count();
         let note = format!(
-            "{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine. A new job counts once it has run.\nEnter fixes the selected one.\nSpace marks, a marks a host's rows with no snapshot job, s makes a snapshot job for each marked row.",
+            "{} not protected ({data} of your data)\nProtected means snapshots plus a copy on another machine. A new job counts once it has run.\nEnter fixes the selected one.\nSpace marks, a marks a host's rows with no snapshot job, s makes a snapshot job for each marked row, i stops checking them.",
             if self.unprotected.len() == 1 { "1 dataset is".to_string() } else { format!("{} datasets are", self.unprotected.len()) }
         );
         // Grouped by host, the hub first and then by name; inside a host your data before the operating system's.
@@ -853,7 +855,7 @@ pub fn build(inputs: &Inputs) -> Dashboard {
             (i, w) => Line { level: Level::Issue, text: format!("{}, {w} to watch", plural(i, "issue")) },
         }
     };
-    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, groups, safety, bodies, at: now, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
+    Dashboard { verdict, attention, unprotected, gaps, protection_more: more, hosts, groups, safety, ignored: inputs.protection.ignored_names(), bodies, at: now, daemon, jobs, failed_jobs, cloud, cloud_header, alerts, running: inputs.running.map(running_notice) }
 }
 
 

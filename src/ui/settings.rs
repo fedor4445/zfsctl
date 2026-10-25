@@ -20,6 +20,7 @@ pub enum Setting {
     ProtCopies,
     ProtOnline,
     ProtDomains,
+    ProtIgnore,
     ProtRecent,
     ProtEmail,
 }
@@ -102,6 +103,9 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
     }
     rows.push(row(PROTECTION, Setting::ProtDomains, PROT_DOMAINS, shown(&p.domains, "1"), p.domains.is_none(), vec![raw(&p.domains).unwrap_or_default()]));
     rows.push(row(PROTECTION, Setting::ProtRecent, PROT_RECENT, shown(&p.recent, "normal"), p.recent.is_none(), vec![raw(&p.recent).unwrap_or_default()]));
+    let (ignored, _) = crate::config::parse_ignore(p.ignore.as_ref());
+    let ignored: Vec<String> = ignored.into_iter().map(|(h, d)| format!("{h}:{d}")).collect();
+    rows.push(row(PROTECTION, Setting::ProtIgnore, "Ignored datasets", if ignored.is_empty() { "(none)".to_string() } else { ignored.join(", ") }, ignored.is_empty(), vec![ignored.join(", ")]));
     rows.push(row(PROTECTION, Setting::ProtEmail, PROT_EMAIL, shown(&p.email, "immediate"), p.email.is_none(), vec![raw(&p.email).unwrap_or_default()]));
     let mut names: Vec<&String> = remotes.iter().chain(cfg.cloud.caps.keys()).collect();
     names.sort();
@@ -128,6 +132,7 @@ pub fn form_fields(row: &Row) -> Vec<(String, String)> {
         Setting::ProtCopies => vec![PROT_COPIES.to_string()],
         Setting::ProtOnline => vec![PROT_ONLINE.to_string()],
         Setting::ProtDomains => vec![PROT_DOMAINS.to_string()],
+        Setting::ProtIgnore => vec!["Leave out (host:dataset, comma-separated; each covers what is below it)".to_string()],
         Setting::ProtRecent => vec![PROT_RECENT.to_string()],
         Setting::ProtEmail => vec![PROT_EMAIL.to_string()],
     };
@@ -239,6 +244,19 @@ fn build_changes_with(setting: &Setting, values: &[String], current: &crate::con
             let n = number(100, 1, "CPU warn")?;
             if n == 95 { vec![Change::remove(&dashboard("cpu_warn"))] } else { vec![Change::set(&dashboard("cpu_warn"), n as i64)] }
         }
+        Setting::ProtIgnore => {
+            let items: Vec<&str> = first.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            let array: toml::Value = toml::Value::Array(items.iter().map(|s| toml::Value::String((*s).to_string())).collect());
+            let (entries, problems) = crate::config::parse_ignore(Some(&array));
+            if let Some(problem) = problems.into_iter().next() {
+                return Err(problem.trim_start_matches("[protection] ignore: ").to_string());
+            }
+            if entries.is_empty() {
+                vec![Change::remove(&["protection", "ignore"])]
+            } else {
+                vec![Change::set(&["protection", "ignore"], entries.iter().map(|(h, d)| format!("{h}:{d}")).collect::<toml_edit::Array>())]
+            }
+        }
         Setting::ScrubIgnore => {
             let names: Vec<&str> = first.split(',').map(str::trim).filter(|n| !n.is_empty()).collect();
             if names.is_empty() {
@@ -275,6 +293,7 @@ pub fn describe(setting: &Setting, values: &[String]) -> String {
         Setting::ProtCopies => ("Copies on other machines", ""),
         Setting::ProtOnline => ("Online copies", ""),
         Setting::ProtDomains => ("Failure domains", ""),
+        Setting::ProtIgnore => ("Ignored datasets", ""),
         Setting::ProtRecent => ("How recent", ""),
         Setting::ProtEmail => ("Email", ""),
         Setting::Cap(name) => return format!("Cap of {name}: {}", if v(0).is_empty() { "none" } else { v(0) }),
@@ -311,7 +330,7 @@ mod tests {
     fn load_lists_the_groups_in_order_with_defaults_marked() {
         let v = view("", &[], false);
         let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "Failure domains (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
+        assert_eq!(labels, ["Theme", "Auto-refresh", "Memory warn / crit", "Swap warn / crit", "Quota warn / crit", "Dedup warn below", "CPU warn", "Scrub warn / crit", "Scrub ignore", "Level", "Failure domains (1 to 3)", "How recent (strict, normal, relaxed)", "Ignored datasets", "Email (immediate, report, off)"]);
         assert!(v.loaded && v.problem.is_none() && v.rows.iter().all(|r| r.is_default), "{v:?}");
         assert_eq!(row(&v, "Theme").value, "ansi");
         assert_eq!(row(&v, "Auto-refresh").value, "10 s");
@@ -431,7 +450,7 @@ mod tests {
     fn the_protection_rows_show_the_effective_values() {
         let v = view("", &[], false);
         let prot: Vec<(&str, &str, bool)> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| (r.label.as_str(), r.value.as_str(), r.is_default)).collect();
-        assert_eq!(prot, [("Level", "basic", true), ("Failure domains (1 to 3)", "1", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Email (immediate, report, off)", "immediate", true)]);
+        assert_eq!(prot, [("Level", "basic", true), ("Failure domains (1 to 3)", "1", true), ("How recent (strict, normal, relaxed)", "normal", true), ("Ignored datasets", "(none)", true), ("Email (immediate, report, off)", "immediate", true)]);
         assert!(v.rows.iter().all(|r| !r.label.starts_with("Copies") && !r.label.starts_with("Online")));
         let v = view("[protection]\nlevel = \"careful\"\nrecent = \"strict\"\n", &[], false);
         assert_eq!(row(&v, "Level").value, "careful");
@@ -460,7 +479,7 @@ mod tests {
     fn custom_adds_its_two_rows() {
         let v = view("[protection]\nlevel = \"custom\"\ncopies = 2\n", &[], false);
         let labels: Vec<&str> = v.rows.iter().filter(|r| r.group == "Data protection").map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "Failure domains (1 to 3)", "How recent (strict, normal, relaxed)", "Email (immediate, report, off)"]);
+        assert_eq!(labels, ["Level", "Copies on other machines (1 to 3)", "Online copies (0 to 2)", "Failure domains (1 to 3)", "How recent (strict, normal, relaxed)", "Ignored datasets", "Email (immediate, report, off)"]);
         let copies = row(&v, "Copies on other machines (1 to 3)");
         assert_eq!((copies.value.as_str(), copies.is_default, copies.raw.as_slice()), ("2", false, &["2".to_string()][..]));
         let online = row(&v, "Online copies (0 to 2)");
@@ -538,5 +557,15 @@ mod tests {
         assert_eq!(build_changes(&Setting::ProtDomains, &values(&["4"])).unwrap_err(), "[protection] domains must be 1, 2 or 3");
         assert!(build_changes(&Setting::ProtDomains, &values(&["x"])).is_err());
         assert_eq!(describe(&Setting::ProtDomains, &values(&["2"])), "Failure domains: 2");
+    }
+
+    #[test]
+    fn ignored_datasets_are_a_comma_list_of_host_and_dataset_and_empty_removes_the_key() {
+        assert_eq!(sets(&build_changes(&Setting::ProtIgnore, &values(&[" local:zroot/tmp , fbsd16:scratch ,,"])).unwrap()), ["set protection.ignore [\"local:zroot/tmp\", \"fbsd16:scratch\"]"]);
+        assert_eq!(sets(&build_changes(&Setting::ProtIgnore, &values(&[" , "])).unwrap()), ["remove protection.ignore"]);
+        assert!(build_changes(&Setting::ProtIgnore, &values(&["tank/tmp"])).unwrap_err().contains("'tank/tmp' is not host:dataset"));
+        let v = view("[protection]\nignore = [\"local:a\", \"b:c/d\"]\n", &[], false);
+        let row = v.rows.iter().find(|r| r.setting == Setting::ProtIgnore).unwrap();
+        assert_eq!((row.value.as_str(), row.is_default, row.raw.as_slice()), ("local:a, b:c/d", false, &["local:a, b:c/d".to_string()][..]));
     }
 }
