@@ -145,7 +145,7 @@ fn octal_byte(digits: &[u8]) -> Option<u8> {
 
 /// The path as seen from the dataset's own root: `/scratch/data/a/b` with the mountpoint `/scratch/data` is `a/b`
 /// and the dataset's root directory is the empty string. On a delegated dataset the host prints the path through
-/// the zone root (`/rpool/zones/z/root/omni30/syncthing/state/x` for the mountpoint `/omni30/syncthing`), so the
+/// the zone root (`/rpool/zones/z/root/tank/photos/state/x` for the mountpoint `/tank/photos`), so the
 /// mountpoint is also looked for inside the path, as a whole run of components. `None` when the mountpoint is not a
 /// path (`legacy`, `none`, `-`, empty) or is not in the path.
 pub fn relative_to_mount(path: &str, mountpoint: &str) -> Option<String> {
@@ -248,8 +248,8 @@ mod tests {
         let link = parse_diff_line("1792530621.344011000\t+\t@\t/scratch/data/zt-tmp/link").unwrap();
         assert_eq!(link.kind, FileKind::Symlink);
 
-        let illumos = parse_diff_line("1785097718.962873562\t+\tF\t/rpool/zones/syncthing/root/omni30/syncthing/Camera/Camera/20260101_120000.jpg").unwrap();
-        assert_eq!(relative_to_mount(&illumos.path, "/omni30/syncthing").as_deref(), Some("Camera/Camera/20260101_120000.jpg"));
+        let illumos = parse_diff_line("1785097718.962873562\t+\tF\t/rpool/zones/z/root/tank/photos/Pictures/2026/photo1.jpg").unwrap();
+        assert_eq!(relative_to_mount(&illumos.path, "/tank/photos").as_deref(), Some("Pictures/2026/photo1.jpg"));
 
         let dir = parse_diff_line("1792529230.252399441\t+\t/\t/ztest/data/zt-sub").unwrap();
         assert_eq!((dir.change, dir.kind), (Change::Added, FileKind::Directory));
@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn relative_to_mount_finds_the_mountpoint_behind_a_zone_root() {
-        let p = "/rpool/zones/syncthing/root/omni30/syncthing/state/x";
-        assert_eq!(relative_to_mount(p, "/omni30/syncthing").as_deref(), Some("state/x"));
+        let p = "/rpool/zones/z/root/tank/photos/state/x";
+        assert_eq!(relative_to_mount(p, "/tank/photos").as_deref(), Some("state/x"));
         for not_a_path in ["legacy", "none", "-", ""] {
             assert_eq!(relative_to_mount(p, not_a_path), None, "{not_a_path:?}");
         }
