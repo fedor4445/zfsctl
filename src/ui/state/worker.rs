@@ -263,6 +263,7 @@ impl App {
                 pin_selection(&mut self.shares_table, previous, &self.shares, share_identity);
                 self.nfs_available = Some(snapshot.nfs_available);
                 self.samba_available = Some(snapshot.samba_available);
+                self.nfsv4_note = snapshot.nfsv4_note;
                 self.shares_loaded = true;
                 self.clear_status_after_refresh(quiet);
                 if let Some(e) = snapshot.smb_error {

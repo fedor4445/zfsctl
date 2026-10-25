@@ -32,6 +32,8 @@ pub struct SharesSnapshot {
     /// Set when the managed SMB block could not be read; NFS shares are
     /// still returned so one broken half never hides the other.
     pub smb_error: Option<String>,
+    /// Set when the NFSv4 server is switched on but no `V4:` line says where its tree starts (see `nfsv4_note`).
+    pub nfsv4_note: Option<String>,
 }
 
 /// Parses a `sharenfs` value using FreeBSD's **native `exports(5)`**
@@ -235,13 +237,57 @@ pub fn list_shares_with_availability(runner: &dyn CommandRunner) -> Result<Share
             Err(e) => smb_error = Some(e.to_string()),
         }
     }
-    Ok(SharesSnapshot { shares, nfs_available, samba_available, smb_error })
+    let nfsv4_note = if nfs_available && shares.iter().any(|s| matches!(s, Share::Nfs { .. })) { nfsv4_note(runner) } else { None };
+    Ok(SharesSnapshot { shares, nfs_available, samba_available, smb_error, nfsv4_note })
+}
+
+/// What the NFSv4 settings of a host say, read without sudo: `v4=<nfsv4_server_enable>` and `lines=<number of V4: lines>` in
+/// `/etc/exports` and `/etc/zfs/exports`.
+const NFSV4_SCRIPT: &str = "echo \"v4=$(sysrc -n nfsv4_server_enable 2>/dev/null)\"; echo \"lines=$(cat /etc/exports /etc/zfs/exports 2>/dev/null | grep -c '^V4:')\"; true";
+
+/// A warning when the NFSv4 server is on and no `V4:` line marks the root of the NFSv4 tree: `sharenfs` makes `mountd` export
+/// the datasets, which is enough for NFSv3, but exports(5) requires a `V4:` line for NFSv4 clients. zfsctl never writes that
+/// line, so it says so. A host that cannot answer gets no warning (a missing answer is not a problem).
+pub fn nfsv4_note(runner: &dyn CommandRunner) -> Option<String> {
+    let out = runner.run_unprivileged("sh", &["-c", NFSV4_SCRIPT]).ok().filter(crate::exec::CommandOutput::success)?;
+    note_from_nfsv4_answer(&out.stdout)
+}
+
+fn note_from_nfsv4_answer(text: &str) -> Option<String> {
+    let value = |key: &str| text.lines().find_map(|l| l.strip_prefix(key)).map(str::trim);
+    let on = value("v4=").is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "yes" | "true" | "on" | "1"));
+    let lines: Option<u32> = value("lines=").and_then(|v| v.parse().ok());
+    (on && lines == Some(0)).then(|| "NFSv4 is on, but no V4: line in /etc/exports marks its root: NFSv4 clients cannot mount these shares".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::exec::test_support::FakeRunner;
+
+    #[test]
+    fn nfsv4_on_without_a_v4_line_is_a_warning_and_nothing_else_is() {
+        assert!(note_from_nfsv4_answer("v4=YES\nlines=0\n").is_some_and(|n| n.contains("V4:") && n.contains("NFSv4 clients cannot mount")));
+        assert!(note_from_nfsv4_answer("v4=yes\nlines=0\n").is_some(), "case does not matter");
+        assert_eq!(note_from_nfsv4_answer("v4=YES\nlines=1\n"), None, "a V4: line is there");
+        assert_eq!(note_from_nfsv4_answer("v4=NO\nlines=0\n"), None, "NFSv4 is off: NFSv3 clients are fine");
+        assert_eq!(note_from_nfsv4_answer("v4=\nlines=0\n"), None, "not set means off");
+        assert_eq!(note_from_nfsv4_answer(""), None, "no answer is no warning");
+        assert_eq!(note_from_nfsv4_answer("v4=YES\nlines=many\n"), None, "an answer that cannot be read is no warning");
+    }
+
+    #[test]
+    fn the_nfsv4_question_is_asked_without_sudo_and_only_when_there_are_nfs_shares_and_the_server_runs() {
+        let freebsd = FakeRunner::new("").route("zfs", "get", "tank/a\tsharenfs\ton\tlocal\n").route("service", "nfsd", "nfsd is running\n").route("service", "samba_server", "smbd is not running\n").route("sh", "-c", "v4=YES\nlines=0\n");
+        let snapshot = list_shares_with_availability(&freebsd).unwrap();
+        assert!(snapshot.nfsv4_note.is_some());
+        assert_eq!(freebsd.unprivileged_calls.lock().unwrap().len(), 1, "one unprivileged answer, nothing through sudo");
+        let no_shares = FakeRunner::new("").route("zfs", "get", "").route("service", "nfsd", "nfsd is running\n").route("service", "samba_server", "smbd is not running\n").route("sh", "-c", "v4=YES\nlines=0\n");
+        assert_eq!(list_shares_with_availability(&no_shares).unwrap().nfsv4_note, None);
+        assert!(no_shares.unprivileged_calls.lock().unwrap().is_empty(), "nothing shared, nothing to ask");
+        let stopped = FakeRunner::new("").route("zfs", "get", "tank/a\tsharenfs\ton\tlocal\n").route_failure("service", "nfsd", "nfsd not running", 1).route("service", "samba_server", "smbd is not running\n").route("sh", "-c", "v4=YES\nlines=0\n");
+        assert_eq!(list_shares_with_availability(&stopped).unwrap().nfsv4_note, None, "a stopped server has its own warning");
+    }
 
     #[test]
     fn parse_sharenfs_fields_bare_on_means_no_restriction() {

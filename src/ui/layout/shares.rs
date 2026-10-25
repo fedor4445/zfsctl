@@ -29,6 +29,9 @@ pub(super) fn draw_shares(f: &mut Frame, app: &mut App, area: Rect) {
     if app.nfs_available == Some(false) {
         hints.push("NFS unavailable: nfsd not running");
     }
+    if let Some(note) = app.nfsv4_note.as_deref() {
+        hints.push(note);
+    }
     if app.samba_available == Some(false) {
         hints.push("SMB unavailable: smbd not running");
     }

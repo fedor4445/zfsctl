@@ -476,6 +476,8 @@ pub struct App {
     /// before it's actually fetched anything.
     pub nfs_available: Option<bool>,
     pub samba_available: Option<bool>,
+    /// The Shares refresh's warning about NFSv4 (the server is on, no `V4:` line), if any.
+    pub nfsv4_note: Option<String>,
     /// Becomes `true` the first time a Shares refresh completes for the
     /// currently-selected host (reset on host switch via
     /// `clear_host_data`). Guards `'N'` from pre-filling against a
@@ -682,6 +684,7 @@ impl App {
             alerts_preview_ready: None,
             alerts_previews_started: 0,
             nfs_available: None,
+            nfsv4_note: None,
             samba_available: None,
             shares_loaded: false,
             bootenvs: Vec::new(),
@@ -943,6 +946,7 @@ impl App {
         self.shares_table.select(None);
         self.nfs_available = None;
         self.samba_available = None;
+        self.nfsv4_note = None;
         self.shares_loaded = false;
         self.bootenvs.clear();
         self.bootenvs_table.select(None);

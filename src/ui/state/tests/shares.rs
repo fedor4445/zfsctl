@@ -38,6 +38,7 @@ fn shares_result_for_a_stale_host_is_discarded() {
                 nfs_available: true,
                 samba_available: true,
                 smb_error: None,
+                nfsv4_note: None,
             }),
         ))
         .unwrap();
@@ -428,7 +429,7 @@ fn clearing_the_message_clears_the_error_state() {
 #[test]
 fn a_share_refresh_keeps_the_selection_on_the_same_share_and_protocol() {
     let nfs = |d: &str| crate::zfs::share::Share::Nfs { dataset: d.to_string(), raw: "on".to_string(), networks: vec![], hosts: vec![], read_only: false, root: None };
-    let snapshot = |shares| crate::zfs::share::SharesSnapshot { shares, nfs_available: true, samba_available: true, smb_error: None };
+    let snapshot = |shares| crate::zfs::share::SharesSnapshot { shares, nfs_available: true, samba_available: true, smb_error: None, nfsv4_note: None };
     let mut app = in_section(Section::Shares);
     app.shares = vec![nfs("tank/a"), smb("tank/b")];
     app.shares_table.select(Some(1)); // the SMB share on tank/b
