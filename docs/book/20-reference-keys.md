@@ -178,7 +178,8 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 | Key | What it does |
 |---|---|
 | `Up / Down` | select a setting |
-| `Enter` | edit the setting in a form (blank = default; saved into `config.toml` after a y/n confirmation) |
+| `Enter` | edit the setting in a form (blank = default; on Ignored datasets it opens the list of ignored datasets instead; saved into `config.toml` after a y/n confirmation) |
+| `e` | on the Ignored datasets row: edit the list as text (`Enter` there opens the list, to check datasets again) |
 | `r` | reload the settings from `config.toml` |
 
 ## Try it
