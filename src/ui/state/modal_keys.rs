@@ -832,12 +832,29 @@ impl App {
         None
     }
 
+    /// A pool create whose typed `-o ashift` is below a physical sector the Disks list shows for one of its disks: the typed
+    /// confirm (the pool's name) that says what that costs. `None` for everything else, which keeps the ordinary question.
+    fn ashift_confirm(&self, action: &PendingAction) -> Option<Modal> {
+        use crate::zfs::ashift::{named_disks, too_small, typed_ashift, warning};
+        let MutationCall::CreatePool { name, vdev_spec } = &action.call else { return None };
+        let ashift = typed_ashift(vdev_spec)?;
+        let (disk, physical) = too_small(ashift, &named_disks(vdev_spec, &self.disks))?;
+        let host = self.hosts.get(action.host).map_or("?", String::as_str);
+        let command = crate::zfs::pool::create_command_text(name, &vdev_spec.iter().map(String::as_str).collect::<Vec<_>>());
+        let prompt = format!("On {host}:\n  {command}\n\n{}\nThe disks are overwritten too.\nType the pool name to confirm:", warning(ashift, disk, physical));
+        Some(Modal::ConfirmTyped { prompt, expected: name.clone(), input: String::new(), action: action.clone() })
+    }
+
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.
     fn submit_plain_form(&mut self, form: FormParts) -> Option<PendingAction> {
         let Some(action) = build_pending_action(&form.kind, &form.fields) else {
             let msg = form_problem(&form.kind, &form.fields);
             return self.reject(form, msg);
         };
+        if let Some(modal) = self.ashift_confirm(&action) {
+            self.modal = Some(modal);
+            return None;
+        }
         if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
             let adding = match (&action.call, super::forms::add_vdev_request(&form.kind, &form.fields)) {
                 (MutationCall::AddVdev { pool, vdev_spec }, Ok((_, _, role))) => Some((pool.clone(), vdev_spec.clone(), role)),

@@ -674,3 +674,78 @@ fn a_new_disk_that_looks_like_a_flag_is_not_submitted() {
     assert!(submit_and_confirm(&mut app).is_none());
     assert!(!matches!(app.modal, Some(crate::ui::modal::Modal::Confirm { .. })), "{:?}", app.modal);
 }
+
+/// The Disks create-pool form for `da0` (512 logical, 4096 physical) and `da1` (512), filled in and submitted with the
+/// given options; returns what the app shows next.
+fn create_pool_with_options(options: &str, physical: u64) -> (App, Option<crate::ui::state::PendingAction>) {
+    let mut app = App::new(vec!["local".to_string()]);
+    for _ in 0..4 {
+        app.handle_key(KeyCode::Tab);
+    }
+    app.disks = vec![
+        crate::zfs::disk::DiskInfo { name: "da0".into(), sector_size: 512, stripe_size: physical, ..Default::default() },
+        crate::zfs::disk::DiskInfo { name: "da1".into(), sector_size: 512, ..Default::default() },
+    ];
+    app.selected_disks.insert("da0".to_string());
+    app.selected_disks.insert("da1".to_string());
+    app.handle_key(KeyCode::Char('n'));
+    let Some(Modal::Form { fields, focused, .. }) = &mut app.modal else { panic!("{:?}", app.modal) };
+    fields[0].value = "tank".into();
+    fields[1].value = "mirror".into();
+    fields[2].value = options.into();
+    *focused = 2;
+    let action = app.handle_modal_key(KeyCode::Enter);
+    (app, action)
+}
+
+#[test]
+fn the_create_form_shows_each_disks_sector_sizes() {
+    let mut app = App::new(vec!["local".to_string()]);
+    for _ in 0..4 {
+        app.handle_key(KeyCode::Tab);
+    }
+    app.disks = vec![crate::zfs::disk::DiskInfo { name: "da0".into(), sector_size: 512, stripe_size: 4096, ..Default::default() }];
+    app.selected_disks.insert("da0".to_string());
+    app.handle_key(KeyCode::Char('n'));
+    let Some(Modal::Form { description: Some(text), .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(text.contains("512B sectors, 4096B physical"), "{text}");
+}
+
+#[test]
+fn an_ashift_below_a_disks_physical_sector_asks_for_the_pool_name_and_says_why() {
+    let (mut app, action) = create_pool_with_options("-o ashift=9", 4096);
+    assert!(action.is_none());
+    let Some(Modal::ConfirmTyped { prompt, expected, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(expected, "tank");
+    assert!(prompt.contains("zpool create -o ashift=9 tank mirror da0 da1") && prompt.contains("da0 reports 4096-byte physical") && prompt.contains("cannot be changed later"), "{prompt}");
+    for c in "tan".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none(), "a partial name does nothing");
+    app.handle_modal_key(KeyCode::Char('k'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "the full name sends it");
+}
+
+#[test]
+fn a_fitting_ashift_no_ashift_or_no_reported_physical_sector_keep_the_ordinary_question() {
+    for (options, physical) in [("-o ashift=12", 4096), ("", 4096), ("-o ashift=9", 0), ("-o ashift=9", 512)] {
+        let (app, action) = create_pool_with_options(options, physical);
+        assert!(action.is_none(), "{options}/{physical}");
+        assert!(matches!(app.modal, Some(Modal::Confirm { .. })), "{options}/{physical}: {:?}", app.modal);
+    }
+}
+
+#[test]
+fn the_typed_vdev_spec_form_gets_the_same_check_for_disks_the_list_knows() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.disks = vec![crate::zfs::disk::DiskInfo { name: "da0".into(), sector_size: 512, stripe_size: 4096, ..Default::default() }];
+    app.modal = Some(Modal::Form {
+        title: "Create pool".to_string(),
+        fields: vec![FormField { label: "Name".into(), value: "tank".into() }, FormField { label: "Vdev spec".into(), value: "-o ashift=9 mirror /dev/da0 da7".into() }],
+        focused: 1,
+        description: None,
+        kind: FormKind::CreatePool { host: 0 },
+    });
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    assert!(matches!(app.modal, Some(Modal::ConfirmTyped { .. })), "{:?}", app.modal);
+}

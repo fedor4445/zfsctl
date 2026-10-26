@@ -7,6 +7,7 @@ pub mod encryption;
 pub mod host;
 pub mod host_health;
 pub mod host_resources;
+pub mod ashift;
 pub mod integrity;
 pub mod local_settings;
 pub mod sync;
