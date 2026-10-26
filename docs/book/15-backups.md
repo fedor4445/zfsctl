@@ -468,6 +468,14 @@ There is nothing special to restore from: open the bucket and download. From a s
 
 > **Safety:** two mirror jobs cannot have overlapping remotes, on one host or on different hosts (the same remote name and path on two hosts counts as one bucket), and a mirror cannot contain or sit inside a restic job's `rclone:` repository: the sync would move the repository's files into `old/`. zfsctl refuses to save or enable such a job. It cannot tell that two remote names (`aws:` and `aws2:`) point to one bucket, so do not do that. The opposite mistake is possible too: if two hosts use one remote name for two different accounts, zfsctl refuses the second job; give the remotes different names to tell it they are different places.
 
+## If you already use zrepl, sanoid or similar
+
+zfsctl does not manage, read or detect other backup tools. That includes the ZFS snapshot and replication tools (zrepl, sanoid with syncoid, znapzend, zfs-autobackup, pyznap, zfsnap, zfs-auto-snapshot, TrueNAS replication tasks) and file-level tools such as borg, kopia or rsync. Their snapshots and copies are not counted as protection, so the datasets they look after show up in the Dashboard's unprotected list.
+
+If you trust that tool for a dataset, leave the dataset out of the check: select it in the unprotected list and press `i`, or add `host:dataset` to **Ignored datasets** in Settings. It stays named on the Dashboard and in the daily report as ignored on purpose, so nothing is hidden, and you can bring it back from the same two places (see [The screen](06-the-screen.md)).
+
+> **Safety:** do not give a dataset to both zfsctl's snapshot or replication jobs and another tool. Two tools pruning one dataset's snapshots can delete each other's, and neither will tell you.
+
 ## Try it
 
 Make a small repository on the practice pool, `restic init` it, create a backup job for the practice dataset with Source `new`, wait for it to run, and restore one file with the command above.
