@@ -12,6 +12,10 @@ pub struct DiskInfo {
     /// `ident:` — the drive's serial number.
     pub serial: Option<String>,
     pub media: DiskMedia,
+    /// `Sectorsize:` — the logical sector size in bytes, 0 when the block did not say.
+    pub sector_size: u64,
+    /// `Stripesize:` — the physical sector size the drive reports, 0 when it does not (virtual disks).
+    pub stripe_size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -42,6 +46,11 @@ impl DiskMedia {
 }
 
 impl DiskInfo {
+    /// The sector size writes should be a multiple of: the physical one when the drive reports it, else the logical one.
+    pub fn physical_sector(&self) -> u64 {
+        self.sector_size.max(self.stripe_size)
+    }
+
     /// One-line human description for the pool forms, e.g.
     /// `da0  WDC WD40EFRX-68N32N0  S/N WD-WCC7K1234567  HDD 5400 rpm  3.6T`.
     /// Missing parts are omitted; the name is always present.
@@ -61,6 +70,9 @@ impl DiskInfo {
         }
         if self.size > 0 {
             parts.push(human_size(self.size));
+        }
+        if self.sector_size > 0 {
+            parts.push(if self.stripe_size > self.sector_size { format!("{}B sectors, {}B physical", self.sector_size, self.stripe_size) } else { format!("{}B sectors", self.sector_size) });
         }
         parts.join("  ")
     }
@@ -114,13 +126,13 @@ fn parse_disk_list(output: &str) -> Vec<DiskInfo> {
     let mut current: Option<DiskInfo> = None;
     // First-occurrence tracking per block (a block may repeat fields
     // for secondary providers; the first one wins).
-    let (mut seen_size, mut seen_descr, mut seen_ident, mut seen_rot) = (false, false, false, false);
+    let (mut seen_size, mut seen_descr, mut seen_ident, mut seen_rot, mut seen_sector, mut seen_stripe) = (false, false, false, false, false, false);
     for line in output.lines() {
         let trimmed = line.trim();
         if let Some(name) = trimmed.strip_prefix("Geom name:") {
             disks.extend(current.take());
             current = Some(DiskInfo { name: name.trim().to_string(), ..Default::default() });
-            (seen_size, seen_descr, seen_ident, seen_rot) = (false, false, false, false);
+            (seen_size, seen_descr, seen_ident, seen_rot, seen_sector, seen_stripe) = (false, false, false, false, false, false);
             continue;
         }
         let Some(d) = current.as_mut() else { continue };
@@ -128,6 +140,20 @@ fn parse_disk_list(output: &str) -> Vec<DiskInfo> {
             if let Some(rest) = trimmed.strip_prefix("Mediasize:") {
                 seen_size = true;
                 d.size = rest.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                continue;
+            }
+        }
+        if !seen_sector {
+            if let Some(rest) = trimmed.strip_prefix("Sectorsize:") {
+                seen_sector = true;
+                d.sector_size = rest.trim().parse().unwrap_or(0);
+                continue;
+            }
+        }
+        if !seen_stripe {
+            if let Some(rest) = trimmed.strip_prefix("Stripesize:") {
+                seen_stripe = true;
+                d.stripe_size = rest.trim().parse().unwrap_or(0);
                 continue;
             }
         }
@@ -332,10 +358,11 @@ Providers:
                     size: 48_318_382_080,
                     model: Some("QEMU HARDDISK".to_string()),
                     serial: Some("o3q4Qrvy".to_string()),
+                    sector_size: 512,
                     ..Default::default()
                 },
-                DiskInfo { name: "da0".to_string(), size: 268_435_456, model: Some("Virtio Block Device".to_string()), ..Default::default() },
-                DiskInfo { name: "da1".to_string(), size: 268_435_456, model: Some("Virtio Block Device".to_string()), ..Default::default() },
+                DiskInfo { name: "da0".to_string(), size: 268_435_456, model: Some("Virtio Block Device".to_string()), sector_size: 512, ..Default::default() },
+                DiskInfo { name: "da1".to_string(), size: 268_435_456, model: Some("Virtio Block Device".to_string()), sector_size: 512, ..Default::default() },
             ]
         );
     }
@@ -343,7 +370,18 @@ Providers:
     #[test]
     fn parses_disk_block_with_no_mediasize_line_as_zero_size_instead_of_dropping_it() {
         let disks = parse_disk_list(GEOM_DISK_LIST_MISSING_MEDIASIZE_FIXTURE);
-        assert_eq!(disks, vec![DiskInfo { name: "cd0".to_string(), size: 0, membership: DiskMembership::Available, ..Default::default() }]);
+        assert_eq!(disks, vec![DiskInfo { name: "cd0".to_string(), size: 0, membership: DiskMembership::Available, sector_size: 2048, ..Default::default() }]);
+    }
+
+    #[test]
+    fn the_physical_sector_is_read_when_the_drive_reports_one_and_shown_next_to_the_logical_one() {
+        let out = "Geom name: ada2\nProviders:\n1. Name: ada2\n   Mediasize: 4000787030016 (3.6T)\n   Sectorsize: 512\n   Stripesize: 4096\n   Stripeoffset: 0\n   descr: WDC WD40EFRX\n   rotationrate: 5400\n";
+        let d = &parse_disk_list(out)[0];
+        assert_eq!((d.sector_size, d.stripe_size, d.physical_sector()), (512, 4096, 4096));
+        assert!(d.identity_line().ends_with("512B sectors, 4096B physical"), "{}", d.identity_line());
+        let plain = DiskInfo { name: "da0".into(), sector_size: 512, ..Default::default() };
+        assert!(plain.identity_line().ends_with("512B sectors") && plain.physical_sector() == 512);
+        assert_eq!(DiskInfo::default().identity_line(), "", "a disk that says nothing adds nothing");
     }
 
     #[test]

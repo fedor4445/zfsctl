@@ -82,8 +82,7 @@ fn the_disks_section_shows_a_disks_activity_and_pool_health() {
         membership: DiskMembership::InPool { pool: "tpool".to_string(), vdev: "raidz2-0".to_string() },
         model: Some("QEMU HARDDISK".to_string()),
         serial: Some("SN123".to_string()),
-        media: DiskMedia::Hdd(7200),
-    }];
+        media: DiskMedia::Hdd(7200), ..Default::default() }];
     app.disks_table.select(Some(0));
     let target = MetricsTarget::Disk { name: "ada1".to_string(), pool: Some("tpool".to_string()) };
     assert_eq!(app.metrics_target(), Some(target.clone()));
