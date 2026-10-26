@@ -465,6 +465,9 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if !app.settings_view.rows.is_empty() {
                 v.push(h("↑↓", "Move", 1));
                 v.push(h("Enter", "Edit", 1));
+                if app.on_ignored_setting() {
+                    v.push(h("e", "Edit text", 2));
+                }
             }
             v.push(h("r", "Refresh", 4));
         }
