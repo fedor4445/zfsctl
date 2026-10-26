@@ -47,6 +47,19 @@ pub struct SettingsView {
     pub protection_problem: Option<String>,
 }
 
+/// How many ignored datasets the Settings row names before "and N more" (the Dashboard's line cuts at the same number).
+const IGNORED_SHOWN: usize = 3;
+
+/// The ignored datasets as the row shows them: the first few, then how many more (Enter lists them all).
+fn ignored_shown(ignored: &[String]) -> String {
+    if ignored.is_empty() {
+        return "(none)".to_string();
+    }
+    let more = ignored.len().saturating_sub(IGNORED_SHOWN);
+    let names = ignored.iter().take(IGNORED_SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    if more > 0 { format!("{names} and {more} more") } else { names }
+}
+
 const DISPLAY: &str = "Display";
 const THRESHOLDS: &str = "Dashboard thresholds";
 const CAPS: &str = "Cloud caps";
@@ -105,7 +118,7 @@ pub fn load(config_path: &Path, remotes: &[String], no_color: bool) -> SettingsV
     rows.push(row(PROTECTION, Setting::ProtRecent, PROT_RECENT, shown(&p.recent, "normal"), p.recent.is_none(), vec![raw(&p.recent).unwrap_or_default()]));
     let (ignored, _) = crate::config::parse_ignore(p.ignore.as_ref());
     let ignored: Vec<String> = ignored.into_iter().map(|(h, d)| format!("{h}:{d}")).collect();
-    rows.push(row(PROTECTION, Setting::ProtIgnore, "Ignored datasets", if ignored.is_empty() { "(none)".to_string() } else { ignored.join(", ") }, ignored.is_empty(), vec![ignored.join(", ")]));
+    rows.push(row(PROTECTION, Setting::ProtIgnore, "Ignored datasets", ignored_shown(&ignored), ignored.is_empty(), vec![ignored.join(", ")]));
     rows.push(row(PROTECTION, Setting::ProtEmail, PROT_EMAIL, shown(&p.email, "immediate"), p.email.is_none(), vec![raw(&p.email).unwrap_or_default()]));
     let mut names: Vec<&String> = remotes.iter().chain(cfg.cloud.caps.keys()).collect();
     names.sort();
@@ -444,6 +457,16 @@ mod tests {
     fn scrub_ignore_is_split_on_commas_and_trimmed() {
         assert_eq!(sets(&build_changes(&Setting::ScrubIgnore, &values(&[" scratch, tmp ,,"])).unwrap()), ["set dashboard.scrub_ignore [\"scratch\", \"tmp\"]"]);
         assert_eq!(sets(&build_changes(&Setting::ScrubIgnore, &values(&[" , "])).unwrap()), ["remove dashboard.scrub_ignore"]);
+    }
+
+    #[test]
+    fn many_ignored_datasets_are_cut_to_the_first_three_and_a_count_but_the_form_keeps_them_all() {
+        let v = view("[protection]\nignore = [\"a:1\", \"a:2\", \"a:3\", \"a:4\", \"a:5\"]\n", &[], false);
+        let r = row(&v, "Ignored datasets");
+        assert_eq!(r.value, "a:1, a:2, a:3 and 2 more");
+        assert_eq!(r.raw, ["a:1, a:2, a:3, a:4, a:5"]);
+        let v = view("[protection]\nignore = [\"a:1\", \"a:2\", \"a:3\"]\n", &[], false);
+        assert_eq!(row(&v, "Ignored datasets").value, "a:1, a:2, a:3");
     }
 
     #[test]
