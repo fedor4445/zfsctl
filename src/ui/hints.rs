@@ -84,6 +84,7 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
                 crate::ui::modal::ChooseThen::Copy { .. } => "Open form",
                 crate::ui::modal::ChooseThen::Provider => "Show steps",
                 crate::ui::modal::ChooseThen::Ignored(_) => "Check again",
+                crate::ui::modal::ChooseThen::LocalSettings(_) => "Select dataset",
             };
             let mut v = vec![h("↑/↓", "Move", 0), h("Enter", what, 0)];
             if matches!(then, crate::ui::modal::ChooseThen::Ignored(_)) {
@@ -215,6 +216,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             v.push(h("→", "Details", 2));
             v.push(h("n", "New", 2));
             v.push(h("E", "New encrypted", 3));
+            v.push(h("H", "Set by hand", 3));
             if selected {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("D", "Destroy recursively", 3).tone(Tone::Danger));

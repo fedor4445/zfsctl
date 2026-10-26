@@ -245,6 +245,16 @@ fn apply_pending_changes(app: &mut App, inventory: &HostInventory) {
     }
 }
 
+/// Hands each queued "set by hand" read its host's runner.
+fn apply_pending_local_audits(app: &mut App, inventory: &HostInventory) {
+    for host in std::mem::take(&mut app.pending_local_audit) {
+        match inventory.hosts.get(host) {
+            Some(h) => app.run_local_audit(h.runner.clone(), host),
+            None => app.fail_local_audit(host, format!("unknown host index {host}")),
+        }
+    }
+}
+
 /// Hands each queued destination listing (a replication form's Keep on target check) its host's runner.
 fn apply_pending_prune_checks(app: &mut App, inventory: &HostInventory) {
     for pending in std::mem::take(&mut app.pending_prune_check) {
@@ -318,6 +328,7 @@ fn event_loop(
         apply_pending_add_checks(app, inventory);
         apply_pending_cloud(app, inventory);
         apply_pending_prune_checks(app, inventory);
+        apply_pending_local_audits(app, inventory);
         apply_pending_changes(app, inventory);
         apply_pending_browse(app, inventory);
         poll_host_probes(app, inventory);
@@ -658,6 +669,18 @@ mod tests {
         let action = crate::ui::modal::PendingAction { host: 0, section: crate::ui::state::Section::Jobs, call: crate::ui::modal::MutationCall::SaveJob { state_dir: "/x".into(), job: Box::new(job) } };
         let form = crate::ui::modal::Modal::Form { title: "x".into(), fields: vec![], focused: 0, description: None, kind: crate::ui::modal::FormKind::AddHost };
         crate::ui::state::PruneCheck { host, host_name: "local".into(), dest_dataset: "backup/data".into(), prefix: "hourly".into(), keep: 3, form, action }
+    }
+
+    #[test]
+    fn apply_pending_local_audits_reads_on_the_hosts_runner_and_an_unknown_host_reports_an_error() {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.pending_local_audit = vec![3];
+        let inventory = HostInventory { hosts: vec![], mux_dir: None };
+        apply_pending_local_audits(&mut app, &inventory);
+        assert!(app.pending_local_audit.is_empty());
+        app.local_audit_busy = true;
+        app.drain_worker_messages();
+        assert!(!app.local_audit_busy, "the answer for the unknown host is delivered and clears the busy flag");
     }
 
     #[test]

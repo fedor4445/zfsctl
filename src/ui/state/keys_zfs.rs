@@ -421,6 +421,7 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('H') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => self.start_local_audit(),
             KeyCode::Char('s') if self.current_section() == Section::Datasets && self.pane_focus == PaneFocus::Middle => {
                 if let Some(i) = self.datasets_table.selected() {
                     if let Some(ds) = self.datasets.get(i) {

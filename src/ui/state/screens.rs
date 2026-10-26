@@ -121,6 +121,50 @@ impl App {
         });
     }
 
+    /// `H` in Datasets: reads every locally set property of the selected host (on a worker thread) and shows them grouped by dataset.
+    pub(super) fn start_local_audit(&mut self) {
+        if self.local_audit_busy {
+            return;
+        }
+        self.local_audit_busy = true;
+        self.status_message = Some(format!("Reading what was set by hand on {}…", self.active_host_name()));
+        self.pending_local_audit.push(self.selected_host);
+    }
+
+    /// Reads on a worker thread and reports as `WorkerMsg::LocalAudit`.
+    pub fn run_local_audit(&mut self, runner: Arc<dyn CommandRunner>, host: usize) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::zfs::local_settings::list_local(&*runner);
+            let _ = tx.send(WorkerMsg::LocalAudit(host, result));
+        });
+    }
+
+    /// Reports a read that could not start (the host index no longer resolves) through the same channel.
+    pub fn fail_local_audit(&self, host: usize, message: String) {
+        let _ = self.tx.send(WorkerMsg::LocalAudit(host, Err(crate::error::AppError::Parse(message))));
+    }
+
+    pub(super) fn on_local_audit(&mut self, host: usize, result: crate::error::Result<Vec<crate::zfs::local_settings::LocalSetting>>) {
+        self.local_audit_busy = false;
+        if host != self.selected_host {
+            return;
+        }
+        let host_name = self.hosts.get(host).cloned().unwrap_or_default();
+        match result {
+            Err(e) => self.set_error(format!("Could not read what was set by hand on {host_name}: {e}")),
+            Ok(settings) if settings.is_empty() => {
+                self.status_message = None;
+                self.info_scroll = 0;
+                self.modal = Some(Modal::Info { title: format!("Set by hand on {host_name}"), body: "Nothing was set by hand here: every property is at its default or inherited.".to_string() });
+            }
+            Ok(settings) => {
+                self.status_message = None;
+                self.modal = Some(local_settings_modal(&host_name, &settings));
+            }
+        }
+    }
+
     /// The edit form for the alert settings, pre-filled from the file; `None` while `config.toml` cannot be read.
     pub fn alerts_form(&self) -> Option<Modal> {
         if self.alerts_view.problem.as_deref().is_some_and(|p| p.starts_with("config.toml could not be read")) {
@@ -244,4 +288,23 @@ impl App {
 /// The settings, and the first thing wrong with them (the global section's, when it has one) as the one line the screens show.
 fn first_problem((settings, problems): (crate::config::ProtectionSettings, Vec<String>)) -> (crate::config::ProtectionSettings, Option<String>) {
     (settings, problems.into_iter().next())
+}
+
+/// The popup of everything set by hand: one heading per dataset, one row per property, long values cut.
+fn local_settings_modal(host_name: &str, settings: &[crate::zfs::local_settings::LocalSetting]) -> Modal {
+    const VALUE_WIDTH: usize = 60;
+    let mut heads = Vec::new();
+    let mut rows = Vec::new();
+    let mut datasets = Vec::new();
+    for (i, s) in settings.iter().enumerate() {
+        if datasets.last() != Some(&s.dataset) {
+            heads.push((i, s.dataset.clone()));
+        }
+        let value = if s.value.chars().count() > VALUE_WIDTH { format!("{}…", s.value.chars().take(VALUE_WIDTH - 1).collect::<String>()) } else { s.value.clone() };
+        rows.push(format!("{} = {value}", s.property));
+        datasets.push(s.dataset.clone());
+    }
+    let count = settings.len();
+    let note = format!("{count} propert{} set by hand on {host_name}, on {} dataset{}.\nEnter selects the dataset in the list.", if count == 1 { "y" } else { "ies" }, heads.len(), if heads.len() == 1 { "" } else { "s" });
+    Modal::Choose { title: format!("Set by hand on {host_name}"), note, rows, selected: 0, then: crate::ui::modal::ChooseThen::LocalSettings(datasets), look: crate::ui::modal::ChooseLook { heads, ..Default::default() } }
 }

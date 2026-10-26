@@ -543,6 +543,8 @@ pub enum ChooseThen {
     Copy { host: String, dataset: String },
     /// The rows are the providers of `cloud_guide::PROVIDERS` (this order): show the steps for the chosen one.
     Provider,
+    /// The rows are properties set by hand; this holds the dataset of each row (same order). Enter selects that dataset in the list.
+    LocalSettings(Vec<String>),
     /// The rows are the ignored `host:dataset` entries (this list, same order): Enter or `u` checks the marked ones, or the chosen one, again.
     Ignored(Vec<String>),
 }
