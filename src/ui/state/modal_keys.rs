@@ -209,7 +209,9 @@ impl App {
             if entries.len() == 1 { "it" } else { "them" },
             shown.join("\n")
         );
-        let action = PendingAction { host: self.selected_host, section: crate::ui::Section::Dashboard, call: MutationCall::UnignoreDatasets { config_path: self.config_path.clone(), entries } };
+        // From Settings the list behind it is reloaded; from the Dashboard the Dashboard is.
+        let section = if self.current_section() == crate::ui::Section::Settings { crate::ui::Section::Settings } else { crate::ui::Section::Dashboard };
+        let action = PendingAction { host: self.selected_host, section, call: MutationCall::UnignoreDatasets { config_path: self.config_path.clone(), entries } };
         self.confirm_restore = Some((prompt.clone(), back));
         self.modal = Some(Modal::Confirm { choice: None, prompt, action });
     }

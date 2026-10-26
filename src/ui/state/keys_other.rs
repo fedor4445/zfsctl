@@ -3,6 +3,17 @@
 use super::*;
 
 impl App {
+    /// The list of ignored `host:dataset` entries, to check one again: Space marks, Enter or `u` asks (Dashboard and Settings).
+    fn open_ignored_list(&mut self, rows: Vec<String>) {
+        let note = format!("{} dataset{} ignored, with everything below.\nSpace marks; Enter or u checks the marked ones (or this one) again.", rows.len(), if rows.len() == 1 { " is" } else { "s are" });
+        let look = crate::ui::modal::ChooseLook { marked: vec![false; rows.len()], ..Default::default() };
+        self.modal = Some(Modal::Choose { title: "Ignored datasets".to_string(), note, rows: rows.clone(), selected: 0, then: crate::ui::modal::ChooseThen::Ignored(rows), look });
+    }
+
+    pub(crate) fn on_ignored_setting(&self) -> bool {
+        self.settings_table.selected().and_then(|i| self.settings_view.rows.get(i)).is_some_and(|r| r.setting == crate::ui::settings::Setting::ProtIgnore)
+    }
+
     /// The Jobs section (and the `J` job shortcuts of Pools and Datasets).
     /// Part of `handle_key`: the arms keep their original order, so an arm in an earlier chunk still wins
     /// over a later one. Returns whether the key was handled.
@@ -121,9 +132,14 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Settings => {
                 move_table_selection(&mut self.settings_table, self.settings_view.rows.len(), false);
             }
-            KeyCode::Enter if self.current_section() == Section::Settings && self.modal.is_none() && self.picker.is_none() => {
+            KeyCode::Enter | KeyCode::Char('e') if self.current_section() == Section::Settings && self.modal.is_none() && self.picker.is_none() && (key == KeyCode::Enter || self.on_ignored_setting()) => {
+                let on_ignored = self.on_ignored_setting();
+                let ignored = self.dashboard_protection.ignored_names();
                 if let Some(problem) = self.settings_view.problem.clone() {
                     self.set_error(format!("{problem}: fix config.toml before editing here"));
+                // Enter on the ignored row lists them, to check one again (the same list as on the Dashboard); e edits the text.
+                } else if on_ignored && key == KeyCode::Enter && !ignored.is_empty() {
+                    self.open_ignored_list(ignored);
                 } else if let Some(form) = self.settings_form() {
                     self.modal = Some(form);
                 }
@@ -153,9 +169,7 @@ impl App {
                 // The ignored-datasets line opens the list of them, to check one again.
                 if self.dashboard_table.selected().is_some_and(|i| dashboard.is_ignored(i)) {
                     let rows = dashboard.ignored.clone();
-                    let note = format!("{} dataset{} ignored, with everything below.\nSpace marks; Enter or u checks the marked ones (or this one) again.", rows.len(), if rows.len() == 1 { " is" } else { "s are" });
-                    let look = crate::ui::modal::ChooseLook { marked: vec![false; rows.len()], ..Default::default() };
-                    self.modal = Some(Modal::Choose { title: "Ignored datasets".to_string(), note, rows: rows.clone(), selected: 0, then: crate::ui::modal::ChooseThen::Ignored(rows), look });
+                    self.open_ignored_list(rows);
                     return true;
                 }
                 // A group row opens the Hosts list narrowed to that tag.

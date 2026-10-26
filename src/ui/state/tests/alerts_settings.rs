@@ -573,6 +573,29 @@ fn the_settings_load_on_entering_the_section_and_again_after_leaving_it() {
 }
 
 #[test]
+fn enter_on_the_ignored_settings_row_lists_them_to_check_again_and_e_edits_the_text() {
+    let (mut app, dir) = alerts_app("");
+    std::fs::write(dir.path().join("config.toml"), "[protection]\nignore = [\"local:old\", \"fbsd16:tank/tmp\"]\n").unwrap();
+    app.dashboard_protection = crate::config::Config::load(&app.config_path).unwrap().protection_settings().0;
+    app.selected_section = app.sections.iter().position(|x| *x == Section::Settings).unwrap();
+    app.refresh_settings();
+    let row = app.settings_view.rows.iter().position(|r| r.setting == crate::ui::settings::Setting::ProtIgnore).unwrap();
+    app.settings_table.select(Some(row));
+    app.handle_key(KeyCode::Enter);
+    let Some(Modal::Choose { rows, then, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows.len(), 2);
+    assert!(matches!(then, crate::ui::modal::ChooseThen::Ignored(_)));
+    app.handle_modal_key(KeyCode::Char('u'));
+    assert!(matches!(&app.modal, Some(Modal::Confirm { action, .. }) if action.section == Section::Settings), "{:?}", app.modal);
+    app.handle_modal_key(KeyCode::Char('n'));
+    app.handle_modal_key(KeyCode::Enter);
+    app.handle_modal_key(KeyCode::Esc);
+    assert!(app.modal.is_none());
+    app.handle_key(KeyCode::Char('e'));
+    assert!(matches!(app.modal, Some(Modal::Form { .. })), "{:?}", app.modal);
+}
+
+#[test]
 fn e_opens_the_encrypted_dataset_form_with_the_default_cipher_and_two_masked_fields() {
     let mut app = key_app(false, "passphrase");
     app.handle_key(KeyCode::Char('E'));
