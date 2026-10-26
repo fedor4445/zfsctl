@@ -755,6 +755,13 @@ fn integrity_app(checksum: &str, dedup: &str) -> App {
     app
 }
 
+/// `quota_app` with a `sync` property on the dataset.
+fn sync_app(value: &str) -> App {
+    let mut app = quota_app(false, 0, 0, 0, 0);
+    app.dataset_properties.push(Property { name: "sync".into(), value: value.into(), source: PropertySource::Default });
+    app
+}
+
 /// A Datasets screen with `tank/s` (an encryption root) and `tank/s/kid` (uses its key) selected on the first row.
 fn key_app(locked: bool, key_format: &str) -> App {
     let mut app = App::new(vec!["local".to_string()]);

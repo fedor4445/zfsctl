@@ -1352,3 +1352,78 @@ fn c_while_a_read_is_running_starts_no_second_one() {
     app.handle_key(KeyCode::Char('C'));
     assert_eq!(app.pending_changes.len(), 1);
 }
+
+#[test]
+fn enter_on_sync_opens_a_form_and_f2_lists_the_three_values() {
+    let mut app = sync_app("standard");
+    open_property(&mut app, "sync");
+    let Some(crate::ui::modal::Modal::Form { fields, kind, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(fields[0].label.contains("F2"), "{}", fields[0].label);
+    assert_eq!(fields[0].value, "standard");
+    assert_eq!(crate::ui::picker::vocabulary_for(kind, 0).unwrap().0, ["standard", "always", "disabled"]);
+}
+
+#[test]
+fn sync_disabled_asks_for_the_dataset_name_and_says_what_is_lost() {
+    let mut app = sync_app("standard");
+    open_property(&mut app, "sync");
+    assert!(submit_value(&mut app, " DISABLED ").is_none());
+    match &app.modal {
+        Some(crate::ui::modal::Modal::ConfirmTyped { prompt, expected, action, .. }) => {
+            assert_eq!(expected, "tank/data");
+            assert!(prompt.contains("zfs set sync=disabled tank/data") && prompt.contains("power loss") && prompt.contains("stable storage") && prompt.contains("SLOG"), "{prompt}");
+            assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "sync".into(), value: "disabled".into() });
+        }
+        other => panic!("{other:?}"),
+    }
+    for c in "tank/dat".chars() {
+        app.handle_modal_key(KeyCode::Char(c));
+    }
+    assert_eq!(app.handle_modal_key(KeyCode::Enter), None, "a partial name does nothing");
+    app.handle_modal_key(KeyCode::Char('a'));
+    assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "the full name sends it");
+}
+
+#[test]
+fn sync_always_and_standard_ask_y_enter_and_send_the_normalized_value() {
+    for (from, to) in [("standard", " Always"), ("disabled", "standard")] {
+        let mut app = sync_app(from);
+        open_property(&mut app, "sync");
+        assert!(submit_value(&mut app, to).is_none());
+        let Some(crate::ui::modal::Modal::Confirm { prompt, action, .. }) = app.modal.take() else { panic!("{:?}", app.modal) };
+        assert!(prompt.contains("Set it? (y/n)") && prompt.contains("inherit"), "{prompt}");
+        assert_eq!(action.call, MutationCall::SetDatasetProperty { dataset: "tank/data".into(), key: "sync".into(), value: to.trim().to_lowercase() });
+    }
+}
+
+#[test]
+fn sync_to_the_value_it_has_or_a_bad_value_is_refused_in_words() {
+    let mut app = sync_app("standard");
+    open_property(&mut app, "sync");
+    assert!(submit_value(&mut app, "standard").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "{:?}", app.modal);
+    assert!(submit_value(&mut app, "off").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn sync_works_on_a_volume_and_with_an_unknown_current_value() {
+    let mut app = sync_app("");
+    for p in &mut app.dataset_properties {
+        if p.name == "type" {
+            p.value = "volume".into();
+        }
+    }
+    open_property(&mut app, "sync");
+    assert!(submit_value(&mut app, "standard").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Confirm { .. })), "{:?}", app.modal);
+}
+
+#[test]
+fn sync_with_the_properties_of_another_dataset_is_refused() {
+    let mut app = sync_app("standard");
+    open_property(&mut app, "sync");
+    app.dataset_properties_for = Some("tank/other".to_string());
+    assert!(submit_value(&mut app, "disabled").is_none());
+    assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "{:?}", app.modal);
+}
