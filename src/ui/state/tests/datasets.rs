@@ -1427,3 +1427,59 @@ fn sync_with_the_properties_of_another_dataset_is_refused() {
     assert!(submit_value(&mut app, "disabled").is_none());
     assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Form { .. })), "{:?}", app.modal);
 }
+
+fn setting(dataset: &str, property: &str, value: &str) -> crate::zfs::local_settings::LocalSetting {
+    crate::zfs::local_settings::LocalSetting { dataset: dataset.into(), property: property.into(), value: value.into() }
+}
+
+#[test]
+fn h_in_datasets_asks_for_the_read_once_and_the_answer_opens_the_list_grouped_by_dataset() {
+    let mut app = key_app(false, "passphrase");
+    app.handle_key(KeyCode::Char('H'));
+    assert_eq!(app.pending_local_audit, [0]);
+    assert!(app.local_audit_busy);
+    app.handle_key(KeyCode::Char('H'));
+    assert_eq!(app.pending_local_audit, [0], "a second press while it is reading asks for nothing more");
+    let long = "x".repeat(100);
+    app.on_local_audit(0, Ok(vec![setting("tank/s", "atime", "off"), setting("tank/s", "compression", "lz4"), setting("tank/plain", "sync", &long)]));
+    assert!(!app.local_audit_busy);
+    let Some(crate::ui::modal::Modal::Choose { title, note, rows, then, look, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(title, "Set by hand on local");
+    assert!(note.starts_with("3 properties set by hand on local, on 2 datasets"), "{note}");
+    assert_eq!(look.heads, [(0, "tank/s".to_string()), (2, "tank/plain".to_string())]);
+    assert_eq!(rows[0], "atime = off");
+    assert!(rows[2].starts_with("sync = xxx") && rows[2].ends_with('…') && rows[2].chars().count() < 80, "{}", rows[2]);
+    assert_eq!(then, &crate::ui::modal::ChooseThen::LocalSettings(vec!["tank/s".into(), "tank/s".into(), "tank/plain".into()]));
+}
+
+#[test]
+fn enter_in_the_set_by_hand_list_selects_that_dataset_and_closes_it() {
+    let mut app = key_app(false, "passphrase");
+    app.on_local_audit(0, Ok(vec![setting("tank/plain", "atime", "off")]));
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert_eq!(app.selected_dataset_name().as_deref(), Some("tank/plain"));
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("press →")), "{:?}", app.status_message);
+}
+
+#[test]
+fn nothing_set_by_hand_and_a_failed_read_say_so_and_another_host_is_ignored() {
+    let mut app = key_app(false, "passphrase");
+    app.on_local_audit(0, Ok(vec![]));
+    let Some(crate::ui::modal::Modal::Info { body, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert!(body.contains("Nothing was set by hand"), "{body}");
+    app.modal = None;
+    app.on_local_audit(0, Err(crate::error::AppError::Parse("boom".into())));
+    assert!(app.modal.is_none());
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("boom")), "{:?}", app.status_message);
+    app.on_local_audit(5, Ok(vec![setting("x", "atime", "off")]));
+    assert!(app.modal.is_none(), "a read for a host that is not selected opens nothing");
+}
+
+#[test]
+fn h_does_nothing_outside_the_datasets_list() {
+    let mut app = key_app(false, "passphrase");
+    go_to(&mut app, Section::Pools);
+    app.handle_key(KeyCode::Char('H'));
+    assert!(app.pending_local_audit.is_empty() && !app.local_audit_busy);
+}

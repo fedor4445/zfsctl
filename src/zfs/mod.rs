@@ -8,6 +8,7 @@ pub mod host;
 pub mod host_health;
 pub mod host_resources;
 pub mod integrity;
+pub mod local_settings;
 pub mod sync;
 pub mod metrics;
 pub mod net;

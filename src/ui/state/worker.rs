@@ -62,6 +62,7 @@ impl App {
                 WorkerMsg::HostHealth(name, probe) => self.on_host_health(name, probe),
                 WorkerMsg::HostProbe(name, target, result) => self.on_host_probe(name, target, result),
                 WorkerMsg::AlertsPreview(text) => self.on_alerts_preview(text),
+                WorkerMsg::LocalAudit(host, result) => self.on_local_audit(host, result),
                 WorkerMsg::AddChecked(check, result) => self.on_add_checked(check, result),
                 WorkerMsg::HostChecked(line) => {
                     self.host_check_running = false;

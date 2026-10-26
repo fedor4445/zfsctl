@@ -250,6 +250,8 @@ pub enum WorkerMsg {
     SnapshotTags(usize, u64, std::collections::HashMap<String, Vec<String>>),
     /// The dry run (`zpool add -n`) of a vdev add finished: the layout it would give, or the host's own refusal.
     AddChecked(AddCheck, std::result::Result<String, String>),
+    /// The read of every locally set property of one host (`H` in Datasets) finished.
+    LocalAudit(usize, Result<Vec<crate::zfs::local_settings::LocalSetting>>),
     /// The report preview the Alerts screen asked for (`p`), as `Subject: ...` then the body.
     AlertsPreview(String),
     /// A check of one host from the Hosts section finished: the line to show.
@@ -574,6 +576,9 @@ pub struct App {
     pub pending_preflight: Vec<PendingPreflight>,
     pub prune_check: Option<PruneCheck>,
     pub pending_prune_check: Vec<PendingPruneCheck>,
+    /// Hosts whose "set by hand" list `H` in Datasets asked for; the event loop hands each its runner.
+    pub pending_local_audit: Vec<usize>,
+    pub local_audit_busy: bool,
     /// Hosts whose disks and shares `c` in Hosts asked to check; the event loop hands each its runner.
     pub pending_host_checks: Vec<String>,
     /// Vdev adds whose dry run the event loop hands a runner (see `start_add_check`).
@@ -732,6 +737,8 @@ impl App {
             pending_preflight: Vec::new(),
             prune_check: None,
             pending_prune_check: Vec::new(),
+            pending_local_audit: Vec::new(),
+            local_audit_busy: false,
             pending_host_checks: Vec::new(),
             pending_add_checks: Vec::new(),
             add_check_ids: 0,

@@ -302,6 +302,17 @@ impl App {
                     self.fix_unprotected(gap);
                 }
             }
+            ChooseThen::LocalSettings(datasets) => {
+                if let Some(name) = datasets.get(row) {
+                    if let Some(i) = self.datasets.iter().position(|d| d.name == *name) {
+                        self.datasets_table.select(Some(i));
+                        self.modal = None;
+                        self.status_message = Some(format!("{name} is selected: press → for its properties"));
+                    } else {
+                        self.status_message = Some(format!("{name} is not in the Datasets list (press r there to reload it)"));
+                    }
+                }
+            }
             // Enter is handled in `choose_key`, which has the marks.
             ChooseThen::Ignored(_) => {}
             ChooseThen::Provider => {
