@@ -128,7 +128,7 @@ impl App {
                             // A size is shown as 10G (or none) and typed the same way; the exact bytes are sent.
                             let (label, value) = if blocks {
                                 ("special_small_blocks (0, 4K, 32K ... 16M)".to_string(), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "0".to_string(), crate::zfs::quota::format_size))
-                            } else if matches!(prop.name.as_str(), "checksum" | "dedup") {
+                            } else if matches!(prop.name.as_str(), "checksum" | "dedup" | "sync") {
                                 (format!("{} (F2 lists the values)", prop.name), prop.value.clone())
                             } else if guided {
                                 (format!("{} (10G, 500M, none)", prop.name), prop.value.parse::<u64>().ok().filter(|b| *b > 0).map_or_else(|| "none".to_string(), crate::zfs::quota::format_size))

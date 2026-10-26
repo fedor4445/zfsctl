@@ -475,6 +475,7 @@ impl App {
             FormKind::EditDatasetProperty { ref key, .. } if crate::zfs::quota::KEYS.contains(&key.as_str()) => self.submit_quota_form(form),
             FormKind::EditDatasetProperty { ref key, .. } if key == "special_small_blocks" => self.submit_small_blocks_form(form),
             FormKind::EditDatasetProperty { ref key, .. } if key == "checksum" || key == "dedup" => self.submit_integrity_form(form),
+            FormKind::EditDatasetProperty { ref key, .. } if key == "sync" => self.submit_sync_form(form),
             FormKind::CreateEncrypted { .. } => match build_create_encrypted(&form.kind, &form.fields, &self.encryption) {
                 Ok(action) => {
                     let MutationCall::CreateEncryptedDataset { name, cipher, .. } = &action.call else { return None };
@@ -581,6 +582,40 @@ impl App {
                 format!("{command}Deduplication keeps a table of every block in memory (a rule of thumb is 1 to 5 GB of RAM per TB of deduplicated data); {memory}.{low} Turning it off later does not undeduplicate what is already stored, and the table stays until that data is rewritten or deleted.\nType the dataset name to confirm:")
             }
             _ => format!("{command}The new setting applies to data written from now on; what is stored stays as it is. Set it? (y/n)"),
+        };
+        if confirm == Confirm::Typed {
+            self.modal = Some(Modal::ConfirmTyped { prompt: text, expected: dataset, input: String::new(), action });
+        } else {
+            self.confirm_restore = Some((text.clone(), form.into_modal()));
+            self.modal = Some(Modal::Confirm { choice: None, prompt: text, action });
+        }
+        None
+    }
+
+    /// `sync`: the value is checked against the three; `disabled` asks for the dataset's name and says what a power loss costs,
+    /// the other two for y then Enter.
+    fn submit_sync_form(&mut self, form: FormParts) -> Option<PendingAction> {
+        use crate::zfs::integrity::Confirm;
+        let FormKind::EditDatasetProperty { host, dataset, key } = form.kind.clone() else { return None };
+        if self.dataset_properties.is_empty() || self.dataset_properties_for.as_deref() != Some(dataset.as_str()) {
+            return self.reject(form, "the dataset's properties are not loaded yet: press r and try again".to_string());
+        }
+        let new = match crate::zfs::sync::check_sync(field_value(&form.fields, 0)) {
+            Ok(new) => new,
+            Err(msg) => return self.reject(form, msg),
+        };
+        let current = self.dataset_properties.iter().find(|p| p.name == key).map(|p| p.value.clone()).unwrap_or_default();
+        if new == current {
+            return self.reject(form, format!("{key} is already {current}"));
+        }
+        let confirm = crate::zfs::sync::sync_confirm(&new);
+        let action = PendingAction { host, section: crate::ui::Section::DatasetProperties, call: MutationCall::SetDatasetProperty { dataset: dataset.clone(), key: key.clone(), value: new.clone() } };
+        let command = format!("On {}:\n  zfs set {key}={new} {dataset}\n\n", self.hosts.get(host).map_or("?", String::as_str));
+        let inherit = "Datasets below this one that inherit sync are changed too.";
+        let text = match new.as_str() {
+            "disabled" => format!("{command}With sync off, fsync returns before the data is on stable storage: writes wait in memory for the next transaction group (about 5 seconds). After a power loss or a crash an application may have been told its data was safe when it is gone. {inherit} If commits are slow, a separate log device (SLOG) on power-loss-protected drives keeps sync=standard safe.\nType the dataset name to confirm:"),
+            "always" => format!("{command}Every write is made synchronous: safe, and can be slow. {inherit} Set it? (y/n)"),
+            _ => format!("{command}The default: applications get the guarantees they ask for. {inherit} Set it? (y/n)"),
         };
         if confirm == Confirm::Typed {
             self.modal = Some(Modal::ConfirmTyped { prompt: text, expected: dataset, input: String::new(), action });
