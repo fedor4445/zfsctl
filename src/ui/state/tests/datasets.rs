@@ -1487,6 +1487,32 @@ fn h_in_datasets_asks_for_the_read_once_and_the_answer_opens_the_list_grouped_by
 }
 
 #[test]
+fn properties_at_their_default_are_hidden_counted_and_d_shows_them() {
+    let mut app = key_app(false, "passphrase");
+    app.on_local_audit(0, Ok(vec![setting("tank", "atime", "on"), setting("tank", "compression", "lz4"), setting("tank/a", "sync", "standard")]));
+    let Some(crate::ui::modal::Modal::Choose { note, rows, then, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows, &["compression = lz4"]);
+    assert!(note.starts_with("1 property set by hand") && note.contains("2 at their default value are hidden"), "{note}");
+    assert_eq!(then, &crate::ui::modal::ChooseThen::LocalSettings(vec!["tank".into()]));
+    app.handle_modal_key(KeyCode::Char('d'));
+    let Some(crate::ui::modal::Modal::Choose { note, rows, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows, &["atime = on", "compression = lz4", "sync = standard"]);
+    assert!(note.contains("Defaults are shown"), "{note}");
+    app.handle_modal_key(KeyCode::Char('d'));
+    let Some(crate::ui::modal::Modal::Choose { rows, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn when_only_defaults_were_set_the_list_shows_them_rather_than_nothing() {
+    let mut app = key_app(false, "passphrase");
+    app.on_local_audit(0, Ok(vec![setting("tank", "atime", "on")]));
+    let Some(crate::ui::modal::Modal::Choose { rows, note, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows, &["atime = on"]);
+    assert!(!note.contains("hidden"), "{note}");
+}
+
+#[test]
 fn enter_in_the_set_by_hand_list_selects_that_dataset_and_closes_it() {
     let mut app = key_app(false, "passphrase");
     app.on_local_audit(0, Ok(vec![setting("tank/plain", "atime", "off")]));

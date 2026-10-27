@@ -160,7 +160,9 @@ impl App {
             }
             Ok(settings) => {
                 self.status_message = None;
-                self.modal = Some(local_settings_modal(&host_name, &settings));
+                self.local_audit_all = settings;
+                self.local_audit_defaults = false;
+                self.modal = Some(self.local_settings_modal(&host_name));
             }
         }
     }
@@ -290,21 +292,34 @@ fn first_problem((settings, problems): (crate::config::ProtectionSettings, Vec<S
     (settings, problems.into_iter().next())
 }
 
-/// The popup of everything set by hand: one heading per dataset, one row per property, long values cut.
-fn local_settings_modal(host_name: &str, settings: &[crate::zfs::local_settings::LocalSetting]) -> Modal {
-    const VALUE_WIDTH: usize = 60;
-    let mut heads = Vec::new();
-    let mut rows = Vec::new();
-    let mut datasets = Vec::new();
-    for (i, s) in settings.iter().enumerate() {
-        if datasets.last() != Some(&s.dataset) {
-            heads.push((i, s.dataset.clone()));
+impl App {
+    /// The popup of everything set by hand: one heading per dataset, one row per property, long values cut. Properties at their
+    /// built-in default are left out (and counted in the note) unless `local_audit_defaults` is on, or nothing else is left.
+    pub(super) fn local_settings_modal(&self, host_name: &str) -> Modal {
+        const VALUE_WIDTH: usize = 60;
+        let kept = |s: &&crate::zfs::local_settings::LocalSetting| !crate::zfs::local_settings::is_default(&s.property, &s.value);
+        let hidden = if self.local_audit_defaults { 0 } else { self.local_audit_all.iter().filter(|s| !kept(s)).count() };
+        let settings: Vec<&crate::zfs::local_settings::LocalSetting> =
+            if self.local_audit_defaults || hidden == self.local_audit_all.len() { self.local_audit_all.iter().collect() } else { self.local_audit_all.iter().filter(kept).collect() };
+        let hidden = if settings.len() == self.local_audit_all.len() { 0 } else { hidden };
+        let mut heads = Vec::new();
+        let mut rows = Vec::new();
+        let mut datasets = Vec::new();
+        for (i, s) in settings.iter().enumerate() {
+            if datasets.last() != Some(&s.dataset) {
+                heads.push((i, s.dataset.clone()));
+            }
+            let value = if s.value.chars().count() > VALUE_WIDTH { format!("{}…", s.value.chars().take(VALUE_WIDTH - 1).collect::<String>()) } else { s.value.clone() };
+            rows.push(format!("{} = {value}", s.property));
+            datasets.push(s.dataset.clone());
         }
-        let value = if s.value.chars().count() > VALUE_WIDTH { format!("{}…", s.value.chars().take(VALUE_WIDTH - 1).collect::<String>()) } else { s.value.clone() };
-        rows.push(format!("{} = {value}", s.property));
-        datasets.push(s.dataset.clone());
+        let count = settings.len();
+        let mut note = format!("{count} propert{} set by hand on {host_name}, on {} dataset{}.\nEnter selects the dataset in the list.", if count == 1 { "y" } else { "ies" }, heads.len(), if heads.len() == 1 { "" } else { "s" });
+        if hidden > 0 {
+            note.push_str(&format!(" {hidden} at their default value are hidden: d shows them."));
+        } else if self.local_audit_defaults {
+            note.push_str(" Defaults are shown: d hides them.");
+        }
+        Modal::Choose { title: format!("Set by hand on {host_name}"), note, rows, selected: 0, then: crate::ui::modal::ChooseThen::LocalSettings(datasets), look: crate::ui::modal::ChooseLook { heads, ..Default::default() } }
     }
-    let count = settings.len();
-    let note = format!("{count} propert{} set by hand on {host_name}, on {} dataset{}.\nEnter selects the dataset in the list.", if count == 1 { "y" } else { "ies" }, heads.len(), if heads.len() == 1 { "" } else { "s" });
-    Modal::Choose { title: format!("Set by hand on {host_name}"), note, rows, selected: 0, then: crate::ui::modal::ChooseThen::LocalSettings(datasets), look: crate::ui::modal::ChooseLook { heads, ..Default::default() } }
 }

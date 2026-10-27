@@ -80,6 +80,12 @@ impl App {
         const PAGE: usize = 10;
         let ChooseParts { title, note, rows, selected, then, mut look } = parts;
         let last = rows.len().saturating_sub(1);
+        if matches!(then, ChooseThen::LocalSettings(_)) && key == KeyCode::Char('d') {
+            self.local_audit_defaults = !self.local_audit_defaults;
+            let host_name = self.hosts.get(self.selected_host).cloned().unwrap_or_default();
+            self.modal = Some(self.local_settings_modal(&host_name));
+            return None;
+        }
         if let ChooseThen::Ignored(entries) = &then {
             match key {
                 KeyCode::Char(' ') => {

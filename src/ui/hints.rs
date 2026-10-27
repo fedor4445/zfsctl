@@ -90,6 +90,9 @@ fn modal_hints(modal: &Modal) -> Vec<Hint> {
             if matches!(then, crate::ui::modal::ChooseThen::Ignored(_)) {
                 v.push(h("Space", "Mark", 1));
             }
+            if matches!(then, crate::ui::modal::ChooseThen::LocalSettings(_)) {
+                v.push(h("d", "Defaults", 1));
+            }
             if matches!(then, crate::ui::modal::ChooseThen::Unprotected(_)) {
                 v.extend([h("Space", "Mark", 1), h("a", "Mark host", 2), h("s", "Snapshot jobs", 1), h("i", "Ignore", 2)]);
             }
