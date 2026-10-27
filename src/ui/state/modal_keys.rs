@@ -851,6 +851,41 @@ impl App {
         Some(Modal::ConfirmTyped { prompt, expected: pool.clone(), input: String::new(), action: action.clone() })
     }
 
+    /// Enabling a pool `feature@`: what it can break beyond "older systems cannot read it". A pool with a `bootfs` is booted from
+    /// by a boot loader that may not know the feature, so the pool's name must be typed; a pool that replication jobs send from
+    /// names the targets, which must understand the feature before the next incremental send arrives. `None` keeps the ordinary question.
+    fn feature_notes(&self, action: &PendingAction) -> Option<(String, bool)> {
+        let MutationCall::SetPoolProperty { pool, key, value } = &action.call else { return None };
+        if !key.starts_with("feature@") || self.selected_pool_name().as_deref() != Some(pool.as_str()) {
+            return None;
+        }
+        let host = self.hosts.get(action.host).map_or("?", String::as_str);
+        let boot = self.pool_properties.iter().find(|p| p.name == "bootfs").map(|p| p.value.as_str()).filter(|v| !matches!(*v, "" | "-"));
+        let mut targets: Vec<String> = self
+            .jobs_view
+            .jobs
+            .iter()
+            .filter(|j| j.kind == crate::jobs::KIND_REPLICATE && j.host == host)
+            .filter(|j| j.dataset.as_deref().is_some_and(|d| d.split('/').next() == Some(pool.as_str())))
+            .filter_map(|j| j.dest_host.clone())
+            .collect();
+        targets.sort();
+        targets.dedup();
+        if boot.is_none() && targets.is_empty() {
+            return None;
+        }
+        let mut prompt = format!("On {host}:\n  zpool set {key}={value} {pool}\n\nEnabling a pool feature cannot be undone and can make the pool unreadable by older systems.");
+        if let Some(bootfs) = boot {
+            prompt.push_str(&format!("\n\n{pool} is a boot pool (bootfs {bootfs}). The boot loader reads it before ZFS is running, and a loader older than the feature can fail to boot it. Update the boot loader to match first (FreeBSD: `gpart bootcode` / the loader on the ESP), and keep a boot environment you know boots."));
+        }
+        if !targets.is_empty() {
+            let names = targets.iter().map(|t| if t == "file" { "a file target".to_string() } else { t.clone() }).collect::<Vec<_>>().join(", ");
+            prompt.push_str(&format!("\n\nReplication jobs send {pool} to {names}. Once a snapshot uses this feature, a target whose ZFS does not know it cannot receive it, and the jobs fail from then on. Check that each target supports the feature."));
+        }
+        prompt.push_str(if boot.is_some() { "\n\nType the pool name to confirm:" } else { "\n\nSet it? (y/n)" });
+        Some((prompt, boot.is_some()))
+    }
+
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.
     fn submit_plain_form(&mut self, form: FormParts) -> Option<PendingAction> {
         let Some(action) = build_pending_action(&form.kind, &form.fields) else {
@@ -861,7 +896,12 @@ impl App {
             self.modal = Some(modal);
             return None;
         }
-        if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
+        let feature = self.feature_notes(&action);
+        if let (Some((prompt, true)), MutationCall::SetPoolProperty { pool, .. }) = (&feature, &action.call) {
+            self.modal = Some(Modal::ConfirmTyped { prompt: prompt.clone(), expected: pool.clone(), input: String::new(), action });
+            return None;
+        }
+        if let Some(prompt) = feature.map(|(p, _)| p).or_else(|| irreversible_prompt(&self.hosts, &action)) {
             let adding = match (&action.call, super::forms::add_vdev_request(&form.kind, &form.fields)) {
                 (MutationCall::AddVdev { pool, vdev_spec }, Ok((_, _, role))) => Some((pool.clone(), vdev_spec.clone(), role)),
                 _ => None,

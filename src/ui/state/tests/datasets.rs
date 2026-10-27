@@ -910,6 +910,40 @@ fn shrinking_a_volume_and_enabling_a_pool_feature_confirm_but_ordinary_propertie
     assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "an ordinary property still applies on Enter");
 }
 
+/// A feature@ edit form on pool `tank`, which is the selected pool, with the given `bootfs` value and replication jobs.
+fn feature_app(bootfs: &str, jobs: Vec<crate::jobs::Job>) -> App {
+    let mut app = property_form(FormKind::EditPoolProperty { host: 0, pool: "tank".into(), key: "feature@zstd_compress".into() }, "enabled");
+    app.pools = vec![crate::zfs::pool::Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+    app.pools_table.select(Some(0));
+    app.pool_properties = vec![Property { name: "bootfs".to_string(), value: bootfs.to_string(), source: PropertySource::Local }];
+    app.jobs_view.jobs = jobs;
+    app
+}
+
+#[test]
+fn enabling_a_feature_on_a_boot_pool_needs_the_pool_name_and_names_the_loader() {
+    let mut app = feature_app("tank/ROOT/default", vec![]);
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    let Some(Modal::ConfirmTyped { prompt, expected, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(expected, "tank");
+    assert!(prompt.contains("zpool set feature@zstd_compress=enabled tank") && prompt.contains("boot pool") && prompt.contains("boot loader"), "{prompt}");
+}
+
+#[test]
+fn enabling_a_feature_on_a_pool_that_replication_sends_from_names_the_targets_but_keeps_y_n() {
+    let jobs = vec![crate::jobs::Job::test_replicate("r1", "tank/data", "zt", "backup1", "pool/copy"), crate::jobs::Job::test_replicate("r2", "other/data", "zt", "backup2", "pool/copy")];
+    let mut app = feature_app("-", jobs);
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("backup1") && !prompt.contains("backup2") && prompt.contains("cannot receive it") && prompt.ends_with("(y/n)"), "{prompt}");
+}
+
+#[test]
+fn a_feature_on_a_plain_pool_keeps_the_ordinary_question() {
+    let mut app = feature_app("-", vec![]);
+    let prompt = submit_to_confirm(&mut app);
+    assert!(!prompt.contains("boot pool") && !prompt.contains("Replication jobs"), "{prompt}");
+}
+
 #[test]
 fn an_answer_for_another_dataset_is_dropped() {
     let mut app = keep_form_app("3");
