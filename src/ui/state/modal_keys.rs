@@ -832,17 +832,23 @@ impl App {
         None
     }
 
-    /// A pool create whose typed `-o ashift` is below a physical sector the Disks list shows for one of its disks: the typed
-    /// confirm (the pool's name) that says what that costs. `None` for everything else, which keeps the ordinary question.
+    /// A pool create or vdev add whose typed `-o ashift` is below a physical sector the Disks list shows for one of its disks:
+    /// the typed confirm (the pool's name) that says what that costs. `None` for everything else, which keeps the ordinary question.
     fn ashift_confirm(&self, action: &PendingAction) -> Option<Modal> {
         use crate::zfs::ashift::{named_disks, too_small, typed_ashift, warning};
-        let MutationCall::CreatePool { name, vdev_spec } = &action.call else { return None };
+        let (pool, vdev_spec, command, overwritten) = match &action.call {
+            MutationCall::CreatePool { name, vdev_spec } => {
+                let words = vdev_spec.iter().map(String::as_str).collect::<Vec<_>>();
+                (name, vdev_spec, crate::zfs::pool::create_command_text(name, &words), "The disks are overwritten too.")
+            }
+            MutationCall::AddVdev { pool, vdev_spec } => (pool, vdev_spec, format!("zpool add {pool} {}", vdev_spec.join(" ")), "A vdev added to a pool usually cannot be removed again."),
+            _ => return None,
+        };
         let ashift = typed_ashift(vdev_spec)?;
         let (disk, physical) = too_small(ashift, &named_disks(vdev_spec, &self.disks))?;
         let host = self.hosts.get(action.host).map_or("?", String::as_str);
-        let command = crate::zfs::pool::create_command_text(name, &vdev_spec.iter().map(String::as_str).collect::<Vec<_>>());
-        let prompt = format!("On {host}:\n  {command}\n\n{}\nThe disks are overwritten too.\nType the pool name to confirm:", warning(ashift, disk, physical));
-        Some(Modal::ConfirmTyped { prompt, expected: name.clone(), input: String::new(), action: action.clone() })
+        let prompt = format!("On {host}:\n  {command}\n\n{}\n{overwritten}\nType the pool name to confirm:", warning(ashift, disk, physical));
+        Some(Modal::ConfirmTyped { prompt, expected: pool.clone(), input: String::new(), action: action.clone() })
     }
 
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.
