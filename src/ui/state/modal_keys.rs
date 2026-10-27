@@ -80,6 +80,12 @@ impl App {
         const PAGE: usize = 10;
         let ChooseParts { title, note, rows, selected, then, mut look } = parts;
         let last = rows.len().saturating_sub(1);
+        if matches!(then, ChooseThen::LocalSettings(_)) && key == KeyCode::Char('d') {
+            self.local_audit_defaults = !self.local_audit_defaults;
+            let host_name = self.hosts.get(self.selected_host).cloned().unwrap_or_default();
+            self.modal = Some(self.local_settings_modal(&host_name));
+            return None;
+        }
         if let ChooseThen::Ignored(entries) = &then {
             match key {
                 KeyCode::Char(' ') => {
@@ -832,17 +838,58 @@ impl App {
         None
     }
 
-    /// A pool create whose typed `-o ashift` is below a physical sector the Disks list shows for one of its disks: the typed
-    /// confirm (the pool's name) that says what that costs. `None` for everything else, which keeps the ordinary question.
+    /// A pool create or vdev add whose typed `-o ashift` is below a physical sector the Disks list shows for one of its disks:
+    /// the typed confirm (the pool's name) that says what that costs. `None` for everything else, which keeps the ordinary question.
     fn ashift_confirm(&self, action: &PendingAction) -> Option<Modal> {
         use crate::zfs::ashift::{named_disks, too_small, typed_ashift, warning};
-        let MutationCall::CreatePool { name, vdev_spec } = &action.call else { return None };
+        let (pool, vdev_spec, command, overwritten) = match &action.call {
+            MutationCall::CreatePool { name, vdev_spec } => {
+                let words = vdev_spec.iter().map(String::as_str).collect::<Vec<_>>();
+                (name, vdev_spec, crate::zfs::pool::create_command_text(name, &words), "The disks are overwritten too.")
+            }
+            MutationCall::AddVdev { pool, vdev_spec } => (pool, vdev_spec, format!("zpool add {pool} {}", vdev_spec.join(" ")), "A vdev added to a pool usually cannot be removed again."),
+            _ => return None,
+        };
         let ashift = typed_ashift(vdev_spec)?;
         let (disk, physical) = too_small(ashift, &named_disks(vdev_spec, &self.disks))?;
         let host = self.hosts.get(action.host).map_or("?", String::as_str);
-        let command = crate::zfs::pool::create_command_text(name, &vdev_spec.iter().map(String::as_str).collect::<Vec<_>>());
-        let prompt = format!("On {host}:\n  {command}\n\n{}\nThe disks are overwritten too.\nType the pool name to confirm:", warning(ashift, disk, physical));
-        Some(Modal::ConfirmTyped { prompt, expected: name.clone(), input: String::new(), action: action.clone() })
+        let prompt = format!("On {host}:\n  {command}\n\n{}\n{overwritten}\nType the pool name to confirm:", warning(ashift, disk, physical));
+        Some(Modal::ConfirmTyped { prompt, expected: pool.clone(), input: String::new(), action: action.clone() })
+    }
+
+    /// Enabling a pool `feature@`: what it can break beyond "older systems cannot read it". A pool with a `bootfs` is booted from
+    /// by a boot loader that may not know the feature, so the pool's name must be typed; a pool that replication jobs send from
+    /// names the targets, which must understand the feature before the next incremental send arrives. `None` keeps the ordinary question.
+    fn feature_notes(&self, action: &PendingAction) -> Option<(String, bool)> {
+        let MutationCall::SetPoolProperty { pool, key, value } = &action.call else { return None };
+        if !key.starts_with("feature@") || self.selected_pool_name().as_deref() != Some(pool.as_str()) {
+            return None;
+        }
+        let host = self.hosts.get(action.host).map_or("?", String::as_str);
+        let boot = self.pool_properties.iter().find(|p| p.name == "bootfs").map(|p| p.value.as_str()).filter(|v| !matches!(*v, "" | "-"));
+        let mut targets: Vec<String> = self
+            .jobs_view
+            .jobs
+            .iter()
+            .filter(|j| j.kind == crate::jobs::KIND_REPLICATE && j.host == host)
+            .filter(|j| j.dataset.as_deref().is_some_and(|d| d.split('/').next() == Some(pool.as_str())))
+            .filter_map(|j| j.dest_host.clone())
+            .collect();
+        targets.sort();
+        targets.dedup();
+        if boot.is_none() && targets.is_empty() {
+            return None;
+        }
+        let mut prompt = format!("On {host}:\n  zpool set {key}={value} {pool}\n\nEnabling a pool feature cannot be undone and can make the pool unreadable by older systems.");
+        if let Some(bootfs) = boot {
+            prompt.push_str(&format!("\n\n{pool} is a boot pool (bootfs {bootfs}). The boot loader reads it before ZFS is running, and a loader older than the feature can fail to boot it. Update the boot loader to match first (FreeBSD: `gpart bootcode` / the loader on the ESP), and keep a boot environment you know boots."));
+        }
+        if !targets.is_empty() {
+            let names = targets.iter().map(|t| if t == "file" { "a file target".to_string() } else { t.clone() }).collect::<Vec<_>>().join(", ");
+            prompt.push_str(&format!("\n\nReplication jobs send {pool} to {names}. Once a snapshot uses this feature, a target whose ZFS does not know it cannot receive it, and the jobs fail from then on. Check that each target supports the feature."));
+        }
+        prompt.push_str(if boot.is_some() { "\n\nType the pool name to confirm:" } else { "\n\nSet it? (y/n)" });
+        Some((prompt, boot.is_some()))
     }
 
     /// Every other form: what cannot be taken back is shown as the exact command and needs y then Enter.
@@ -855,7 +902,12 @@ impl App {
             self.modal = Some(modal);
             return None;
         }
-        if let Some(prompt) = irreversible_prompt(&self.hosts, &action) {
+        let feature = self.feature_notes(&action);
+        if let (Some((prompt, true)), MutationCall::SetPoolProperty { pool, .. }) = (&feature, &action.call) {
+            self.modal = Some(Modal::ConfirmTyped { prompt: prompt.clone(), expected: pool.clone(), input: String::new(), action });
+            return None;
+        }
+        if let Some(prompt) = feature.map(|(p, _)| p).or_else(|| irreversible_prompt(&self.hosts, &action)) {
             let adding = match (&action.call, super::forms::add_vdev_request(&form.kind, &form.fields)) {
                 (MutationCall::AddVdev { pool, vdev_spec }, Ok((_, _, role))) => Some((pool.clone(), vdev_spec.clone(), role)),
                 _ => None,

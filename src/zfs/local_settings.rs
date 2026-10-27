@@ -16,6 +16,40 @@ pub fn list_local(runner: &dyn CommandRunner) -> Result<Vec<LocalSetting>> {
     parse_local(&output.stdout)
 }
 
+/// Properties whose built-in default is the same on every OpenZFS system (values as `zfs get -p` prints them). A property set
+/// by hand to exactly this value changes nothing; FreeBSD installers set many of them explicitly, which buries the real choices.
+const DEFAULTS: [(&str, &str); 24] = [
+    ("atime", "on"),
+    ("canmount", "on"),
+    ("checksum", "on"),
+    ("compression", "off"),
+    ("copies", "1"),
+    ("dedup", "off"),
+    ("devices", "on"),
+    ("exec", "on"),
+    ("jailed", "off"),
+    ("logbias", "latency"),
+    ("nbmand", "off"),
+    ("primarycache", "all"),
+    ("quota", "0"),
+    ("readonly", "off"),
+    ("recordsize", "131072"),
+    ("redundant_metadata", "all"),
+    ("refquota", "0"),
+    ("refreservation", "0"),
+    ("reservation", "0"),
+    ("secondarycache", "all"),
+    ("setuid", "on"),
+    ("sync", "standard"),
+    ("snapdir", "hidden"),
+    ("sharenfs", "off"),
+];
+
+/// Whether `property = value` is the built-in default, so setting it by hand changed nothing.
+pub fn is_default(property: &str, value: &str) -> bool {
+    DEFAULTS.iter().any(|(p, v)| *p == property && *v == value)
+}
+
 /// `name  property  value  source` lines. A line that is not four tab-separated fields is an error, as in `parse_property_list`:
 /// a half-read list must not pass for "nothing was set by hand".
 pub fn parse_local(output: &str) -> Result<Vec<LocalSetting>> {
@@ -45,6 +79,12 @@ mod tests {
         let got = parse_local(out).unwrap();
         let names: Vec<(&str, &str, &str)> = got.iter().map(|s| (s.dataset.as_str(), s.property.as_str(), s.value.as_str())).collect();
         assert_eq!(names, [("tank", "mountpoint", "/my tank"), ("tank/b", "atime", "off"), ("tank/b", "compression", "lz4")]);
+    }
+
+    #[test]
+    fn only_a_property_at_its_built_in_default_counts_as_one() {
+        assert!(is_default("sync", "standard") && is_default("recordsize", "131072") && is_default("quota", "0"));
+        assert!(!is_default("sync", "disabled") && !is_default("compression", "lz4") && !is_default("mountpoint", "/"));
     }
 
     #[test]

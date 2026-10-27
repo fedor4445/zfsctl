@@ -464,6 +464,29 @@ fn handle_modal_key_add_vdev_form_submits_with_correct_pool_and_vdev_spec() {
 }
 
 #[test]
+fn an_add_vdev_ashift_below_a_disks_physical_sector_asks_for_the_pool_name() {
+    for (options, typed) in [("-o ashift=9 ", true), ("-o ashift=12 ", false), ("", false)] {
+        let mut app = App::new(vec!["local".to_string()]);
+        app.disks = vec![crate::zfs::disk::DiskInfo { name: "da2".into(), sector_size: 512, stripe_size: 4096, ..Default::default() }];
+        app.modal = Some(crate::ui::modal::Modal::Form {
+            title: "Add vdev".to_string(),
+            fields: vec![crate::ui::modal::FormField { label: "Vdev spec".into(), value: format!("{options}da2") }],
+            focused: 0,
+            description: None,
+            kind: crate::ui::modal::FormKind::AddVdev { host: 0, pool: "tank".to_string() },
+        });
+        assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+        if typed {
+            let Some(crate::ui::modal::Modal::ConfirmTyped { prompt, expected, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+            assert_eq!(expected, "tank");
+            assert!(prompt.contains("zpool add tank -o ashift=9 da2") && prompt.contains("da2 reports 4096-byte physical"), "{prompt}");
+        } else {
+            assert!(matches!(app.modal, Some(crate::ui::modal::Modal::Confirm { .. })), "{options}: {:?}", app.modal);
+        }
+    }
+}
+
+#[test]
 fn handle_key_x_on_group_vdev_row_does_not_open_modal() {
     let mut app = App::new(vec!["local".to_string()]);
     app.pools = vec![Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];

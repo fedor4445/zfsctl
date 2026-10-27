@@ -910,6 +910,40 @@ fn shrinking_a_volume_and_enabling_a_pool_feature_confirm_but_ordinary_propertie
     assert!(app.handle_modal_key(KeyCode::Enter).is_some(), "an ordinary property still applies on Enter");
 }
 
+/// A feature@ edit form on pool `tank`, which is the selected pool, with the given `bootfs` value and replication jobs.
+fn feature_app(bootfs: &str, jobs: Vec<crate::jobs::Job>) -> App {
+    let mut app = property_form(FormKind::EditPoolProperty { host: 0, pool: "tank".into(), key: "feature@zstd_compress".into() }, "enabled");
+    app.pools = vec![crate::zfs::pool::Pool { name: "tank".to_string(), size: 0, allocated: 0, free: 0, health: crate::zfs::pool::PoolHealth::Online }];
+    app.pools_table.select(Some(0));
+    app.pool_properties = vec![Property { name: "bootfs".to_string(), value: bootfs.to_string(), source: PropertySource::Local }];
+    app.jobs_view.jobs = jobs;
+    app
+}
+
+#[test]
+fn enabling_a_feature_on_a_boot_pool_needs_the_pool_name_and_names_the_loader() {
+    let mut app = feature_app("tank/ROOT/default", vec![]);
+    assert!(app.handle_modal_key(KeyCode::Enter).is_none());
+    let Some(Modal::ConfirmTyped { prompt, expected, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(expected, "tank");
+    assert!(prompt.contains("zpool set feature@zstd_compress=enabled tank") && prompt.contains("boot pool") && prompt.contains("boot loader"), "{prompt}");
+}
+
+#[test]
+fn enabling_a_feature_on_a_pool_that_replication_sends_from_names_the_targets_but_keeps_y_n() {
+    let jobs = vec![crate::jobs::Job::test_replicate("r1", "tank/data", "zt", "backup1", "pool/copy"), crate::jobs::Job::test_replicate("r2", "other/data", "zt", "backup2", "pool/copy")];
+    let mut app = feature_app("-", jobs);
+    let prompt = submit_to_confirm(&mut app);
+    assert!(prompt.contains("backup1") && !prompt.contains("backup2") && prompt.contains("cannot receive it") && prompt.ends_with("(y/n)"), "{prompt}");
+}
+
+#[test]
+fn a_feature_on_a_plain_pool_keeps_the_ordinary_question() {
+    let mut app = feature_app("-", vec![]);
+    let prompt = submit_to_confirm(&mut app);
+    assert!(!prompt.contains("boot pool") && !prompt.contains("Replication jobs"), "{prompt}");
+}
+
 #[test]
 fn an_answer_for_another_dataset_is_dropped() {
     let mut app = keep_form_app("3");
@@ -1450,6 +1484,32 @@ fn h_in_datasets_asks_for_the_read_once_and_the_answer_opens_the_list_grouped_by
     assert_eq!(rows[0], "atime = off");
     assert!(rows[2].starts_with("sync = xxx") && rows[2].ends_with('…') && rows[2].chars().count() < 80, "{}", rows[2]);
     assert_eq!(then, &crate::ui::modal::ChooseThen::LocalSettings(vec!["tank/s".into(), "tank/s".into(), "tank/plain".into()]));
+}
+
+#[test]
+fn properties_at_their_default_are_hidden_counted_and_d_shows_them() {
+    let mut app = key_app(false, "passphrase");
+    app.on_local_audit(0, Ok(vec![setting("tank", "atime", "on"), setting("tank", "compression", "lz4"), setting("tank/a", "sync", "standard")]));
+    let Some(crate::ui::modal::Modal::Choose { note, rows, then, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows, &["compression = lz4"]);
+    assert!(note.starts_with("1 property set by hand") && note.contains("2 at their default value are hidden"), "{note}");
+    assert_eq!(then, &crate::ui::modal::ChooseThen::LocalSettings(vec!["tank".into()]));
+    app.handle_modal_key(KeyCode::Char('d'));
+    let Some(crate::ui::modal::Modal::Choose { note, rows, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows, &["atime = on", "compression = lz4", "sync = standard"]);
+    assert!(note.contains("Defaults are shown"), "{note}");
+    app.handle_modal_key(KeyCode::Char('d'));
+    let Some(crate::ui::modal::Modal::Choose { rows, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn when_only_defaults_were_set_the_list_shows_them_rather_than_nothing() {
+    let mut app = key_app(false, "passphrase");
+    app.on_local_audit(0, Ok(vec![setting("tank", "atime", "on")]));
+    let Some(crate::ui::modal::Modal::Choose { rows, note, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(rows, &["atime = on"]);
+    assert!(!note.contains("hidden"), "{note}");
 }
 
 #[test]

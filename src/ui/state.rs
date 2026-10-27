@@ -579,6 +579,9 @@ pub struct App {
     /// Hosts whose "set by hand" list `H` in Datasets asked for; the event loop hands each its runner.
     pub pending_local_audit: Vec<usize>,
     pub local_audit_busy: bool,
+    /// What the last `H` read, and whether the list shows the properties that are at their default too.
+    pub local_audit_all: Vec<crate::zfs::local_settings::LocalSetting>,
+    pub local_audit_defaults: bool,
     /// Hosts whose disks and shares `c` in Hosts asked to check; the event loop hands each its runner.
     pub pending_host_checks: Vec<String>,
     /// Vdev adds whose dry run the event loop hands a runner (see `start_add_check`).
@@ -739,6 +742,8 @@ impl App {
             pending_prune_check: Vec::new(),
             pending_local_audit: Vec::new(),
             local_audit_busy: false,
+            local_audit_all: Vec::new(),
+            local_audit_defaults: false,
             pending_host_checks: Vec::new(),
             pending_add_checks: Vec::new(),
             add_check_ids: 0,

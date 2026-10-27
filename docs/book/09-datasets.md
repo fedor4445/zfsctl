@@ -131,7 +131,7 @@ The panel under the list shows `Checksum` and `Dedup` only when they are not the
 
 ## What was set by hand
 
-Press `H` on the Datasets list to see every property that someone set on purpose on this host: the ones whose source is `local`, which is what `zfs get -r -s local all` prints. A window lists them under a heading for each dataset (`atime = off`, `compression = lz4`, `sync = disabled`); a long value is cut with `…`. It is read-only and is read when you press `H`, not on the refresh timer. `Enter` on a row selects that dataset in the list (press `→` for its Properties tab, where it can be changed), and `Esc` closes the window.
+Press `H` on the Datasets list to see every property that someone set on purpose on this host: the ones whose source is `local`, which is what `zfs get -r -s local all` prints. A window lists them under a heading for each dataset (`atime = off`, `compression = lz4`, `sync = disabled`); a long value is cut with `…`. Properties set to exactly their built-in default (`atime = on`, `sync = standard`, `recordsize = 131072` and the like) change nothing, so they are left out and counted in the note; `d` shows or hides them. It is read-only and is read when you press `H`, not on the refresh timer. `Enter` on a row selects that dataset in the list (press `→` for its Properties tab, where it can be changed), and `Esc` closes the window.
 
 This is the first thing to look at on a pool you inherited, or one a tool or a chatbot set up for you: read the list and make sure someone can explain every line, above all `sync`, `checksum`, `dedup`, `recordsize` and `mountpoint`. A host where nothing was set by hand says so. Properties that came from a replication (`received`) are not listed.
 
