@@ -130,7 +130,7 @@ fn the_book_and_its_captures_show_no_real_names() {
 
 #[test]
 fn callouts_use_only_the_known_labels() {
-    const LABELS: [&str; 5] = ["Coming from Linux", "Coming from Windows", "Safety", "Not built yet", "Tip"];
+    const LABELS: [&str; 5] = ["Coming from Linux", "Coming from Windows", "Safety", "Limit", "Tip"];
     for (name, text) in chapters() {
         for (n, line) in text.lines().enumerate() {
             if let Some(rest) = line.strip_prefix("> **") {

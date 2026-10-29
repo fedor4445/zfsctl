@@ -8,7 +8,7 @@
 
 ## The three areas
 
-Here is the Pools section with nothing selected yet (a real capture; the pools belong to the author's test hub):
+Here is the Pools section with nothing selected yet:
 
 ```screen
 ┌zfsctl────────────────┐┌Pools — local ('r' refresh, → for properties)────┐┌Properties — ? ('r' refresh, Ente┐

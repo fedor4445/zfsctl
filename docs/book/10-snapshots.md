@@ -262,7 +262,7 @@ Sometimes the question is not "what changed" but "what was in there": a folder y
 ↑↓ Move  Enter Open  ← Up  / Name  m Modified  s Size  t Type  Esc Close  Tab Section  ! Shell  ? Help  q Quit
 ```
 
-This is a real capture of the top folder of a test snapshot. It holds a folder of 9,275 files (`big`), a symlink, and two entries whose names contain a newline and an escape character; those are shown cleaned, and the folder with a newline in its name is not opened (`unusual name, not opened`).
+This is the top folder of a test snapshot. It holds a folder of 9,275 files (`big`), a symlink, and two entries whose names contain a newline and an escape character; those are shown cleaned, and the folder with a newline in its name is not opened (`unusual name, not opened`).
 
 Each line is one entry, folders first, then by name:
 

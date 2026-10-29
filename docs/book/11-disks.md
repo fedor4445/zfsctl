@@ -72,7 +72,7 @@ A disk that already belongs to a pool cannot be marked: a message tells you whic
 
 > **Safety:** a **stripe** (no redundancy) has no protection: if any disk fails, the pool is lost. Use a mirror or raidz for anything you care about. The question shows the exact `zpool create` command, so read it before you press `y`.
 
-> **Not built yet:** zfsctl does not partition disks or label them (`gpart`). It uses whole disks as ZFS does when you give it `da0`.
+> **Limit:** zfsctl does not partition disks or label them (`gpart`). It uses whole disks as ZFS does when you give it `da0`.
 
 ## Hardware notes
 
