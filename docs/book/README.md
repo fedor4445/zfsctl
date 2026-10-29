@@ -4,7 +4,7 @@ A guide to running ZFS with zfsctl: a terminal tool that shows your pools, datas
 
 ## How it was made
 
-zfsctl and this book were written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code), and directed and tested by the author on real machines. The screens are real captures, not drawings.
+zfsctl and this book were written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code), and directed and tested by the author on real machines.
 
 ## Who this is for
 
@@ -18,15 +18,15 @@ Boxes mark the things worth noticing:
 
 > **Safety:** said before anything that changes your data.
 
-> **Not built yet:** something you might expect that zfsctl does not do (yet), so you are never misled.
+> **Limit:** something you might expect that zfsctl does not do, so you are never misled.
 
 > **Tip:** a shortcut or a good habit.
 
-Keys are written in backticks, like `n` or `Enter`. Screens in the book are real captures from a running zfsctl, not drawings. Commands you type are in code blocks; the ones that need root say so.
+Keys are written in backticks, like `n` or `Enter`. Commands you type are in code blocks; the ones that need root say so.
 
 ## The running example
 
-The examples follow a small home lab: one machine, the *hub*, runs zfsctl and holds a pool called `tank`; a second machine, `backup`, receives copies. The screens come from the author's test machines, which have other names (`fb`, `fbsd16`, `fbsd16t1`, `fbsd16t2`); chapter 1 says so again where it matters.
+The examples follow a small home lab: one machine, the *hub*, runs zfsctl and holds a pool called `tank`; a second machine, `backup`, receives copies. In the screens the machines have other names (`fb`, `fbsd16`, `fbsd16t1`, `fbsd16t2`); chapter 1 says so again where it matters.
 
 ## Chapters
 
@@ -54,4 +54,4 @@ The examples follow a small home lab: one machine, the *hub*, runs zfsctl and ho
 - [22 Reference: commands](22-reference-commands.md)
 - [23 Glossary](23-glossary.md)
 
-For the project itself (building, the full feature list) see the [project README](../../README.md).
+For the project itself (building, the full feature list) see the [project README](https://github.com/fedor4445/zfsctl#readme).

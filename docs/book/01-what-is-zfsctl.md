@@ -89,7 +89,7 @@ The same layers apply whether you manage one machine or twenty; only the number 
 
 ## What you see
 
-When you start zfsctl you land on the Hosts section. This is a real capture from the author's test machines (the hub is called `fb` and the other hosts are small virtual machines; the book's examples use the names `hub`, `backup` and `tank` in the text, but every screen is a genuine one):
+When you start zfsctl you land on the Hosts section. In the screens the hub is called `fb` and the other hosts are small virtual machines; the text uses the names `hub`, `backup` and `tank`:
 
 ```screen
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────┐
@@ -147,7 +147,7 @@ Chapter 18 gathers these promises, and the honest limits of them, in one place.
 
 ## A note about the screens
 
-Every screen and command output in this book was captured from a running zfsctl on test machines, not drawn. Where a screen would show something private (an email address), it is replaced with `you@example.com`.
+Where a screen would show something private (an email address), it is replaced with `you@example.com`.
 
 ## Built on
 

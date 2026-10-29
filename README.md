@@ -4,7 +4,7 @@ A terminal UI and daemon for managing ZFS storage on FreeBSD: one hub that manag
 
 > **Built with Claude.** zfsctl was written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code): the design, code, tests and documentation were produced in conversation with it, and directed and tested by the author on real machines.
 
-**Documentation: [The zfsctl Book](docs/book/README.md)**, with real screens and a chapter for each part of the tool. This README is the reference for the details.
+**Documentation: [The zfsctl Book](docs/book/README.md)**, with screens and a chapter for each part of the tool. This README is the reference for the details.
 
 ## Requirements
 
@@ -502,7 +502,7 @@ remind_hours = 6                     # repeat an unresolved alert this often; de
 
 ## Status
 
-Version 0.2, in development. It manages pools, datasets and their properties, snapshots, disks, NFS and SMB shares, boot environments, delegated permissions and ACLs, native encryption keys, and scheduled snapshot, replication, restic backup and rclone mirror jobs, with alerts and a daily report. The book (`docs/book`) documents every screen.
+Version 0.2. It manages pools, datasets and their properties, snapshots, disks, NFS and SMB shares, boot environments, delegated permissions and ACLs, native encryption keys, and scheduled snapshot, replication, restic backup and rclone mirror jobs, with alerts and a daily report. The book (`docs/book`) documents every screen.
 
 ### What is tested, and what is not
 
