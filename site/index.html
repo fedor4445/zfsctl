@@ -68,6 +68,7 @@ install -m 555 contrib/rc.d/zfsctl /usr/local/etc/rc.d/zfsctl
 sysrc zfsctl_enable=YES &amp;&amp; service zfsctl start
 <span class="c"># the screen</span>
 sudo zfsctl</pre>
+<p>Use at your own risk: zfsctl is provided without warranty and runs commands that can destroy data. Keep backups and try it on a scratch pool first (<a href="book/18-safety.html">safety</a>).</p>
 <p>The book covers configuration, the sudoers rules for remote hosts, and every screen: <a href="book/04-installing.html">installing</a>, <a href="book/05-remote-hosts.html">remote hosts</a>, <a href="book/17-recipes.html">recipes</a>.</p>
 
 <h2 data-rule="──────────────────────────────">built on</h2>
@@ -78,7 +79,7 @@ sudo zfsctl</pre>
 <a href="https://ratatui.rs/">ratatui</a>,
 <a href="https://restic.net/">restic</a> and <a href="https://rclone.org/">rclone</a>. With thanks to all their authors.</p>
 
-<footer>Written by fedor4445 in collaboration with Claude, an AI model by Anthropic. BSD 2-Clause. Copyright (c) 2026, fedor4445. This page loads one stylesheet and nothing else.</footer>
+<footer>Written by fedor4445 in collaboration with Claude, an AI model by Anthropic. BSD 2-Clause, no warranty. Copyright (c) 2026, fedor4445. This page loads one stylesheet and nothing else.</footer>
 </main>
 </body>
 </html>
