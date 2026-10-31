@@ -6,6 +6,10 @@
 - How its pieces fit together: the *hub*, the *hosts* and the *daemon*.
 - What it can do for you, what it deliberately does not do, and the promises it makes about your data.
 
+## Before you begin
+
+zfsctl is provided as is, without warranty (see the LICENSE file): use it at your own risk. It runs commands as root that can destroy data, such as destroying a dataset, rolling back a snapshot, changing a pool or activating a boot environment. It asks for confirmation before anything you could not undo, but that is not a backup. Keep backups of anything you care about, and try zfsctl first on a scratch pool or a test machine. The [Safety](18-safety.md) chapter lists what it does to protect you and the habits that matter most.
+
 ## What zfsctl is not
 
 zfsctl is not a storage appliance, a ready-made "NAS in a box". It has no operating system of its own, no web page and no installer that takes over a machine. It is an ordinary program that you install on a plain FreeBSD you already run, in the same way as any other tool, and remove the same way. Your machines stay what they were: normal servers with normal ZFS, which you can still manage by hand with `zpool` and `zfs` at any moment. zfsctl adds a screen and a scheduler on top and leaves nothing behind that you cannot see.

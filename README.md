@@ -4,6 +4,8 @@ A terminal UI and daemon for managing ZFS storage on FreeBSD: one hub that manag
 
 > **Built with Claude.** zfsctl was written by fedor4445 in collaboration with Claude, an AI model by Anthropic (through Claude Code): the design, code, tests and documentation were produced in conversation with it, and directed and tested by the author on real machines.
 
+> **Use at your own risk.** zfsctl is provided as is, without warranty (see [LICENSE](LICENSE)). It runs privileged commands that can destroy data: destroying datasets and snapshots, rollback, pool changes, boot environment activation. It asks for confirmation before anything irreversible, but that is no substitute for backups. Try it on a scratch pool before pointing it at data you care about.
+
 **Documentation: [The zfsctl Book](docs/book/README.md)**, with screens and a chapter for each part of the tool. This README is the reference for the details.
 
 ## Requirements
