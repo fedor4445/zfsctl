@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn merged_run_can_be_cancelled() {
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "sleep 30"]);
+        cmd.args(["-c", "exec sleep 30"]);
         let lines = run_lines_merged(cmd, &AtomicBool::new(true), |_| {}).unwrap();
         assert!(lines.cancelled);
     }
@@ -355,7 +355,7 @@ mod tests {
             flag.store(true, Ordering::SeqCst);
         });
         let started = Instant::now();
-        let t = pump(sh("sleep 60"), sh("cat > /dev/null"), &cancel, |_| {}).unwrap();
+        let t = pump(sh("exec sleep 60"), sh("cat > /dev/null"), &cancel, |_| {}).unwrap();
         setter.join().unwrap();
         assert!(t.cancelled, "{t:?}");
         assert!(started.elapsed() < Duration::from_secs(10));
@@ -365,7 +365,7 @@ mod tests {
     fn a_command_that_cannot_start_is_an_error_and_leaves_nothing_running() {
         let cancel = AtomicBool::new(false);
         let missing = Command::new("/nonexistent/zfsctl-test-binary");
-        assert!(pump(sh("sleep 60"), missing, &cancel, |_| {}).is_err());
+        assert!(pump(sh("exec sleep 60"), missing, &cancel, |_| {}).is_err());
     }
 
     #[test]
@@ -394,7 +394,7 @@ mod tests {
         let file = std::fs::File::create(dir.path().join("out")).unwrap();
         let cancel = AtomicBool::new(true);
         let started = Instant::now();
-        let t = pump_to_file(sh("sleep 60"), file, &cancel, |_| {}).unwrap();
+        let t = pump_to_file(sh("exec sleep 60"), file, &cancel, |_| {}).unwrap();
         assert!(t.cancelled && !t.send_ok);
         assert!(started.elapsed() < Duration::from_secs(10), "the sleep was killed, not waited for");
     }
@@ -406,7 +406,7 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         let read_only = std::fs::File::open(&path).unwrap(); // every write to it fails, like ENOSPC
         let started = Instant::now();
-        let t = pump_to_file(sh("head -c 1000000 /dev/zero; sleep 30"), read_only, &AtomicBool::new(false), |_| {}).unwrap();
+        let t = pump_to_file(sh("head -c 1000000 /dev/zero; exec sleep 30"), read_only, &AtomicBool::new(false), |_| {}).unwrap();
         assert!(t.write_error.is_some(), "{t:?}");
         assert!(!t.send_ok, "the send is killed once the write fails");
         assert!(started.elapsed() < Duration::from_secs(10));
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn run_lines_kills_the_child_when_cancelled_and_still_returns() {
         let started = Instant::now();
-        let r = run_lines(sh("echo started; sleep 60"), &AtomicBool::new(true), |_| {}).unwrap();
+        let r = run_lines(sh("echo started; exec sleep 60"), &AtomicBool::new(true), |_| {}).unwrap();
         assert!(r.cancelled);
         assert!(started.elapsed() < Duration::from_secs(10));
         assert_ne!(r.code, Some(0));
