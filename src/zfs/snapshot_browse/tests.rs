@@ -320,7 +320,7 @@ fn read_folder_joins_modified_changed_and_created() {
 
 #[test]
 fn the_entry_cap_stops_the_read_and_says_so() {
-    let r = LsRunner::new(&[&format!("{} sleep 30", files(&["a", "b", "c", "d", "e"], 1))]);
+    let r = LsRunner::new(&[&format!("{} exec sleep 30", files(&["a", "b", "c", "d", "e"], 1))]);
     let limits = BrowseLimits { max_entries: 3, ..BrowseLimits::default() };
     let started = Instant::now();
     let l = read_folder(&r, DIR, &limits, &AtomicBool::new(false)).unwrap();
@@ -338,7 +338,7 @@ fn exactly_the_cap_is_not_truncated() {
 
 #[test]
 fn the_time_limit_stops_the_read() {
-    let r = LsRunner::new(&[&format!("{} sleep 30", files(&["a"], 1))]);
+    let r = LsRunner::new(&[&format!("{} exec sleep 30", files(&["a"], 1))]);
     let limits = BrowseLimits { max_seconds: 1, ..BrowseLimits::default() };
     let started = Instant::now();
     let l = read_folder(&r, DIR, &limits, &AtomicBool::new(false)).unwrap();
@@ -348,7 +348,7 @@ fn the_time_limit_stops_the_read() {
 
 #[test]
 fn cancel_is_an_error_and_returns_quickly() {
-    let r = LsRunner::new(&["sleep 30"]);
+    let r = LsRunner::new(&["exec sleep 30"]);
     let cancel = AtomicBool::new(false);
     let started = Instant::now();
     let result = std::thread::scope(|s| {
@@ -371,7 +371,7 @@ fn a_failing_first_call_is_an_error_with_the_first_stderr_line() {
 
 #[test]
 fn a_changed_or_created_listing_cut_short_by_the_time_limit_is_reported() {
-    let r = LsRunner::new(&[&files(&["a", "b"], 100), &format!("{} sleep 30", files(&["a"], 200))]);
+    let r = LsRunner::new(&[&files(&["a", "b"], 100), &format!("{} exec sleep 30", files(&["a"], 200))]);
     let limits = BrowseLimits { max_seconds: 2, ..BrowseLimits::default() };
     let started = Instant::now();
     let l = read_folder(&r, DIR, &limits, &AtomicBool::new(false)).unwrap();
@@ -410,7 +410,7 @@ fn a_stray_line_is_counted_not_glued_onto_the_entry_before_it() {
 
 #[test]
 fn a_name_with_a_newline_arrives_escaped_as_one_entry_that_cannot_be_opened() {
-    let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; echo 'drwxr-xr-x 2 u g 5 100 dir\\nnewline'; echo '-rw-r--r-- 1 u g 5 100 last'";
+    let script = "echo 'total 3'; echo '-rw-r--r-- 1 u g 5 100 first'; printf '%s\\n' 'drwxr-xr-x 2 u g 5 100 dir\\nnewline'; echo '-rw-r--r-- 1 u g 5 100 last'";
     let r = LsRunner::new(&[script, script]);
     let l = read_folder(&r, DIR, &BrowseLimits::default(), &AtomicBool::new(false)).unwrap();
     let names: Vec<&str> = l.entries.iter().map(|r| r.entry.name.as_str()).collect();

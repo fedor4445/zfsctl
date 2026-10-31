@@ -523,7 +523,7 @@ mod reader_tests {
 
     #[test]
     fn the_line_limit_stops_the_read_and_says_so() {
-        let r = DiffRunner::new("i=0; while [ $i -lt 10 ]; do printf '1.0\\t+\\tF\\t/ds/f%s\\n' $i; i=$((i+1)); done; sleep 30");
+        let r = DiffRunner::new("i=0; while [ $i -lt 10 ]; do printf '1.0\\t+\\tF\\t/ds/f%s\\n' $i; i=$((i+1)); done; exec sleep 30");
         let started = Instant::now();
         let limits = Limits { max_lines: 3, ..Limits::default() };
         let s = read_changes(&r, "tank/d@a", "tank/d@b", Some("/ds".to_string()), &limits, &AtomicBool::new(false)).unwrap();
@@ -534,7 +534,7 @@ mod reader_tests {
 
     #[test]
     fn the_time_limit_stops_the_read() {
-        let r = DiffRunner::new("printf '1.0\\t+\\tF\\t/ds/x\\n'; sleep 30");
+        let r = DiffRunner::new("printf '1.0\\t+\\tF\\t/ds/x\\n'; exec sleep 30");
         let started = Instant::now();
         let limits = Limits { max_seconds: 1, ..Limits::default() };
         let s = read_changes(&r, "tank/d@a", "tank/d@b", None, &limits, &AtomicBool::new(false)).unwrap();
@@ -544,7 +544,7 @@ mod reader_tests {
 
     #[test]
     fn cancel_stops_the_read_and_keeps_what_was_read() {
-        let r = DiffRunner::new("printf '1.0\\t+\\tF\\t/ds/x\\n'; sleep 30");
+        let r = DiffRunner::new("printf '1.0\\t+\\tF\\t/ds/x\\n'; exec sleep 30");
         let cancel = AtomicBool::new(false);
         let started = Instant::now();
         let s = std::thread::scope(|scope| {
