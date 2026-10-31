@@ -11,7 +11,8 @@ create-missing = false
 default-theme = "coal"
 preferred-dark-theme = "coal"
 additional-css = ["theme/terminal.css"]
-git-repository-icon = "fa-github"
+git-repository-url = "https://github.com/fedor4445/zfsctl"
+git-repository-icon = "fab-github"
 no-section-label = true
 smart-punctuation = false
 
