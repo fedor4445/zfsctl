@@ -4,3 +4,6 @@
 .superpowers/
 /site/public/
 /docs/superpowers/
+
+# Cloudflare wrangler cache: holds the account id and account name
+.wrangler/
