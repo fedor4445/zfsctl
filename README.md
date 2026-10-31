@@ -13,6 +13,7 @@ A terminal UI and daemon for managing ZFS storage on FreeBSD: one hub that manag
 - A FreeBSD machine as the hub, where zfsctl runs (it uses `zpool`/`zfs`). The hosts it manages over ssh run FreeBSD too
 - Root privileges
 - `ssh` configured (with working host keys / `~/.ssh/config` entries) for any remote hosts you add to the config
+- To build it from source: a Rust toolchain and about 2 GB of RAM. The compiler peaks near 1 GB for the zfsctl crate itself, on top of what the system and the ZFS cache already use; on a 1 GB machine the kernel kills the build ("failed to reclaim memory"). Running it needs far less.
 
 ## Running
 

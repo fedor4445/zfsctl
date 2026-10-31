@@ -11,7 +11,7 @@
 - A **FreeBSD machine with ZFS** to be the hub. zfsctl runs on FreeBSD and uses its `zpool` and `zfs`.
 - **Root.** The screen and the daemon both run as root on the hub, because they run ZFS commands.
 - **ssh set up for any other host** you want to manage (chapter 5): keys and host keys that work from the hub's root account.
-- A Rust toolchain to build it (`pkg install rust`), or a binary someone built for you.
+- A Rust toolchain to build it (`pkg install rust`), or a binary someone built for you. Building needs about 2 GB of RAM: the compiler peaks near 1 GB, and on a 1 GB machine the kernel kills it ("failed to reclaim memory"). Running zfsctl needs far less.
 
 Optional tools that unlock features: `restic` (backups, chapter 15), `rclone` (cloud backups), `smartmontools` (the daily disk health check on the Dashboard, chapter 6; `pkg install smartmontools`), and a mail tool such as `msmtp` (alerts, chapter 16).
 
