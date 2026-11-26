@@ -459,6 +459,11 @@ pub struct App {
     pub host_sites: Vec<String>,
     /// Hosts marked with Space in Hosts, by name, for one edit of their tag and site.
     pub marked_hosts: std::collections::BTreeSet<String>,
+    /// Hosts taken out of `config.toml` while this TUI runs. They stay in the index-aligned host lists (removing them
+    /// would shift every later host under results still in flight) but get nothing sent and show as removed.
+    pub removed_hosts: std::collections::BTreeSet<String>,
+    /// The hosts of the last remove sent; the ones `config.toml` no longer has afterwards become `removed_hosts`.
+    pub removing_hosts: Vec<String>,
     /// Tags typed in the Add Host form, by lowercase host name, until the host is confirmed reachable.
     pub new_host_tags: HashMap<String, String>,
     /// The Hosts filter text (empty = none) and whether it is being typed. Only the drawn rows and Up/Down use
@@ -644,6 +649,8 @@ impl App {
             host_tags: vec![String::new(); hosts_for_addr.len()],
             host_sites: vec![String::new(); hosts_for_addr.len()],
             marked_hosts: std::collections::BTreeSet::new(),
+            removed_hosts: std::collections::BTreeSet::new(),
+            removing_hosts: Vec::new(),
             new_host_tags: HashMap::new(),
             host_filter: String::new(),
             host_filter_editing: false,
@@ -995,16 +1002,25 @@ impl App {
     /// clears it on submit) — this only executes the mutation itself.
     pub fn dispatch_mutation(&mut self, action: PendingAction, runner: Arc<dyn CommandRunner>) {
         let PendingAction { host, section, call } = action;
+        // Calls that only change the hub's own files (config.toml, jobs.toml, a test message) have no target host to refuse.
+        let local = call.changes_only_local_files();
+        if !local && self.hosts.get(host).is_some_and(|h| self.removed_hosts.contains(h)) {
+            self.status_message = Some("Not sent: this host was removed from zfsctl".to_string());
+            return;
+        }
         // The last gate before a command is sent: zfsctl changes FreeBSD hosts only, so nothing is sent to a host that answered
         // as something else, and the share changes (which use FreeBSD's own tools) also wait until the OS has been read.
         let os = self.host_os(host);
-        let refused = os == Some(crate::zfs::host_health::HostOs::Other) || (matches!(&call, MutationCall::SetSmbShare { .. } | MutationCall::RemoveSmbShare { .. }) && !crate::ui::support::shares_editable(os));
+        let refused = !local && os == Some(crate::zfs::host_health::HostOs::Other) || (matches!(&call, MutationCall::SetSmbShare { .. } | MutationCall::RemoveSmbShare { .. }) && !crate::ui::support::shares_editable(os));
         if refused {
             self.status_message = Some(match os {
                 Some(_) => "Not sent: this host is not FreeBSD, and zfsctl does not change it.".to_string(),
                 None => "Not sent: the host's OS has not been read yet.".to_string(),
             });
             return;
+        }
+        if let MutationCall::RemoveHosts { names, .. } = &call {
+            self.removing_hosts.extend(names.iter().cloned());
         }
         if let Some(note) = call.done_note() {
             self.done_note = Some(note);
@@ -1198,6 +1214,7 @@ Hosts
   c                check the selected host's disks (smartctl) and shares (NFS, Samba) now; the result joins the Dashboard (read-only)
   Space            mark or unmark the selected host for one edit of several (Esc unmarks all)
   e                edit the tag and site of the marked hosts, or of the selected one
+  d / Delete       remove the marked hosts, or the selected one, from config.toml (refused while a job uses them)
   n                add a new host (prompts for Name, SSH target and an optional Tag)
 
 Pools

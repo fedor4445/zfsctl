@@ -214,6 +214,7 @@ impl App {
                 }
             }
             KeyCode::Char('e') if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() => self.begin_edit_hosts(),
+            KeyCode::Char('d') | KeyCode::Delete if self.current_section() == Section::Hosts && self.modal.is_none() && self.picker.is_none() => self.begin_remove_hosts(),
             KeyCode::Char('n') if self.current_section() == Section::Hosts => {
                 self.host_filter.clear();
                 self.modal = Some(Modal::Form {

@@ -618,7 +618,7 @@ impl App {
             self.alerts_test_busy = false;
         }
         // The Alerts calls are local to the hub: their result matters whichever host is selected now.
-        if host != self.selected_host && !matches!(section, Section::Alerts | Section::Settings) {
+        if host != self.selected_host && !matches!(section, Section::Alerts | Section::Settings | Section::Hosts) {
             return;
         }
         if section == Section::BootEnvs {
@@ -635,7 +635,7 @@ impl App {
         // A restore creates one live file and changes no snapshot: the list needs no refresh, and a manual refresh would
         // clear the "Restored ..." message the moment it returned.
         let restored_a_file = restored_ok.is_some();
-        let note = if matches!(section, Section::Alerts | Section::Settings) { self.done_note.take() } else { restored_ok };
+        let note = if matches!(section, Section::Alerts | Section::Settings | Section::Hosts) { self.done_note.take() } else { restored_ok };
         match result {
             Ok(()) => {
                 self.status_message = note;

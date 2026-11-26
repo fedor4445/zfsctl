@@ -144,11 +144,23 @@ pub fn save(path: &Path, jobs: &[Job]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io("creating the directory of", e))?;
     }
-    let tmp = path.with_extension("toml.tmp");
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| io("writing", e))?;
-    file.write_all(text.as_bytes()).map_err(|e| io("writing", e))?;
-    file.sync_all().map_err(|e| io("syncing", e))?;
-    std::fs::rename(&tmp, path).map_err(|e| io("replacing", e))
+    // Each save has a temp file of its own, so two saves can never write into, or rename away, the same one.
+    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("toml.tmp.{}.{n}", std::process::id()));
+    let fail = |what: &str, e: std::io::Error| {
+        let _ = std::fs::remove_file(&tmp);
+        io(what, e)
+    };
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| io("writing", e))?;
+    file.write_all(text.as_bytes()).map_err(|e| fail("writing", e))?;
+    file.sync_all().map_err(|e| fail("syncing", e))?;
+    drop(file);
+    std::fs::rename(&tmp, path).map_err(|e| fail("replacing", e))?;
+    if let Some(dir) = path.parent().and_then(|d| std::fs::File::open(d).ok()) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 /// Whether `s` can be a dataset name for a job: ZFS name characters only, no `@`, no leading
@@ -503,10 +515,41 @@ impl Job {
 /// Re-reads `jobs.toml`, applies `change`, and saves. Reading first means a hand edit made
 /// since the caller last looked is kept, and a file that cannot be read stops the change
 /// before anything is written, so a half-typed file is never overwritten.
+/// Only one change runs at a time: a lock for this process's threads (every confirmed change runs on its own) and an
+/// `flock` on `jobs.toml.lock` for other zfsctl processes. Without it two overlapping changes each saved the list they
+/// had read, and the later save undid the earlier change.
 fn edit(path: &Path, change: impl FnOnce(&mut Vec<Job>) -> Result<()>) -> Result<()> {
-    let mut list = load(path)?;
-    change(&mut list)?;
-    save(path, &list)
+    with_lock(path, |list| {
+        let mut list = list.to_vec();
+        change(&mut list)?;
+        save(path, &list)
+    })
+}
+
+/// Runs `work` with the jobs as they are now, holding the same locks as every change to `jobs.toml`, so no job can be
+/// added or changed until it returns. For a decision about other files that depends on the jobs (removing a host).
+pub fn with_lock<T>(path: &Path, work: impl FnOnce(&[Job]) -> Result<T>) -> Result<T> {
+    static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _thread = IN_PROCESS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let lock = lock_path(path);
+    let locking = |e: std::io::Error| AppError::Config(format!("locking {}: {e}", lock.display()));
+    if let Some(parent) = lock.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(locking)?;
+    }
+    let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(&lock).map_err(locking)?;
+    let _process = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).map_err(|(_, e)| locking(e.into()))?;
+    let list = load(path)?;
+    work(&list)
+}
+
+/// The ids of the jobs that run on one of `hosts` or replicate to one of them.
+pub fn using_hosts(jobs: &[Job], hosts: &[String]) -> Vec<String> {
+    jobs.iter().filter(|j| hosts.contains(&j.host) || j.dest_host.as_ref().is_some_and(|d| hosts.contains(d))).map(|j| j.id.clone()).collect()
+}
+
+/// The lock file next to `jobs.toml`; it holds nothing and is never removed.
+fn lock_path(path: &Path) -> std::path::PathBuf {
+    path.with_extension("toml.lock")
 }
 
 fn no_such_job(id: &str) -> AppError {

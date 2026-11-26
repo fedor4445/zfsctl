@@ -70,6 +70,8 @@ pub enum MutationCall {
     SaveSettings { config_path: std::path::PathBuf, setting: crate::ui::settings::Setting, values: Vec<String> },
     /// Sets or clears `tag` and `site` in the `[[hosts]]` blocks of `names`, nothing else in the file. A local file edit.
     SaveHostKeys { config_path: std::path::PathBuf, names: Vec<String>, tag: crate::config::KeyUpdate, site: crate::config::KeyUpdate },
+    /// Takes hosts out of `config.toml` (their blocks and ignore entries); nothing on the machines is touched.
+    RemoveHosts { config_path: std::path::PathBuf, state_dir: std::path::PathBuf, names: Vec<String> },
     /// Sends a real test message through the saved channels (`zfsctl notify-test`). The runner is not used.
     SendTestMessage { settings: Box<crate::config::NotifySettings>, hook: Option<String> },
     /// Copies one file out of a snapshot to a new name next to the original (`cp -p -n`, run as root by the engine in
@@ -107,6 +109,25 @@ pub enum Tone {
 
 impl MutationCall {
     /// What to say after the call succeeded, instead of the blank status every call leaves.
+    /// Whether this call only changes files on the hub itself (`config.toml`, `jobs.toml`) or sends a test message from
+    /// it: nothing goes to the selected host, so that host's OS or removal does not matter.
+    pub fn changes_only_local_files(&self) -> bool {
+        matches!(
+            self,
+            MutationCall::SaveSettings { .. }
+                | MutationCall::SaveNotify { .. }
+                | MutationCall::SaveHostKeys { .. }
+                | MutationCall::RemoveHosts { .. }
+                | MutationCall::IgnoreDatasets { .. }
+                | MutationCall::UnignoreDatasets { .. }
+                | MutationCall::SaveJob { .. }
+                | MutationCall::SaveJobs { .. }
+                | MutationCall::DeleteJob { .. }
+                | MutationCall::SetJobEnabled { .. }
+                | MutationCall::SendTestMessage { .. }
+        )
+    }
+
     pub fn done_note(&self) -> Option<String> {
         match self {
             MutationCall::SaveNotify { .. } => Some("Alert settings saved; the daemon applies them within seconds".to_string()),
@@ -115,6 +136,7 @@ impl MutationCall {
             MutationCall::UnignoreDatasets { entries, .. } => Some(format!("Checking {} dataset{} again", entries.len(), if entries.len() == 1 { "" } else { "s" })),
             MutationCall::SaveJobs { jobs, .. } => Some(format!("Created {} snapshot job{}", jobs.len(), if jobs.len() == 1 { "" } else { "s" })),
             MutationCall::SaveHostKeys { names, .. } => Some(format!("Saved to config.toml for {}", if names.len() == 1 { names.join("") } else { format!("{} hosts", names.len()) })),
+            MutationCall::RemoveHosts { names, .. } => Some(format!("Removed from config.toml: {}. It leaves this screen when zfsctl restarts", names.join(", "))),
             MutationCall::HoldSnapshot { dataset, name } => Some(format!("Protected {dataset}@{name}")),
             MutationCall::ReleaseSnapshot { dataset, name } => Some(format!("Released the zfsctl hold on {dataset}@{name}")),
             MutationCall::SendTestMessage { .. } => Some("Test message sent: the mail command accepted it (run from this terminal; the daemon runs it with root's home)".to_string()),
@@ -148,7 +170,8 @@ impl MutationCall {
             | MutationCall::CreateEncryptedDataset { .. }
             | MutationCall::ActivateBootEnv { temporary: false, .. }
             | MutationCall::ReleaseSnapshot { .. }
-            | MutationCall::DeleteJob { .. } => Tone::Warn,
+            | MutationCall::DeleteJob { .. }
+            | MutationCall::RemoveHosts { .. } => Tone::Warn,
             MutationCall::ScrubPool { .. }
             | MutationCall::ResilverPool { .. }
             | MutationCall::OnlineDisk { .. }
@@ -225,6 +248,7 @@ impl MutationCall {
             MutationCall::IgnoreDatasets { .. } => "STOP CHECKING DATASETS",
             MutationCall::UnignoreDatasets { .. } => "CHECK DATASETS AGAIN",
             MutationCall::DeleteJob { .. } => "DELETE JOB",
+            MutationCall::RemoveHosts { .. } => "REMOVE HOST",
             MutationCall::SetJobEnabled { .. } => "ENABLE OR DISABLE JOB",
             MutationCall::SaveNotify { .. } => "SAVE ALERT SETTINGS",
             MutationCall::SaveSettings { .. } => "SAVE SETTING",
@@ -325,6 +349,13 @@ impl MutationCall {
             MutationCall::SetJobEnabled { state_dir, id, enabled } => crate::jobs::set_enabled(&state_dir.join("jobs.toml"), id, *enabled),
             MutationCall::SaveNotify { config_path, section } => crate::config::save_notify_section(config_path, section),
             MutationCall::SaveHostKeys { config_path, names, tag, site } => crate::config::set_host_keys_in_file(config_path, names, tag, site),
+            // The jobs are checked again here, under the jobs lock, so a job saved since `d` was pressed is not left behind.
+            MutationCall::RemoveHosts { config_path, state_dir, names } => crate::jobs::with_lock(&state_dir.join("jobs.toml"), |jobs| {
+                match crate::jobs::using_hosts(jobs, names) {
+                    used if used.is_empty() => crate::config::remove_hosts_in_file(config_path, names),
+                    used => Err(crate::error::AppError::Config(format!("Not removed: delete the jobs that use {} first ({})", names.join(", "), used.join(", ")))),
+                }
+            }),
             MutationCall::SaveSettings { config_path, setting, values } => {
                 let changes = crate::ui::settings::build_changes_for(config_path, setting, values).map_err(crate::error::AppError::Config)?;
                 crate::config_edit::save(config_path, &changes)

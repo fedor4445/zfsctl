@@ -871,3 +871,78 @@ fn ignore_entries_are_host_and_dataset_a_bad_one_is_named_and_left_out_and_the_r
     assert!(s.ignore.is_empty() && problems[0].contains("must be a list"), "{problems:?}");
     assert_eq!(protection_problem_line(&problems[0]), problems[0], "an ignore problem does not say 'judging at Basic'");
 }
+
+/// The hub's shape on 2026-11-26: three hosts, then other sections and an ignore list naming them.
+const HUB_FILE: &str = r#"[[hosts]]
+name = "fbsd16"
+ssh_target = "fbsd@192.0.2.60"
+site = "lab-box"
+tag = "freebsd"
+
+[[hosts]]
+name = "t1"
+ssh_target = "fbsd@192.0.2.61"
+site = "lab-box"
+
+[[hosts]]
+name = "t2"
+ssh_target = "fbsd@192.0.2.62"
+
+# ssh settings
+[ssh]
+multiplex = true
+
+[protection]
+ignore = ["local:zroot", "t1:tpool", "fbsd16:zroot", "t2:zroot", "t10:x"]
+"#;
+
+#[test]
+fn remove_hosts_drops_the_blocks_and_their_ignore_entries() {
+    let out = remove_hosts(HUB_FILE, &names(&["t1", "t2"])).unwrap();
+    let config: Config = toml::from_str(&out).unwrap();
+    assert_eq!(config.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), vec!["fbsd16"]);
+    let table: toml::Table = out.parse().unwrap();
+    let ignore: Vec<&str> = table["protection"]["ignore"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(ignore, vec!["local:zroot", "fbsd16:zroot", "t10:x"], "only t1: and t2: entries go; t10: is another host");
+    assert!(out.contains("# ssh settings\n[ssh]\nmultiplex = true\n"), "{out}");
+    assert!(out.starts_with("[[hosts]]\nname = \"fbsd16\"\n"), "{out}");
+}
+
+#[test]
+fn remove_hosts_keeps_the_comment_above_the_next_section() {
+    let out = remove_hosts(HUB_FILE, &names(&["t2"])).unwrap();
+    assert!(out.contains("site = \"lab-box\"\n\n# ssh settings\n[ssh]"), "{out}");
+    assert!(!out.contains("t2"), "{out}");
+}
+
+#[test]
+fn remove_hosts_handles_crlf() {
+    let out = remove_hosts(&HUB_FILE.replace('\n', "\r\n"), &names(&["t1"])).unwrap();
+    assert!(!out.contains("name = \"t1\""));
+    assert!(!out.replace("\r\n", "").contains('\n'), "line ends stay CRLF");
+    assert_eq!(toml::from_str::<Config>(&out).unwrap().hosts.len(), 2);
+}
+
+#[test]
+fn remove_hosts_refuses_a_name_without_a_block() {
+    for name in ["local", "nope"] {
+        let err = remove_hosts(HUB_FILE, &names(&["t1", name])).unwrap_err();
+        assert!(err.contains(name), "{err}");
+    }
+}
+
+#[test]
+fn remove_hosts_refuses_hand_written_forms() {
+    let err = remove_hosts("hosts = [{ name = \"t1\", ssh_target = \"x@y\" }]\n", &names(&["t1"])).unwrap_err();
+    assert!(err.contains("edit it by hand"), "{err}");
+}
+
+#[test]
+fn remove_hosts_in_file_keeps_a_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, HUB_FILE).unwrap();
+    remove_hosts_in_file(&path, &names(&["t1"])).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(), HUB_FILE);
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("name = \"t1\""));
+}

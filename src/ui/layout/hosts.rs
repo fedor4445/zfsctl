@@ -96,11 +96,14 @@ pub(super) fn draw_hosts(f: &mut Frame, app: &App, area: Rect) {
                 Some(HostProbe::Reached { rtt_ms, pools, .. }) => Some((*rtt_ms, pools.as_slice())),
                 _ => None,
             };
+            // A host removed from config.toml while this TUI runs stays listed (dimmed) until the next start.
+            let removed = app.removed_hosts.contains(name);
+            let (marker_style, name_style, state_style) = if removed { (theme.dim(), theme.dim(), theme.dim()) } else { (marker_style, name_style, state_style) };
             let mut cells = vec![Cell::from(Line::from(vec![Span::styled(if app.marked_hosts.contains(name) { "+ " } else { "● " }, marker_style), Span::styled(name.clone(), name_style)]))];
             if cols.addr {
                 cells.push(Cell::from(app.host_address(i).to_string()));
             }
-            cells.push(Cell::from(Span::styled(assessment.reason, state_style)));
+            cells.push(Cell::from(Span::styled(if removed { "removed".to_string() } else { assessment.reason }, state_style)));
             if cols.type_ {
                 let (word, style) = match state.and_then(|s| s.kind.as_ref()) {
                     Some(k @ HostKind::Vm(_)) => (k.word(), theme.info),

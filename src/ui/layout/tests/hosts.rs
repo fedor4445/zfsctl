@@ -263,3 +263,14 @@ fn a_short_terminal_keeps_the_host_panel_whole_and_drops_the_network_block() {
     assert!(!text.contains("Network"), "no room for it: the I/O graphs and pool rows keep their rows\n{text}");
     assert!(text.contains("Read "), "{text}");
 }
+
+#[test]
+fn a_removed_host_is_listed_as_removed_until_restart() {
+    let mut app = App::new(vec!["local".to_string(), "t1".to_string()]);
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Hosts).unwrap();
+    app.removed_hosts.insert("t1".to_string());
+    let text = render(&mut app, 120, 30).join("\n");
+    let row = |name: &str| text.lines().find(|l| l.contains(&format!("● {name} "))).unwrap_or_default().to_string();
+    assert!(row("t1").contains("removed"), "{text}");
+    assert!(!row("local").contains("removed"), "{text}");
+}

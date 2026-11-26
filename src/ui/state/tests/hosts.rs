@@ -1,6 +1,7 @@
 //! Hosts: the list, the add-host form, probes and their results, the name filter, tags and the OS.
 #![allow(clippy::wildcard_imports)]
 use super::*;
+use crate::ui::modal::{FormKind, MutationCall, PendingAction};
 
 #[test]
 fn a_mutation_the_hosts_os_cannot_serve_is_refused_before_anything_is_sent() {
@@ -1239,4 +1240,164 @@ fn the_local_host_has_no_block_so_it_cannot_be_edited_and_nothing_changed_is_sai
     assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), TWO_HOSTS);
     app.handle_key(KeyCode::Esc);
     assert!(app.marked_hosts.is_empty(), "Esc unmarks");
+}
+
+/// `edit_app` plus a `jobs.toml` holding `jobs`.
+fn remove_app(jobs: &[crate::jobs::Job]) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = edit_app(TWO_HOSTS);
+    app.state_dir = dir.path().to_path_buf();
+    crate::jobs::save(&dir.path().join("jobs.toml"), jobs).unwrap();
+    (app, dir)
+}
+
+fn job_on(id: &str, host: &str) -> crate::jobs::Job {
+    crate::jobs::Job { host: host.into(), ..crate::jobs::Job::test_snapshot(id, "tank/data", "auto", 3) }
+}
+
+#[test]
+fn d_on_a_free_host_asks_and_names_it() {
+    let (mut app, _dir) = remove_app(&[job_on("j", "local")]);
+    app.selected_host = 1;
+    app.handle_key(KeyCode::Char('d'));
+    let Some(Modal::Confirm { prompt, action, .. }) = &app.modal else { panic!("{:?} {:?}", app.modal, app.status_message) };
+    assert!(prompt.contains("'a'") && prompt.contains("nothing on the machine"), "{prompt}");
+    assert!(matches!(&action.call, MutationCall::RemoveHosts { names, .. } if names == &["a".to_string()]), "{:?}", action.call);
+}
+
+#[test]
+fn d_refuses_a_host_a_job_uses() {
+    let replication = crate::jobs::Job::test_replicate("rep", "tank/data", "auto", "a", "backup/data");
+    let (mut app, _dir) = remove_app(&[job_on("snap-a", "a"), replication]);
+    app.selected_host = 1;
+    app.handle_key(KeyCode::Char('d'));
+    assert!(app.modal.is_none(), "{:?}", app.modal);
+    let message = app.status_message.clone().unwrap_or_default();
+    assert!(message.contains("snap-a") && message.contains("rep"), "{message}");
+}
+
+#[test]
+fn d_with_marked_hosts_refuses_all_if_one_is_used() {
+    let (mut app, _dir) = remove_app(&[job_on("snap-b", "b")]);
+    app.marked_hosts.insert("a".to_string());
+    app.marked_hosts.insert("b".to_string());
+    app.handle_key(KeyCode::Char('d'));
+    assert!(app.modal.is_none() && app.pending_mutations.is_empty(), "{:?}", app.modal);
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("snap-b")), "{:?}", app.status_message);
+}
+
+#[test]
+fn d_refuses_the_local_host() {
+    let (mut app, _dir) = remove_app(&[]);
+    app.selected_host = 0;
+    app.handle_key(KeyCode::Char('d'));
+    assert!(app.modal.is_none(), "{:?}", app.modal);
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("local")), "{:?}", app.status_message);
+}
+
+#[test]
+fn delete_key_does_the_same_as_d() {
+    let (mut app, _dir) = remove_app(&[]);
+    app.selected_host = 2;
+    app.handle_key(KeyCode::Delete);
+    assert!(matches!(&app.modal, Some(Modal::Confirm { action, .. }) if matches!(&action.call, MutationCall::RemoveHosts { names, .. } if names == &["b".to_string()])), "{:?}", app.modal);
+}
+
+#[test]
+fn a_removed_host_leaves_config_toml_and_gets_no_more_mutations() {
+    let (mut app, dir) = remove_app(&[]);
+    app.selected_host = 1;
+    let call = MutationCall::RemoveHosts { config_path: app.config_path.clone(), state_dir: app.state_dir.clone(), names: vec!["a".to_string()] };
+    app.dispatch_mutation(PendingAction { host: 1, section: Section::Hosts, call }, Arc::new(FakeRunner::new("")));
+    // The selection moves on before the result arrives: the removal still counts.
+    app.selected_host = 2;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !app.removed_hosts.contains("a") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        app.drain_worker_messages();
+    }
+    assert!(app.removed_hosts.contains("a"), "{:?}", app.status_message);
+    assert!(!std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("name = \"a\""));
+    let runner = Arc::new(FakeRunner::new(""));
+    app.dispatch_mutation(PendingAction { host: 1, section: Section::BootEnvs, call: MutationCall::CreateBootEnv { name: "be".into(), from: None } }, runner.clone());
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(runner.calls.lock().unwrap().is_empty() && runner.unprivileged_calls.lock().unwrap().is_empty());
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("removed")), "{:?}", app.status_message);
+}
+
+fn wait_for(app: &mut App, done: impl Fn(&App) -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !done(app) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        app.drain_worker_messages();
+    }
+}
+
+fn remove_call(app: &App, names: &[&str]) -> MutationCall {
+    MutationCall::RemoveHosts { config_path: app.config_path.clone(), state_dir: app.state_dir.clone(), names: names.iter().map(ToString::to_string).collect() }
+}
+
+#[test]
+fn a_local_change_still_runs_while_a_removed_host_is_selected() {
+    let (mut app, dir) = remove_app(&[job_on("j", "local")]);
+    app.removed_hosts.insert("a".to_string());
+    app.selected_host = 1;
+    let call = MutationCall::DeleteJob { state_dir: app.state_dir.clone(), id: "j".into() };
+    app.dispatch_mutation(PendingAction { host: 1, section: Section::Jobs, call }, Arc::new(FakeRunner::new("")));
+    let jobs = dir.path().join("jobs.toml");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !crate::jobs::load(&jobs).unwrap().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(crate::jobs::load(&jobs).unwrap().is_empty(), "{:?}", app.status_message);
+}
+
+#[test]
+fn a_host_that_is_not_freebsd_can_be_removed() {
+    let (mut app, _dir) = remove_app(&[]);
+    app.set_os_for_test("a", crate::zfs::host_health::HostOs::Other);
+    app.selected_host = 1;
+    let call = remove_call(&app, &["a"]);
+    app.dispatch_mutation(PendingAction { host: 1, section: Section::Hosts, call }, Arc::new(FakeRunner::new("")));
+    wait_for(&mut app, |a| a.removed_hosts.contains("a"));
+    assert!(app.removed_hosts.contains("a"), "{:?}", app.status_message);
+}
+
+#[test]
+fn job_forms_do_not_offer_a_removed_host() {
+    let (mut app, _dir) = remove_app(&[]);
+    app.removed_hosts.insert("a".to_string());
+    let Modal::Form { kind: FormKind::SnapshotJob { hosts, .. }, .. } = app.snapshot_job_form(None, "") else { panic!() };
+    assert_eq!(hosts, vec!["local".to_string(), "b".to_string()]);
+    let Modal::Form { kind: FormKind::ReplicateJob { hosts, .. }, .. } = app.replicate_job_form(None) else { panic!() };
+    assert!(!hosts.contains(&"a".to_string()));
+}
+
+#[test]
+fn two_removals_in_flight_both_count() {
+    let (mut app, dir) = remove_app(&[]);
+    let config = dir.path().join("config.toml");
+    let gone = |name: &str| !std::fs::read_to_string(&config).unwrap().contains(&format!("name = \"{name}\""));
+    for (index, name) in [(1, "a"), (2, "b")] {
+        let call = remove_call(&app, &[name]);
+        app.dispatch_mutation(PendingAction { host: index, section: Section::Hosts, call }, Arc::new(FakeRunner::new("")));
+        // Each save lands before the next starts, but no result is read until both are queued.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !gone(name) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    app.drain_worker_messages();
+    assert!(app.removed_hosts.contains("a") && app.removed_hosts.contains("b"), "{:?}", app.removed_hosts);
+}
+
+#[test]
+fn the_removal_checks_the_jobs_again_when_it_runs() {
+    let (app, dir) = remove_app(&[]);
+    let call = remove_call(&app, &["a"]);
+    // A job for the host saved after the question was asked.
+    crate::jobs::save(&dir.path().join("jobs.toml"), &[job_on("late", "a")]).unwrap();
+    let err = call.run(&FakeRunner::new("")).unwrap_err().to_string();
+    assert!(err.contains("late"), "{err}");
+    assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("name = \"a\""), "nothing written");
 }

@@ -633,3 +633,67 @@ fn raw_is_omitted_when_false_round_trips_when_true_and_is_only_for_replication()
     ok.raw = true;
     assert!(resolve(&ok, &hosts).is_ok());
 }
+
+/// Runs `n` threads that each call `change(path, i)` at the same moment and returns their results.
+fn race(path: &std::path::Path, n: usize, change: fn(&std::path::Path, usize) -> Result<()>) -> Vec<Result<()>> {
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(n));
+    let handles: Vec<_> = (0..n)
+        .map(|i| {
+            let (barrier, path) = (barrier.clone(), path.to_path_buf());
+            std::thread::spawn(move || {
+                barrier.wait();
+                change(&path, i)
+            })
+        })
+        .collect();
+    handles.into_iter().map(|h| h.join().unwrap()).collect()
+}
+
+#[test]
+fn concurrent_removes_all_stick() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jobs.toml");
+    save(&path, &(0..24).map(|i| scrub(&format!("j{i}"))).collect::<Vec<_>>()).unwrap();
+    let results = race(&path, 24, |p, i| remove(p, &format!("j{i}")));
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+    assert!(load(&path).unwrap().is_empty(), "{:?}", load(&path).unwrap().iter().map(|j| j.id.clone()).collect::<Vec<_>>());
+}
+
+#[test]
+fn concurrent_upserts_all_stick() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jobs.toml");
+    let results = race(&path, 24, |p, i| upsert(p, scrub(&format!("j{i}"))));
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+    assert_eq!(load(&path).unwrap().len(), 24);
+}
+
+#[test]
+fn a_held_file_lock_makes_a_change_wait() {
+    use nix::fcntl::{Flock, FlockArg};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jobs.toml");
+    save(&path, &[scrub("a")]).unwrap();
+    // What a second zfsctl process holds while it changes the jobs.
+    let held = Flock::lock(std::fs::File::create(dir.path().join("jobs.toml.lock")).unwrap(), FlockArg::LockExclusive).map_err(|(_, e)| e).unwrap();
+    let worker = {
+        let path = path.clone();
+        std::thread::spawn(move || remove(&path, "a"))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(load(&path).unwrap().len(), 1, "the change must wait for the other process's lock");
+    drop(held);
+    worker.join().unwrap().unwrap();
+    assert!(load(&path).unwrap().is_empty());
+}
+
+#[test]
+fn save_leaves_no_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jobs.toml");
+    save(&path, &[scrub("a")]).unwrap();
+    upsert(&path, scrub("b")).unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert!(names.iter().all(|n| n == "jobs.toml" || n == "jobs.toml.lock"), "{names:?}");
+}
