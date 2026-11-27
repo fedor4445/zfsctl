@@ -380,3 +380,48 @@ impl App {
         });
     }
 }
+
+impl App {
+    /// The hosts new work may name: all of them except the ones removed while this TUI runs.
+    pub fn live_hosts(&self) -> Vec<String> {
+        self.hosts.iter().filter(|h| !self.removed_hosts.contains(*h)).cloned().collect()
+    }
+
+    /// `d` or Delete in Hosts: asks to take the selected host, or every marked one, out of `config.toml`. Refused for the
+    /// local host and any host without a block of its own, and for any host a job still uses (as its host or as a
+    /// replication target): those jobs must go first, or they would keep failing against a host zfsctl no longer knows.
+    pub fn begin_remove_hosts(&mut self) {
+        let names: Vec<String> = if self.marked_hosts.is_empty() { self.hosts.get(self.selected_host).cloned().into_iter().collect() } else { self.hosts.iter().filter(|h| self.marked_hosts.contains(*h)).cloned().collect() };
+        if names.is_empty() {
+            return;
+        }
+        if let Some(gone) = names.iter().find(|n| self.removed_hosts.contains(*n)) {
+            self.set_error(format!("'{gone}' is already removed; it leaves this screen when zfsctl restarts"));
+            return;
+        }
+        let Ok(config) = crate::config::Config::load(&self.config_path) else {
+            self.set_error("config.toml cannot be read, so no host can be removed here".to_string());
+            return;
+        };
+        if let Some(missing) = names.iter().find(|n| !config.hosts.iter().any(|h| &h.name == *n)) {
+            self.set_error(format!("'{missing}' has no [[hosts]] block in config.toml (the local host has none), so it cannot be removed"));
+            return;
+        }
+        let jobs = match crate::jobs::load(&self.state_dir.join("jobs.toml")) {
+            Ok(jobs) => jobs,
+            Err(e) => {
+                self.set_error(format!("Cannot check which jobs use these hosts, so nothing is removed: {e}"));
+                return;
+            }
+        };
+        let used = crate::jobs::using_hosts(&jobs, &names);
+        if !used.is_empty() {
+            self.set_error(format!("Not removed: delete the jobs that use {} first ({})", names.join(", "), used.join(", ")));
+            return;
+        }
+        let list = names.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", ");
+        let prompt = format!("Remove {list} from zfsctl? Only config.toml changes (the old one is kept as config.toml.bak); nothing on the machine is touched. (y/n)");
+        let call = crate::ui::modal::MutationCall::RemoveHosts { config_path: self.config_path.clone(), state_dir: self.state_dir.clone(), names };
+        self.modal = Some(Modal::Confirm { choice: None, prompt, action: crate::ui::modal::PendingAction { host: self.selected_host, section: crate::ui::Section::Hosts, call } });
+    }
+}

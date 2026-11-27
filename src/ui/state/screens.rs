@@ -259,6 +259,12 @@ impl App {
     /// site, read from the file as it is now. The marks are spent.
     pub fn apply_saved_hosts(&mut self) {
         self.marked_hosts.clear();
+        if let Ok(config) = crate::config::Config::load(&self.config_path) {
+            // A removal still in flight keeps its names here until config.toml no longer has them.
+            let (gone, pending): (Vec<String>, Vec<String>) = std::mem::take(&mut self.removing_hosts).into_iter().partition(|h| !config.hosts.iter().any(|c| &c.name == h));
+            self.removing_hosts = pending;
+            self.removed_hosts.extend(gone);
+        }
         self.reload_host_labels();
         self.refresh_dashboard();
     }

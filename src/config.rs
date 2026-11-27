@@ -694,6 +694,66 @@ pub fn set_host_keys_in_file(path: &Path, names: &[String], tag: &KeyUpdate, sit
     rewrite_config(path, &|text| set_host_keys(text, names, tag, site))
 }
 
+/// Removes the `[[hosts]]` blocks named in `names` and their `NAME:` entries in `[protection] ignore`, changing nothing
+/// else: comments above the next section stay, and so do other hosts and sections. Refuses a name without a block of its
+/// own (the local host has none), `hosts` written in a form this program does not edit, and any result that differs
+/// from the old file by more than that.
+pub fn remove_hosts(text: &str, names: &[String]) -> std::result::Result<String, String> {
+    const BY_HAND: &str = "config.toml writes hosts in a form this screen cannot edit safely: edit it by hand";
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    if hosts_written_by_hand(&lines) {
+        return Err(BY_HAND.to_string());
+    }
+    let is_header = |l: &str| l.trim_start().starts_with('[');
+    let is_name_of = |l: &str, name: &str| {
+        l.trim_start().split_once('=').is_some_and(|(k, v)| k.trim() == "name" && v.split('#').next().unwrap_or("").trim().trim_matches('"') == name)
+    };
+    let mut drop = vec![false; lines.len()];
+    for name in names {
+        let header = (0..lines.len())
+            .filter(|&i| lines.get(i).is_some_and(|l| l.trim().starts_with("[[hosts]]")))
+            .find(|&i| {
+                let end = (i + 1..lines.len()).find(|&j| lines.get(j).is_some_and(|l| is_header(l))).unwrap_or(lines.len());
+                (i + 1..end).any(|j| lines.get(j).is_some_and(|l| is_name_of(l, name)))
+            })
+            .ok_or_else(|| format!("'{name}' has no [[hosts]] block in config.toml, so it cannot be removed here"))?;
+        let end = (header + 1..lines.len()).find(|&j| lines.get(j).is_some_and(|l| is_header(l))).unwrap_or(lines.len());
+        // The block's own lines, then the blank lines after it; comments just above the next header belong to that header.
+        let content_end = (header..end).rev().find(|&i| lines.get(i).is_some_and(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))).map_or(header + 1, |i| i + 1);
+        let stop = (content_end..end).find(|&i| lines.get(i).is_some_and(|l| !l.trim().is_empty())).unwrap_or(end);
+        drop.iter_mut().take(stop).skip(header).for_each(|d| *d = true);
+    }
+    let kept: String = lines.iter().zip(&drop).filter(|(_, d)| !**d).map(|(l, _)| *l).collect();
+    let owned = |entry: &str| names.iter().any(|n| entry.strip_prefix(n.as_str()).is_some_and(|rest| rest.starts_with(':')));
+    let mut doc: toml_edit::DocumentMut = kept.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
+    if let Some(ignore) = doc.get_mut("protection").and_then(|p| p.get_mut("ignore")).and_then(toml_edit::Item::as_array_mut) {
+        ignore.retain(|v| !v.as_str().is_some_and(owned));
+    }
+    // toml_edit writes plain `\n` line ends: a CRLF file keeps its own.
+    let result = if text.contains("\r\n") { doc.to_string().replace("\r\n", "\n").replace('\n', "\r\n") } else { doc.to_string() };
+    let parse = |t: &str| -> std::result::Result<(toml::Table, Vec<HostConfig>), String> {
+        let mut table: toml::Table = t.parse().map_err(|e| format!("config.toml does not parse: {e}"))?;
+        table.remove("hosts");
+        let hosts = toml::from_str::<Config>(t).map_err(|e| format!("config.toml does not parse: {e}"))?.hosts;
+        Ok((table, hosts))
+    };
+    let (mut want_rest, mut want_hosts) = parse(text)?;
+    let (new_rest, new_hosts) = parse(&result)?;
+    want_hosts.retain(|h| !names.contains(&h.name));
+    if let Some(toml::Value::Array(ignore)) = want_rest.get_mut("protection").and_then(|p| p.get_mut("ignore")) {
+        ignore.retain(|v| !v.as_str().is_some_and(owned));
+    }
+    if want_rest != new_rest || new_hosts != want_hosts {
+        return Err(BY_HAND.to_string());
+    }
+    Ok(result)
+}
+
+/// `remove_hosts` on the file, written the safe way (a backup copy first, replaced only if every step succeeds).
+pub fn remove_hosts_in_file(path: &Path, names: &[String]) -> Result<()> {
+    rewrite_config(path, &|text| remove_hosts(text, names))
+}
+
 /// Adds a `[[hosts]]` block for `host` right after the last existing host block (so the hosts stay together),
 /// or at the end of the file when there is none, keeping every other byte: the comments that follow the last host
 /// belong to what comes next and stay below the new block. Refuses `hosts` written as an inline array or dotted keys,

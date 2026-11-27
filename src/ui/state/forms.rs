@@ -47,7 +47,7 @@ impl App {
             ],
             focused: 0,
             description: None,
-            kind: FormKind::Job { hosts: self.hosts.clone(), existing: existing.map(Box::new), taken_ids: self.jobs_view.jobs.iter().map(|j| j.id.clone()).collect() },
+            kind: FormKind::Job { hosts: self.live_hosts(), existing: existing.map(Box::new), taken_ids: self.jobs_view.jobs.iter().map(|j| j.id.clone()).collect() },
         }
     }
 }
@@ -72,7 +72,7 @@ impl App {
             ],
             focused: 0,
             description: Some("Only snapshots named <prefix>-<timestamp> made by this job are ever pruned.".to_string()),
-            kind: FormKind::SnapshotJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+            kind: FormKind::SnapshotJob { hosts: self.live_hosts(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
 }
@@ -112,7 +112,7 @@ impl App {
             ],
             focused: 0,
             description: Some("Sends the newest <prefix>-<timestamp> snapshot, incrementally. The destination is received unmounted and rolled back only if Force is y. Keep on target destroys this job's older snapshots on a host destination after each run. Raw y sends an encrypted dataset as it is (it stays encrypted and locked on the destination, which cannot read it without the key); an encrypted source needs it.".to_string()),
-            kind: FormKind::ReplicateJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+            kind: FormKind::ReplicateJob { hosts: self.live_hosts(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
 }
@@ -154,7 +154,7 @@ impl App {
             ],
             focused: 0,
             description: Some("Backs up a read-only clone of a snapshot. Source: new = take a fresh snapshot each run and keep the last few of those; a prefix = the newest <prefix>-<timestamp> (it takes none); @name = always that one snapshot. The repository must already exist (restic init).".to_string()),
-            kind: FormKind::BackupJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+            kind: FormKind::BackupJob { hosts: self.live_hosts(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
 }
@@ -267,7 +267,7 @@ impl App {
             ],
             focused: 0,
             description: Some("Copies a read-only clone of a snapshot to <remote>/current as plain files. What a run replaces or deletes is first moved to <remote>/old/<date and time>/; zfsctl never deletes anything in old/. Symlinks, devices, empty folders and child datasets are not copied.".to_string()),
-            kind: FormKind::MirrorJob { hosts: self.hosts.clone(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
+            kind: FormKind::MirrorJob { hosts: self.live_hosts(), existing: existing.map(Box::new), jobs: self.jobs_view.jobs.clone() },
         }
     }
 }

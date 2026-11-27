@@ -173,6 +173,7 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if !app.hosts.is_empty() {
                 v.push(h("Space", "Mark", 2));
                 v.push(h("e", "Edit tag and site", 2));
+                v.push(h("d", "Remove host", 2).tone(Tone::Danger));
             }
             if !app.marked_hosts.is_empty() {
                 v.push(h("Esc", "Unmark", 2));
