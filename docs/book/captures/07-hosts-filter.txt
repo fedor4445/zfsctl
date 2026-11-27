@@ -1,10 +1,10 @@
-┌zfsctl────────────────┐┌Hosts (filter: t1_ — 1/6)───────────────────────────────────────────────────────────┐
-│Dashboard             ││Name       Address            State                     Type   Tag     Site    Used │
-│Hosts                 ││● fbsd16t1 172.16.10.61       ok                        vm     freebsd lab-box 53%  │
+┌zfsctl────────────────┐┌Hosts (filter: 16_ — 1/2)───────────────────────────────────────────────────────────┐
+│Dashboard             ││Name     Address            State                       Type   Tag     Site    Used │
+│Hosts                 ││● fbsd16 172.16.10.60       ok                          vm     freebsd lab-box 40%  │
 │Pools                 ││                                                                                    │
 │Datasets              ││                                                                                    │
 │Snapshots             ││                                                                                    │
 │Disks                 ││                                                                                    │
 │Shares                ││                                                                                    │
-└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-Enter Keep filter  Esc Clear
+│Boot Envs             ││                                                                                    │
+│Jobs                  ││                                                                                    │

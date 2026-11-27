@@ -1,30 +1,30 @@
 ┌zfsctl────────────────┐┌Snapshots — local ('r' to refresh)──────────────────────────────────────────────────┐
 │Dashboard             ││Snapshot                           Used     Written  Hold                           │
-│Hosts                 ││scratch/data@snap1                 64.0K    96.0K                                   │
-│Pools                 ││scratch/data@snap2                 64.0K    64.0K                                   │
-│Datasets              ││scratch/data@snap4                 72.0K    100M                                    │
-│Snapshots             ││scratch/data@sphrase1              72.0K    72.0K                                   │
-│Disks                 ││tpool@snap1                        93.0K    2.0G                                    │
-│Shares                ││tpool@snap2                        2.0G     2.0G                                    │
-│Boot Envs             ││zroot@09052026                     80.0K    96.0K                                   │
-│Jobs                  ││zroot/ROOT@snap1                   0B       96.0K                                   │
-│Cloud                 ││zroot/home/alice@alice             8.0K     136K                                    │
-│Alerts                ││zroot/home/fb@09052026             88.0K    114M                                    │
-│Settings              ││zroot/home/fb@09062026             88.0K    88.0K                                   │
-│                      ││zroot/home/carol@carol1            0B       128K                                    │
+│Hosts                 ││scratch@auto-20261126T020000Z      64.0K    104K                                    │
+│Pools                 ││scratch@auto-20261127T000000Z      56.0K    64.0K                                   │
+│Datasets              ││scratch@auto-20261127T010000Z      0B       64.0K                                   │
+│Snapshots             ││scratch/data@snap1                 64.0K    96.0K                                   │
+│Disks                 ││scratch/data@snap2                 64.0K    64.0K                                   │
+│Shares                ││scratch/data@snap4                 72.0K    100M                                    │
+│Boot Envs             ││scratch/data@sphrase1              72.0K    72.0K                                   │
+│Jobs                  ││scratch/data@auto-20261126T020000Z 0B       88.0K                                   │
+│Cloud                 ││scratch/data@auto-20261126T040000Z 0B       0B                                      │
+│Alerts                ││scratch/data@auto-20261126T050000Z 0B       0B                                      │
+│Settings              ││scratch/data@auto-20261126T060000Z 0B       0B                                      │
+│                      ││scratch/data@auto-20261126T070000Z 0B       0B                                      │
 │                      │└────────────────────────────────────────────────────────────────────────────────────┘
-│                      │┌Metrics — scratch/data@snap4────────────────────────────────────────────────────────┐
-│                      ││Snapshot  snap4                               Snapshot sizes                        │
-│                      ││Created   18d 21h ago                         oldest → newest, this one lit         │
-│                      ││Used      72.0K   Refer 100M   Written 100M     ██                                  │
-│                      ││Reclaim   72.0K  (freed if destroyed)         ▇▇██                                  │
-│                      ││Holds     0   Clones -                        ████                                  │
-│                      ││Dataset   4 snaps, 288K = <1% of used         ████                                  │
-│                      ││Oldest    45d 22h ago                         ████                                  │
-│                      ││Newest    3d 4h ago                           ████                                  │
-│                      ││                                              ████                                  │
-│                      ││                                              ████                                  │
-│                      ││                                              ████                                  │
-│                      ││                                              ████                                  │
+│                      │┌Metrics — scratch@auto-20261126T020000Z─────────────────────────────────────────────┐
+│                      ││Snapshot  auto-20261126T020000Z               Snapshot sizes                        │
+│                      ││Created   23h 28m ago                         oldest → newest, this one lit         │
+│                      ││Used      64.0K   Refer 104K   Written 104K   █                                     │
+│                      ││Reclaim   64.0K  (freed if destroyed)         █▆                                    │
+│                      ││Holds     0   Clones -                        ██                                    │
+│                      ││Dataset   3 snaps, 128K = <1% of used         ██                                    │
+│                      ││Oldest    23h 28m ago                         ██                                    │
+│                      ││Newest    28m ago                             ██                                    │
+│                      ││                                              ██                                    │
+│                      ││                                              ██                                    │
+│                      ││                                              ██                                    │
+│                      ││                                              ██                                    │
 └──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Move  d Destroy  b Rollback  H Hold  c Changes  C Since  f Browse  r Refresh  Tab Section  ? Help  q Quit
+↑↓ Move  Space Mark  M Mark to here  d Destroy  b Rollback  H Hold  c Changes  f Browse  ? Help  q Quit
