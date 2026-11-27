@@ -1,12 +1,12 @@
 ┌zfsctl────────────────┐┌Hosts───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│Dashboard             ││Name       Address            State                            Type   Tag     Site    Used  Pools Scrub         Jobs  Rtt   │
-│Hosts                 ││● local    local              ok                               vm                     45%   3     Oct 8 2026    0/11  15ms  │
-│Pools                 ││● fbsd16   172.16.10.60       ok                               vm     freebsd lab-box 62%   1     Oct 17 2026   0/4   74ms  │
-│Datasets              ││● fbsd16t1 172.16.10.61       ok                               vm     freebsd lab-box 53%   2     Oct 17 2026   0/17  64ms  │
-│Snapshots             ││● fbsd16t2 172.16.10.62       ok                               vm     freebsd lab-box 79%   2     Oct 17 2026   0/5   61ms  │
+│Dashboard             ││Name     Address            State                              Type   Tag     Site    Used  Pools Scrub         Jobs  Rtt   │
+│Hosts                 ││● local  local              ok                                 vm                     46%   3     Oct 8 2026    0/9   15ms  │
+│Pools                 ││● fbsd16 172.16.10.60       ok                                 vm     freebsd lab-box 40%   1     Oct 17 2026   -     65ms  │
+│Datasets              ││                                                                                                                            │
+│Snapshots             ││                                                                                                                            │
 │Disks                 ││                                                                                                                            │
 │Shares                ││                                                                                                                            │
 │Boot Envs             ││                                                                                                                            │
 │Jobs                  ││                                                                                                                            │
-└──────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ Host  c Check disks and shares  Space Mark  e Edit tag and site  n Add host  / Filter  Tab Section  ! Shell  A About  ? Help  q Quit
+│Cloud                 ││                                                                                                                            │
+│Alerts                ││                                                                                                                            │
