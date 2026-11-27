@@ -61,6 +61,7 @@ impl App {
                 WorkerMsg::PoolNames(host, result) => self.on_pool_names(host, result),
                 WorkerMsg::HostHealth(name, probe) => self.on_host_health(name, probe),
                 WorkerMsg::HostProbe(name, target, result) => self.on_host_probe(name, target, result),
+                WorkerMsg::HostsRemoved(names, result) => self.on_hosts_removed(&names, result),
                 WorkerMsg::AlertsPreview(text) => self.on_alerts_preview(text),
                 WorkerMsg::LocalAudit(host, result) => self.on_local_audit(host, result),
                 WorkerMsg::AddChecked(check, result) => self.on_add_checked(check, result),
@@ -605,6 +606,23 @@ impl App {
             Err(e) => {
                 self.new_host_tags.remove(&name.to_lowercase());
                 self.set_error(format!("Could not add host '{name}': {e}"));
+            }
+        }
+    }
+
+    fn on_hosts_removed(&mut self, names: &[String], result: Result<()>) {
+        match result {
+            Ok(()) => {
+                self.status_message = self.done_note.take();
+                self.apply_saved_hosts();
+            }
+            Err(e) => {
+                // Nothing was written: the hosts are still configured and usable.
+                for name in names {
+                    self.removed_hosts.remove(name);
+                }
+                self.done_note = None;
+                self.set_error(e.to_string());
             }
         }
     }

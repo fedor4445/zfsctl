@@ -522,6 +522,7 @@ fn edit(path: &Path, change: impl FnOnce(&mut Vec<Job>) -> Result<()>) -> Result
     with_lock(path, |list| {
         let mut list = list.to_vec();
         change(&mut list)?;
+        remove_stale_temps(path);
         save(path, &list)
     })
 }
@@ -545,6 +546,22 @@ pub fn with_lock<T>(path: &Path, work: impl FnOnce(&[Job]) -> Result<T>) -> Resu
 /// The ids of the jobs that run on one of `hosts` or replicate to one of them.
 pub fn using_hosts(jobs: &[Job], hosts: &[String]) -> Vec<String> {
     jobs.iter().filter(|j| hosts.contains(&j.host) || j.dest_host.as_ref().is_some_and(|d| hosts.contains(d))).map(|j| j.id.clone()).collect()
+}
+
+/// Removes the temp files a save left when it was killed before its rename (`jobs.toml.tmp`, `jobs.toml.tmp.<pid>.<n>`).
+/// Called under the lock, when no save of any zfsctl is in flight, so every one of them is stale. Best effort.
+fn remove_stale_temps(path: &Path) {
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name().and_then(|f| f.to_str())) else { return };
+    let base = format!("{file}.tmp");
+    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name == base || name.strip_prefix(&base).is_some_and(|rest| rest.starts_with('.')) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The lock file next to `jobs.toml`; it holds nothing and is never removed.

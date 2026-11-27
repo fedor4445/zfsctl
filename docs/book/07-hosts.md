@@ -163,7 +163,7 @@ To give several hosts the same tag or site, press `Space` on each (a marked host
 
 `d` (or `Delete`) in Hosts takes the selected host, or every marked one, out of zfsctl. Only `config.toml` changes: the host's `[[hosts]]` block goes, and so do its entries in the ignore list (chapter 6), with a backup copy first (`config.toml.bak`). Nothing on the machine itself is touched: its account, its sudoers file and its SSH key stay as they are. You confirm with `y` first.
 
-zfsctl refuses while any job still runs on the host or replicates to it, and names those jobs: delete them in Jobs first, so nothing keeps failing against a host zfsctl no longer knows. The local host has no block and cannot be removed. The daemon picks up the change by itself within seconds. On this screen the host stays listed as `removed`, dimmed and with nothing sent to it, until you start zfsctl again.
+zfsctl refuses while any job still runs on the host or replicates to it, and names those jobs: delete them in Jobs first, so nothing keeps failing against a host zfsctl no longer knows. The local host has no block and cannot be removed. The daemon picks up the change by itself within seconds. From the moment you confirm, nothing more is sent to the host; if the removal is refused (a job was added meanwhile), it is back as before. Once it is gone, this screen keeps it listed as `removed`, dimmed, until you start zfsctl again: it is not checked any more and leaves the Dashboard. To add a host of the same name again, restart zfsctl first.
 
 ## Try it
 

@@ -99,13 +99,20 @@ pub fn destroy_snapshots(runner: &dyn CommandRunner, items: &[(String, String)])
     datasets.sort_unstable();
     datasets.dedup();
     let mut holds = std::collections::HashMap::new();
+    let mut unchecked = std::collections::HashSet::new();
     for dataset in datasets {
         match held_in(runner, dataset, false) {
             Ok(rows) => holds.extend(rows),
-            Err(e) => problems.push(format!("{dataset}: the hold check failed: {e}")),
+            Err(e) => {
+                problems.push(format!("{dataset}: the hold check failed: {e}"));
+                unchecked.insert(dataset);
+            }
         }
     }
     for (dataset, name) in items {
+        if unchecked.contains(dataset.as_str()) {
+            continue;
+        }
         let target = format!("{dataset}@{name}");
         match holds.get(&target) {
             Some(Some(0)) => {}
@@ -137,7 +144,7 @@ pub fn destroy_snapshots(runner: &dyn CommandRunner, items: &[(String, String)])
         }
     }
     let done = items.len() - failed.len();
-    if failed.is_empty() { Ok(done) } else { Err(AppError::Message(format!("destroyed {done} of {}; failed: {}", items.len(), failed.join("; ")))) }
+    if failed.is_empty() { Ok(done) } else { Err(AppError::Message(format!("Destroyed {done} of {}; failed: {}", items.len(), failed.join("; ")))) }
 }
 
 /// The snapshots of `dataset` alone (`-d 1`), or of its whole tree when `recursive`.
@@ -464,7 +471,7 @@ tank/data@2026-09-04\t2000\t0\t0
     fn a_failure_while_destroying_does_not_stop_the_rest() {
         let r = batch("tank/a@s1\t0\ntank/a@s2\t0\n", vec![(vec!["destroy", "--", "tank/a@s1"], "dataset is busy")]);
         let err = destroy_snapshots(&r, &items(&[("tank/a", "s1"), ("tank/a", "s2")])).unwrap_err().to_string();
-        assert!(err.contains("destroyed 1 of 2") && err.contains("tank/a@s1") && err.contains("busy"), "{err}");
+        assert!(err.contains("Destroyed 1 of 2") && err.contains("tank/a@s1") && err.contains("busy"), "{err}");
         assert!(batch_destroys(&r).contains(&vec!["destroy".to_string(), "--".to_string(), "tank/a@s2".to_string()]));
     }
 
@@ -473,6 +480,14 @@ tank/data@2026-09-04\t2000\t0\t0
         let r = batch("", vec![]);
         assert!(destroy_snapshots(&r, &items(&[("-r", "s1")])).is_err());
         assert!(batch_destroys(&r).is_empty());
+    }
+
+    #[test]
+    fn a_failed_hold_check_is_named_once_for_its_dataset() {
+        let r = batch("", vec![]);
+        let err = destroy_snapshots(&r, &items(&[("-x", "s1"), ("-x", "s2")])).unwrap_err().to_string();
+        assert_eq!(err.matches("the hold check failed").count(), 1, "{err}");
+        assert!(!err.contains("not seen"), "{err}");
     }
 
     fn destroy_calls(runner: &FakeRunner) -> Vec<Vec<String>> {

@@ -1160,3 +1160,22 @@ fn a_long_batch_question_names_a_few_and_counts_the_rest() {
     assert!(prompt.contains("and 1 more") && prompt.len() < 700, "{prompt}");
     assert!(prompt.ends_with("Type 6 to go ahead:"), "{prompt}");
 }
+
+#[test]
+fn the_batch_is_refused_while_the_jobs_cannot_be_read() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0)]);
+    app.jobs_view.error = Some("parsing jobs.toml: bad".to_string());
+    app.marked_snapshots.insert("tank/a@1".to_string());
+    app.handle_key(KeyCode::Char('d'));
+    assert!(app.modal.is_none(), "{:?}", app.modal);
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("jobs")), "{:?}", app.status_message);
+}
+
+#[test]
+fn esc_clears_the_marks_and_the_status_line_together() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0)]);
+    app.handle_key(KeyCode::Char(' '));
+    app.status_message = Some("something".to_string());
+    app.handle_key(KeyCode::Esc);
+    assert!(app.marked_snapshots.is_empty() && app.status_message.is_none(), "{:?}", app.status_message);
+}

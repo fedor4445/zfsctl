@@ -296,6 +296,9 @@ pub enum WorkerMsg {
     /// The outcome of an Add Host SSH reachability probe. `String,
     /// String` are the candidate host's name and SSH target.
     HostProbe(String, String, Result<()>),
+    /// A removal of these hosts from config.toml finished: Ok means they are gone from the file, an error that nothing
+    /// was written.
+    HostsRemoved(Vec<String>, Result<()>),
     /// The latest health probe of the named host (the background probe, not the Add Host check above).
     HostHealth(String, crate::zfs::host_health::HostProbe),
     /// The host's memory, CPU, load and swap from the probe just made (`None` when it could not be read), and its UTC
@@ -463,8 +466,6 @@ pub struct App {
     /// Hosts taken out of `config.toml` while this TUI runs. They stay in the index-aligned host lists (removing them
     /// would shift every later host under results still in flight) but get nothing sent and show as removed.
     pub removed_hosts: std::collections::BTreeSet<String>,
-    /// The hosts of the last remove sent; the ones `config.toml` no longer has afterwards become `removed_hosts`.
-    pub removing_hosts: Vec<String>,
     /// Snapshots marked with Space in Snapshots, as `dataset@name`, for one destroy of several.
     pub marked_snapshots: std::collections::BTreeSet<String>,
     /// The host the marks belong to: another host's `tank@x` is a different snapshot.
@@ -657,7 +658,6 @@ impl App {
             host_sites: vec![String::new(); hosts_for_addr.len()],
             marked_hosts: std::collections::BTreeSet::new(),
             removed_hosts: std::collections::BTreeSet::new(),
-            removing_hosts: Vec::new(),
             marked_snapshots: std::collections::BTreeSet::new(),
             marked_snapshots_host: 0,
             snapshot_mark_anchor: None,
@@ -1031,8 +1031,9 @@ impl App {
             });
             return;
         }
+        // A host being removed gets nothing sent from now on; a removal that is refused gives it back.
         if let MutationCall::RemoveHosts { names, .. } = &call {
-            self.removing_hosts.extend(names.iter().cloned());
+            self.removed_hosts.extend(names.iter().cloned());
         }
         if let Some(note) = call.done_note() {
             self.done_note = Some(note);
@@ -1056,7 +1057,10 @@ impl App {
                     };
                     WorkerMsg::RestoreDone(host, Err(sentence), Err(e))
                 }
-                None => WorkerMsg::MutationDone(host, section, call.run(runner.as_ref())),
+                None => match &call {
+                    MutationCall::RemoveHosts { names, .. } => WorkerMsg::HostsRemoved(names.clone(), call.run(runner.as_ref())),
+                    _ => WorkerMsg::MutationDone(host, section, call.run(runner.as_ref())),
+                },
             };
             let _ = tx.send(message);
         });
