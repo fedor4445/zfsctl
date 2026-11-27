@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod book_check;
+#[cfg(test)]
+mod time_pins;
 mod preflight;
 mod rclone;
 mod smart;
