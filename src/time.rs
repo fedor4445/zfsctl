@@ -33,7 +33,7 @@ pub fn local_zone() -> jiff::tz::TimeZone {
     }
 }
 
-/// `zone`, or else the zone in `localtime` (the bytes of a TZif file), or else UTC.
+/// `zone`, or else the zone in `localtime` (the bytes of a `TZif` file), or else UTC.
 fn zone_or_localtime(zone: Result<jiff::tz::TimeZone, String>, localtime: Option<Vec<u8>>) -> jiff::tz::TimeZone {
     zone.unwrap_or_else(|_| localtime.and_then(|bytes| jiff::tz::TimeZone::tzif("localtime", &bytes).ok()).unwrap_or(jiff::tz::TimeZone::UTC))
 }
