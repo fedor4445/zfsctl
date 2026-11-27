@@ -1,7 +1,7 @@
 //! What zfsctl does with dates today, pinned as text so that replacing the date library (chrono -> jiff) cannot change
 //! it unseen. Every expected value is a literal string: a saved file's text, a snapshot name, a screen word, an RFC 3339
-//! time with its offset. Only the three helpers below name the date library; the swap may change their bodies and
-//! return types and nothing else in this file.
+//! time with its offset. Only the helpers below name the date library; the swap may change their bodies and return
+//! types and nothing else in this file.
 #![allow(clippy::unwrap_used)]
 
 // ----- Helpers: the only lines that know the date library. -----
@@ -17,6 +17,18 @@ fn local(zone: &str, civil: &str) -> chrono::DateTime<chrono_tz::Tz> {
     let tz: chrono_tz::Tz = zone.parse().unwrap();
     let naive = chrono::NaiveDateTime::parse_from_str(civil, "%Y-%m-%dT%H:%M").unwrap();
     tz.from_local_datetime(&naive).earliest().unwrap()
+}
+
+/// The same wall-clock time as `local`, the later one when it happens twice.
+fn later(zone: &str, civil: &str) -> chrono::DateTime<chrono_tz::Tz> {
+    use chrono::TimeZone;
+    let tz: chrono_tz::Tz = zone.parse().unwrap();
+    tz.from_local_datetime(&chrono::NaiveDateTime::parse_from_str(civil, "%Y-%m-%dT%H:%M").unwrap()).latest().unwrap()
+}
+
+/// A length of time in whole seconds.
+fn secs(d: &chrono::Duration) -> i64 {
+    d.num_seconds()
 }
 
 /// A zoned time as RFC 3339 with its offset (`2027-03-15T02:30:00-04:00`).
@@ -171,5 +183,71 @@ fn ages_read_the_same() {
     for (then, health, jobs) in cases {
         assert_eq!(crate::daemon::health_text::ago(now, at(then)), health, "{then}");
         assert_eq!(crate::ui::jobs::age_text(now, at(then)), jobs, "{then}");
+    }
+}
+
+// ----- Schedules across daylight saving -----
+// The rules (daemon/cron.rs): a time in the spring gap is skipped; a time that happens twice in autumn fires once, at its
+// first occurrence; "latest at or before" during the second pass gives the later occurrence. Two zones, because the US
+// and Europe change on different dates.
+
+const NY: &str = "America/New_York";
+const BERLIN: &str = "Europe/Berlin";
+
+fn next(expr: &str, zone: &str, civil: &str) -> String {
+    text(&crate::daemon::cron::Schedule::parse(expr).unwrap().next_after(&local(zone, civil)).unwrap())
+}
+
+/// The next `count` fire times of `expr` after `civil` in `zone`, each after the one before.
+fn next_n(expr: &str, zone: &str, civil: &str, count: usize) -> Vec<String> {
+    let schedule = crate::daemon::cron::Schedule::parse(expr).unwrap();
+    let mut t = local(zone, civil);
+    (0..count)
+        .map(|_| {
+            t = schedule.next_after(&t).unwrap();
+            text(&t)
+        })
+        .collect()
+}
+
+#[test]
+fn a_time_in_the_spring_gap_is_skipped() {
+    assert_eq!(next("30 2 * * *", NY, "2027-03-13T03:00"), "2027-03-15T02:30:00-04:00");
+    assert_eq!(next("30 2 * * *", BERLIN, "2027-03-27T03:00"), "2027-03-29T02:30:00+02:00");
+}
+
+#[test]
+fn a_time_that_happens_twice_fires_once_at_its_first_occurrence() {
+    assert_eq!(next_n("30 1 * * *", NY, "2027-11-06T02:00", 2), ["2027-11-07T01:30:00-04:00", "2027-11-08T01:30:00-05:00"]);
+    assert_eq!(next_n("30 2 * * *", BERLIN, "2027-10-30T03:00", 2), ["2027-10-31T02:30:00+02:00", "2027-11-01T02:30:00+01:00"]);
+}
+
+#[test]
+fn hourly_jobs_across_both_changes() {
+    assert_eq!(next_n("0 * * * *", NY, "2027-03-14T00:30", 4), ["2027-03-14T01:00:00-05:00", "2027-03-14T03:00:00-04:00", "2027-03-14T04:00:00-04:00", "2027-03-14T05:00:00-04:00"]);
+    assert_eq!(next_n("0 * * * *", NY, "2027-11-07T00:30", 4), ["2027-11-07T01:00:00-04:00", "2027-11-07T02:00:00-05:00", "2027-11-07T03:00:00-05:00", "2027-11-07T04:00:00-05:00"]);
+    assert_eq!(next_n("0 * * * *", BERLIN, "2027-03-28T00:30", 4), ["2027-03-28T01:00:00+01:00", "2027-03-28T03:00:00+02:00", "2027-03-28T04:00:00+02:00", "2027-03-28T05:00:00+02:00"]);
+    assert_eq!(next_n("0 * * * *", BERLIN, "2027-10-31T00:30", 4), ["2027-10-31T01:00:00+02:00", "2027-10-31T02:00:00+02:00", "2027-10-31T03:00:00+01:00", "2027-10-31T04:00:00+01:00"]);
+}
+
+#[test]
+fn the_latest_time_during_the_second_pass_is_the_later_occurrence() {
+    // 01:45 during the second pass (EST): its earlier reading would be 01:45 EDT, an hour before.
+    let schedule = crate::daemon::cron::Schedule::parse("30 1 * * *").unwrap();
+    let second_pass = later(NY, "2027-11-07T01:45");
+    assert_eq!(text(&schedule.latest_at_or_before(&second_pass).unwrap()), "2027-11-07T01:30:00-05:00");
+}
+
+#[test]
+fn month_and_leap_year_ends() {
+    assert_eq!(next("0 3 1 * *", "UTC", "2027-12-15T00:00"), "2028-01-01T03:00:00+00:00");
+    assert_eq!(next("0 3 29 2 *", "UTC", "2027-03-01T00:00"), "2028-02-29T03:00:00+00:00");
+}
+
+/// The usual gap between two runs, at a time with no change of offset near (so the machine's own zone does not matter).
+#[test]
+fn schedule_gaps() {
+    for (expr, seconds) in [("0 * * * *", 3600), ("30 * * * *", 3600), ("0 3 * * 0", 604_800)] {
+        assert_eq!(crate::daemon::cron::schedule_gap(expr, at("2026-11-27T12:00:00Z")).map(|d| secs(&d)), Some(seconds), "{expr}");
     }
 }
