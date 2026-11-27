@@ -39,9 +39,9 @@ fn the_jobs_table_shows_each_job_with_its_schedule_next_run_and_last_result() {
 #[test]
 fn the_next_run_column_is_wide_enough_for_the_whole_time() {
     let (mut app, _dir) = jobs_app(&[a_job("a", "* * * * *")]);
-    let before = crate::ui::jobs::next_run_text("* * * * *", &jiff::ZonedDateTime::now());
+    let before = crate::ui::jobs::next_run_text("* * * * *", &jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()));
     let text = render(&mut app, 120, 30).join("\n");
-    let after = crate::ui::jobs::next_run_text("* * * * *", &jiff::ZonedDateTime::now());
+    let after = crate::ui::jobs::next_run_text("* * * * *", &jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()));
     assert!(text.contains(&before) || text.contains(&after), "the next-run time is cut off (wanted {before:?} or {after:?}):\n{text}");
 }
 

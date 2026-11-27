@@ -9,7 +9,8 @@ use jiff::{SignedDuration, Timestamp};
 
 /// `t` as chrono wrote it: `2026-11-27T01:00:00Z`, `….500Z`, `….000123Z`, `….485121070Z`.
 pub fn format_rfc3339(t: Timestamp) -> String {
-    let nanos = t.subsec_nanosecond();
+    // The civil value's fraction is always 0..1e9; the timestamp's own is negative before 1970.
+    let nanos = t.to_zoned_datetime(jiff::tz::TimeZone::UTC).datetime().subsec_nanosecond();
     let whole = t.strftime("%Y-%m-%dT%H:%M:%S");
     if nanos == 0 {
         format!("{whole}Z")
@@ -20,6 +21,21 @@ pub fn format_rfc3339(t: Timestamp) -> String {
     } else {
         format!("{whole}.{nanos:09}Z")
     }
+}
+
+/// The machine's time zone, read now (jiff caches it and notices a change within minutes): `TZ` when it names a zone,
+/// else `/etc/localtime`, else UTC. A `TZ` that names no zone falls back to `/etc/localtime`, as chrono did, instead of
+/// to UTC, so a bad environment cannot move every schedule to UTC unseen.
+pub fn local_zone() -> jiff::tz::TimeZone {
+    match jiff::tz::TimeZone::try_system() {
+        Ok(zone) => zone,
+        Err(e) => zone_or_localtime(Err(e.to_string()), std::fs::read("/etc/localtime").ok()),
+    }
+}
+
+/// `zone`, or else the zone in `localtime` (the bytes of a TZif file), or else UTC.
+fn zone_or_localtime(zone: Result<jiff::tz::TimeZone, String>, localtime: Option<Vec<u8>>) -> jiff::tz::TimeZone {
+    zone.unwrap_or_else(|_| localtime.and_then(|bytes| jiff::tz::TimeZone::tzif("localtime", &bytes).ok()).unwrap_or(jiff::tz::TimeZone::UTC))
 }
 
 /// `t` as chrono's `to_rfc3339` wrote it, with `+00:00` instead of `Z` (the daemon log's slot times).

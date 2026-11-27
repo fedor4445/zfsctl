@@ -254,7 +254,7 @@ const LOOKAHEAD: usize = 5;
 /// The longest gap between the next few scheduled times after `now`; `None` for a schedule that does not parse or never fires.
 pub fn schedule_gap(schedule: &str, now: Timestamp) -> Option<SignedDuration> {
     let schedule = Schedule::parse(schedule).ok()?;
-    let mut at = now.to_zoned_datetime(TimeZone::system());
+    let mut at = now.to_zoned_datetime(crate::time::local_zone());
     let mut gaps = Vec::new();
     for _ in 0..LOOKAHEAD {
         let next = schedule.next_after(&at)?;

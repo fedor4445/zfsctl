@@ -59,3 +59,22 @@ fn the_duration_helpers_are_exact() {
     assert_eq!(days(1).as_secs(), 86_400);
     assert_eq!(seconds(-30).as_secs(), -30);
 }
+
+#[test]
+fn a_date_before_1970_keeps_a_positive_fraction() {
+    assert_eq!(format_rfc3339("1969-12-31T23:59:59.5Z".parse().unwrap()), "1969-12-31T23:59:59.500Z");
+    assert_eq!(format_rfc3339("1960-01-01T00:00:00.25Z".parse().unwrap()), "1960-01-01T00:00:00.250Z");
+}
+
+#[test]
+fn a_bad_tz_falls_back_to_etc_localtime_then_utc() {
+    let new_york = std::fs::read("/usr/share/zoneinfo/America/New_York").ok();
+    let bad: Result<jiff::tz::TimeZone, String> = Err("TZ=Foo/Bar is not a zone".to_string());
+    if let Some(bytes) = new_york {
+        let zone = zone_or_localtime(bad.clone(), Some(bytes));
+        assert_eq!(zone.to_offset("2026-07-01T12:00:00Z".parse().unwrap()), jiff::tz::offset(-4), "the zone file, not UTC");
+    }
+    assert_eq!(zone_or_localtime(bad, None).to_offset("2026-07-01T12:00:00Z".parse().unwrap()), jiff::tz::offset(0));
+    let good = zone_or_localtime(Ok(jiff::tz::TimeZone::fixed(jiff::tz::offset(2))), None);
+    assert_eq!(good.to_offset("2026-07-01T12:00:00Z".parse().unwrap()), jiff::tz::offset(2), "a good zone is used as it is");
+}

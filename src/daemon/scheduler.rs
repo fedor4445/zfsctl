@@ -32,17 +32,19 @@ struct Entry {
 }
 
 pub struct Scheduler {
-    tz: jiff::tz::TimeZone,
+    /// Asked for the zone at every calculation, so a change of the host's zone applies from the next slot without a
+    /// restart (as with chrono's `Local`).
+    zone: Box<dyn Fn() -> jiff::tz::TimeZone + Send + Sync>,
     entries: Vec<Entry>,
 }
 
 impl Scheduler {
-    pub fn new(tz: jiff::tz::TimeZone) -> Self {
-        Scheduler { tz, entries: Vec::new() }
+    pub fn new(zone: impl Fn() -> jiff::tz::TimeZone + Send + Sync + 'static) -> Self {
+        Scheduler { zone: Box::new(zone), entries: Vec::new() }
     }
 
     fn next_after(&self, schedule: &Schedule, after: Timestamp) -> Option<Timestamp> {
-        schedule.next_after(&after.to_zoned_datetime(self.tz.clone())).map(|t| t.timestamp())
+        schedule.next_after(&after.to_zoned_datetime((self.zone)())).map(|t| t.timestamp())
     }
 
     /// Replaces the job set. A job whose definition is unchanged keeps its
@@ -88,7 +90,7 @@ impl Scheduler {
             if !entry.job.catch_up {
                 continue;
             }
-            let latest = entry.schedule.latest_at_or_before(&now.to_zoned_datetime(self.tz.clone())).map(|t| t.timestamp());
+            let latest = entry.schedule.latest_at_or_before(&now.to_zoned_datetime((self.zone)())).map(|t| t.timestamp());
             if let Some(slot) = latest.filter(|slot| *slot > entry.baseline) {
                 due.push(Due { job: entry.job.clone(), scheduled_for: slot, catch_up: true });
             }
@@ -166,7 +168,7 @@ mod tests {
     }
 
     fn loaded(jobs: Vec<Job>, last: &[(&str, &str)], now: &str) -> Scheduler {
-        let mut s = Scheduler::new(jiff::tz::TimeZone::UTC);
+        let mut s = Scheduler::new(|| jiff::tz::TimeZone::UTC);
         let last: HashMap<String, Timestamp> = last.iter().map(|(k, v)| ((*k).to_string(), at(v))).collect();
         assert!(s.reload(jobs, &hosts(), &last, at(now)).is_empty());
         s
@@ -180,10 +182,28 @@ mod tests {
         kind.kind = "restic".to_string();
         let mut off = job("off", "0 3 * * *");
         off.enabled = false;
-        let mut s = Scheduler::new(jiff::tz::TimeZone::UTC);
+        let mut s = Scheduler::new(|| jiff::tz::TimeZone::UTC);
         let report = s.reload(vec![job("ok", "0 3 * * *"), bad_host, kind, off], &hosts(), &HashMap::new(), at("2026-10-06T00:00:00Z"));
         assert_eq!(report.iter().map(|u| u.id.as_str()).collect::<Vec<_>>(), vec!["bad-host", "kind"]);
         assert_eq!(s.len(), 1, "only the enabled, runnable job is scheduled");
+    }
+
+    #[test]
+    fn a_change_of_the_hosts_zone_applies_from_the_next_slot_without_a_restart() {
+        // What `tzsetup` does to a running daemon: the zone it reads changes; chrono followed that, so must this.
+        let zone = std::sync::Arc::new(std::sync::Mutex::new(jiff::tz::TimeZone::UTC));
+        let source = std::sync::Arc::clone(&zone);
+        let mut s = Scheduler::new(move || source.lock().unwrap().clone());
+        assert!(s.reload(vec![job("j", "0 3 * * *")], &hosts(), &HashMap::new(), at("2026-10-06T02:00:00Z")).is_empty());
+        assert_eq!(s.tick(at("2026-10-06T03:00:00Z")).len(), 1);
+        *zone.lock().unwrap() = jiff::tz::TimeZone::fixed(jiff::tz::offset(-5));
+        assert_eq!(s.tick(at("2026-10-06T03:00:01Z")).len(), 0);
+        // The slot after the change was computed when the 03:00 UTC run fired, before the change: it stays.
+        assert_eq!(s.next_time("j"), Some(at("2026-10-07T03:00:00Z")));
+        assert_eq!(s.tick(at("2026-10-07T03:00:00Z")).len(), 1);
+        // From then on, 03:00 is 03:00 in the new zone: that run (03:00 UTC) was 22:00 on the 6th there, so 03:00 local
+        // on the 7th is still ahead, at 08:00 UTC.
+        assert_eq!(s.next_time("j"), Some(at("2026-10-07T08:00:00Z")));
     }
 
     #[test]
@@ -274,7 +294,7 @@ mod tests {
 
     #[test]
     fn the_later_of_two_snapshot_jobs_with_one_host_dataset_and_prefix_is_unsupported() {
-        let mut s = Scheduler::new(jiff::tz::TimeZone::UTC);
+        let mut s = Scheduler::new(|| jiff::tz::TimeZone::UTC);
         let a = Job::test_snapshot("a", "tank/data", "hourly", 3);
         let b = Job::test_snapshot("b", "tank/data", "hourly", 5);
         let unsupported = s.reload(vec![a, b], &hosts(), &HashMap::new(), at("2026-10-06T00:00:00Z"));

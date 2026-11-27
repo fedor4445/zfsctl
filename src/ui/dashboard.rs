@@ -534,7 +534,7 @@ fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidth
         }
     };
     let jobs_text = format!("{} job{}", cells[3], if cells[3] == "1" { "" } else { "s" });
-    let next = cloud::next_run_text(row, view, &inputs.now.to_zoned_datetime(jiff::tz::TimeZone::system()));
+    let next = cloud::next_run_text(row, view, &inputs.now.to_zoned_datetime(crate::time::local_zone()));
     Line { level, text: cloud_columns(w, &provider, &cloud_label(row), &jobs_text, &cells[4], &next, &cloud_traffic(row, view, inputs.now), &cells[5]) }
 }
 
@@ -739,7 +739,7 @@ impl Dashboard {
 
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
-    let since = marker.since.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%H:%M");
+    let since = marker.since.to_zoned_datetime(crate::time::local_zone()).strftime("%H:%M");
     match &marker.host {
         Some(host) => format!("checking {host}: disks and shares since {since}"),
         None => format!("checking: daily disk and shares check since {since}"),

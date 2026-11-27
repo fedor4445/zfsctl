@@ -55,7 +55,7 @@ fn stamp(t: &jiff::ZonedDateTime) -> String {
 /// Logs in the hub's local time, the zone its schedules are written in. (The
 /// history file stays in UTC: it is machine data.)
 fn log(message: &str) {
-    eprintln!("{} {message}", stamp(&jiff::ZonedDateTime::now()));
+    eprintln!("{} {message}", stamp(&jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone())));
 }
 
 /// What every job thread shares.
@@ -412,11 +412,11 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
             let probed = monitor::probe_all(&hosts, &|n| m.needs_kind(n), monitor::PROBE_DEADLINE, &busy);
             let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
             let runs = history::runs(&shared.history.read());
-            let local = jiff::ZonedDateTime::now().datetime();
+            let local = jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).datetime();
             m.observe(Timestamp::now(), local, &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
         });
         // Wake for the daily report too, so it is not lost when the probe interval straddles the report time.
-        let wake = match m.report_wait(jiff::ZonedDateTime::now().datetime()) {
+        let wake = match m.report_wait(jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).datetime()) {
             Some(wait) if !wait.is_zero() => settings.check_interval.min(wait + Duration::from_secs(1)),
             _ => settings.check_interval,
         };
@@ -437,8 +437,8 @@ fn checks_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, a
     let path = state_dir.join("smart.json");
     while !stop.load(Ordering::SeqCst) {
         guarded("the daily checks", || {
-            let last = smart_check::SmartFile::load(&path).last_run().map(|t| t.to_zoned_datetime(jiff::tz::TimeZone::system()).datetime());
-            if !smart_check::due(jiff::ZonedDateTime::now().datetime(), Some(at), last) {
+            let last = smart_check::SmartFile::load(&path).last_run().map(|t| t.to_zoned_datetime(crate::time::local_zone()).datetime());
+            if !smart_check::due(jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).datetime(), Some(at), last) {
                 return;
             }
             let Some(_running) = checks::RunGuard::start(state_dir, "daemon", None) else {
@@ -536,11 +536,11 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
     let cancel_dir = paths.cancel_dir();
     let state_dir = paths.dir.clone();
     let mut config_mtime = modified(config_path);
-    let mut engine = Engine::new(paths, jiff::tz::TimeZone::system(), names, now);
+    let mut engine = Engine::new(paths, crate::time::local_zone, names, now);
     let started_at = now;
 
     let work = engine.start(Timestamp::now());
-    log(&format!("zfsctl daemon started (pid {})", std::process::id()));
+    log(&format!("zfsctl daemon started (pid {}, zone {})", std::process::id(), crate::time::local_zone().iana_name().unwrap_or("not named")));
     report(&engine);
     dispatch(&shared, work);
     {

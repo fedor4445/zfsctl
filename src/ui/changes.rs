@@ -99,7 +99,7 @@ fn time_text(secs: u64) -> String {
     i64::try_from(secs)
         .ok()
         .and_then(|s| jiff::Timestamp::from_second(s).ok())
-        .map_or_else(|| "?".to_string(), |t| t.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M:%S").to_string())
+        .map_or_else(|| "?".to_string(), |t| t.to_zoned_datetime(crate::time::local_zone()).strftime("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 impl ChangesView {

@@ -387,7 +387,7 @@ pub fn draw_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
     let d = app.dashboard();
     let selected = app.dashboard_table.selected().filter(|_| d.selectable() > 0).map(|s| s.min(d.selectable() - 1));
     app.dashboard_table.select(selected);
-    let now = jiff::ZonedDateTime::now().strftime("%a %d %b %H:%M").to_string();
+    let now = jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).strftime("%a %d %b %H:%M").to_string();
     let lines = screen_lines(&d, selected, usize::from(area.width), usize::from(area.height), &now, &app.theme);
     f.render_widget(Paragraph::new(lines), area);
 }

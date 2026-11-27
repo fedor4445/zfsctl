@@ -92,7 +92,7 @@ fn mtime(paths: &Paths) -> Option<SystemTime> {
 }
 
 impl Engine {
-    pub fn new(paths: Paths, tz: jiff::tz::TimeZone, hosts: Vec<String>, now: Timestamp) -> Self {
+    pub fn new(paths: Paths, tz: impl Fn() -> jiff::tz::TimeZone + Send + Sync + 'static, hosts: Vec<String>, now: Timestamp) -> Self {
         Engine { paths, hosts, scheduler: Scheduler::new(tz), jobs_mtime: None, last_prune: now, pending: Vec::new(), caught_up: false, unsupported: Vec::new(), load_error: None }
     }
 
@@ -203,7 +203,7 @@ mod tests {
     }
 
     fn engine(dir: &tempfile::TempDir, now: &str) -> Engine {
-        Engine::new(Paths::new(dir.path()), jiff::tz::TimeZone::UTC, vec!["local".to_string()], at(now))
+        Engine::new(Paths::new(dir.path()), || jiff::tz::TimeZone::UTC, vec!["local".to_string()], at(now))
     }
 
     fn started(job_id: &str, run_id: &str, when: &str) -> Event {

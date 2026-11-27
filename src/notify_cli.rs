@@ -75,7 +75,7 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: Timestamp, probe
     let rows = build_rows(&hosts, &probed, &kinds, &jobs, &runs);
     let events = EventLog::new(state_dir.join("health-events.jsonl")).read();
     let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
-    let local = jiff::ZonedDateTime::now().strftime("%Y-%m-%d %H:%M").to_string();
+    let local = jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).strftime("%Y-%m-%d %H:%M").to_string();
     // The same judgment the daemon makes; the alert tracker lives only in the daemon, so the preview has no "(for 3d)".
     let (settings, problems) = config.protection_settings();
     let problem = problems.into_iter().next();

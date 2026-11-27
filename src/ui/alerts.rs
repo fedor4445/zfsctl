@@ -99,7 +99,7 @@ impl AlertsView {
 
 /// `10-10 14:02  fbsd16  alert  tank DEGRADED`, in the hub's local time.
 pub fn event_line(e: &HealthEvent) -> String {
-    format!("{}  {}  {}  {}", e.at.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%m-%d %H:%M"), e.host, e.kind, e.text)
+    format!("{}  {}  {}  {}", e.at.to_zoned_datetime(crate::time::local_zone()).strftime("%m-%d %H:%M"), e.host, e.kind, e.text)
 }
 
 #[cfg(test)]

@@ -278,7 +278,7 @@ impl App {
             return;
         }
         if let Some(other) = crate::daemon::checks::fresh_marker(&self.state_dir, jiff::Timestamp::now()) {
-            let since = other.since.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%H:%M");
+            let since = other.since.to_zoned_datetime(crate::time::local_zone()).strftime("%H:%M");
             self.set_error(format!("A check is already running ({}, since {since})", other.by));
             return;
         }
