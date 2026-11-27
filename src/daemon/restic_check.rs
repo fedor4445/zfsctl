@@ -49,7 +49,7 @@ mod tests {
     use super::*;
 
     fn at(day: u32) -> Timestamp {
-        (&format!("2026-10-{day:02}T03:00:00Z")).parse::<jiff::Timestamp>().unwrap()
+        format!("2026-10-{day:02}T03:00:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
     #[test]

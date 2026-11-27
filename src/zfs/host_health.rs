@@ -224,7 +224,7 @@ fn last_scrub_when(block: &str) -> Option<String> {
 /// `utc_offset_secs` is that host's offset from UTC (`date +%z`). Never negative (a skewed clock reads as today); `None` when
 /// `when` does not parse.
 pub fn scrub_age_days(when: &str, utc_offset_secs: i32, now_utc: jiff::Timestamp) -> Option<i64> {
-    let local = jiff::civil::DateTime::strptime("%a %b %d %H:%M:%S %Y", &when.split_whitespace().collect::<Vec<_>>().join(" ")).ok()?;
+    let local = jiff::civil::DateTime::strptime("%a %b %d %H:%M:%S %Y", when.split_whitespace().collect::<Vec<_>>().join(" ")).ok()?;
     let finished = local.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok()?.timestamp() - crate::time::seconds(i64::from(utc_offset_secs));
     Some((now_utc.duration_since(finished).as_secs() / 86_400).max(0))
 }
@@ -373,7 +373,7 @@ pub fn scan_cell(pools: &[PoolProbe]) -> String {
     if whens.is_empty() {
         return "canceled".to_string();
     }
-    let parse = |w: &str| jiff::civil::DateTime::strptime("%a %b %d %H:%M:%S %Y", &w.split_whitespace().collect::<Vec<_>>().join(" ")).ok();
+    let parse = |w: &str| jiff::civil::DateTime::strptime("%a %b %d %H:%M:%S %Y", w.split_whitespace().collect::<Vec<_>>().join(" ")).ok();
     let dated: Vec<jiff::civil::DateTime> = whens.iter().filter_map(|w| parse(w)).collect();
     let first = whens.first().copied().unwrap_or("-").to_string();
     dated.iter().min().map_or(first, |d| d.strftime("%b %-d %Y").to_string())

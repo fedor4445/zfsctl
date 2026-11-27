@@ -16,8 +16,6 @@ allow = [
 [advisories]
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but only used at compile time, and it comes in through ratatui 0.29" },
-    { id = "RUSTSEC-2026-0543", reason = "chrono is marked unmaintained (no vulnerability); it carries all schedules and timestamps, a move to jiff is its own project" },
-    { id = "RUSTSEC-2026-0555", reason = "chrono-tz is marked unmaintained (no vulnerability); it is a dev-dependency, used by tests only" },
 ]
 
 [bans]
