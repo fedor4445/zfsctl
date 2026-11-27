@@ -135,3 +135,41 @@ fn jobs_toml_reads_created_at_written_by_hand_with_an_offset() {
     let jobs = crate::jobs::load(&path).unwrap();
     assert_eq!(jobs[0].created_at, Some(at("2026-11-27T01:00:00Z")));
 }
+
+// ----- Text made from dates -----
+
+/// Snapshot names: the prefix, then the UTC time to the second (the fraction is dropped, not rounded).
+#[test]
+fn snapshot_names_are_utc_to_the_second() {
+    assert_eq!(crate::daemon::snapshot::snapshot_name("auto", at("2026-11-27T01:00:00.9Z")), "auto-20261127T010000Z");
+    assert_eq!(crate::daemon::snapshot::snapshot_name("auto", at("2026-11-27T02:00:00+01:00")), "auto-20261127T010000Z");
+}
+
+/// The `old/` folder of an rclone run: `YYYYMMDDTHHMMSSZ` in UTC, fraction dropped.
+#[test]
+fn rclone_run_stamps_are_utc_to_the_second() {
+    assert_eq!(crate::rclone::run_stamp(at("2026-11-27T01:02:03.9Z")), "20261127T010203Z");
+}
+
+/// "How long ago" words: whole minutes, hours and days, rounded down; a time in the future reads as now.
+#[test]
+fn ages_read_the_same() {
+    let now = at("2026-11-27T12:00:00Z");
+    let cases: [(&str, &str, &str); 11] = [
+        ("2026-11-27T12:00:00Z", "0m ago", "just now"),
+        ("2026-11-27T11:59:01Z", "0m ago", "just now"),
+        ("2026-11-27T11:58:59Z", "1m ago", "1m ago"),
+        ("2026-11-27T11:01:00Z", "59m ago", "59m ago"),
+        ("2026-11-27T10:59:00Z", "1h 1m ago", "1h ago"),
+        ("2026-11-26T13:00:00Z", "23h ago", "23h ago"),
+        ("2026-11-26T11:00:00Z", "1d 1h ago", "1d ago"),
+        ("2026-11-21T12:00:00Z", "6d ago", "6d ago"),
+        ("2026-11-19T12:00:00Z", "8d ago", "8d ago"),
+        ("2025-10-23T12:00:00Z", "400d ago", "400d ago"),
+        ("2026-11-27T12:00:30Z", "0m ago", "just now"),
+    ];
+    for (then, health, jobs) in cases {
+        assert_eq!(crate::daemon::health_text::ago(now, at(then)), health, "{then}");
+        assert_eq!(crate::ui::jobs::age_text(now, at(then)), jobs, "{then}");
+    }
+}
