@@ -345,7 +345,15 @@ fn context_hints(app: &App) -> Vec<Hint> {
             if !app.snapshots.is_empty() {
                 v.push(h("↑↓", "Move", 1));
             }
+            if !app.marked_snapshots.is_empty() {
+                v.push(h("d", "Destroy marked", 1).tone(Tone::Danger));
+                v.push(h("Esc", "Unmark", 1));
+            }
             if app.snapshots_table.selected().is_some() {
+                v.push(h("Space", "Mark", 2));
+                v.push(h("M", "Mark to here", 3));
+            }
+            if app.snapshots_table.selected().is_some() && app.marked_snapshots.is_empty() {
                 v.push(h("d", "Destroy", 2).tone(Tone::Danger));
                 v.push(h("b", "Rollback", 2).tone(Tone::Danger));
                 v.push(h("H", "Hold", 2));

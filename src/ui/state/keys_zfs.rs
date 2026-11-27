@@ -513,6 +513,9 @@ impl App {
             KeyCode::Up if self.current_section() == Section::Snapshots => {
                 move_table_selection(&mut self.snapshots_table, self.snapshots.len(), false);
             }
+            KeyCode::Char(' ') if self.current_section() == Section::Snapshots && !self.browse_view_active() && !self.changes_view_active() => self.toggle_snapshot_mark(),
+            KeyCode::Char('M') if self.current_section() == Section::Snapshots && !self.browse_view_active() && !self.changes_view_active() => self.mark_snapshots_to_cursor(),
+            KeyCode::Char('d') if self.current_section() == Section::Snapshots && !self.marked_snapshots.is_empty() => self.begin_destroy_marked_snapshots(),
             KeyCode::Char('d') if self.current_section() == Section::Snapshots => {
                 if let Some(i) = self.snapshots_table.selected() {
                     if let Some(snap) = self.snapshots.get(i) {

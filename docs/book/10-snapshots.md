@@ -107,6 +107,8 @@ For regular snapshots you do not have to remember: chapter 14 shows how to sched
 
 Select it in the Snapshots list and press `d`. You **type its full name** (`tank/home@before-upgrade`) to confirm. Destroying a snapshot frees the space only it held; the dataset itself is not touched.
 
+To destroy several, mark them first. `Space` marks the selected snapshot (it shows `+`); `M` marks every snapshot from the last one you marked with `Space` down, or up, to the selected one, so a day of hourly snapshots takes two keys. `Esc` unmarks them all. Then `d` shows one question for all of them: how many, in which datasets, the first and the last. You type that **number** to go ahead, so a wrong selection shows before anything happens. A snapshot with a hold is left alone and named, and so is the newest snapshot of a dataset that a replication job sends from or into, because the next copy starts from it. zfsctl then checks every one (its holds, and a dry run, `zfs destroy -n`): if any of them would fail, for example because it has a clone, none is destroyed and you are told which. Only then are they destroyed one by one; if one fails, the others still go and the message names the failure. Marks belong to one host: changing host clears them.
+
 ## Roll back
 
 Press `b` on a snapshot to roll its dataset back to that moment. You **type the full snapshot name** to confirm.

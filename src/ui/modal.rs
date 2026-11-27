@@ -32,6 +32,8 @@ pub enum MutationCall {
     HoldSnapshot { dataset: String, name: String },
     ReleaseSnapshot { dataset: String, name: String },
     DestroySnapshot { dataset: String, name: String },
+    /// Several snapshots at once, `(dataset, name)` each: all checked (holds, a dry run) before any is destroyed.
+    DestroySnapshots { items: Vec<(String, String)> },
     RollbackSnapshot { dataset: String, name: String },
     AllowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Vec<String> },
     UnallowPermission { dataset: String, target: crate::zfs::permission::PermissionTarget, perms: Option<Vec<String>> },
@@ -136,6 +138,7 @@ impl MutationCall {
             MutationCall::UnignoreDatasets { entries, .. } => Some(format!("Checking {} dataset{} again", entries.len(), if entries.len() == 1 { "" } else { "s" })),
             MutationCall::SaveJobs { jobs, .. } => Some(format!("Created {} snapshot job{}", jobs.len(), if jobs.len() == 1 { "" } else { "s" })),
             MutationCall::SaveHostKeys { names, .. } => Some(format!("Saved to config.toml for {}", if names.len() == 1 { names.join("") } else { format!("{} hosts", names.len()) })),
+            MutationCall::DestroySnapshots { items } => Some(format!("Destroyed {} snapshot{}", items.len(), if items.len() == 1 { "" } else { "s" })),
             MutationCall::RemoveHosts { names, .. } => Some(format!("Removed from config.toml: {}. It leaves this screen when zfsctl restarts", names.join(", "))),
             MutationCall::HoldSnapshot { dataset, name } => Some(format!("Protected {dataset}@{name}")),
             MutationCall::ReleaseSnapshot { dataset, name } => Some(format!("Released the zfsctl hold on {dataset}@{name}")),
@@ -154,6 +157,7 @@ impl MutationCall {
             | MutationCall::DestroyDataset { .. }
             | MutationCall::DestroyDatasetRecursive { .. }
             | MutationCall::DestroySnapshot { .. }
+            | MutationCall::DestroySnapshots { .. }
             | MutationCall::RollbackSnapshot { .. }
             | MutationCall::DestroyBootEnv { .. } => Tone::Danger,
             MutationCall::OfflineDisk { .. }
@@ -225,6 +229,7 @@ impl MutationCall {
             MutationCall::HoldSnapshot { .. } => "HOLD SNAPSHOT",
             MutationCall::ReleaseSnapshot { .. } => "RELEASE HOLD",
             MutationCall::DestroySnapshot { .. } => "DESTROY SNAPSHOT",
+            MutationCall::DestroySnapshots { .. } => "DESTROY SNAPSHOTS",
             MutationCall::RollbackSnapshot { .. } => "ROLLBACK SNAPSHOT",
             MutationCall::AllowPermission { .. } => "GRANT PERMISSION",
             MutationCall::UnallowPermission { .. } => "REVOKE PERMISSION",
@@ -306,6 +311,7 @@ impl MutationCall {
             MutationCall::HoldSnapshot { dataset, name } => crate::zfs::snapshot::hold_snapshot(runner, dataset, name),
             MutationCall::ReleaseSnapshot { dataset, name } => crate::zfs::snapshot::release_snapshot(runner, dataset, name),
             MutationCall::DestroySnapshot { dataset, name } => crate::zfs::snapshot::destroy_snapshot(runner, dataset, name),
+            MutationCall::DestroySnapshots { items } => crate::zfs::snapshot::destroy_snapshots(runner, items).map(|_| ()),
             MutationCall::RollbackSnapshot { dataset, name } => crate::zfs::snapshot::rollback_snapshot(runner, dataset, name),
             MutationCall::AllowPermission { dataset, target, perms } => crate::zfs::permission::allow(runner, dataset, target, perms),
             MutationCall::UnallowPermission { dataset, target, perms } => {

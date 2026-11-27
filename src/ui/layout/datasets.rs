@@ -172,7 +172,12 @@ pub(super) fn draw_snapshots(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = app
         .snapshots
         .iter()
-        .map(|s| Row::new(vec![format!("{}@{}", s.dataset, s.name), crate::zfs::disk::human_size(s.used), crate::zfs::disk::human_size(s.written), app.hold_marker(s).to_string()]));
+        .map(|s| {
+            let key = format!("{}@{}", s.dataset, s.name);
+            // A snapshot marked for one destroy of several shows `+` in front, like a marked host.
+            let shown = if app.marked_snapshots.contains(&key) { format!("+ {key}") } else { key };
+            Row::new(vec![shown, crate::zfs::disk::human_size(s.used), crate::zfs::disk::human_size(s.written), app.hold_marker(s).to_string()])
+        });
     let widths = [Constraint::Length(34), Constraint::Length(SIZE_COL_W), Constraint::Length(SIZE_COL_W), Constraint::Length(4)];
     let title = format!("Snapshots — {} ('r' to refresh)", app.active_host_name());
     let table = Table::new(rows, widths)

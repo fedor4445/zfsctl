@@ -211,6 +211,14 @@ impl App {
                 let previous = self.snapshots_table.selected().and_then(|i| self.snapshots.get(i)).map(|s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots = snapshots;
                 self.snapshot_tags.clear();
+                // Marks keep only snapshots this host still lists; marks made on another host mean nothing here.
+                if self.marked_snapshots_host != host {
+                    self.marked_snapshots.clear();
+                    self.snapshot_mark_anchor = None;
+                    self.marked_snapshots_host = host;
+                }
+                let listed: std::collections::BTreeSet<String> = self.snapshots.iter().map(|s| format!("{}@{}", s.dataset, s.name)).collect();
+                self.marked_snapshots.retain(|k| listed.contains(k));
                 pin_selection(&mut self.snapshots_table, previous, &self.snapshots, |s| (s.dataset.clone(), s.name.clone()));
                 self.snapshots_loaded = true;
                 self.clear_status_after_refresh(quiet);
