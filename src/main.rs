@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod book_check;
+mod time;
 #[cfg(test)]
 mod time_pins;
 mod preflight;
