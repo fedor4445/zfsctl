@@ -7,6 +7,15 @@ fn key_of(s: &Snapshot) -> String {
     format!("{}@{}", s.dataset, s.name)
 }
 
+/// The first five of `list`, joined, with "and N more" for the rest: keeps the question short enough that its input line
+/// stays on screen.
+fn a_few(list: &[String]) -> String {
+    match list.len() {
+        0..=5 => list.join(", "),
+        n => format!("{} and {} more", list.iter().take(5).cloned().collect::<Vec<_>>().join(", "), n - 5),
+    }
+}
+
 impl App {
     /// `Space` in Snapshots: marks or unmarks the selected snapshot; a new mark is where `M` starts.
     pub fn toggle_snapshot_mark(&mut self) {
@@ -28,58 +37,59 @@ impl App {
         let Some(cursor) = self.snapshots_table.selected().filter(|&i| i < self.snapshots.len()) else { return };
         let anchor = self.snapshot_mark_anchor.as_ref().and_then(|a| self.snapshots.iter().position(|s| &key_of(s) == a)).unwrap_or(cursor);
         let (from, to) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
+        if self.snapshots.get(from).map(|s| &s.dataset) != self.snapshots.get(to).map(|s| &s.dataset) {
+            self.set_error("M marks within one dataset: the last mark and this snapshot belong to different datasets".to_string());
+            return;
+        }
         self.marked_snapshots_host = self.selected_host;
         let keys: Vec<String> = self.snapshots.iter().skip(from).take(to - from + 1).map(key_of).collect();
         self.marked_snapshots.extend(keys);
     }
 
-    /// The newest listed snapshot of each dataset that an enabled replication job of the selected host sends from or
-    /// receives into (the job's tree, when it is recursive): the base the next incremental send starts from.
-    fn replication_bases(&self) -> std::collections::BTreeSet<String> {
-        let Some(host) = self.hosts.get(self.selected_host) else { return std::collections::BTreeSet::new() };
-        let covers = |root: &str, dataset: &str, recursive: bool| dataset == root || (recursive && dataset.strip_prefix(root).is_some_and(|r| r.starts_with('/')));
-        let used = |dataset: &str| {
-            self.jobs_view.jobs.iter().filter(|j| j.enabled && j.kind == crate::jobs::KIND_REPLICATE).any(|j| {
-                (&j.host == host && j.dataset.as_deref().is_some_and(|d| covers(d, dataset, j.recursive)))
-                    || (j.dest_host.as_ref() == Some(host) && j.dest_dataset.as_deref().is_some_and(|d| covers(d, dataset, j.recursive)))
-            })
-        };
-        let mut newest: std::collections::BTreeMap<&str, &Snapshot> = std::collections::BTreeMap::new();
-        for s in &self.snapshots {
-            newest.insert(s.dataset.as_str(), s);
-        }
-        newest.into_iter().filter(|(dataset, _)| used(dataset)).map(|(_, s)| key_of(s)).collect()
+    /// Whether a replication job of the selected host (enabled or paused) sends from or receives into this snapshot's
+    /// dataset and the snapshot carries the job's prefix. Its next incremental base is one of those, and only the other
+    /// host knows which, so the batch leaves them all to the job's own pruning (a single `d` can still destroy one).
+    fn replication_owned(&self, s: &Snapshot) -> bool {
+        let Some(host) = self.hosts.get(self.selected_host) else { return false };
+        let covers = |root: &str, recursive: bool| s.dataset == root || (recursive && s.dataset.strip_prefix(root).is_some_and(|r| r.starts_with('/')));
+        self.jobs_view.jobs.iter().filter(|j| j.kind == crate::jobs::KIND_REPLICATE).any(|j| {
+            let here = (&j.host == host && j.dataset.as_deref().is_some_and(|d| covers(d, j.recursive)))
+                || (j.dest_host.as_ref() == Some(host) && j.dest_dataset.as_deref().is_some_and(|d| covers(d, j.recursive)));
+            // No prefix known: every snapshot of the dataset may be the base.
+            here && j.prefix.as_deref().is_none_or(|p| crate::daemon::snapshot::is_own(p, &s.name))
+        })
     }
 
     /// `d` with marks: one typed confirm for the marked snapshots, in list order. Held ones and replication bases are
     /// left out and named; the user types how many will be destroyed.
     pub fn begin_destroy_marked_snapshots(&mut self) {
-        let bases = self.replication_bases();
         let mut items = Vec::new();
         let mut skipped = Vec::new();
         for s in self.snapshots.iter().filter(|s| self.marked_snapshots.contains(&key_of(s))) {
             if s.holds > 0 {
                 skipped.push(format!("{} (has a hold)", key_of(s)));
-            } else if bases.contains(&key_of(s)) {
-                skipped.push(format!("{} (the newest one a replication job uses: its next incremental base)", key_of(s)));
+            } else if self.replication_owned(s) {
+                skipped.push(format!("{} (a replication job's own snapshot: one of them is its next base)", key_of(s)));
             } else {
                 items.push((s.dataset.clone(), s.name.clone()));
             }
         }
-        let skipped_text = if skipped.is_empty() { String::new() } else { format!(" Left alone: {}.", skipped.join(", ")) };
+        let skipped_text = if skipped.is_empty() { String::new() } else { format!(" Left alone: {}.", a_few(&skipped)) };
         let (Some(first), Some(last)) = (items.first(), items.last()) else {
             self.set_error(format!("Nothing to destroy among the marked snapshots.{skipped_text}"));
             return;
         };
-        let mut datasets: Vec<&str> = items.iter().map(|(d, _)| d.as_str()).collect();
-        datasets.dedup();
+        let mut datasets: Vec<String> = items.iter().map(|(d, _)| d.clone()).collect();
         datasets.sort_unstable();
         datasets.dedup();
         let count = items.len();
+        // The marks have done their job: a skipped one left behind would turn a later single `d` into a batch.
+        self.marked_snapshots.clear();
+        self.snapshot_mark_anchor = None;
         let prompt = format!(
             "Destroy {count} snapshot{} for good, in {}: from {}@{} to {}@{}.{skipped_text} Each is checked first (holds, a dry run); if one would fail, none is destroyed. Type {count} to go ahead:",
             if count == 1 { "" } else { "s" },
-            datasets.join(", "),
+            a_few(&datasets),
             first.0,
             first.1,
             last.0,
