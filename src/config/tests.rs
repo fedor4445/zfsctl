@@ -646,11 +646,19 @@ fn a_missing_file_is_created_and_a_failing_write_leaves_the_original_alone() {
     save_notify_section(&path, &render_notify_section(&cfg("n@x.org"))).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "[notify]\nmail_to = \"n@x.org\"\n");
     assert!(!dir.path().join("sub").join("config.toml.bak").exists(), "nothing to back up the first time");
-    // A directory where the temporary file must go: the write fails, the original stays.
-    std::fs::create_dir(dir.path().join("sub").join(format!("config.toml.tmp.{}", std::process::id()))).unwrap();
+    // A folder nothing new can be written into: the save fails (at its backup copy or its temp file), the original stays.
+    use std::os::unix::fs::PermissionsExt;
+    let sub = dir.path().join("sub");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
     let before = std::fs::read_to_string(&path).unwrap();
-    let err = save_notify_section(&path, &render_notify_section(&cfg("other@x.org"))).unwrap_err().to_string();
-    assert!(err.contains("config.toml.tmp"), "{err}");
+    let result = save_notify_section(&path, &render_notify_section(&cfg("other@x.org")));
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Root ignores the folder's mode: nothing to prove there.
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("config.toml."), "{err}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
 }
 
@@ -945,4 +953,27 @@ fn remove_hosts_in_file_keeps_a_backup() {
     remove_hosts_in_file(&path, &names(&["t1"])).unwrap();
     assert_eq!(std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(), HUB_FILE);
     assert!(!std::fs::read_to_string(&path).unwrap().contains("name = \"t1\""));
+}
+
+#[test]
+fn two_config_saves_at_once_never_share_a_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, HUB_FILE).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let (barrier, path) = (barrier.clone(), path.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                rewrite_config(&path, &|t| Ok(t.to_string()))
+            })
+        })
+        .collect();
+    for result in handles.into_iter().map(|h| h.join().unwrap()) {
+        // Losing the race is "changed while it was being saved, try again"; never a clash over one temp file.
+        if let Err(e) = result {
+            assert!(!e.to_string().contains("File exists"), "{e}");
+        }
+    }
 }

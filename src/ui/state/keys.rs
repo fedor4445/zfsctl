@@ -73,6 +73,7 @@ impl App {
             KeyCode::Esc if self.current_section() == Section::Snapshots && !self.marked_snapshots.is_empty() && self.modal.is_none() && !self.browse_view_active() && !self.changes_view_active() => {
                 self.marked_snapshots.clear();
                 self.snapshot_mark_anchor = None;
+                self.status_message = None;
             }
             KeyCode::Esc if self.current_section() == Section::Hosts && !self.host_filter.is_empty() => {
                 self.host_filter.clear();

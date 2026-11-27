@@ -941,7 +941,10 @@ pub(crate) fn rewrite_config(path: &Path, edit: &dyn Fn(&str) -> std::result::Re
         let bak = real.with_file_name(format!("{name}.bak"));
         std::fs::copy(&real, &bak).map_err(|e| AppError::Config(format!("writing {}: {e}", bak.display())))?;
     }
-    let tmp = real.with_file_name(format!("{name}.tmp.{}", std::process::id()));
+    // Each save has a temp file of its own: two saves in one process never write into, or rename away, the same one.
+    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = real.with_file_name(format!("{name}.tmp.{}.{n}", std::process::id()));
     let mode = before.as_ref().map_or(0o644, |m| m.mode() & 0o7777);
     let fail = |what: &str, e: std::io::Error| {
         let _ = std::fs::remove_file(&tmp);

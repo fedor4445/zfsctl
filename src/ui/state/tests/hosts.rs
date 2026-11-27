@@ -1311,7 +1311,7 @@ fn a_removed_host_leaves_config_toml_and_gets_no_more_mutations() {
     // The selection moves on before the result arrives: the removal still counts.
     app.selected_host = 2;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !app.removed_hosts.contains("a") && std::time::Instant::now() < deadline {
+    while app.status_message.as_deref().is_none_or(|m| !m.contains("Removed")) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
         app.drain_worker_messages();
     }
@@ -1400,4 +1400,54 @@ fn the_removal_checks_the_jobs_again_when_it_runs() {
     let err = call.run(&FakeRunner::new("")).unwrap_err().to_string();
     assert!(err.contains("late"), "{err}");
     assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("name = \"a\""), "nothing written");
+}
+
+#[test]
+fn a_removed_host_is_not_probed_and_leaves_the_dashboard() {
+    let (mut app, _dir) = remove_app(&[]);
+    app.removed_hosts.insert("a".to_string());
+    assert!(!app.due_host_probes(std::time::Instant::now()).contains(&1), "{:?}", app.due_host_probes(std::time::Instant::now()));
+    let names: Vec<String> = app.dashboard().hosts.iter().map(|h| h.name.clone()).collect();
+    assert_eq!(names, vec!["local".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn adding_a_host_removed_in_this_session_says_to_restart() {
+    let (mut app, _dir) = remove_app(&[]);
+    app.removed_hosts.insert("a".to_string());
+    app.handle_key(KeyCode::Char('n'));
+    type_text(&mut app, "a");
+    app.handle_modal_key(KeyCode::Tab);
+    type_text(&mut app, "u@a");
+    app.handle_modal_key(KeyCode::Tab);
+    app.handle_modal_key(KeyCode::Enter);
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("restart")), "{:?}", app.status_message);
+}
+
+#[test]
+fn a_removal_blocks_the_host_at_once_and_a_refused_one_gives_it_back() {
+    let (mut app, dir) = remove_app(&[]);
+    // A job on the host appears after the question: the removal is refused when it runs.
+    crate::jobs::save(&dir.path().join("jobs.toml"), &[job_on("late", "a")]).unwrap();
+    let call = remove_call(&app, &["a"]);
+    app.dispatch_mutation(PendingAction { host: 1, section: Section::Hosts, call }, Arc::new(FakeRunner::new("")));
+    assert!(app.removed_hosts.contains("a"), "nothing is sent to it while the removal runs");
+    wait_for(&mut app, |a| a.status_message.is_some());
+    assert!(!app.removed_hosts.contains("a"), "the removal was refused, so the host is back: {:?}", app.status_message);
+}
+
+#[test]
+fn a_host_stays_removed_when_config_toml_cannot_be_read_afterwards() {
+    let (mut app, dir) = remove_app(&[]);
+    let config = dir.path().join("config.toml");
+    let call = remove_call(&app, &["a"]);
+    app.dispatch_mutation(PendingAction { host: 1, section: Section::Hosts, call }, Arc::new(FakeRunner::new("")));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::fs::read_to_string(&config).unwrap().contains("name = \"a\"") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    std::fs::write(&config, "this is [ not toml").unwrap();
+    app.drain_worker_messages();
+    assert!(app.removed_hosts.contains("a"));
 }

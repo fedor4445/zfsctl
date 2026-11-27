@@ -751,6 +751,10 @@ impl App {
         if name.is_empty() || target.is_empty() {
             return self.reopen(form);
         }
+        if self.removed_hosts.iter().any(|h| h.eq_ignore_ascii_case(&name)) {
+            self.set_error(format!("'{name}' was removed while zfsctl was running: restart zfsctl to add it again"));
+            return self.reopen(form);
+        }
         if is_duplicate {
             self.set_error(format!("A host named '{name}' already exists or is already being added"));
             return self.reopen(form);

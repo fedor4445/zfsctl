@@ -697,3 +697,18 @@ fn save_leaves_no_temp_file() {
     names.sort();
     assert!(names.iter().all(|n| n == "jobs.toml" || n == "jobs.toml.lock"), "{names:?}");
 }
+
+#[test]
+fn a_change_removes_temp_files_left_by_a_save_that_never_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jobs.toml");
+    save(&path, &[scrub("a")]).unwrap();
+    for stale in ["jobs.toml.tmp", "jobs.toml.tmp.999.0"] {
+        std::fs::write(dir.path().join(stale), "half").unwrap();
+    }
+    std::fs::write(dir.path().join("jobs.toml.tmpl"), "not ours").unwrap();
+    upsert(&path, scrub("b")).unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, vec!["jobs.toml", "jobs.toml.lock", "jobs.toml.tmpl"]);
+}

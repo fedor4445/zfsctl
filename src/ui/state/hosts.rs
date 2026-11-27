@@ -198,6 +198,9 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(i, name)| {
+                if self.removed_hosts.contains(*name) {
+                    return false;
+                }
                 let state = self.host_probes.get(*name);
                 if state.is_some_and(|s| s.in_flight) {
                     return false;

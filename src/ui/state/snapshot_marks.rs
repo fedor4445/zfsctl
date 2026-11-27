@@ -63,6 +63,10 @@ impl App {
     /// `d` with marks: one typed confirm for the marked snapshots, in list order. Held ones and replication bases are
     /// left out and named; the user types how many will be destroyed.
     pub fn begin_destroy_marked_snapshots(&mut self) {
+        if let Some(e) = &self.jobs_view.error {
+            self.set_error(format!("The jobs cannot be read ({e}), so the snapshots a replication still needs cannot be told apart: nothing is destroyed"));
+            return;
+        }
         let mut items = Vec::new();
         let mut skipped = Vec::new();
         for s in self.snapshots.iter().filter(|s| self.marked_snapshots.contains(&key_of(s))) {
