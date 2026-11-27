@@ -3,13 +3,14 @@
 
 use crate::exec::CommandRunner;
 use crate::smart::Severity;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SharesResult {
-    pub checked_at: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub checked_at: Timestamp,
     pub nfs_running: bool,
     pub samba_running: bool,
     pub nfs_shares: usize,
@@ -27,8 +28,8 @@ pub struct SharesFile {
     #[serde(default)]
     pub hosts: BTreeMap<String, SharesResult>,
     /// When the last daily pass ran, even if no host had anything to say.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ran_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::time::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    pub ran_at: Option<Timestamp>,
 }
 
 impl SharesFile {
@@ -43,7 +44,7 @@ impl SharesFile {
     }
 
     /// When any host last gave an answer.
-    pub fn newest_check(&self) -> Option<DateTime<Utc>> {
+    pub fn newest_check(&self) -> Option<Timestamp> {
         self.hosts.values().map(|h| h.checked_at).max()
     }
 }
@@ -100,7 +101,7 @@ fn listing_failure(error: crate::error::AppError) -> Outcome {
 }
 
 /// Asks one host whether its NFS server and Samba run and how many shares need them. Read-only.
-pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
+pub fn check_host(runner: &dyn CommandRunner, now: Timestamp) -> Outcome {
     // `service ... onestatus` is FreeBSD's: a host that answers `uname -s` with anything else is not checked.
     match runner.run_unprivileged("uname", &["-s"]) {
         Ok(out) if out.status == 255 => return Outcome::Failed(first_line(&out.stderr, "could not reach the host")),
@@ -151,7 +152,7 @@ pub struct ShareProblem {
     pub severity: Severity,
     /// `NFS: 2 shares but nfsd is not running; Samba: 1 share but smbd is not running`
     pub text: String,
-    pub checked_at: DateTime<Utc>,
+    pub checked_at: Timestamp,
 }
 
 pub fn problems(file: &SharesFile) -> Vec<ShareProblem> {
@@ -217,7 +218,7 @@ mod tests {
         }))
     }
 
-    fn at(s: &str) -> DateTime<Utc> {
+    fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
     }
 

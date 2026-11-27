@@ -2,24 +2,26 @@
 //! reads it to show whether jobs will fire, and a second daemon reads it to
 //! refuse to start.
 
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 /// A heartbeat older than this means the daemon is not running.
-pub const STALE_AFTER: Duration = Duration::seconds(10);
+pub const STALE_AFTER: SignedDuration = crate::time::seconds(10);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Heartbeat {
     pub pid: u32,
-    pub started_at: DateTime<Utc>,
-    pub last_tick: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub started_at: Timestamp,
+    #[serde(with = "crate::time::rfc3339")]
+    pub last_tick: Timestamp,
 }
 
 impl Heartbeat {
-    pub fn is_fresh(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_fresh(&self, now: Timestamp) -> bool {
         now - self.last_tick < STALE_AFTER
     }
 }
@@ -42,7 +44,7 @@ pub fn read(path: &Path) -> Option<Heartbeat> {
 /// that still exists and is not us. A crashed daemon's heartbeat can still be
 /// fresh for a few seconds, so the process check is what lets a supervisor
 /// restart it immediately.
-pub fn live_other_instance(heartbeat: Option<&Heartbeat>, now: DateTime<Utc>, my_pid: u32, pid_alive: impl Fn(u32) -> bool) -> Option<u32> {
+pub fn live_other_instance(heartbeat: Option<&Heartbeat>, now: Timestamp, my_pid: u32, pid_alive: impl Fn(u32) -> bool) -> Option<u32> {
     heartbeat.filter(|h| h.pid != my_pid && h.is_fresh(now) && pid_alive(h.pid)).map(|h| h.pid)
 }
 
@@ -57,8 +59,8 @@ pub fn process_alive(pid: u32) -> bool {
 mod tests {
     use super::*;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        (s).parse::<jiff::Timestamp>().unwrap()
     }
 
     fn beat(pid: u32, last: &str) -> Heartbeat {

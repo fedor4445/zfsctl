@@ -25,16 +25,16 @@ impl Sink for FakeSink {
     }
 }
 
-fn t(min: i64) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-10-11T00:00:00Z").unwrap().with_timezone(&Utc) + chrono::Duration::minutes(min)
+fn t(min: i64) -> Timestamp {
+    ("2026-10-11T00:00:00Z").parse::<jiff::Timestamp>().unwrap() + crate::time::minutes(min)
 }
 
 fn local(min: i64) -> NaiveDateTime {
-    NaiveDate::from_ymd_opt(2026, 10, 11).unwrap().and_hms_opt(0, 0, 0).unwrap() + chrono::Duration::minutes(min)
+    NaiveDate::new(2026, 10, 11).unwrap().at(0, 0, 0, 0) + crate::time::minutes(min)
 }
 
-fn at_local(h: u32, m: u32) -> NaiveDateTime {
-    NaiveDate::from_ymd_opt(2026, 10, 11).unwrap().and_hms_opt(h, m, 0).unwrap()
+fn at_local(h: i8, m: i8) -> NaiveDateTime {
+    NaiveDate::new(2026, 10, 11).unwrap().at(h, m, 0, 0)
 }
 
 fn settings_with_report(report: &str) -> NotifySettings {
@@ -66,8 +66,8 @@ fn job(id: &str, kind: &str, host: &str) -> Job {
     j
 }
 
-fn run(job: &str, result: Option<RunResult>, msg: &str, at: DateTime<Utc>) -> Run {
-    Run { job_id: job.into(), run_id: format!("{job}-{}", at.timestamp()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: msg.into(), catch_up: false, summary: None }
+fn run(job: &str, result: Option<RunResult>, msg: &str, at: Timestamp) -> Run {
+    Run { job_id: job.into(), run_id: format!("{job}-{}", at.as_second()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: msg.into(), catch_up: false, summary: None }
 }
 
 #[test]
@@ -204,14 +204,14 @@ fn a_retry_that_succeeds_is_not_sent_again() {
 
 #[test]
 fn the_report_is_due_once_per_local_day_from_report_time_on() {
-    let at = NaiveTime::from_hms_opt(7, 0, 0);
-    let day = |d: u32, h: u32, mi: u32| NaiveDate::from_ymd_opt(2026, 10, d).unwrap().and_hms_opt(h, mi, 0).unwrap();
-    let last = NaiveDate::from_ymd_opt(2026, 10, 10);
+    let at = NaiveTime::new(7, 0, 0, 0).ok();
+    let day = |d: i8, h: i8, mi: i8| NaiveDate::new(2026, 10, d).unwrap().at(h, mi, 0, 0);
+    let last = NaiveDate::new(2026, 10, 10).ok();
     assert!(!Monitor::report_due(day(11, 6, 59), at, last), "not yet");
     assert!(Monitor::report_due(day(11, 7, 0), at, last));
     assert!(Monitor::report_due(day(11, 15, 0), at, last), "the daemon was down at 07:00: sent on return");
-    assert!(!Monitor::report_due(day(11, 15, 0), at, NaiveDate::from_ymd_opt(2026, 10, 11)), "already today");
-    assert!(Monitor::report_due(day(12, 7, 0), at, NaiveDate::from_ymd_opt(2026, 10, 11)));
+    assert!(!Monitor::report_due(day(11, 15, 0), at, NaiveDate::new(2026, 10, 11).ok()), "already today");
+    assert!(Monitor::report_due(day(12, 7, 0), at, NaiveDate::new(2026, 10, 11).ok()));
     assert!(!Monitor::report_due(day(11, 9, 0), None, None), "off");
 }
 
@@ -255,7 +255,7 @@ fn a_report_that_keeps_failing_is_given_up_for_the_day_without_being_recorded_as
     let mut sink = FakeSink::failing();
     let mut m = Monitor::new(settings_with_report("07:00"), "hub".into(), dir.path().to_path_buf(), t(0));
     for i in 0..10 {
-        m.observe(t(i * 5), at_local(7, u32::try_from(i).unwrap()), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
+        m.observe(t(i * 5), at_local(7, i8::try_from(i).unwrap()), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
     }
     assert_eq!(reports(&sink), 6, "six attempts, then it stops asking for today");
     assert!(!dir.path().join("notify.json").exists());
@@ -348,17 +348,17 @@ use crate::config::{EmailTiming, ProtectionSettings};
 use crate::daemon::storage_check::{self, Integrity, SeenDataset, StorageFile, StorageResult};
 
 /// Writes `storage.json` with each host's datasets, created `created_ago` before `t(0)` and checked at `t(0)`.
-fn write_storage(dir: &std::path::Path, hosts: &[(&str, &[&str])], created_ago: chrono::Duration) {
+fn write_storage(dir: &std::path::Path, hosts: &[(&str, &[&str])], created_ago: jiff::SignedDuration) {
     let mut file = StorageFile::default();
     for (h, names) in hosts {
-        let seen = names.iter().map(|n| SeenDataset { name: (*n).into(), volume: false, created: Some((t(0) - created_ago).timestamp()) }).collect();
+        let seen = names.iter().map(|n| SeenDataset { name: (*n).into(), volume: false, created: Some((t(0) - created_ago).as_second()) }).collect();
         file.hosts.insert((*h).into(), StorageResult { checked_at: t(0), datasets: vec![], seen, pools: vec![], integrity: Integrity::default(), locked: vec![], integrity_stale: false, zfs_version: None, error: None });
     }
     file.save(&dir.join(storage_check::FILE)).unwrap();
 }
 
-fn week() -> chrono::Duration {
-    chrono::Duration::days(7)
+fn week() -> jiff::SignedDuration {
+    crate::time::days(7)
 }
 
 fn guarding(email: EmailTiming) -> (Monitor, PathBuf) {
@@ -464,7 +464,7 @@ fn protection_reminders_are_at_most_daily() {
 #[test]
 fn a_dataset_in_its_grace_sends_nothing() {
     let (mut m, dir) = guarding(EmailTiming::Immediate);
-    write_storage(&dir, &[("a", &["tank/new"])], chrono::Duration::hours(1));
+    write_storage(&dir, &[("a", &["tank/new"])], crate::time::hours(1));
     let hosts = [host("a")];
     let mut sink = FakeSink::new();
     for i in 0..4 {
@@ -602,7 +602,7 @@ fn judge_reachable_says_which_hosts_were_not_checked_and_why() {
     let dir = tempfile::tempdir().unwrap();
     write_storage(dir.path(), &[("a", &["tank/x"]), ("down", &["tank/y"]), ("old", &["tank/z"])], week());
     let mut file = StorageFile::load(&dir.path().join(storage_check::FILE));
-    file.hosts.get_mut("old").unwrap().checked_at = t(0) - chrono::Duration::days(3);
+    file.hosts.get_mut("old").unwrap().checked_at = t(0) - crate::time::days(3);
     let hosts = [host("a"), host("down"), host("new"), host("old")];
     let probed = [probed_ok("a"), probed_bad("down"), probed_ok("new"), probed_ok("old")];
     let rows = build_rows(&hosts, &probed, &HashMap::new(), &[], &[]);
@@ -644,7 +644,7 @@ fn a_dataset_destroyed_and_made_again_is_new_not_protected_again() {
         m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
     }
     assert_eq!(protection_mail(&sink).len(), 1);
-    write_storage(&dir, &[("a", &["tank/x"])], chrono::Duration::hours(1));
+    write_storage(&dir, &[("a", &["tank/x"])], crate::time::hours(1));
     for i in 2..6 {
         m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
     }
@@ -659,12 +659,12 @@ fn a_dataset_destroyed_and_made_again_is_new_not_protected_again() {
         m.observe(t(i * 5), local(i * 5), &hosts, &[probed_ok("a")], &[], &[], &mut sink);
     }
     assert_eq!(protection_mail(&sink).len(), 1);
-    write_storage(&dir, &[("a", &["tank/x"])], chrono::Duration::minutes(-10));
+    write_storage(&dir, &[("a", &["tank/x"])], crate::time::minutes(-10));
     let later = t(26 * 60);
     let (jobs, _) = protecting("a", &["tank/x"]);
-    let runs: Vec<Run> = jobs.iter().map(|j| run(&j.id, Some(RunResult::Ok), "", later - chrono::Duration::minutes(10))).collect();
+    let runs: Vec<Run> = jobs.iter().map(|j| run(&j.id, Some(RunResult::Ok), "", later - crate::time::minutes(10))).collect();
     for i in 0..3 {
-        m.observe(later + chrono::Duration::minutes(i * 5), local(26 * 60 + i * 5), &hosts, &[probed_ok("a")], &jobs, &runs, &mut sink);
+        m.observe(later + crate::time::minutes(i * 5), local(26 * 60 + i * 5), &hosts, &[probed_ok("a")], &jobs, &runs, &mut sink);
     }
     assert_eq!(protection_mail(&sink).len(), 1, "{:?}", sink.sent);
 }
@@ -753,7 +753,7 @@ fn report_wait_says_how_long_until_the_report_is_due() {
     assert_eq!(m.report_wait(at_local(15, 0)), Some(Duration::ZERO), "overdue: sent as soon as a tick runs");
     m.mark_report_sent(at_local(7, 1).date(), false);
     assert_eq!(m.report_wait(at_local(8, 0)), None, "sent today");
-    let next_day = at_local(0, 5) + chrono::Duration::days(1);
+    let next_day = at_local(0, 5) + crate::time::days(1);
     assert_eq!(m.report_wait(next_day), Some(Duration::from_secs(6 * 3600 + 55 * 60)), "after midnight the wait is for the next 07:00");
     assert_eq!(monitor().report_wait(at_local(6, 0)), None, "no report configured");
 }

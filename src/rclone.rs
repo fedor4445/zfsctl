@@ -1,7 +1,7 @@
 //! The pure parts of the cloud mirror job: validating a remote and a speed limit, building the `rclone`
 //! argument lists, reading its output, and the overlap rule. Running it is `daemon::mirror`'s job.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 fn plain(s: &str) -> bool {
     !s.chars().any(|c| matches!(c, '\0' | '\n' | '\r'))
@@ -41,8 +41,8 @@ pub fn join(remote: &str, tail: &str) -> String {
 }
 
 /// `YYYYMMDDTHHMMSSZ` in UTC: names the `old/` folder of one run.
-pub fn run_stamp(at: DateTime<Utc>) -> String {
-    at.format("%Y%m%dT%H%M%SZ").to_string()
+pub fn run_stamp(at: Timestamp) -> String {
+    at.strftime("%Y%m%dT%H%M%SZ").to_string()
 }
 
 /// `rclone sync SOURCE REMOTE/current --backup-dir REMOTE/old/STAMP`: what the sync would replace or delete is
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn the_stamp_is_utc_to_the_second() {
-        let at = DateTime::parse_from_rfc3339("2026-10-17T03:05:09Z").unwrap().with_timezone(&Utc);
+        let at = ("2026-10-17T03:05:09Z").parse::<jiff::Timestamp>().unwrap();
         assert_eq!(run_stamp(at), "20261017T030509Z");
     }
 

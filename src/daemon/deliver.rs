@@ -2,7 +2,7 @@
 
 use super::notify::{run_command, NotifyError};
 use crate::config::NotifySettings;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::time::Duration;
 
 pub const TIMEOUT: Duration = Duration::from_secs(30);
@@ -41,14 +41,14 @@ pub fn default_from() -> String {
     format!("zfsctl@{}", ascii_line(&host))
 }
 
-pub fn compose_mail(from: &str, to: &[String], subject: &str, body: &str, now: DateTime<Utc>) -> String {
+pub fn compose_mail(from: &str, to: &[String], subject: &str, body: &str, now: Timestamp) -> String {
     let to: Vec<String> = to.iter().map(|a| ascii_line(a)).collect();
     format!(
         "From: {}\nTo: {}\nSubject: {}\nDate: {}\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: 8bit\n\n{}",
         ascii_line(from),
         to.join(", "),
         cap_subject(subject),
-        now.to_rfc2822(),
+        jiff::fmt::rfc2822::to_string(&now.to_zoned_datetime(jiff::tz::TimeZone::UTC)).unwrap_or_default(),
         cap_body_lines(body),
     )
 }
@@ -103,7 +103,7 @@ fn cap_body_lines(body: &str) -> String {
 
 /// Sends `msg` on every configured channel (one `Delivery` each; none when nothing is configured). One channel
 /// failing does not stop the other.
-pub fn send(settings: &NotifySettings, hook: Option<&str>, msg: &Message, now: DateTime<Utc>, timeout: Duration) -> Vec<Delivery> {
+pub fn send(settings: &NotifySettings, hook: Option<&str>, msg: &Message, now: Timestamp, timeout: Duration) -> Vec<Delivery> {
     let mut out = Vec::new();
     if settings.has_mail() {
         let from = settings.mail_from.clone().unwrap_or_else(default_from);
@@ -137,8 +137,8 @@ mod tests {
         Message { kind: "health-alert".into(), host: "fbsd16".into(), level: "critical".into(), subject: subject.into(), body: body.into() }
     }
 
-    fn at() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-11T07:00:00Z").unwrap().with_timezone(&Utc)
+    fn at() -> Timestamp {
+        ("2026-10-11T07:00:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
     #[test]

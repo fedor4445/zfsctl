@@ -211,8 +211,8 @@ fn form_values(app: &App) -> Vec<String> {
     }
 }
 
-fn at_utc(s: &str) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&chrono::Utc)
+fn at_utc(s: &str) -> jiff::Timestamp {
+    (s).parse::<jiff::Timestamp>().unwrap()
 }
 
 fn job_kind(existing: Option<crate::jobs::Job>, taken: &[&str]) -> FormKind {
@@ -278,7 +278,7 @@ fn snap_fields(values: [&str; 7]) -> Vec<FormField> {
 }
 
 fn snap_err(values: [&str; 7], jobs: Vec<crate::jobs::Job>) -> String {
-    build_snapshot_job_action(&snapshot_kind(None, jobs), &snap_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err()
+    build_snapshot_job_action(&snapshot_kind(None, jobs), &snap_fields(values), std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap_err()
 }
 
 fn repl_kind(existing: Option<crate::jobs::Job>, jobs: Vec<crate::jobs::Job>) -> FormKind {
@@ -512,7 +512,7 @@ fn mirror_fields(values: [&str; 9]) -> Vec<FormField> {
 }
 
 fn mirror_build(values: [&str; 9], jobs: Vec<crate::jobs::Job>) -> std::result::Result<PendingAction, String> {
-    build_mirror_job_action(&mirror_kind(None, jobs), &mirror_fields(values), std::path::Path::new("/state"), chrono::Utc::now())
+    build_mirror_job_action(&mirror_kind(None, jobs), &mirror_fields(values), std::path::Path::new("/state"), jiff::Timestamp::now())
 }
 
 // ---- Cloud ----
@@ -557,11 +557,11 @@ fn unprotected_app(names: &[&str]) -> App {
     let (mut app, dir) = dash_app();
     std::mem::forget(dir);
     app.jobs_view.loaded = true;
-    app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now() - chrono::Duration::days(1), last_tick: chrono::Utc::now() });
+    app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: jiff::Timestamp::now() - crate::time::days(1), last_tick: jiff::Timestamp::now() });
     app.host_probes.insert("local".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
-    let created = Some((chrono::Utc::now() - chrono::Duration::days(7)).timestamp());
+    let created = Some((jiff::Timestamp::now() - crate::time::days(7)).as_second());
     let seen = names.iter().map(|n| crate::daemon::storage_check::SeenDataset { name: (*n).into(), volume: false, created }).collect();
-    let entry = crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
+    let entry = crate::daemon::storage_check::StorageResult { checked_at: jiff::Timestamp::now(), datasets: vec![], seen, pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None };
     app.storage_check.hosts.insert("local".into(), entry);
     app
 }

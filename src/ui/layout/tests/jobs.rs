@@ -27,7 +27,7 @@ fn a_job(id: &str, schedule: &str) -> crate::jobs::Job {
 fn the_jobs_table_shows_each_job_with_its_schedule_next_run_and_last_result() {
     let (mut app, dir) = jobs_app(&[a_job("scrub-local-tank", "0 3 * * 0"), a_job("custom", "*/10 * * * *")]);
     let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
-    let when = chrono::Utc::now() - chrono::Duration::hours(2);
+    let when = jiff::Timestamp::now() - crate::time::hours(2);
     h.append(&crate::daemon::history::Event { job_id: "scrub-local-tank".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Finished, at: when, scheduled_for: Some(when), result: Some(crate::daemon::history::RunResult::Ok), message: String::new(), catch_up: false, summary: None }).unwrap();
     app.refresh_jobs();
     let text = render(&mut app, 120, 30).join("\n");
@@ -39,9 +39,9 @@ fn the_jobs_table_shows_each_job_with_its_schedule_next_run_and_last_result() {
 #[test]
 fn the_next_run_column_is_wide_enough_for_the_whole_time() {
     let (mut app, _dir) = jobs_app(&[a_job("a", "* * * * *")]);
-    let before = crate::ui::jobs::next_run_text("* * * * *", &chrono::Local::now());
+    let before = crate::ui::jobs::next_run_text("* * * * *", &jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()));
     let text = render(&mut app, 120, 30).join("\n");
-    let after = crate::ui::jobs::next_run_text("* * * * *", &chrono::Local::now());
+    let after = crate::ui::jobs::next_run_text("* * * * *", &jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()));
     assert!(text.contains(&before) || text.contains(&after), "the next-run time is cut off (wanted {before:?} or {after:?}):\n{text}");
 }
 
@@ -62,7 +62,7 @@ fn the_jobs_title_says_whether_the_daemon_is_running() {
     let (mut app, dir) = jobs_app(&[a_job("a", "0 3 * * 0")]);
     let text = render(&mut app, 120, 30).join("\n");
     assert!(text.contains("daemon NOT running"), "{text}");
-    crate::daemon::heartbeat::write(&dir.path().join("daemon.json"), &crate::daemon::heartbeat::Heartbeat { pid: 4242, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() }).unwrap();
+    crate::daemon::heartbeat::write(&dir.path().join("daemon.json"), &crate::daemon::heartbeat::Heartbeat { pid: 4242, started_at: jiff::Timestamp::now(), last_tick: jiff::Timestamp::now() }).unwrap();
     app.refresh_jobs();
     let text = render(&mut app, 120, 30).join("\n");
     assert!(text.contains("daemon running (pid 4242)"), "{text}");
@@ -109,7 +109,7 @@ fn the_job_forms_preview_follows_what_is_typed_and_shows_a_parse_error() {
 }
 
 fn history_event(job_id: &str, run_id: &str, kind: crate::daemon::history::EventKind, ago_mins: i64, result: Option<crate::daemon::history::RunResult>, message: &str) -> crate::daemon::history::Event {
-    let at = chrono::Utc::now() - chrono::Duration::minutes(ago_mins);
+    let at = jiff::Timestamp::now() - crate::time::minutes(ago_mins);
     crate::daemon::history::Event { job_id: job_id.into(), run_id: run_id.into(), event: kind, at, scheduled_for: Some(at), result, message: message.into(), catch_up: false, summary: None }
 }
 
@@ -236,7 +236,7 @@ fn a_replicate_job_with_dest_keep_says_how_many_it_keeps_on_the_target() {
 fn a_replicate_job_shows_its_source_as_the_target_and_destination_prefix_and_progress_in_the_panel() {
     let repl = crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "local", "backup/data");
     let (mut app, dir) = jobs_app(&[repl]);
-    let p = crate::daemon::progress::Progress { job_id: "r".into(), bytes: 5, total: Some(10), started_at: chrono::Utc::now(), updated_at: chrono::Utc::now(), rate: None };
+    let p = crate::daemon::progress::Progress { job_id: "r".into(), bytes: 5, total: Some(10), started_at: jiff::Timestamp::now(), updated_at: jiff::Timestamp::now(), rate: None };
     crate::daemon::progress::write(&dir.path().join("progress"), "run1", &p).unwrap();
     app.refresh_jobs();
     app.handle_key(crossterm::event::KeyCode::Down);

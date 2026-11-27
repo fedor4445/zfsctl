@@ -5,7 +5,7 @@
 use super::shares_check::{self, SharesFile};
 use super::smart_check::{self, SmartFile};
 use crate::exec::CommandRunner;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,8 +25,10 @@ const GONE_SHARES: &str = "the shares check no longer works on this host";
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Marker {
     pub by: String,
-    pub since: DateTime<Utc>,
-    pub beat: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub since: Timestamp,
+    #[serde(with = "crate::time::rfc3339")]
+    pub beat: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
 }
@@ -53,7 +55,7 @@ fn claim_marker(dir: &Path, marker: &Marker) -> bool {
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let taken = match read_marker(dir) {
-                    Some(other) => (marker.since - other.beat).num_seconds() <= STALE_AFTER_SECS,
+                    Some(other) => (marker.since - other.beat).as_secs() <= STALE_AFTER_SECS,
                     // Unreadable: a claimant may be between creating the file and writing it.
                     None => std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age < Duration::from_secs(5)),
                 };
@@ -75,8 +77,8 @@ pub fn read_marker(dir: &Path) -> Option<Marker> {
 }
 
 /// The marker of a check that is running now: present, readable and with a heartbeat younger than `STALE_AFTER_SECS`.
-pub fn fresh_marker(dir: &Path, now: DateTime<Utc>) -> Option<Marker> {
-    read_marker(dir).filter(|m| (now - m.beat).num_seconds() <= STALE_AFTER_SECS)
+pub fn fresh_marker(dir: &Path, now: Timestamp) -> Option<Marker> {
+    read_marker(dir).filter(|m| (now - m.beat).as_secs() <= STALE_AFTER_SECS)
 }
 
 /// Holds the marker for as long as it lives: writes it, keeps its heartbeat going, and removes it on drop (also on a
@@ -95,7 +97,7 @@ impl RunGuard {
     }
 
     pub fn start_with(dir: &Path, by: &str, host: Option<&str>, beat_every: Duration) -> Option<RunGuard> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mine = Marker { by: by.to_string(), since: now, beat: now, host: host.map(str::to_string) };
         if !claim_marker(dir, &mine) {
             return None;
@@ -126,7 +128,7 @@ fn beat_loop(dir: &Path, mine: &Marker, stop: &std::sync::atomic::AtomicBool, ev
         last = std::time::Instant::now();
         match read_marker(dir) {
             Some(on_disk) if is_mine(&on_disk, mine) => {
-                let _ = write_marker(dir, &Marker { beat: Utc::now(), ..on_disk });
+                let _ = write_marker(dir, &Marker { beat: Timestamp::now(), ..on_disk });
             }
             _ => return,
         }
@@ -155,7 +157,7 @@ pub struct HostChecks {
 /// Disks first, then shares, one after the other on the one host. Only the tests use this: the real runs ask the two
 /// halves at once (`collect`), so a slow disk cannot take the shares answer with it.
 #[cfg(test)]
-pub fn check_one_host(runner: &dyn CommandRunner, now: DateTime<Utc>, previous_disks: Option<&smart_check::HostResult>, _previous_shares: Option<&shares_check::SharesResult>) -> HostChecks {
+pub fn check_one_host(runner: &dyn CommandRunner, now: Timestamp, previous_disks: Option<&smart_check::HostResult>, _previous_shares: Option<&shares_check::SharesResult>) -> HostChecks {
     HostChecks { disks: smart_check::check_host(runner, now, previous_disks, smart_check::HOST_BUDGET), shares: shares_check::check_host(runner, now) }
 }
 
@@ -212,7 +214,7 @@ enum Half {
 /// the files as it arrives. A half that has not answered by `deadline` is recorded as failed (the previous entry stays,
 /// with a note); the other half is kept. Returns what each host answered, in the order of `hosts`. Does not prune hosts
 /// or date the run: that is `run_pass`.
-pub fn collect(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: Duration) -> Vec<(String, HostChecks)> {
+pub fn collect(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: Timestamp, deadline: Duration) -> Vec<(String, HostChecks)> {
     let smart_before = SmartFile::load(&dir.join("smart.json"));
     let (tx, rx) = std::sync::mpsc::channel();
     let mut tasks: Vec<crate::daemon::workers::Task> = Vec::new();
@@ -318,7 +320,7 @@ pub struct PassSummary {
 
 /// The daily pass: both checks on every host at once, each answer merged as it arrives, hosts that have not answered by
 /// `deadline` recorded as failed, entries of hosts that are gone from the configuration dropped, and `ran_at` set.
-pub fn run_pass(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: Duration) -> PassSummary {
+pub fn run_pass(dir: &Path, hosts: &[(String, Arc<dyn CommandRunner>)], now: Timestamp, deadline: Duration) -> PassSummary {
     collect(dir, hosts, now, deadline);
     let mut smart = SmartFile::load(&dir.join("smart.json"));
     let mut shares = SharesFile::load(&dir.join("shares.json"));
@@ -340,7 +342,7 @@ mod tests {
     use crate::exec::CommandOutput;
     use crate::smart::{Disk, Problem, Severity};
 
-    fn at(s: &str) -> DateTime<Utc> {
+    fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
     }
 
@@ -409,7 +411,7 @@ mod tests {
     fn a_guard_dropped_after_another_run_took_the_file_over_leaves_the_others_marker() {
         let dir = tempfile::tempdir().unwrap();
         let guard = RunGuard::start_with(dir.path(), "tui", None, Duration::from_secs(60)).unwrap();
-        let other = Marker { by: "daemon".into(), since: Utc::now() + chrono::Duration::seconds(5), beat: Utc::now(), host: None };
+        let other = Marker { by: "daemon".into(), since: Timestamp::now() + crate::time::seconds(5), beat: Timestamp::now(), host: None };
         write_marker(dir.path(), &other).unwrap();
         drop(guard);
         assert_eq!(read_marker(dir.path()), Some(other));
@@ -490,7 +492,7 @@ mod tests {
         let first = RunGuard::start_with(dir.path(), "tui", None, Duration::from_secs(60)).expect("free");
         assert!(RunGuard::start_with(dir.path(), "daemon", None, Duration::from_secs(60)).is_none(), "a fresh marker is not taken over");
         drop(first);
-        let old = Utc::now() - chrono::Duration::minutes(10);
+        let old = Timestamp::now() - crate::time::minutes(10);
         write_marker(dir.path(), &Marker { by: "daemon".into(), since: old, beat: old, host: None }).unwrap();
         assert!(RunGuard::start_with(dir.path(), "tui", None, Duration::from_secs(60)).is_some(), "a run that died does not block");
         let racing = tempfile::tempdir().unwrap();

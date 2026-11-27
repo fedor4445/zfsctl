@@ -3,7 +3,7 @@
 
 use crate::daemon::cron::Schedule;
 use crate::jobs::{self, Job};
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 
 /// A job that should start now.
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 pub struct Due {
     pub job: Job,
     /// The scheduled slot this run is for.
-    pub scheduled_for: DateTime<Utc>,
+    pub scheduled_for: Timestamp,
     /// True when this run makes up a slot missed while the daemon was down.
     pub catch_up: bool,
 }
@@ -27,28 +27,30 @@ struct Entry {
     job: Job,
     schedule: Schedule,
     /// Slots at or before this have been dealt with (or predate the job).
-    baseline: DateTime<Utc>,
-    next: Option<DateTime<Utc>>,
+    baseline: Timestamp,
+    next: Option<Timestamp>,
 }
 
-pub struct Scheduler<Tz: TimeZone> {
-    tz: Tz,
+pub struct Scheduler {
+    /// Asked for the zone at every calculation, so a change of the host's zone applies from the next slot without a
+    /// restart (as with chrono's `Local`).
+    zone: Box<dyn Fn() -> jiff::tz::TimeZone + Send + Sync>,
     entries: Vec<Entry>,
 }
 
-impl<Tz: TimeZone> Scheduler<Tz> {
-    pub fn new(tz: Tz) -> Self {
-        Scheduler { tz, entries: Vec::new() }
+impl Scheduler {
+    pub fn new(zone: impl Fn() -> jiff::tz::TimeZone + Send + Sync + 'static) -> Self {
+        Scheduler { zone: Box::new(zone), entries: Vec::new() }
     }
 
-    fn next_after(&self, schedule: &Schedule, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        schedule.next_after(&after.with_timezone(&self.tz)).map(|t| t.with_timezone(&Utc))
+    fn next_after(&self, schedule: &Schedule, after: Timestamp) -> Option<Timestamp> {
+        schedule.next_after(&after.to_zoned_datetime((self.zone)())).map(|t| t.timestamp())
     }
 
     /// Replaces the job set. A job whose definition is unchanged keeps its
     /// pending time; a new or edited one starts from `now`. Disabled jobs are
     /// left out silently; jobs the daemon cannot run are returned with the reason.
-    pub fn reload(&mut self, jobs: Vec<Job>, hosts: &[String], last_scheduled: &HashMap<String, DateTime<Utc>>, now: DateTime<Utc>) -> Vec<Unsupported> {
+    pub fn reload(&mut self, jobs: Vec<Job>, hosts: &[String], last_scheduled: &HashMap<String, Timestamp>, now: Timestamp) -> Vec<Unsupported> {
         let mut old = std::mem::take(&mut self.entries);
         let mut unsupported = Vec::new();
         let clashes = jobs::duplicate_prefix_reasons(&jobs);
@@ -81,14 +83,14 @@ impl<Tz: TimeZone> Scheduler<Tz> {
     /// Run once when the daemon starts: every catch-up job whose latest
     /// scheduled slot is newer than its baseline is due now, however many
     /// slots were missed.
-    pub fn catch_up(&mut self, now: DateTime<Utc>) -> Vec<Due> {
+    pub fn catch_up(&mut self, now: Timestamp) -> Vec<Due> {
         let mut due = Vec::new();
         for i in 0..self.entries.len() {
             let Some(entry) = self.entries.get(i) else { continue };
             if !entry.job.catch_up {
                 continue;
             }
-            let latest = entry.schedule.latest_at_or_before(&now.with_timezone(&self.tz)).map(|t| t.with_timezone(&Utc));
+            let latest = entry.schedule.latest_at_or_before(&now.to_zoned_datetime((self.zone)())).map(|t| t.timestamp());
             if let Some(slot) = latest.filter(|slot| *slot > entry.baseline) {
                 due.push(Due { job: entry.job.clone(), scheduled_for: slot, catch_up: true });
             }
@@ -100,7 +102,7 @@ impl<Tz: TimeZone> Scheduler<Tz> {
     /// slot: afterwards its next time is computed from the later of `now` and
     /// the slot, so a stalled tick fires once (not once per missed slot) and a
     /// clock stepped backwards cannot fire a slot twice.
-    pub fn tick(&mut self, now: DateTime<Utc>) -> Vec<Due> {
+    pub fn tick(&mut self, now: Timestamp) -> Vec<Due> {
         let mut due = Vec::new();
         for i in 0..self.entries.len() {
             let Some(entry) = self.entries.get(i) else { continue };
@@ -116,7 +118,7 @@ impl<Tz: TimeZone> Scheduler<Tz> {
 
     /// When `id` next fires.
     #[cfg(test)]
-    pub fn next_time(&self, id: &str) -> Option<DateTime<Utc>> {
+    pub fn next_time(&self, id: &str) -> Option<Timestamp> {
         self.entries.iter().find(|e| e.job.id == id).and_then(|e| e.next)
     }
 
@@ -131,8 +133,8 @@ mod tests {
     use super::*;
     use crate::jobs::KIND_SCRUB;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        (s).parse::<jiff::Timestamp>().unwrap()
     }
 
     fn job(id: &str, schedule: &str) -> Job {
@@ -165,9 +167,9 @@ mod tests {
         vec!["local".to_string()]
     }
 
-    fn loaded(jobs: Vec<Job>, last: &[(&str, &str)], now: &str) -> Scheduler<Utc> {
-        let mut s = Scheduler::new(Utc);
-        let last: HashMap<String, DateTime<Utc>> = last.iter().map(|(k, v)| ((*k).to_string(), at(v))).collect();
+    fn loaded(jobs: Vec<Job>, last: &[(&str, &str)], now: &str) -> Scheduler {
+        let mut s = Scheduler::new(|| jiff::tz::TimeZone::UTC);
+        let last: HashMap<String, Timestamp> = last.iter().map(|(k, v)| ((*k).to_string(), at(v))).collect();
         assert!(s.reload(jobs, &hosts(), &last, at(now)).is_empty());
         s
     }
@@ -180,10 +182,28 @@ mod tests {
         kind.kind = "restic".to_string();
         let mut off = job("off", "0 3 * * *");
         off.enabled = false;
-        let mut s = Scheduler::new(Utc);
+        let mut s = Scheduler::new(|| jiff::tz::TimeZone::UTC);
         let report = s.reload(vec![job("ok", "0 3 * * *"), bad_host, kind, off], &hosts(), &HashMap::new(), at("2026-10-06T00:00:00Z"));
         assert_eq!(report.iter().map(|u| u.id.as_str()).collect::<Vec<_>>(), vec!["bad-host", "kind"]);
         assert_eq!(s.len(), 1, "only the enabled, runnable job is scheduled");
+    }
+
+    #[test]
+    fn a_change_of_the_hosts_zone_applies_from_the_next_slot_without_a_restart() {
+        // What `tzsetup` does to a running daemon: the zone it reads changes; chrono followed that, so must this.
+        let zone = std::sync::Arc::new(std::sync::Mutex::new(jiff::tz::TimeZone::UTC));
+        let source = std::sync::Arc::clone(&zone);
+        let mut s = Scheduler::new(move || source.lock().unwrap().clone());
+        assert!(s.reload(vec![job("j", "0 3 * * *")], &hosts(), &HashMap::new(), at("2026-10-06T02:00:00Z")).is_empty());
+        assert_eq!(s.tick(at("2026-10-06T03:00:00Z")).len(), 1);
+        *zone.lock().unwrap() = jiff::tz::TimeZone::fixed(jiff::tz::offset(-5));
+        assert_eq!(s.tick(at("2026-10-06T03:00:01Z")).len(), 0);
+        // The slot after the change was computed when the 03:00 UTC run fired, before the change: it stays.
+        assert_eq!(s.next_time("j"), Some(at("2026-10-07T03:00:00Z")));
+        assert_eq!(s.tick(at("2026-10-07T03:00:00Z")).len(), 1);
+        // From then on, 03:00 is 03:00 in the new zone: that run (03:00 UTC) was 22:00 on the 6th there, so 03:00 local
+        // on the 7th is still ahead, at 08:00 UTC.
+        assert_eq!(s.next_time("j"), Some(at("2026-10-07T08:00:00Z")));
     }
 
     #[test]
@@ -274,7 +294,7 @@ mod tests {
 
     #[test]
     fn the_later_of_two_snapshot_jobs_with_one_host_dataset_and_prefix_is_unsupported() {
-        let mut s = Scheduler::new(Utc);
+        let mut s = Scheduler::new(|| jiff::tz::TimeZone::UTC);
         let a = Job::test_snapshot("a", "tank/data", "hourly", 3);
         let b = Job::test_snapshot("b", "tank/data", "hourly", 5);
         let unsupported = s.reload(vec![a, b], &hosts(), &HashMap::new(), at("2026-10-06T00:00:00Z"));

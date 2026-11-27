@@ -1,12 +1,12 @@
 //! The data-safety graph in words: the one line the Dashboard shows and the trees of its pop-up.
 
 use crate::daemon::safety::{Body, PlaceKind};
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 
 /// How old something is: `10 min`, `3 h`, `2 d`; `unknown` when a hop on the way never succeeded.
-pub fn span(age: Option<Duration>) -> String {
+pub fn span(age: Option<SignedDuration>) -> String {
     let Some(age) = age else { return "unknown".to_string() };
-    let minutes = age.num_minutes().max(0);
+    let minutes = age.as_mins().max(0);
     match minutes {
         0 => "now".to_string(),
         m if m < 60 => format!("{m} min"),
@@ -35,10 +35,10 @@ fn failures(n: usize) -> String {
 
 /// How the weakest body reads on the Dashboard, and whether it is worth a yellow: `None` when no dataset has a copy yet.
 /// The weakest is the first of `bodies` (they come weakest first).
-pub fn summary(bodies: &[Body], now: DateTime<Utc>) -> Option<(bool, String)> {
+pub fn summary(bodies: &[Body], now: Timestamp) -> Option<(bool, String)> {
     let weakest = bodies.first()?;
     let readings: Vec<_> = (1..weakest.places.len()).map(|i| weakest.reading(i, now)).collect();
-    let oldest = readings.iter().map(|r| r.age).try_fold(Duration::zero(), |acc, age| age.map(|a| acc.max(a)));
+    let oldest = readings.iter().map(|r| r.age).try_fold(SignedDuration::ZERO, |acc, age| age.map(|a| acc.max(a)));
     let attention = readings.iter().any(|r| !r.current || r.age.is_none()) || weakest.tolerates(now) == 0;
     let id = weakest.places.first().map_or("?", |p| p.id.as_str());
     let many = if bodies.len() == 1 { "1 data set has copies".to_string() } else { format!("{} data sets have copies", bodies.len()) };
@@ -47,8 +47,8 @@ pub fn summary(bodies: &[Body], now: DateTime<Utc>) -> Option<(bool, String)> {
 
 /// One body as a tree: the original with what it tolerates, then each place with its kind, the age of the data there and
 /// whether the way to it is current; and what stops being fed if a place fails.
-pub fn tree(body: &Body, now: DateTime<Utc>) -> Vec<String> {
-    fn walk(body: &Body, at: usize, prefix: &str, now: DateTime<Utc>, lines: &mut Vec<String>) {
+pub fn tree(body: &Body, now: Timestamp) -> Vec<String> {
+    fn walk(body: &Body, at: usize, prefix: &str, now: Timestamp, lines: &mut Vec<String>) {
         let children: Vec<usize> = body.edges.iter().filter(|e| e.from == at).map(|e| e.to).collect();
         for (n, child) in children.iter().enumerate() {
             let last = n + 1 == children.len();
@@ -77,7 +77,7 @@ pub fn tree(body: &Body, now: DateTime<Utc>) -> Vec<String> {
 }
 
 /// The whole pop-up: every body's tree, the weakest first.
-pub fn popup(bodies: &[Body], now: DateTime<Utc>) -> String {
+pub fn popup(bodies: &[Body], now: Timestamp) -> String {
     const SHOWN: usize = 200;
     if bodies.is_empty() {
         return "No dataset has a copy yet: the data lives only where it is.\n\nA replication, a backup or a cloud mirror job makes the first one (Jobs).".to_string();
@@ -101,20 +101,20 @@ mod tests {
     use crate::daemon::safety::bodies;
     use crate::jobs::Job;
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-24T12:00:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> Timestamp {
+        ("2026-10-24T12:00:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
-    fn ok_at(job: &str, ago: Duration) -> Run {
+    fn ok_at(job: &str, ago: SignedDuration) -> Run {
         let at = now() - ago;
-        Run { job_id: job.into(), run_id: format!("{job}-{}", ago.num_minutes()), started_at: at, scheduled_for: None, finished_at: Some(at), result: Some(RunResult::Ok), message: String::new(), catch_up: false, summary: None }
+        Run { job_id: job.into(), run_id: format!("{job}-{}", ago.as_mins()), started_at: at, scheduled_for: None, finished_at: Some(at), result: Some(RunResult::Ok), message: String::new(), catch_up: false, summary: None }
     }
 
     fn on(host: &str, job: Job) -> Job {
         Job { host: host.into(), ..job }
     }
 
-    fn chain(replica_ago: Duration, mirror_ago: Duration) -> Vec<Body> {
+    fn chain(replica_ago: SignedDuration, mirror_ago: SignedDuration) -> Vec<Body> {
         let jobs = vec![on("a", Job::test_replicate("r", "tank/data", "rep", "b", "tank/copy")), on("b", Job::test_mirror("m", "tank/copy", "m", "b2:bkt/x"))];
         let runs = vec![ok_at("r", replica_ago), ok_at("m", mirror_ago)];
         bodies(&jobs, &runs, &ProtectionSettings::default(), &|h| h.to_string(), now())
@@ -122,12 +122,12 @@ mod tests {
 
     #[test]
     fn spans_are_short_and_say_unknown_when_they_are() {
-        assert_eq!([span(Some(Duration::seconds(20))), span(Some(Duration::minutes(10))), span(Some(Duration::hours(3))), span(Some(Duration::hours(47))), span(Some(Duration::days(3))), span(None)], ["now", "10 min", "3 h", "47 h", "3 d", "unknown"]);
+        assert_eq!([span(Some(crate::time::seconds(20))), span(Some(crate::time::minutes(10))), span(Some(crate::time::hours(3))), span(Some(crate::time::hours(47))), span(Some(crate::time::days(3))), span(None)], ["now", "10 min", "3 h", "47 h", "3 d", "unknown"]);
     }
 
     #[test]
     fn a_chain_is_drawn_as_a_tree_with_what_depends_on_what() {
-        let all = chain(Duration::minutes(10), Duration::hours(3));
+        let all = chain(crate::time::minutes(10), crate::time::hours(3));
         assert_eq!(
             tree(&all[0], now()),
             [
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn branches_are_drawn_apart_and_a_stopped_or_never_run_job_is_said() {
         let jobs = vec![on("a", Job::test_replicate("r", "tank/data", "rep", "b", "tank/copy")), on("a", Job::test_mirror("m", "tank/data", "m", "b2:bkt/x")), on("a", Job::test_backup("k", "tank/data", "bk", "sftp:nas:/r", "/pw"))];
-        let runs = vec![ok_at("r", Duration::minutes(5)), ok_at("m", Duration::days(4))];
+        let runs = vec![ok_at("r", crate::time::minutes(5)), ok_at("m", crate::time::days(4))];
         let all = bodies(&jobs, &runs, &ProtectionSettings::default(), &|h| h.to_string(), now());
         assert_eq!(
             tree(&all[0], now()),
@@ -152,17 +152,17 @@ mod tests {
 
     #[test]
     fn the_dashboard_line_names_the_weakest_data_and_is_yellow_when_something_is_not_current() {
-        let (attention, text) = summary(&chain(Duration::minutes(10), Duration::hours(3)), now()).unwrap();
+        let (attention, text) = summary(&chain(crate::time::minutes(10), crate::time::hours(3)), now()).unwrap();
         assert_eq!(text, "weakest: a:tank/data  tolerates 2 failures  · oldest copy 3 h · 1 data set has copies");
         assert!(!attention);
-        let (attention, text) = summary(&chain(Duration::minutes(10), Duration::days(5)), now()).unwrap();
+        let (attention, text) = summary(&chain(crate::time::minutes(10), crate::time::days(5)), now()).unwrap();
         assert!(attention && text.contains("tolerates 1 failure") && text.contains("oldest copy 5 d"), "{text}");
         assert!(summary(&[], now()).is_none(), "nothing to say when no dataset has a copy");
     }
 
     #[test]
     fn the_popup_explains_itself_lists_every_body_and_says_so_when_there_is_none() {
-        let text = popup(&chain(Duration::minutes(10), Duration::hours(3)), now());
+        let text = popup(&chain(crate::time::minutes(10), crate::time::hours(3)), now());
         assert!(text.starts_with("Where each dataset's data lives") && text.contains("a:tank/data  tolerates 2 failures"), "{text}");
         assert!(popup(&[], now()).starts_with("No dataset has a copy yet"));
     }

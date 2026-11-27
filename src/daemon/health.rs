@@ -1,7 +1,7 @@
 //! When to tell the operator about a host: the alert state machine, with no clock and no I/O of its own.
 
 use crate::zfs::host_health::Level;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -43,8 +43,8 @@ pub struct Alert {
 #[derive(Debug, Clone)]
 struct Alerted {
     severity: Severity,
-    since: DateTime<Utc>,
-    last_sent: DateTime<Utc>,
+    since: Timestamp,
+    last_sent: Timestamp,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -65,8 +65,8 @@ pub struct Tracker {
     hosts: HashMap<String, HostState>,
 }
 
-fn elapsed(from: DateTime<Utc>, to: DateTime<Utc>) -> Duration {
-    (to - from).to_std().unwrap_or_default()
+fn elapsed(from: Timestamp, to: Timestamp) -> Duration {
+    std::time::Duration::try_from(to.duration_since(from)).unwrap_or_default()
 }
 
 impl Tracker {
@@ -75,7 +75,7 @@ impl Tracker {
     }
 
     /// When the alert that is still open for `host` was first sent.
-    pub fn bad_since(&self, host: &str) -> Option<DateTime<Utc>> {
+    pub fn bad_since(&self, host: &str) -> Option<Timestamp> {
         self.hosts.get(host).and_then(|s| s.alerted.as_ref()).map(|a| a.since)
     }
 
@@ -94,7 +94,7 @@ impl Tracker {
     }
 
     /// Feeds one probe result; returns the message it calls for, if any.
-    pub fn observe(&mut self, host: &str, level: Level, reason: &str, now: DateTime<Utc>) -> Option<Alert> {
+    pub fn observe(&mut self, host: &str, level: Level, reason: &str, now: Timestamp) -> Option<Alert> {
         let sev = severity(level)?;
         let (confirm, remind) = (self.confirm, self.remind);
         let state = self.hosts.entry(host.to_string()).or_default();
@@ -153,8 +153,8 @@ impl Tracker {
 mod tests {
     use super::*;
 
-    fn t(min: i64) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-11T00:00:00Z").unwrap().with_timezone(&Utc) + chrono::Duration::minutes(min)
+    fn t(min: i64) -> Timestamp {
+        ("2026-10-11T00:00:00Z").parse::<jiff::Timestamp>().unwrap() + crate::time::minutes(min)
     }
 
     fn tracker() -> Tracker {

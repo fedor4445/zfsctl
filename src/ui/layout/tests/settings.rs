@@ -6,7 +6,7 @@ use super::*;
 fn the_alerts_screen_shows_settings_status_and_events() {
     let (mut app, dir) = alerts_render_app("[daemon]\nnotify_command = \"curl -s x\"\n\n[notify]\nmail_to = \"me@x.org\"\n");
     std::fs::write(dir.path().join("notify.json"), "{\"last_report\":\"2026-10-10\"}").unwrap();
-    crate::daemon::health_text::EventLog::new(dir.path().join("health-events.jsonl")).append(&crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "fbsd16".into(), kind: "alert".into(), text: "tank DEGRADED".into() }).unwrap();
+    crate::daemon::health_text::EventLog::new(dir.path().join("health-events.jsonl")).append(&crate::daemon::health_text::HealthEvent { at: jiff::Timestamp::now(), host: "fbsd16".into(), kind: "alert".into(), text: "tank DEGRADED".into() }).unwrap();
     app.refresh_alerts();
     let text = render(&mut app, 140, 40).join("\n");
     for want in ["Alerts", "Email to", "me@x.org", "Mail command", "msmtp -t", "(default)", "Hook command", "curl -s x", "edit in config.toml", "Monitor on", "Last report sent 2026-10-10", "fbsd16", "alert", "tank DEGRADED"] {

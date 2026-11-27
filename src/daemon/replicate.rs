@@ -9,7 +9,7 @@ use crate::exec::CommandRunner;
 use crate::error::AppError;
 use crate::jobs::{effective_prefix, valid_dataset, valid_snapshot_name, Job, DEST_FILE};
 use crate::zfs::replication::{keep_bookmark, list_bookmark_infos_or_empty, list_snapshot_infos, list_snapshot_infos_or_empty, own_bookmarks, parse_send_size, plan_with_bookmarks, prune_selection, receive_args, resume_send_args, resume_token, send_args, Base, Plan, SnapInfo};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -122,7 +122,7 @@ fn prune_after(dst: &dyn CommandRunner, job: &Job, dest_host: &str, dest_ds: &st
     }
 }
 
-pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
+pub fn run_replicate(env: &Env, src: &dyn CommandRunner, dst: &dyn CommandRunner, job: &Job, scheduled_for: Timestamp, catch_up: bool, run_id: &str) -> Outcome {
     let ctx = env.ctx;
     let dataset = job.dataset.clone().unwrap_or_default();
     let dest_host = job.dest_host.clone().unwrap_or_default();
@@ -261,9 +261,9 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(Timestamp);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> Timestamp {
             self.0
         }
         fn sleep(&self, _: Duration) {}
@@ -361,8 +361,8 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-06T19:30:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> Timestamp {
+        ("2026-10-06T19:30:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
     const A: &str = "hourly-20261006T100000Z";

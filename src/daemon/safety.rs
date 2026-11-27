@@ -8,7 +8,7 @@ use crate::config::ProtectionSettings;
 use crate::daemon::history::Run;
 use crate::daemon::protection::{copy_of, job_state, CopyKind, JobState};
 use crate::jobs::{self, Job};
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use std::fmt::Write as _;
 
 /// What a place is.
@@ -44,7 +44,7 @@ pub struct Edge {
     pub from: usize,
     pub to: usize,
     pub job: String,
-    pub last_ok: Option<DateTime<Utc>>,
+    pub last_ok: Option<Timestamp>,
     pub current: bool,
 }
 
@@ -59,7 +59,7 @@ pub struct Body {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
     /// How old the data there is, at most; `None` when a hop on the way never succeeded.
-    pub age: Option<Duration>,
+    pub age: Option<SignedDuration>,
     /// Edges between the original and this place.
     pub hops: usize,
     /// Every edge on the way is current.
@@ -73,7 +73,7 @@ impl Body {
     }
 
     /// The data at place `i`, from the oldest last success on the path from the original. The original is live.
-    pub fn reading(&self, i: usize, now: DateTime<Utc>) -> Reading {
+    pub fn reading(&self, i: usize, now: Timestamp) -> Reading {
         let (mut oldest, mut hops, mut current, mut at, mut seen) = (Some(now), 0, true, i, vec![i]);
         while let Some(edge) = self.feeder(at) {
             hops += 1;
@@ -93,7 +93,7 @@ impl Body {
 
     /// How many failure domains can be lost at once with the data surviving: the distinct domains holding a current copy
     /// (the original's included), minus one.
-    pub fn tolerates(&self, now: DateTime<Utc>) -> usize {
+    pub fn tolerates(&self, now: Timestamp) -> usize {
         let mut domains: Vec<&str> = self.places.first().map(|p| p.domain.as_str()).into_iter().collect();
         for (i, place) in self.places.iter().enumerate().skip(1) {
             if self.reading(i, now).current && !domains.contains(&place.domain.as_str()) {
@@ -148,7 +148,7 @@ const REPORT_SHOWN: usize = 5;
 
 /// The DATA SAFETY lines of the daily report: the weakest datasets, one line each (what it tolerates, how old its oldest
 /// copy is at most, and a place that is not current), then how many more there are. Never empty.
-pub fn report_lines(jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Vec<String> {
+pub fn report_lines(jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: Timestamp) -> Vec<String> {
     use crate::ui::safety_text::span;
     let all = bodies(jobs, runs, settings, &|h| settings.domain_of(h), now);
     if all.is_empty() {
@@ -159,7 +159,7 @@ pub fn report_lines(jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, n
         .take(REPORT_SHOWN)
         .map(|b| {
             let readings: Vec<(usize, Reading)> = (1..b.places.len()).map(|i| (i, b.reading(i, now))).collect();
-            let oldest = readings.iter().map(|(_, r)| r.age).try_fold(Duration::zero(), |acc, age| age.map(|a| acc.max(a)));
+            let oldest = readings.iter().map(|(_, r)| r.age).try_fold(SignedDuration::ZERO, |acc, age| age.map(|a| acc.max(a)));
             let tolerates = b.tolerates(now);
             let mut line = format!("  {}: tolerates {} failure{}, oldest copy {}", b.places.first().map_or("?", |p| p.id.as_str()), tolerates, if tolerates == 1 { "" } else { "s" }, span(oldest));
             if let Some(place) = readings.iter().find(|(_, r)| !r.current).and_then(|(i, _)| b.places.get(*i)) {
@@ -184,13 +184,13 @@ pub fn copy_domain(job: &Job, domain_of: &dyn Fn(&str) -> String) -> Option<Stri
 /// Every body of the jobs: one per original that has at least one copy job (enabled, to another machine, for the whole
 /// dataset), the weakest first (the oldest data among its places, a place never reached before any). `domain_of` says which
 /// failure domain a host belongs to.
-pub fn bodies(jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, domain_of: &dyn Fn(&str) -> String, now: DateTime<Utc>) -> Vec<Body> {
+pub fn bodies(jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, domain_of: &dyn Fn(&str) -> String, now: Timestamp) -> Vec<Body> {
     struct Raw {
         from: (String, String),
         to: String,
         to_place: (PlaceKind, Option<String>, bool),
         job: String,
-        last_ok: Option<DateTime<Utc>>,
+        last_ok: Option<Timestamp>,
         current: bool,
     }
     let raws: Vec<Raw> = jobs
@@ -240,8 +240,8 @@ pub fn bodies(jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, domain_
     }
     out.sort_by_key(|b| {
         // The oldest data among the places; unknown (a hop never succeeded) is the weakest of all.
-        let oldest = (1..b.places.len()).map(|i| b.reading(i, now).age).try_fold(Duration::zero(), |acc, age| age.map(|a| acc.max(a)));
-        (oldest.is_some(), std::cmp::Reverse(oldest.unwrap_or_else(Duration::zero)), b.places.first().map(|p| p.id.clone()).unwrap_or_default())
+        let oldest = (1..b.places.len()).map(|i| b.reading(i, now).age).try_fold(SignedDuration::ZERO, |acc, age| age.map(|a| acc.max(a)));
+        (oldest.is_some(), std::cmp::Reverse(oldest.unwrap_or(SignedDuration::ZERO)), b.places.first().map(|p| p.id.clone()).unwrap_or_default())
     });
     out
 }
@@ -251,13 +251,13 @@ mod tests {
     use super::*;
     use crate::daemon::history::RunResult;
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-24T12:00:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> Timestamp {
+        ("2026-10-24T12:00:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
-    fn ok_at(job: &str, ago: Duration) -> Run {
+    fn ok_at(job: &str, ago: SignedDuration) -> Run {
         let at = now() - ago;
-        Run { job_id: job.into(), run_id: format!("{job}-{}", ago.num_minutes()), started_at: at, scheduled_for: None, finished_at: Some(at), result: Some(RunResult::Ok), message: String::new(), catch_up: false, summary: None }
+        Run { job_id: job.into(), run_id: format!("{job}-{}", ago.as_mins()), started_at: at, scheduled_for: None, finished_at: Some(at), result: Some(RunResult::Ok), message: String::new(), catch_up: false, summary: None }
     }
 
     fn on(host: &str, job: Job) -> Job {
@@ -275,7 +275,7 @@ mod tests {
     /// `a:tank/data` replicated to `b:tank/copy` ten minutes ago, which `b` mirrors to `b2:bkt/x` three hours ago.
     fn chain() -> (Vec<Job>, Vec<Run>) {
         let jobs = vec![on("a", Job::test_replicate("r", "tank/data", "rep", "b", "tank/copy")), on("b", Job::test_mirror("m", "tank/copy", "m", "b2:bkt/x"))];
-        let runs = vec![ok_at("r", Duration::minutes(10)), ok_at("m", Duration::hours(3))];
+        let runs = vec![ok_at("r", crate::time::minutes(10)), ok_at("m", crate::time::hours(3))];
         (jobs, runs)
     }
 
@@ -294,29 +294,29 @@ mod tests {
     fn the_age_of_the_data_is_the_oldest_hop_on_the_path_and_the_original_is_live() {
         let (jobs, runs) = chain();
         let body = &graph(&jobs, &runs)[0];
-        assert_eq!(body.reading(0, now()), Reading { age: Some(Duration::zero()), hops: 0, current: true });
-        assert_eq!(body.reading(1, now()), Reading { age: Some(Duration::minutes(10)), hops: 1, current: true });
-        assert_eq!(body.reading(2, now()).age, Some(Duration::hours(3)), "fed through a replica that was done 10 minutes ago, but by a mirror run 3 hours ago");
+        assert_eq!(body.reading(0, now()), Reading { age: Some(SignedDuration::ZERO), hops: 0, current: true });
+        assert_eq!(body.reading(1, now()), Reading { age: Some(crate::time::minutes(10)), hops: 1, current: true });
+        assert_eq!(body.reading(2, now()).age, Some(crate::time::hours(3)), "fed through a replica that was done 10 minutes ago, but by a mirror run 3 hours ago");
         assert_eq!(body.reading(2, now()).hops, 2);
         // The other order: the cloud was fed after the replica last ran, from what the replica then held.
-        let runs = vec![ok_at("r", Duration::hours(5)), ok_at("m", Duration::minutes(5))];
-        assert_eq!(graph(&jobs, &runs)[0].reading(2, now()).age, Some(Duration::hours(5)), "the cloud holds what the replica held, which is 5 hours old");
+        let runs = vec![ok_at("r", crate::time::hours(5)), ok_at("m", crate::time::minutes(5))];
+        assert_eq!(graph(&jobs, &runs)[0].reading(2, now()).age, Some(crate::time::hours(5)), "the cloud holds what the replica held, which is 5 hours old");
     }
 
     #[test]
     fn a_hop_that_never_succeeded_makes_the_age_unknown_and_the_place_not_current() {
         let (jobs, _) = chain();
-        let runs = vec![ok_at("r", Duration::minutes(10))];
+        let runs = vec![ok_at("r", crate::time::minutes(10))];
         let body = &graph(&jobs, &runs)[0];
         let cloud = body.reading(2, now());
         assert_eq!((cloud.age, cloud.current, cloud.hops), (None, false, 2));
-        assert_eq!(body.reading(1, now()).age, Some(Duration::minutes(10)), "the replica is still known");
+        assert_eq!(body.reading(1, now()).age, Some(crate::time::minutes(10)), "the replica is still known");
     }
 
     #[test]
     fn a_stopped_job_is_an_edge_that_is_not_current_and_the_place_behind_it_is_shown_but_not_current() {
         let (jobs, _) = chain();
-        let runs = vec![ok_at("r", Duration::days(3)), ok_at("m", Duration::minutes(5))];
+        let runs = vec![ok_at("r", crate::time::days(3)), ok_at("m", crate::time::minutes(5))];
         let body = &graph(&jobs, &runs)[0];
         assert!(!body.reading(1, now()).current && !body.reading(2, now()).current, "an hourly-ish job three days old is stopped, and what hangs on it with it");
         assert_eq!(body.edges.len(), 2, "the stopped edge is still drawn");
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(graph(&jobs, &runs)[0].tolerates(now()), 2, "a, b and the cloud: any two can be lost");
         let one_box = |host: &str| if host == "a" || host == "b" { "rack1".to_string() } else { host.to_string() };
         assert_eq!(bodies(&jobs, &runs, &ProtectionSettings::default(), &one_box, now())[0].tolerates(now()), 1, "a and b share a failure");
-        let runs = vec![ok_at("r", Duration::minutes(10))];
+        let runs = vec![ok_at("r", crate::time::minutes(10))];
         assert_eq!(graph(&jobs, &runs)[0].tolerates(now()), 1, "a cloud copy that has never been made protects nothing");
     }
 
@@ -349,7 +349,7 @@ mod tests {
             on("a", Job::test_backup("k", "tank/data", "bk", "rclone:b2:bkt/x", "/pw")),
             on("a", Job::test_backup("k2", "tank/data", "bk", "sftp:nas:/r", "/pw")),
         ];
-        let runs: Vec<Run> = jobs.iter().map(|j| ok_at(&j.id, Duration::minutes(30))).collect();
+        let runs: Vec<Run> = jobs.iter().map(|j| ok_at(&j.id, crate::time::minutes(30))).collect();
         let body = &graph(&jobs, &runs)[0];
         assert_eq!(body.places.len(), 5, "the original, the replica, the mirror, the rclone repository and the sftp repository");
         assert_eq!(body.dependents(0).len(), 4);
@@ -362,14 +362,14 @@ mod tests {
         let jobs = vec![on("a", Job::test_snapshot("s", "tank/x", "auto", 24))];
         assert!(graph(&jobs, &[]).is_empty());
         let circle = vec![on("a", Job::test_replicate("r1", "tank/a", "rep", "b", "tank/b")), on("b", Job::test_replicate("r2", "tank/b", "rep", "a", "tank/a"))];
-        let runs = vec![ok_at("r1", Duration::minutes(5)), ok_at("r2", Duration::minutes(5))];
+        let runs = vec![ok_at("r1", crate::time::minutes(5)), ok_at("r2", crate::time::minutes(5))];
         assert!(graph(&circle, &runs).is_empty(), "neither dataset is the original");
     }
 
     #[test]
     fn the_weakest_body_comes_first_an_unknown_age_before_the_oldest_known_one() {
         let jobs = vec![on("a", Job::test_replicate("fresh", "tank/a", "rep", "b", "tank/a")), on("a", Job::test_replicate("old", "tank/b", "rep", "b", "tank/b")), on("a", Job::test_replicate("never", "tank/c", "rep", "b", "tank/c"))];
-        let runs = vec![ok_at("fresh", Duration::minutes(5)), ok_at("old", Duration::hours(30))];
+        let runs = vec![ok_at("fresh", crate::time::minutes(5)), ok_at("old", crate::time::hours(30))];
         let all = graph(&jobs, &runs);
         assert_eq!(all.iter().map(|b| b.places[0].id.as_str()).collect::<Vec<_>>(), ["a:tank/c", "a:tank/b", "a:tank/a"]);
     }
@@ -380,16 +380,16 @@ mod tests {
         assert_eq!(report_lines(&[], &[], &settings, now()), ["  No dataset has a copy yet: the data lives only where it is."]);
         let (jobs, runs) = chain();
         assert_eq!(report_lines(&jobs, &runs, &settings, now()), ["  a:tank/data: tolerates 2 failures, oldest copy 3 h"]);
-        let stale = vec![ok_at("r", Duration::minutes(10)), ok_at("m", Duration::days(5))];
+        let stale = vec![ok_at("r", crate::time::minutes(10)), ok_at("m", crate::time::days(5))];
         assert_eq!(report_lines(&jobs, &stale, &settings, now()), ["  a:tank/data: tolerates 1 failure, oldest copy 5 d (b2:bkt/x is not current)"]);
-        let never = vec![ok_at("r", Duration::minutes(10))];
+        let never = vec![ok_at("r", crate::time::minutes(10))];
         assert_eq!(report_lines(&jobs, &never, &settings, now()), ["  a:tank/data: tolerates 1 failure, oldest copy unknown (b2:bkt/x is not current)"]);
     }
 
     #[test]
     fn more_than_five_datasets_are_counted_not_listed() {
         let jobs: Vec<Job> = (0..7).map(|i| on("a", Job::test_replicate(&format!("r{i}"), &format!("tank/d{i}"), "rep", "b", &format!("tank/d{i}")))).collect();
-        let runs: Vec<Run> = jobs.iter().map(|j| ok_at(&j.id, Duration::minutes(10))).collect();
+        let runs: Vec<Run> = jobs.iter().map(|j| ok_at(&j.id, crate::time::minutes(10))).collect();
         let lines = report_lines(&jobs, &runs, &ProtectionSettings::default(), now());
         assert_eq!((lines.len(), lines.last().map(String::as_str)), (6, Some("  and 2 more with copies")));
     }

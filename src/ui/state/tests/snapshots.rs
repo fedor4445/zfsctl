@@ -251,7 +251,7 @@ fn j_on_a_dataset_prefills_the_snapshot_form() {
 #[test]
 fn the_snapshot_form_refuses_what_the_daemon_would_refuse() {
     let good = ["local", "tank/data", "n", "hourly", "24", "0 * * * *", "y"];
-    assert!(build_snapshot_job_action(&snapshot_kind(None, vec![]), &snap_fields(good), std::path::Path::new("/x"), chrono::Utc::now()).is_ok());
+    assert!(build_snapshot_job_action(&snapshot_kind(None, vec![]), &snap_fields(good), std::path::Path::new("/x"), jiff::Timestamp::now()).is_ok());
     assert!(snap_err(["nope", "tank/data", "n", "hourly", "24", "0 * * * *", "y"], vec![]).contains("Unknown host"));
     assert!(snap_err(["local", "", "n", "hourly", "24", "0 * * * *", "y"], vec![]).contains("Dataset"));
     assert!(snap_err(["local", "-rf", "n", "hourly", "24", "0 * * * *", "y"], vec![]).contains("Dataset"));
@@ -278,7 +278,7 @@ fn f2_on_the_snapshot_forms_dataset_field_queues_a_dataset_fetch_for_the_chosen_
 }
 
 fn saved_backup(values: [&str; 10]) -> crate::jobs::Job {
-    let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+    let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap();
     let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
     *job
 }

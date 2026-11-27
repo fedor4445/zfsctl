@@ -12,7 +12,7 @@ use super::transfer::run_lines_merged;
 use crate::exec::CommandRunner;
 use crate::jobs::Job;
 use crate::rclone::{self, Line};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 /// The clone a mirror job reads from.
 const CLONE_PREFIX: &str = "zit-mirror";
@@ -114,7 +114,7 @@ fn sync(env: &Env, runner: &dyn CommandRunner, job: &Job, remote: &str, mount: &
     }
 }
 
-pub fn run_mirror(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
+pub fn run_mirror(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_for: Timestamp, catch_up: bool, run_id: &str) -> Outcome {
     let ctx = env.ctx;
     let dataset = job.dataset.clone().unwrap_or_default();
     let remote = job.remote.clone().unwrap_or_default();
@@ -182,9 +182,9 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(Timestamp);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> Timestamp {
             self.0
         }
         fn sleep(&self, _: Duration) {}
@@ -282,8 +282,8 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-08T23:30:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> Timestamp {
+        ("2026-10-08T23:30:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
     struct Rig {

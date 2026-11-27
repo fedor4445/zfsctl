@@ -186,7 +186,7 @@ fn saving_thresholds_and_caps_reaches_the_dashboard_and_cloud_at_once() {
 fn enter_on_a_share_line_selects_that_host_in_shares_and_the_marker_reaches_the_dashboard() {
     let (mut app, dir) = dash_app();
     let mut file = crate::daemon::shares_check::SharesFile::default();
-    file.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: chrono::Utc::now(), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None});
+    file.hosts.insert("fbsd16".into(), crate::daemon::shares_check::SharesResult { checked_at: jiff::Timestamp::now(), nfs_running: false, samba_running: true, nfs_shares: 2, smb_shares: 0, smb_error: None, error: None});
     file.save(&dir.path().join("shares.json")).unwrap();
     app.host_probes.insert("fbsd16".into(), HostProbeState { last: Some(reached_probe(10)), ..HostProbeState::default() });
     app.refresh_dashboard();
@@ -212,7 +212,7 @@ fn the_dashboard_reads_smart_json_and_enter_on_its_line_selects_that_host_in_dis
     file.hosts.insert(
         "fbsd16".into(),
         crate::daemon::smart_check::HostResult {
-            checked_at: chrono::Utc::now() - chrono::Duration::hours(2),
+            checked_at: jiff::Timestamp::now() - crate::time::hours(2),
             disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Watch, text: "reallocated sectors 8".into() }] }],
             error: None,
         },
@@ -257,7 +257,7 @@ fn a_reservation_above_the_quota_is_refused_with_the_quota_named() {
 
 fn calm_probe() -> crate::zfs::host_health::HostProbe {
     use crate::zfs::host_health::{HostProbe, PoolProbe, ScanSummary};
-    let when = chrono::Utc::now().format("%a %b %e %H:%M:%S %Y").to_string();
+    let when = jiff::Timestamp::now().strftime("%a %b %e %H:%M:%S %Y").to_string();
     let pool = PoolProbe { name: "tank".into(), health: crate::zfs::pool::PoolHealth::Online, capacity_percent: 10, frag_percent: None, errors: Some(0), scan: Some(ScanSummary::Finished { when: when.clone(), errors: 0 }), last_scrub: Some(when) };
     HostProbe::Reached { rtt_ms: 2, pools: vec![pool], kind: None, os: None, os_name: None }
 }

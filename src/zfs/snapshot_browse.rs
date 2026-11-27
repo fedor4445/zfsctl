@@ -529,8 +529,8 @@ pub fn parse_size_range(text: &str) -> Option<(Option<u64>, Option<u64>)> {
 
 /// The start of `YYYY-MM-DD` in a zone `utc_offset_secs` east of UTC, as epoch seconds.
 fn day_start(text: &str, utc_offset_secs: i32) -> Option<i64> {
-    let day = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
-    Some(day.and_hms_opt(0, 0, 0)?.and_utc().timestamp() - i64::from(utc_offset_secs))
+    let day = jiff::civil::Date::strptime("%Y-%m-%d", text).ok()?;
+    Some(day.at(0, 0, 0, 0).to_zoned_datetime(jiff::tz::TimeZone::UTC).ok()?.timestamp().as_second() - i64::from(utc_offset_secs))
 }
 
 /// `2026-10-01..2026-10-20`, `2026-10-01..`, `..2026-10-20` or one day; the end day is included to its last second.

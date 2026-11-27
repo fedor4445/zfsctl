@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod book_check;
+mod time;
 #[cfg(test)]
 mod time_pins;
 mod preflight;
@@ -156,7 +157,7 @@ fn admin(command: &Command, config: &config::Config) -> error::Result<i32> {
         if check {
             exec::sudoers::check_host_target(found.runner.as_ref(), host, target, &features).map(|report| (report.render(), report.exit_code()))
         } else {
-            let generated = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let generated = jiff::Timestamp::now().strftime("%Y-%m-%d").to_string();
             exec::sudoers::print_sudoers(found.runner.as_ref(), host, target, &features, &generated).map(|text| (text, 0))
         }
     });

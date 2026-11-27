@@ -15,7 +15,7 @@ use crate::jobs::{backup_source, fresh_prefix, BackupSource, Job, DEFAULT_FRESH_
 use crate::restic::{self, Line, Summary};
 use crate::zfs::replication::list_snapshot_infos;
 use crate::zfs::snapshot::{create_snapshot_with, destroy_snapshot_with};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::fmt::Write;
 
 /// Where a job's clone is mounted: the same path every run, so restic finds its parent backup.
@@ -274,7 +274,7 @@ fn path_has_no_symlink(runner: &dyn CommandRunner, mount: &str, path: &str) -> s
     Ok(())
 }
 
-pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
+pub fn run_backup(env: &Env, runner: &dyn CommandRunner, job: &Job, scheduled_for: Timestamp, catch_up: bool, run_id: &str) -> Outcome {
     let ctx = env.ctx;
     let dataset = job.dataset.clone().unwrap_or_default();
     let repo = job.repository.clone().unwrap_or_default();

@@ -74,7 +74,7 @@ fn host_jobs_counts_total_enabled_jobs_and_failed_latest_runs_per_host() {
     let (mut app, dir) = app_with_jobs(&[a, b, c]);
     app.hosts = vec!["local".into(), "fbsd16".into()];
     let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
-    h.append(&crate::daemon::history::Event { job_id: "j1".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Finished, at: chrono::Utc::now(), scheduled_for: None, result: Some(crate::daemon::history::RunResult::Failed), message: String::new(), catch_up: false, summary: None }).unwrap();
+    h.append(&crate::daemon::history::Event { job_id: "j1".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Finished, at: jiff::Timestamp::now(), scheduled_for: None, result: Some(crate::daemon::history::RunResult::Failed), message: String::new(), catch_up: false, summary: None }).unwrap();
     app.refresh_jobs();
     assert_eq!(app.host_jobs_counts("fbsd16"), (1, 2), "the disabled job counts nowhere");
     assert_eq!(app.host_jobs_counts("local"), (0, 0));
@@ -310,7 +310,7 @@ fn the_snapshot_form_refuses_a_prefix_another_job_already_uses_on_that_dataset()
     assert!(snap_err(["local", "tank/data", "n", "hourly", "24", "0 * * * *", "y"], vec![other.clone()]).contains("other"));
     // Editing that same job is fine, as is a different prefix.
     let kind = snapshot_kind(Some(other.clone()), vec![other]);
-    assert!(build_snapshot_job_action(&kind, &snap_fields(["local", "tank/data", "n", "hourly", "9", "0 * * * *", "y"]), std::path::Path::new("/x"), chrono::Utc::now()).is_ok());
+    assert!(build_snapshot_job_action(&kind, &snap_fields(["local", "tank/data", "n", "hourly", "9", "0 * * * *", "y"]), std::path::Path::new("/x"), jiff::Timestamp::now()).is_ok());
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn space_still_enables_a_job_with_no_clash() {
 }
 
 fn repl_err(values: [&str; 8], jobs: Vec<crate::jobs::Job>) -> String {
-    build_replicate_job_action(&repl_kind(None, jobs), &repl_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err()
+    build_replicate_job_action(&repl_kind(None, jobs), &repl_fields(values), std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap_err()
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn the_replication_form_refuses_what_the_daemon_would_refuse() {
     let mut to_file = GOOD;
     to_file[3] = "file";
     to_file[4] = "/mnt/usb";
-    assert!(build_replicate_job_action(&repl_kind(None, vec![]), &repl_fields(to_file), std::path::Path::new("/x"), chrono::Utc::now()).is_ok(), "a file destination with an absolute directory is accepted");
+    assert!(build_replicate_job_action(&repl_kind(None, vec![]), &repl_fields(to_file), std::path::Path::new("/x"), jiff::Timestamp::now()).is_ok(), "a file destination with an absolute directory is accepted");
     to_file[4] = "relative/dir";
     assert!(repl_err(to_file, vec![]).contains("dest_dir"));
 }
@@ -398,7 +398,7 @@ fn the_replication_form_refuses_a_destination_another_job_already_uses() {
     assert!(repl_err(GOOD, vec![other.clone()]).contains("other"));
     // Editing that same job is fine.
     let kind = repl_kind(Some(other.clone()), vec![other]);
-    assert!(build_replicate_job_action(&kind, &repl_fields(GOOD), std::path::Path::new("/x"), chrono::Utc::now()).is_ok());
+    assert!(build_replicate_job_action(&kind, &repl_fields(GOOD), std::path::Path::new("/x"), jiff::Timestamp::now()).is_ok());
 }
 
 #[test]
@@ -463,7 +463,7 @@ fn c_cancels_a_running_replication_and_is_inert_otherwise() {
     assert!(app.status_message.is_none(), "not running: nothing happens");
     assert!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")).is_empty());
     let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
-    h.append(&crate::daemon::history::Event { job_id: "r".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Started, at: chrono::Utc::now(), scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }).unwrap();
+    h.append(&crate::daemon::history::Event { job_id: "r".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Started, at: jiff::Timestamp::now(), scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }).unwrap();
     app.refresh_jobs();
     app.handle_key(KeyCode::Char('c'));
     assert_eq!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")), ["r"]);
@@ -526,7 +526,7 @@ fn a_failed_job_of_that_host_warns_only_for_an_enabled_job_whose_latest_run_fail
     other.host = "local".to_string();
     crate::jobs::save(&dir.path().join("jobs.toml"), &[a, off, other]).unwrap();
     let h = History::new(dir.path().join("history.jsonl"));
-    let ev = |id: &str, run: &str, at: &str, result| Event { job_id: id.into(), run_id: run.into(), event: EventKind::Finished, at: chrono::DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&chrono::Utc), scheduled_for: None, result: Some(result), message: String::new(), catch_up: false, summary: None };
+    let ev = |id: &str, run: &str, at: &str, result| Event { job_id: id.into(), run_id: run.into(), event: EventKind::Finished, at: (at).parse::<jiff::Timestamp>().unwrap(), scheduled_for: None, result: Some(result), message: String::new(), catch_up: false, summary: None };
     h.append(&ev("a", "a1", "2026-10-09T01:00:00Z", RunResult::Failed)).unwrap();
     h.append(&ev("off", "o1", "2026-10-09T01:00:00Z", RunResult::Failed)).unwrap();
     h.append(&ev("other", "x1", "2026-10-09T01:00:00Z", RunResult::Ok)).unwrap();

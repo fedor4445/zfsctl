@@ -6,7 +6,7 @@
 
 use crate::daemon::cron::Schedule;
 use crate::error::{AppError, Result};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -106,8 +106,8 @@ pub struct Job {
     pub enabled: bool,
     /// When the job was created. A catch-up never reaches back before this,
     /// so a new job does not fire for a slot that passed before it existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::time::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

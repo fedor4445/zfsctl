@@ -10,7 +10,7 @@ use crate::ui::jobs::{age_text, DaemonState, JobsView};
 use crate::ui::state::Section;
 use crate::zfs::host_health::{scrub_age_days, used_cell, Assessment, HostProbe, Level as HealthLevel, PoolProbe, ScanSummary};
 use crate::zfs::host_resources::{cpu_percent_between, memory_used_percent, swap_used_percent, Resources};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 
 /// How worried to be about one reading. `Unknown` means the zfsctl does not know (no answer yet, nothing to compare with): it is
@@ -149,7 +149,7 @@ fn errors_cell(pools: &[PoolProbe]) -> Cell {
 }
 
 /// How one pool's last scrub reads: its level, the cell text, how many days (to pick the worst) and the attention note.
-fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, now: DateTime<Utc>) -> (Level, String, i64, Option<String>) {
+fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, now: Timestamp) -> (Level, String, i64, Option<String>) {
     match pool.scan {
         Some(ScanSummary::Running { percent, .. }) => return (Level::Fine, percent.map_or_else(|| "running".to_string(), |p| format!("running {p}%")), -1, None),
         Some(ScanSummary::Paused { .. }) => return (Level::Fine, "paused".to_string(), -1, None),
@@ -184,7 +184,7 @@ fn pool_scrub(pool: &PoolProbe, utc_offset_secs: Option<i32>, t: &Thresholds, no
     (level, if days == 0 { "today".to_string() } else { format!("{days} d ago") }, days, note)
 }
 
-fn scrub_cell(pools: &[PoolProbe], utc_offset_secs: Option<i32>, t: &Thresholds, now: DateTime<Utc>) -> Cell {
+fn scrub_cell(pools: &[PoolProbe], utc_offset_secs: Option<i32>, t: &Thresholds, now: Timestamp) -> Cell {
     let judged: Vec<(Level, String, i64, Option<String>)> = pools.iter().filter(|p| !t.scrub_ignore.contains(&p.name)).map(|p| pool_scrub(p, utc_offset_secs, t, now)).collect();
     let Some((level, text, _, note)) = judged.into_iter().max_by_key(|(level, _, days, _)| (*level, *days)) else { return Cell::none() };
     let cell = Cell::new(text, level);
@@ -227,7 +227,7 @@ fn load_cell(resources: Option<(&Resources, Option<&Resources>)>) -> Cell {
 }
 
 /// Judges one host. The state starts from `assess()` and is only ever raised by the readings, never lowered.
-pub fn host_row(input: &HostInput, t: &Thresholds, now: DateTime<Utc>) -> HostRow {
+pub fn host_row(input: &HostInput, t: &Thresholds, now: Timestamp) -> HostRow {
     let base_level = level_of(input.assessment.level);
     let base = (base_level >= Level::Watch).then(|| (base_level, input.assessment.reason.clone()));
     let (pools, space, errors, scrub) = match input.probe {
@@ -407,7 +407,7 @@ pub struct Dashboard {
     /// Every body of the graph, the weakest first, for that pop-up.
     pub bodies: Vec<crate::daemon::safety::Body>,
     /// The time the graph was read at (the pop-up's ages are relative to it).
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     pub daemon: Line,
     pub jobs: Line,
     /// Ids of the enabled jobs whose latest run failed.
@@ -443,13 +443,13 @@ pub struct Inputs<'a> {
     pub running: Option<&'a crate::daemon::checks::Marker>,
     /// List every host under its group, not only the ones that need a look.
     pub expand_groups: bool,
-    pub now: DateTime<Utc>,
+    pub now: Timestamp,
 }
 
-fn daemon_line(view: &JobsView, now: DateTime<Utc>) -> Line {
+fn daemon_line(view: &JobsView, now: Timestamp) -> Line {
     match view.daemon(now) {
         DaemonState::Running { pid } => {
-            let age = view.heartbeat.as_ref().map_or(0, |h| (now - h.last_tick).num_seconds().max(0));
+            let age = view.heartbeat.as_ref().map_or(0, |h| (now - h.last_tick).as_secs().max(0));
             Line { level: Level::Fine, text: format!("running (pid {pid}), heartbeat {age}s ago") }
         }
         DaemonState::NotRunning => Line { level: Level::Issue, text: "not running: jobs will not fire and no alerts are sent".to_string() },
@@ -509,13 +509,13 @@ fn cloud_header(w: &CloudWidths) -> String {
 }
 
 /// What the "Last run" cell says for a row: the last result and its age, or `-` for a remote no job uses.
-fn cloud_last(row: &cloud::Row, view: &JobsView, now: DateTime<Utc>) -> String {
+fn cloud_last(row: &cloud::Row, view: &JobsView, now: Timestamp) -> String {
     if row.job_ids.is_empty() { "-".to_string() } else { crate::ui::jobs::last_result_text(cloud::last_run(row, view), now) }
 }
 
 /// The Traffic cell for a row; the arrow moves one cell a second, from the clock.
-fn cloud_traffic(row: &cloud::Row, view: &JobsView, now: DateTime<Utc>) -> String {
-    if row.job_ids.is_empty() { "-".to_string() } else { cloud::traffic_cell(&cloud::traffic(row, view), now.timestamp().unsigned_abs()) }
+fn cloud_traffic(row: &cloud::Row, view: &JobsView, now: Timestamp) -> String {
+    if row.job_ids.is_empty() { "-".to_string() } else { cloud::traffic_cell(&cloud::traffic(row, view), now.as_second().unsigned_abs()) }
 }
 
 fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidths) -> Line {
@@ -534,11 +534,11 @@ fn cloud_line(row: &cloud::Row, view: &JobsView, inputs: &Inputs, w: &CloudWidth
         }
     };
     let jobs_text = format!("{} job{}", cells[3], if cells[3] == "1" { "" } else { "s" });
-    let next = cloud::next_run_text(row, view, &inputs.now.with_timezone(&chrono::Local));
+    let next = cloud::next_run_text(row, view, &inputs.now.to_zoned_datetime(crate::time::local_zone()));
     Line { level, text: cloud_columns(w, &provider, &cloud_label(row), &jobs_text, &cells[4], &next, &cloud_traffic(row, view, inputs.now), &cells[5]) }
 }
 
-fn alerts_line(alerts: &AlertsView, daemon_running: bool, now: DateTime<Utc>) -> Line {
+fn alerts_line(alerts: &AlertsView, daemon_running: bool, now: Timestamp) -> Line {
     if let Some(problem) = &alerts.problem {
         return Line { level: Level::Watch, text: format!("alert settings: {problem}") };
     }
@@ -604,14 +604,14 @@ fn smart_items(inputs: &Inputs, daemon_running: bool) -> Vec<Item> {
     }
     // The storage check runs every ten minutes: silent for three times that is a loop that stopped.
     if let (true, Some(last)) = (daemon_running, inputs.storage.ran_at) {
-        if inputs.now - last > chrono::Duration::minutes(30) {
+        if inputs.now - last > crate::time::minutes(30) {
             items.push(Item { level: Level::Watch, subject: "checks".to_string(), what: format!("the quota check last ran {}", age_text(inputs.now, last)), goto: Section::Jobs, target: None });
         }
     }
     // The newest answer over both files: a file that is missing is no data, not "never checked".
     let newest = [inputs.smart.newest_check(), inputs.shares.newest_check()].into_iter().flatten().max();
     if let (true, Some(last)) = (daemon_running, newest) {
-        let days = (inputs.now - last).num_days();
+        let days = inputs.now.duration_since(last).as_secs() / 86_400;
         if days >= CHECK_STALE_DAYS {
             items.push(Item { level: Level::Watch, subject: "checks".to_string(), what: format!("disk and shares check is {days} days old"), goto: Section::Jobs, target: None });
         }
@@ -739,7 +739,7 @@ impl Dashboard {
 
 /// What the red notice says while a check runs.
 fn running_notice(marker: &crate::daemon::checks::Marker) -> String {
-    let since = marker.since.with_timezone(&chrono::Local).format("%H:%M");
+    let since = marker.since.to_zoned_datetime(crate::time::local_zone()).strftime("%H:%M");
     match &marker.host {
         Some(host) => format!("checking {host}: disks and shares since {since}"),
         None => format!("checking: daily disk and shares check since {since}"),

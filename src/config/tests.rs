@@ -2,9 +2,9 @@
 #[test]
 fn daily_check_accepts_off_and_hh_mm_and_rejects_the_rest() {
     let time = |v: Option<&str>| DaemonConfig { daily_check: v.map(str::to_string), ..DaemonConfig::default() }.daily_time();
-    assert_eq!(time(None), Ok(chrono::NaiveTime::from_hms_opt(3, 30, 0)), "the default is 03:30");
+    assert_eq!(time(None), Ok(jiff::civil::Time::new(3, 30, 0, 0).ok()), "the default is 03:30");
     assert_eq!(time(Some("off")), Ok(None));
-    assert_eq!(time(Some("05:15")), Ok(chrono::NaiveTime::from_hms_opt(5, 15, 0)));
+    assert_eq!(time(Some("05:15")), Ok(jiff::civil::Time::new(5, 15, 0, 0).ok()));
     for bad in ["", "25:00", "3pm", "03:30:00", "on"] {
         assert!(time(Some(bad)).is_err(), "{bad:?}");
     }
@@ -13,9 +13,9 @@ fn daily_check_accepts_off_and_hh_mm_and_rejects_the_rest() {
 #[test]
 fn the_old_smart_check_key_is_still_read_and_daily_check_wins_when_both_are_there() {
     let read = |text: &str| toml::from_str::<Config>(text).unwrap().daemon.daily_time();
-    assert_eq!(read("[daemon]\nsmart_check = \"05:15\"\n"), Ok(chrono::NaiveTime::from_hms_opt(5, 15, 0)));
+    assert_eq!(read("[daemon]\nsmart_check = \"05:15\"\n"), Ok(jiff::civil::Time::new(5, 15, 0, 0).ok()));
     assert_eq!(read("[daemon]\nsmart_check = \"05:15\"\ndaily_check = \"off\"\n"), Ok(None));
-    assert_eq!(read("[daemon]\ndaily_check = \"04:00\"\n"), Ok(chrono::NaiveTime::from_hms_opt(4, 0, 0)));
+    assert_eq!(read("[daemon]\ndaily_check = \"04:00\"\n"), Ok(jiff::civil::Time::new(4, 0, 0, 0).ok()));
     let saved = toml::to_string(&toml::from_str::<Config>("[daemon]\nsmart_check = \"05:15\"\n").unwrap()).unwrap();
     assert!(!saved.contains("smart_check"), "the old key is read, never written: {saved}");
 }
@@ -53,7 +53,7 @@ fn documented_keys_match_the_serialised_fields() {
         id: "i".into(), host: "local".into(), kind: "backup".into(), pool: Some("p".into()), dataset: Some("d".into()), recursive: true,
         prefix: Some("x".into()), keep: Some(1), dest_host: Some("h".into()), dest_dataset: Some("d".into()), dest_dir: Some("/d".into()), dest_keep: Some(2), check_days: Some(30), remote: Some("aws:b".into()), bwlimit: Some("5M".into()),
         force: true, raw: false, repository: Some("r".into()), password_file: Some("/p".into()), retention: Some("7d".into()), source: Some("new".into()), snapshot: Some("s".into()), path: Some("p".into()), schedule: "* * * * *".into(),
-        catch_up: true, enabled: true, created_at: Some(chrono::Utc::now()),
+        catch_up: true, enabled: true, created_at: Some(jiff::Timestamp::now()),
     };
     let mut found: Vec<String> = Vec::new();
     for value in [toml::Value::try_from(&host).unwrap(), toml::Value::try_from(&ui).unwrap(), toml::Value::try_from(&daemon).unwrap(), toml::Value::try_from(&notify).unwrap(), toml::Value::try_from(&cloud).unwrap(), toml::Value::try_from(&ssh).unwrap(), toml::Value::try_from(&dashboard).unwrap(), toml::Value::try_from(&protection).unwrap(), toml::Value::try_from(&job).unwrap()] {
@@ -254,7 +254,7 @@ fn a_config_without_notify_loads_saves_unchanged_and_resolves_to_the_defaults() 
     assert!(s.mail_to.is_empty() && !s.has_mail());
     assert_eq!(s.mail_command, "msmtp -t");
     assert_eq!(s.check_interval, std::time::Duration::from_secs(300));
-    assert_eq!(s.report_time, Some(chrono::NaiveTime::from_hms_opt(7, 0, 0).unwrap()));
+    assert_eq!(s.report_time, Some(jiff::civil::Time::new(7, 0, 0, 0).ok().unwrap()));
     assert_eq!(s.remind, Some(std::time::Duration::from_secs(6 * 3600)));
     assert_eq!(s.mail_from, None);
 }
@@ -267,7 +267,7 @@ fn every_notify_key_parses_and_round_trips() {
     assert_eq!(s.mail_to, ["a@x.org", "b@y.org"]);
     assert_eq!((s.mail_command.as_str(), s.mail_from.as_deref()), ("msmtp -a default -t", Some("zfsctl@hub")));
     assert_eq!(s.check_interval, std::time::Duration::from_secs(600));
-    assert_eq!(s.report_time, Some(chrono::NaiveTime::from_hms_opt(6, 30, 0).unwrap()));
+    assert_eq!(s.report_time, Some(jiff::civil::Time::new(6, 30, 0, 0).ok().unwrap()));
     assert_eq!(s.remind, None, "0 hours means never");
     assert_eq!(toml::from_str::<Config>(&toml::to_string_pretty(&config).unwrap()).unwrap(), config);
 }

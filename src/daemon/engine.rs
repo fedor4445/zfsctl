@@ -1,16 +1,17 @@
 //! The daemon's brain, without threads or sleeping: given the clock it says
 //! what work to start. The runtime loop in `mod.rs` executes that work.
 
+use jiff::SignedDuration;
 use crate::daemon::history::{self, History, Run};
 use crate::daemon::scheduler::{Due, Scheduler, Unsupported};
 use crate::jobs::{self, Job};
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use jiff::Timestamp;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 /// Runs kept per job when the history is pruned.
 pub const KEEP_RUNS: usize = 500;
-const PRUNE_EVERY: Duration = Duration::hours(24);
+const PRUNE_EVERY: SignedDuration = crate::time::hours(24);
 
 /// Where the daemon keeps its state.
 #[derive(Debug, Clone)]
@@ -69,12 +70,12 @@ pub enum Work {
     Orphan(Run),
 }
 
-pub struct Engine<Tz: TimeZone> {
+pub struct Engine {
     paths: Paths,
     hosts: Vec<String>,
-    scheduler: Scheduler<Tz>,
+    scheduler: Scheduler,
     jobs_mtime: Option<SystemTime>,
-    last_prune: DateTime<Utc>,
+    last_prune: Timestamp,
     /// Runs found unfinished at startup that have not been handed out yet. A
     /// `jobs.toml` that cannot be read must not condemn them as lost.
     pending: Vec<Run>,
@@ -90,15 +91,15 @@ fn mtime(paths: &Paths) -> Option<SystemTime> {
     std::fs::metadata(paths.jobs()).and_then(|m| m.modified()).ok()
 }
 
-impl<Tz: TimeZone> Engine<Tz> {
-    pub fn new(paths: Paths, tz: Tz, hosts: Vec<String>, now: DateTime<Utc>) -> Self {
+impl Engine {
+    pub fn new(paths: Paths, tz: impl Fn() -> jiff::tz::TimeZone + Send + Sync + 'static, hosts: Vec<String>, now: Timestamp) -> Self {
         Engine { paths, hosts, scheduler: Scheduler::new(tz), jobs_mtime: None, last_prune: now, pending: Vec::new(), caught_up: false, unsupported: Vec::new(), load_error: None }
     }
 
     /// Reads `jobs.toml` and swaps the job set in. A bad file keeps the job
     /// set already in place (it never empties the schedule). Returns the jobs
     /// that were read, or `None` when the file could not be read.
-    fn reload(&mut self, now: DateTime<Utc>, last_scheduled: &std::collections::HashMap<String, DateTime<Utc>>) -> Option<Vec<Job>> {
+    fn reload(&mut self, now: Timestamp, last_scheduled: &std::collections::HashMap<String, Timestamp>) -> Option<Vec<Job>> {
         self.jobs_mtime = mtime(&self.paths);
         match jobs::load(&self.paths.jobs()) {
             Ok(list) => {
@@ -113,7 +114,7 @@ impl<Tz: TimeZone> Engine<Tz> {
         }
     }
 
-    fn last_scheduled(&self) -> std::collections::HashMap<String, DateTime<Utc>> {
+    fn last_scheduled(&self) -> std::collections::HashMap<String, Timestamp> {
         history::last_scheduled(&history::runs(&History::new(self.paths.history()).read()))
     }
 
@@ -136,7 +137,7 @@ impl<Tz: TimeZone> Engine<Tz> {
 
     /// Everything to do after a successful read of `jobs.toml`: hand out
     /// unfinished runs, and on the first successful read catch up missed slots.
-    fn after_load(&mut self, jobs: &[Job], now: DateTime<Utc>) -> Vec<Work> {
+    fn after_load(&mut self, jobs: &[Job], now: Timestamp) -> Vec<Work> {
         let mut catch_ups = if self.caught_up { Vec::new() } else { self.scheduler.catch_up(now) };
         self.caught_up = true;
         let mut work = self.hand_out_pending(jobs, &mut catch_ups);
@@ -146,7 +147,7 @@ impl<Tz: TimeZone> Engine<Tz> {
 
     /// Everything to do when the daemon starts: re-attach to unfinished runs
     /// and catch up on missed slots.
-    pub fn start(&mut self, now: DateTime<Utc>) -> Vec<Work> {
+    pub fn start(&mut self, now: Timestamp) -> Vec<Work> {
         let _ = History::new(self.paths.history()).prune(KEEP_RUNS);
         self.pending = history::runs(&History::new(self.paths.history()).read()).into_iter().filter(|r| r.result.is_none()).collect();
         let last = self.last_scheduled();
@@ -157,7 +158,7 @@ impl<Tz: TimeZone> Engine<Tz> {
     }
 
     /// One tick: pick up an edited `jobs.toml`, fire what is due, prune daily.
-    pub fn step(&mut self, now: DateTime<Utc>) -> Vec<Work> {
+    pub fn step(&mut self, now: Timestamp) -> Vec<Work> {
         let mut work = Vec::new();
         let current = mtime(&self.paths);
         if current != self.jobs_mtime {
@@ -182,7 +183,7 @@ impl<Tz: TimeZone> Engine<Tz> {
     }
 
     #[cfg(test)]
-    pub fn next_time(&self, id: &str) -> Option<DateTime<Utc>> {
+    pub fn next_time(&self, id: &str) -> Option<Timestamp> {
         self.scheduler.next_time(id)
     }
 }
@@ -193,16 +194,16 @@ mod tests {
     use crate::daemon::history::{Event, EventKind, RunResult};
     use crate::jobs::KIND_SCRUB;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        (s).parse::<jiff::Timestamp>().unwrap()
     }
 
     fn job(id: &str, schedule: &str) -> Job {
         Job { id: id.into(), host: "local".into(), kind: KIND_SCRUB.into(), pool: Some("tank".into()), schedule: schedule.into(), catch_up: true, enabled: true, created_at: Some(at("2026-09-01T00:00:00Z")), dataset: None, recursive: false, prefix: None, keep: None, dest_host: None, dest_dataset: None, dest_dir: None, dest_keep: None, check_days: None, remote: None, bwlimit: None, force: false, raw: false, repository: None, password_file: None, retention: None, source: None, snapshot: None, path: None }
     }
 
-    fn engine(dir: &tempfile::TempDir, now: &str) -> Engine<Utc> {
-        Engine::new(Paths::new(dir.path()), Utc, vec!["local".to_string()], at(now))
+    fn engine(dir: &tempfile::TempDir, now: &str) -> Engine {
+        Engine::new(Paths::new(dir.path()), || jiff::tz::TimeZone::UTC, vec!["local".to_string()], at(now))
     }
 
     fn started(job_id: &str, run_id: &str, when: &str) -> Event {

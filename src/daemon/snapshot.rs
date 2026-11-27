@@ -8,7 +8,7 @@ use crate::error::AppError;
 use crate::exec::CommandRunner;
 use crate::jobs::{effective_prefix, Job};
 use crate::zfs::snapshot::{create_snapshot_with, destroy_snapshot_with, list_snapshots_of};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::fmt::Write;
 
 /// What a successful run of a recursive job adds after the snapshot's name. The protection check reads it as the proof that the
@@ -17,8 +17,8 @@ pub const RECURSIVE_MARK: &str = " (recursive)";
 
 /// `<prefix>-<UTC YYYYMMDDTHHMMSSZ>`: no colons, sorts chronologically as a string, and does not
 /// depend on the hub's local time zone.
-pub fn snapshot_name(prefix: &str, at: DateTime<Utc>) -> String {
-    format!("{prefix}-{}", at.format("%Y%m%dT%H%M%SZ"))
+pub fn snapshot_name(prefix: &str, at: Timestamp) -> String {
+    format!("{prefix}-{}", at.strftime("%Y%m%dT%H%M%SZ"))
 }
 
 /// Whether `name` is exactly `<prefix>-<YYYYMMDDTHHMMSSZ>`. Retention destroys nothing else, so
@@ -38,7 +38,7 @@ pub fn lock_key(dataset: &str, prefix: &str) -> String {
     format!("@{dataset}@{prefix}")
 }
 
-pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
+pub fn run_snapshot(ctx: &Context, runner: &dyn CommandRunner, job: &Job, scheduled_for: Timestamp, catch_up: bool, run_id: &str) -> Outcome {
     let dataset = job.dataset.clone().unwrap_or_default();
     let prefix = effective_prefix(job).to_string();
     let keep = job.keep.unwrap_or(1).max(1) as usize;
@@ -110,9 +110,9 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(Timestamp);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> Timestamp {
             self.0
         }
         fn sleep(&self, _: Duration) {}
@@ -177,8 +177,8 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-06T19:30:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> Timestamp {
+        ("2026-10-06T19:30:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
     /// Runs one job against `zfs` and returns the outcome and the history of the run.

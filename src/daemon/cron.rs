@@ -6,7 +6,9 @@
 //! `a-b` and a step `*/n` or `a-b/n`. When both day fields are
 //! restricted a day matches if EITHER does (standard cron behavior).
 
-use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
+use jiff::civil::DateTime as Civil;
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::{SignedDuration, Timestamp, ZonedDateTime};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schedule {
@@ -86,13 +88,13 @@ impl Schedule {
         })
     }
 
-    fn month_ok(&self, t: &NaiveDateTime) -> bool {
+    fn month_ok(&self, t: &Civil) -> bool {
         self.months & (1 << t.month()) != 0
     }
 
-    fn day_ok(&self, t: &NaiveDateTime) -> bool {
+    fn day_ok(&self, t: &Civil) -> bool {
         let dom = self.days & (1 << t.day()) != 0;
-        let dow = self.weekdays & (1 << t.weekday().num_days_from_sunday()) != 0;
+        let dow = self.weekdays & (1 << t.weekday().to_sunday_zero_offset()) != 0;
         match (self.days_star, self.weekdays_star) {
             (true, true) => true,
             (true, false) => dow,
@@ -101,18 +103,18 @@ impl Schedule {
         }
     }
 
-    fn hour_ok(&self, t: &NaiveDateTime) -> bool {
+    fn hour_ok(&self, t: &Civil) -> bool {
         self.hours & (1 << t.hour()) != 0
     }
 
-    fn minute_ok(&self, t: &NaiveDateTime) -> bool {
+    fn minute_ok(&self, t: &Civil) -> bool {
         self.minutes & (1 << t.minute()) != 0
     }
 
     /// The first matching wall-clock minute strictly after `from`.
-    fn next_naive(&self, from: NaiveDateTime) -> Option<NaiveDateTime> {
+    fn next_naive(&self, from: Civil) -> Option<Civil> {
         let limit_year = from.year() + 8;
-        let mut t = floor_minute(from) + Duration::minutes(1);
+        let mut t = plus(floor_minute(from), MINUTE)?;
         for _ in 0..4_000_000 {
             if t.year() > limit_year {
                 return None;
@@ -120,11 +122,11 @@ impl Schedule {
             if !self.month_ok(&t) {
                 t = first_of_next_month(t)?;
             } else if !self.day_ok(&t) {
-                t = start_of_day(t) + Duration::days(1);
+                t = plus(start_of_day(t), SignedDuration::from_hours(24))?;
             } else if !self.hour_ok(&t) {
-                t = floor_hour(t) + Duration::hours(1);
+                t = plus(floor_hour(t), SignedDuration::from_hours(1))?;
             } else if !self.minute_ok(&t) {
-                t += Duration::minutes(1);
+                t = plus(t, MINUTE)?;
             } else {
                 return Some(t);
             }
@@ -133,7 +135,7 @@ impl Schedule {
     }
 
     /// The last matching wall-clock minute at or before `from`.
-    fn prev_naive(&self, from: NaiveDateTime) -> Option<NaiveDateTime> {
+    fn prev_naive(&self, from: Civil) -> Option<Civil> {
         let limit_year = from.year() - 8;
         let mut t = floor_minute(from);
         for _ in 0..4_000_000 {
@@ -141,13 +143,13 @@ impl Schedule {
                 return None;
             }
             if !self.month_ok(&t) {
-                t = start_of_month(t) - Duration::minutes(1);
+                t = plus(start_of_month(t), -MINUTE)?;
             } else if !self.day_ok(&t) {
-                t = start_of_day(t) - Duration::minutes(1);
+                t = plus(start_of_day(t), -MINUTE)?;
             } else if !self.hour_ok(&t) {
-                t = floor_hour(t) - Duration::minutes(1);
+                t = plus(floor_hour(t), -MINUTE)?;
             } else if !self.minute_ok(&t) {
-                t -= Duration::minutes(1);
+                t = plus(t, -MINUTE)?;
             } else {
                 return Some(t);
             }
@@ -158,61 +160,87 @@ impl Schedule {
     /// The first scheduled time strictly after `after`, in `after`'s zone.
     /// A local time that does not exist (a spring-forward gap) is skipped;
     /// one that occurs twice (autumn) fires at its first occurrence only.
-    pub fn next_after<Tz: TimeZone>(&self, after: &DateTime<Tz>) -> Option<DateTime<Tz>> {
-        let tz = after.timezone();
-        let mut cursor = after.naive_local();
+    pub fn next_after(&self, after: &ZonedDateTime) -> Option<ZonedDateTime> {
+        let tz = after.time_zone();
+        let mut cursor = after.datetime();
         loop {
             let naive = self.next_naive(cursor)?;
-            match tz.from_local_datetime(&naive) {
-                LocalResult::Single(dt) if dt > *after => return Some(dt),
-                LocalResult::Ambiguous(first, _) if first > *after => return Some(first),
+            match resolve(tz, naive) {
+                Resolved::Single(dt) if dt.timestamp() > after.timestamp() => return Some(dt),
+                Resolved::Twice(first, _) if first.timestamp() > after.timestamp() => return Some(first),
                 _ => cursor = naive,
             }
         }
     }
 
     /// The most recent scheduled time at or before `at`, in `at`'s zone.
-    pub fn latest_at_or_before<Tz: TimeZone>(&self, at: &DateTime<Tz>) -> Option<DateTime<Tz>> {
-        let tz = at.timezone();
-        let mut cursor = at.naive_local();
+    pub fn latest_at_or_before(&self, at: &ZonedDateTime) -> Option<ZonedDateTime> {
+        let tz = at.time_zone();
+        let mut cursor = at.datetime();
         loop {
             let naive = self.prev_naive(cursor)?;
-            match tz.from_local_datetime(&naive) {
-                LocalResult::Single(dt) if dt <= *at => return Some(dt),
-                LocalResult::Ambiguous(first, second) => {
-                    if second <= *at {
+            match resolve(tz, naive) {
+                Resolved::Single(dt) if dt.timestamp() <= at.timestamp() => return Some(dt),
+                Resolved::Twice(first, second) => {
+                    if second.timestamp() <= at.timestamp() {
                         return Some(second);
                     }
-                    if first <= *at {
+                    if first.timestamp() <= at.timestamp() {
                         return Some(first);
                     }
-                    cursor = naive - Duration::minutes(1);
+                    cursor = plus(naive, -MINUTE)?;
                 }
-                _ => cursor = naive - Duration::minutes(1),
+                _ => cursor = plus(naive, -MINUTE)?,
             }
         }
     }
 }
 
-fn floor_minute(t: NaiveDateTime) -> NaiveDateTime {
-    t.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(t)
+const MINUTE: SignedDuration = SignedDuration::from_mins(1);
+
+/// What a wall-clock time is in a zone: one instant, two (the repeated autumn hour, earlier first), or none (the spring gap).
+enum Resolved {
+    Single(ZonedDateTime),
+    Twice(ZonedDateTime, ZonedDateTime),
+    Missing,
 }
 
-fn floor_hour(t: NaiveDateTime) -> NaiveDateTime {
-    floor_minute(t).with_minute(0).unwrap_or(t)
+fn resolve(tz: &TimeZone, naive: Civil) -> Resolved {
+    let ambiguous = tz.to_ambiguous_zoned_datetime(naive);
+    match ambiguous.offset() {
+        AmbiguousOffset::Unambiguous { .. } => ambiguous.unambiguous().map_or(Resolved::Missing, Resolved::Single),
+        AmbiguousOffset::Fold { .. } => match (ambiguous.clone().earlier(), ambiguous.later()) {
+            (Ok(first), Ok(second)) => Resolved::Twice(first, second),
+            _ => Resolved::Missing,
+        },
+        AmbiguousOffset::Gap { .. } => Resolved::Missing,
+    }
 }
 
-fn start_of_day(t: NaiveDateTime) -> NaiveDateTime {
-    floor_hour(t).with_hour(0).unwrap_or(t)
+/// `t + d` in wall-clock time; `None` past the calendar's end.
+fn plus(t: Civil, d: SignedDuration) -> Option<Civil> {
+    t.checked_add(d).ok()
 }
 
-fn start_of_month(t: NaiveDateTime) -> NaiveDateTime {
-    start_of_day(t).with_day(1).unwrap_or(t)
+fn floor_minute(t: Civil) -> Civil {
+    t.date().at(t.hour(), t.minute(), 0, 0)
 }
 
-fn first_of_next_month(t: NaiveDateTime) -> Option<NaiveDateTime> {
-    let (year, month) = if t.month() == 12 { (t.year() + 1, 1) } else { (t.year(), t.month() + 1) };
-    NaiveDate::from_ymd_opt(year, month, 1).and_then(|d| d.and_hms_opt(0, 0, 0))
+fn floor_hour(t: Civil) -> Civil {
+    t.date().at(t.hour(), 0, 0, 0)
+}
+
+fn start_of_day(t: Civil) -> Civil {
+    t.date().at(0, 0, 0, 0)
+}
+
+fn start_of_month(t: Civil) -> Civil {
+    t.date().first_of_month().at(0, 0, 0, 0)
+}
+
+fn first_of_next_month(t: Civil) -> Option<Civil> {
+    let (year, month) = if t.month() == 12 { (t.year().checked_add(1)?, 1) } else { (t.year(), t.month() + 1) };
+    jiff::civil::Date::new(year, month, 1).ok().map(|d| d.at(0, 0, 0, 0))
 }
 
 /// A job is current while its last success is at most this many schedule intervals old. One missed run is normal (a run can
@@ -224,13 +252,13 @@ pub const CURRENT_WITHIN_INTERVALS: i32 = 2;
 const LOOKAHEAD: usize = 5;
 
 /// The longest gap between the next few scheduled times after `now`; `None` for a schedule that does not parse or never fires.
-pub fn schedule_gap(schedule: &str, now: DateTime<Utc>) -> Option<Duration> {
+pub fn schedule_gap(schedule: &str, now: Timestamp) -> Option<SignedDuration> {
     let schedule = Schedule::parse(schedule).ok()?;
-    let mut at = now.with_timezone(&Local);
+    let mut at = now.to_zoned_datetime(crate::time::local_zone());
     let mut gaps = Vec::new();
     for _ in 0..LOOKAHEAD {
         let next = schedule.next_after(&at)?;
-        gaps.push(next - at);
+        gaps.push(next.timestamp().duration_since(at.timestamp()));
         at = next;
     }
     // the first "gap" is from `now`, not between two fires: leave it out
@@ -240,23 +268,30 @@ pub fn schedule_gap(schedule: &str, now: DateTime<Utc>) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::FixedOffset;
-    use chrono_tz::America::New_York;
 
-    fn utc(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn utc(s: &str) -> ZonedDateTime {
+        s.parse::<Timestamp>().unwrap().to_zoned_datetime(TimeZone::UTC)
+    }
+
+    /// RFC 3339 with the offset, as chrono's `to_rfc3339` wrote it for a whole second.
+    fn rfc(z: &ZonedDateTime) -> String {
+        z.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    }
+
+    fn new_york(civil: &str) -> ZonedDateTime {
+        civil.parse::<Civil>().unwrap().to_zoned_datetime(TimeZone::get("America/New_York").unwrap()).unwrap()
     }
 
     fn next(expr: &str, after: &str) -> String {
-        Schedule::parse(expr).unwrap().next_after(&utc(after)).unwrap().to_rfc3339()
+        rfc(&Schedule::parse(expr).unwrap().next_after(&utc(after)).unwrap())
     }
 
     #[test]
     fn schedule_gap_is_the_longest_gap_among_the_next_fires() {
         let now = utc("2026-10-22T12:00:00Z");
-        assert_eq!(schedule_gap("0 * * * *", now), Some(Duration::hours(1)));
-        assert!(schedule_gap("0 3 * * 1-5", now).unwrap() >= Duration::hours(24));
-        assert_eq!(schedule_gap("not a schedule", now), None);
+        assert_eq!(schedule_gap("0 * * * *", now.timestamp()), Some(SignedDuration::from_hours(1)));
+        assert!(schedule_gap("0 3 * * 1-5", now.timestamp()).unwrap() >= SignedDuration::from_hours(24));
+        assert_eq!(schedule_gap("not a schedule", now.timestamp()), None);
     }
 
     #[test]
@@ -323,44 +358,45 @@ mod tests {
     #[test]
     fn latest_at_or_before_includes_the_instant_itself() {
         let s = Schedule::parse("0 3 * * *").unwrap();
-        assert_eq!(s.latest_at_or_before(&utc("2026-10-06T03:00:00Z")).unwrap().to_rfc3339(), "2026-10-06T03:00:00+00:00");
-        assert_eq!(s.latest_at_or_before(&utc("2026-10-06T02:59:59Z")).unwrap().to_rfc3339(), "2026-10-05T03:00:00+00:00");
-        assert_eq!(s.latest_at_or_before(&utc("2026-10-06T10:30:12Z")).unwrap().to_rfc3339(), "2026-10-06T03:00:00+00:00");
+        assert_eq!(rfc(&s.latest_at_or_before(&utc("2026-10-06T03:00:00Z")).unwrap()), "2026-10-06T03:00:00+00:00");
+        assert_eq!(rfc(&s.latest_at_or_before(&utc("2026-10-06T02:59:59Z")).unwrap()), "2026-10-05T03:00:00+00:00");
+        assert_eq!(rfc(&s.latest_at_or_before(&utc("2026-10-06T10:30:12Z")).unwrap()), "2026-10-06T03:00:00+00:00");
     }
 
     #[test]
     fn latest_at_or_before_crosses_month_and_year_boundaries() {
         let s = Schedule::parse("0 3 1 * *").unwrap();
-        assert_eq!(s.latest_at_or_before(&utc("2027-01-01T02:00:00Z")).unwrap().to_rfc3339(), "2026-12-01T03:00:00+00:00");
+        assert_eq!(rfc(&s.latest_at_or_before(&utc("2027-01-01T02:00:00Z")).unwrap()), "2026-12-01T03:00:00+00:00");
     }
 
     #[test]
     fn evaluates_in_the_given_zone() {
-        let est = FixedOffset::west_opt(5 * 3600).unwrap();
-        let after = utc("2026-10-06T10:00:00Z").with_timezone(&est); // 05:00 local
-        assert_eq!(Schedule::parse("0 3 * * *").unwrap().next_after(&after).unwrap().to_rfc3339(), "2026-10-07T03:00:00-05:00");
+        let est = TimeZone::fixed(jiff::tz::offset(-5));
+        let after = utc("2026-10-06T10:00:00Z").timestamp().to_zoned_datetime(est); // 05:00 local
+        assert_eq!(rfc(&Schedule::parse("0 3 * * *").unwrap().next_after(&after).unwrap()), "2026-10-07T03:00:00-05:00");
     }
 
     #[test]
     fn a_time_inside_the_spring_forward_gap_is_skipped() {
         // New York, 2026-03-08: 02:00 jumps to 03:00, so 02:30 does not exist that day.
         let s = Schedule::parse("30 2 * * *").unwrap();
-        let after = New_York.with_ymd_and_hms(2026, 3, 7, 12, 0, 0).unwrap();
+        let after = new_york("2026-03-07T12:00");
         let n = s.next_after(&after).unwrap();
-        assert_eq!(n.naive_local().to_string(), "2026-03-09 02:30:00", "{n}");
+        assert_eq!(n.strftime("%Y-%m-%d %H:%M:%S").to_string(), "2026-03-09 02:30:00", "{n}");
     }
 
     #[test]
     fn a_repeated_autumn_time_fires_once_at_its_first_occurrence() {
         // New York, 2026-11-01: 01:00-02:00 happens twice (EDT then EST).
         let s = Schedule::parse("30 1 * * *").unwrap();
-        let after = New_York.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
+        let after = new_york("2026-10-31T12:00");
         let first = s.next_after(&after).unwrap();
-        assert_eq!(first.to_rfc3339(), "2026-11-01T01:30:00-04:00");
+        assert_eq!(rfc(&first), "2026-11-01T01:30:00-04:00");
         let again = s.next_after(&first).unwrap();
-        assert_eq!(again.naive_local().to_string(), "2026-11-02 01:30:00", "the second 01:30 must not fire: {again}");
+        assert_eq!(again.strftime("%Y-%m-%d %H:%M:%S").to_string(), "2026-11-02 01:30:00", "the second 01:30 must not fire: {again}");
         // Asked for the latest time at the second 01:30 (EST), the later occurrence is the answer.
-        let second_instant = New_York.from_local_datetime(&NaiveDate::from_ymd_opt(2026, 11, 1).unwrap().and_hms_opt(1, 45, 0).unwrap()).latest().unwrap();
-        assert_eq!(s.latest_at_or_before(&second_instant).unwrap().to_rfc3339(), "2026-11-01T01:30:00-05:00");
+        let tz = TimeZone::get("America/New_York").unwrap();
+        let second_instant = tz.to_ambiguous_zoned_datetime("2026-11-01T01:45".parse::<Civil>().unwrap()).later().unwrap();
+        assert_eq!(rfc(&s.latest_at_or_before(&second_instant).unwrap()), "2026-11-01T01:30:00-05:00");
     }
 }

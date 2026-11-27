@@ -2,7 +2,7 @@
 //! by the daemon once a second and read by the TUI. Files are written atomically, so a reader
 //! never sees half of one.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::io::Write;
@@ -14,8 +14,10 @@ pub struct Progress {
     pub job_id: String,
     pub bytes: u64,
     pub total: Option<u64>,
-    pub started_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub started_at: Timestamp,
+    #[serde(with = "crate::time::rfc3339")]
+    pub updated_at: Timestamp,
     /// Bytes per second over the last sample.
     pub rate: Option<u64>,
 }
@@ -97,8 +99,8 @@ pub struct ProgressWriter {
     run_id: String,
     job_id: String,
     total: Option<u64>,
-    started_at: DateTime<Utc>,
-    last: Option<(DateTime<Utc>, u64)>,
+    started_at: Timestamp,
+    last: Option<(Timestamp, u64)>,
 }
 
 impl ProgressWriter {
@@ -106,15 +108,15 @@ impl ProgressWriter {
     pub fn set_total(&mut self, total: u64) {
         self.total = Some(total);
     }
-    pub fn new(dir: PathBuf, run_id: String, job_id: String, total: Option<u64>, started_at: DateTime<Utc>) -> Self {
+    pub fn new(dir: PathBuf, run_id: String, job_id: String, total: Option<u64>, started_at: Timestamp) -> Self {
         ProgressWriter { dir, run_id, job_id, total, started_at, last: None }
     }
 
-    pub fn update(&mut self, bytes: u64, now: DateTime<Utc>) {
+    pub fn update(&mut self, bytes: u64, now: Timestamp) {
         let rate = match self.last {
-            Some((then, _)) if (now - then).num_milliseconds() < 1000 => return,
+            Some((then, _)) if now.duration_since(then).as_millis() < 1000 => return,
             Some((then, before)) => {
-                let ms = u64::try_from((now - then).num_milliseconds()).unwrap_or(1).max(1);
+                let ms = u64::try_from(now.duration_since(then).as_millis()).unwrap_or(1).max(1);
                 Some(bytes.saturating_sub(before).saturating_mul(1000) / ms)
             }
             None => None,
@@ -129,8 +131,8 @@ impl ProgressWriter {
 mod tests {
     use super::*;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        (s).parse::<jiff::Timestamp>().unwrap()
     }
 
     fn sample(bytes: u64, total: Option<u64>, rate: Option<u64>) -> Progress {

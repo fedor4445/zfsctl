@@ -33,7 +33,7 @@ use crate::error::{AppError, Result};
 use crate::exec::CommandRunner;
 use crate::config::Config;
 use crate::hosts::HostInventory;
-use chrono::Utc;
+use jiff::Timestamp;
 use engine::{Engine, Paths, Work};
 use history::{Event, EventKind, History, RunResult};
 use scrub::{Clock, Context, Locks, Outcome, SystemClock};
@@ -48,17 +48,14 @@ use std::time::Duration;
 const POLL: Duration = Duration::from_secs(30);
 
 /// A log timestamp: second precision with the zone offset, e.g. `2026-10-06T11:43:16-04:00`.
-fn stamp<Tz: chrono::TimeZone>(t: &chrono::DateTime<Tz>) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+fn stamp(t: &jiff::ZonedDateTime) -> String {
+    t.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
 /// Logs in the hub's local time, the zone its schedules are written in. (The
 /// history file stays in UTC: it is machine data.)
 fn log(message: &str) {
-    eprintln!("{} {message}", stamp(&chrono::Local::now()));
+    eprintln!("{} {message}", stamp(&jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone())));
 }
 
 /// What every job thread shares.
@@ -207,7 +204,7 @@ impl Shared {
                 subject: format!("[zfsctl] job {} failed on {}", deliver::ascii_line(&job.id), deliver::ascii_line(&job.host)),
                 body: format!("Job {} ({}) on {} failed.\n\n{}\n", job.id, job.kind, job.host, outcome.message),
             };
-            for d in deliver::send(&settings, None, &msg, Utc::now(), deliver::TIMEOUT) {
+            for d in deliver::send(&settings, None, &msg, Timestamp::now(), deliver::TIMEOUT) {
                 match d.result {
                     Ok(()) => log(&format!("mailed about {}", job.id)),
                     Err(e) => log(&format!("mail for {} {e}", job.id)),
@@ -290,8 +287,8 @@ impl Shared {
         let ctx = Context { history: &self.history, clock: self.clock.as_ref(), locks: &self.locks, poll: self.poll, stop: &self.stop };
         match work {
             Work::Run(due) => {
-                let run_id = format!("{}-{}", due.job.id, self.clock.now().timestamp_millis());
-                log(&format!("running {} (slot {}{})", due.job.id, due.scheduled_for.to_rfc3339(), if due.catch_up { ", catch-up" } else { "" }));
+                let run_id = format!("{}-{}", due.job.id, self.clock.now().as_millisecond());
+                log(&format!("running {} (slot {}{})", due.job.id, crate::time::rfc3339_with_offset(due.scheduled_for), if due.catch_up { ", catch-up" } else { "" }));
                 let outcome = match due.job.kind.as_str() {
                     crate::jobs::KIND_REPLICATE => Some(self.replicate(&ctx, &due, &run_id)),
                     crate::jobs::KIND_BACKUP => Some(self.backup(&ctx, &due, &run_id)),
@@ -352,7 +349,7 @@ impl monitor::Sink for DaemonSink<'_> {
     fn send(&mut self, msg: &deliver::Message) -> bool {
         let settings = self.0.settings_for(msg);
         let hook = self.0.notify_command.read().unwrap_or_else(PoisonError::into_inner).clone();
-        let results = deliver::send(&settings, hook.as_deref(), msg, Utc::now(), deliver::TIMEOUT);
+        let results = deliver::send(&settings, hook.as_deref(), msg, Timestamp::now(), deliver::TIMEOUT);
         for d in &results {
             if let Err(e) = &d.result {
                 log(&format!("{:?} delivery of '{}' {e}", d.channel, msg.subject));
@@ -396,8 +393,8 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
         }
         if monitor.is_none() {
             let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
-            log(&format!("health monitor started (every {} min, report at {})", settings.check_interval.as_secs() / 60, settings.report_time.map_or("off".to_string(), |t| t.format("%H:%M").to_string())));
-            monitor = Some(monitor::Monitor::new(settings.clone(), hub, state_dir.to_path_buf(), Utc::now()));
+            log(&format!("health monitor started (every {} min, report at {})", settings.check_interval.as_secs() / 60, settings.report_time.map_or("off".to_string(), |t| t.strftime("%H:%M").to_string())));
+            monitor = Some(monitor::Monitor::new(settings.clone(), hub, state_dir.to_path_buf(), Timestamp::now()));
         }
         let Some(m) = monitor.as_mut() else { continue };
         // At construction and on every later tick, so an edited `[protection]` applies from the next pass.
@@ -415,11 +412,11 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
             let probed = monitor::probe_all(&hosts, &|n| m.needs_kind(n), monitor::PROBE_DEADLINE, &busy);
             let jobs = crate::jobs::load(&state_dir.join("jobs.toml")).unwrap_or_default();
             let runs = history::runs(&shared.history.read());
-            let local = chrono::Local::now().naive_local();
-            m.observe(Utc::now(), local, &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
+            let local = jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).datetime();
+            m.observe(Timestamp::now(), local, &hosts, &probed, &jobs, &runs, &mut DaemonSink(shared));
         });
         // Wake for the daily report too, so it is not lost when the probe interval straddles the report time.
-        let wake = match m.report_wait(chrono::Local::now().naive_local()) {
+        let wake = match m.report_wait(jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).datetime()) {
             Some(wait) if !wait.is_zero() => settings.check_interval.min(wait + Duration::from_secs(1)),
             _ => settings.check_interval,
         };
@@ -431,17 +428,17 @@ fn monitor_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
 /// local time), and also at start when the last run is missing or over a day old. Nothing here depends on the health
 /// monitor being on. While it runs a marker file says so (the Dashboard shows a red notice); it does not start while a
 /// check of one host is running from the TUI, and tries again at its next wake.
-fn checks_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, at: Option<chrono::NaiveTime>) {
+fn checks_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, at: Option<jiff::civil::Time>) {
     let Some(at) = at else {
         log("daily checks are off");
         return;
     };
-    log(&format!("daily checks (disks, shares) at {}", at.format("%H:%M")));
+    log(&format!("daily checks (disks, shares) at {}", at.strftime("%H:%M")));
     let path = state_dir.join("smart.json");
     while !stop.load(Ordering::SeqCst) {
         guarded("the daily checks", || {
-            let last = smart_check::SmartFile::load(&path).last_run().map(|t| t.with_timezone(&chrono::Local).naive_local());
-            if !smart_check::due(chrono::Local::now().naive_local(), Some(at), last) {
+            let last = smart_check::SmartFile::load(&path).last_run().map(|t| t.to_zoned_datetime(crate::time::local_zone()).datetime());
+            if !smart_check::due(jiff::Timestamp::now().to_zoned_datetime(crate::time::local_zone()).datetime(), Some(at), last) {
                 return;
             }
             let Some(_running) = checks::RunGuard::start(state_dir, "daemon", None) else {
@@ -449,7 +446,7 @@ fn checks_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>, a
                 return;
             };
             let hosts = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
-            let summary = checks::run_pass(state_dir, &hosts, Utc::now(), smart_check::HOST_DEADLINE);
+            let summary = checks::run_pass(state_dir, &hosts, Timestamp::now(), smart_check::HOST_DEADLINE);
             log(&format!(
                 "daily checks done: disks on {} of {} hosts, shares on {} of {} hosts, {} problem(s)",
                 summary.disks_hosts, summary.hosts, summary.shares_hosts, summary.hosts, summary.problems
@@ -473,7 +470,7 @@ fn storage_loop(shared: &Arc<Shared>, state_dir: &Path, stop: &Arc<AtomicBool>) 
     while !stop.load(Ordering::SeqCst) {
         guarded("the storage check", || {
             let hosts = shared.hosts.read().unwrap_or_else(PoisonError::into_inner).clone();
-            storage_check::run_pass(state_dir, &hosts, Utc::now(), storage_check::HOST_DEADLINE);
+            storage_check::run_pass(state_dir, &hosts, Timestamp::now(), storage_check::HOST_DEADLINE);
             storage_check::retain_hosts(state_dir, &hosts.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>());
         });
         let mut waited = Duration::ZERO;
@@ -499,7 +496,7 @@ fn dispatch(shared: &Arc<Shared>, work: Vec<Work>) {
 /// Runs the scheduler until `stop` is set. Refuses to start if another daemon is alive.
 pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<()> {
     paths.ensure_dir().map_err(|e| AppError::Config(format!("creating {}: {e}", paths.dir.display())))?;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let heartbeat_path = paths.heartbeat();
     if let Some(pid) = heartbeat::live_other_instance(heartbeat::read(&heartbeat_path).as_ref(), now, std::process::id(), heartbeat::process_alive) {
         return Err(AppError::Config(format!("another zfsctl daemon is already running (pid {pid})")));
@@ -539,11 +536,11 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
     let cancel_dir = paths.cancel_dir();
     let state_dir = paths.dir.clone();
     let mut config_mtime = modified(config_path);
-    let mut engine = Engine::new(paths, chrono::Local, names, now);
+    let mut engine = Engine::new(paths, crate::time::local_zone, names, now);
     let started_at = now;
 
-    let work = engine.start(Utc::now());
-    log(&format!("zfsctl daemon started (pid {})", std::process::id()));
+    let work = engine.start(Timestamp::now());
+    log(&format!("zfsctl daemon started (pid {}, zone {})", std::process::id(), crate::time::local_zone().iana_name().unwrap_or("not named")));
     report(&engine);
     dispatch(&shared, work);
     {
@@ -572,7 +569,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
 
     let mut last_problem: Option<String> = None;
     while !stop.load(Ordering::SeqCst) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         if let Err(e) = heartbeat::write(&heartbeat_path, &heartbeat::Heartbeat { pid: std::process::id(), started_at, last_tick: now }) {
             let problem = format!("cannot write the heartbeat: {e}");
             if last_problem.as_deref() != Some(problem.as_str()) {
@@ -615,7 +612,7 @@ pub fn run(config_path: &Path, paths: Paths, stop: &Arc<AtomicBool>) -> Result<(
     Ok(())
 }
 
-fn report(engine: &Engine<chrono::Local>) {
+fn report(engine: &Engine) {
     if let Some(e) = &engine.load_error {
         log(&format!("jobs file problem, keeping the previous schedule: {e}"));
     }
@@ -632,14 +629,14 @@ mod tests {
     use scheduler::Due;
     use std::sync::Mutex;
 
-    struct FixedClock(Mutex<chrono::DateTime<Utc>>);
+    struct FixedClock(Mutex<jiff::Timestamp>);
 
     impl Clock for FixedClock {
-        fn now(&self) -> chrono::DateTime<Utc> {
+        fn now(&self) -> jiff::Timestamp {
             *self.0.lock().unwrap()
         }
         fn sleep(&self, d: Duration) {
-            *self.0.lock().unwrap() += chrono::Duration::from_std(d).unwrap();
+            *self.0.lock().unwrap() += jiff::SignedDuration::try_from(d).unwrap();
         }
     }
 
@@ -648,7 +645,7 @@ mod tests {
     }
 
     fn shared(dir: &tempfile::TempDir, runner: FakeRunner, notify: Option<String>) -> Shared {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-10-07T03:00:00Z").unwrap().with_timezone(&Utc);
+        let now = ("2026-10-07T03:00:00Z").parse::<jiff::Timestamp>().unwrap();
         Shared {
             history: History::new(dir.path().join("history.jsonl")),
             hosts: RwLock::new(vec![("local".to_string(), Arc::new(runner) as Arc<dyn CommandRunner>)]),
@@ -827,7 +824,7 @@ mod tests {
     }
 
     fn due() -> Due {
-        Due { job: job(), scheduled_for: chrono::DateTime::parse_from_rfc3339("2026-10-07T03:00:00Z").unwrap().with_timezone(&Utc), catch_up: false }
+        Due { job: job(), scheduled_for: ("2026-10-07T03:00:00Z").parse::<jiff::Timestamp>().unwrap(), catch_up: false }
     }
 
     #[test]
@@ -922,10 +919,10 @@ mod tests {
 
     #[test]
     fn log_lines_are_stamped_in_the_given_zone_to_the_second() {
-        let when = chrono::DateTime::parse_from_rfc3339("2026-10-06T15:43:16.472Z").unwrap();
-        let eastern = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
-        assert_eq!(stamp(&when.with_timezone(&eastern)), "2026-10-06T11:43:16-04:00");
-        assert_eq!(stamp(&when.with_timezone(&Utc)), "2026-10-06T15:43:16+00:00");
+        let when = "2026-10-06T15:43:16.472Z".parse::<jiff::Timestamp>().unwrap();
+        let eastern = jiff::tz::TimeZone::fixed(jiff::tz::offset(-4));
+        assert_eq!(stamp(&when.to_zoned_datetime(eastern)), "2026-10-06T11:43:16-04:00");
+        assert_eq!(stamp(&when.to_zoned_datetime(jiff::tz::TimeZone::UTC)), "2026-10-06T15:43:16+00:00");
     }
 
     #[test]
@@ -943,7 +940,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(dir.path());
         // A heartbeat from this very process, as if another daemon were running here.
-        let other = heartbeat::Heartbeat { pid: 1, started_at: Utc::now(), last_tick: Utc::now() };
+        let other = heartbeat::Heartbeat { pid: 1, started_at: Timestamp::now(), last_tick: Timestamp::now() };
         heartbeat::write(&paths.heartbeat(), &other).unwrap();
         let err = run(&dir.path().join("config.toml"), paths, &Arc::new(AtomicBool::new(true))).unwrap_err();
         assert!(err.to_string().contains("another zfsctl daemon is already running (pid 1)"), "{err}");
@@ -1025,7 +1022,7 @@ mod tests {
     fn startup_removes_progress_and_cancel_files_left_by_a_previous_daemon() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(dir.path());
-        let p = progress::Progress { job_id: "j".into(), bytes: 1, total: None, started_at: Utc::now(), updated_at: Utc::now(), rate: None };
+        let p = progress::Progress { job_id: "j".into(), bytes: 1, total: None, started_at: Timestamp::now(), updated_at: Timestamp::now(), rate: None };
         progress::write(&paths.progress_dir(), "old", &p).unwrap();
         cancel::request(&paths.cancel_dir(), "j").unwrap();
         clear_runtime_files(&paths);

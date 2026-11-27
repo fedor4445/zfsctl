@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn draw_cloud(f: &mut Frame, app: &mut App, area: Rect) {
     use crate::ui::cloud::{failed, row_fill, table_cells, Fill};
     let theme = app.theme.clone();
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     let rows = app.cloud_rows();
     let jobs: usize = rows.iter().map(|r| r.job_ids.len()).sum();
     let mut title = vec![Span::raw(format!("Cloud — {} remote{}, {} job{}", rows.len(), if rows.len() == 1 { "" } else { "s" }, jobs, if jobs == 1 { "" } else { "s" }))];
@@ -59,7 +59,7 @@ pub(super) fn draw_cloud_panel(f: &mut Frame, app: &App, area: Rect) {
     };
     // The plan line is yellow from 80% and red from 95%; every other problem line is red.
     let fill = crate::ui::cloud::row_fill(&row, &app.cloud_sizes, &app.cloud_caps);
-    let mut lines: Vec<Line> = crate::ui::cloud::detail(&row, &app.jobs_view, &app.cloud_sizes, &app.cloud_caps, chrono::Utc::now())
+    let mut lines: Vec<Line> = crate::ui::cloud::detail(&row, &app.jobs_view, &app.cloud_sizes, &app.cloud_caps, jiff::Timestamp::now())
         .into_iter()
         .enumerate()
         .map(|(i, (text, bad))| {

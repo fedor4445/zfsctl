@@ -161,7 +161,7 @@ impl App {
 
 /// Turns a submitted backup form into a save, or says what is wrong. It refuses exactly what the
 /// daemon would refuse (`jobs::resolve`).
-pub(super) fn build_backup_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+pub(super) fn build_backup_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: jiff::Timestamp) -> std::result::Result<PendingAction, String> {
     let FormKind::BackupJob { hosts, existing, jobs } = kind else { return Err("not a backup job form".to_string()) };
     let yes_no = |label: &str, raw: &str, blank: bool| match raw.trim().to_lowercase().as_str() {
         "" => Ok(blank),
@@ -274,7 +274,7 @@ impl App {
 
 /// Turns a submitted cloud mirror form into a save, or says what is wrong. It refuses exactly what the daemon
 /// would refuse (`jobs::resolve`), plus a remote that overlaps another job's.
-pub(super) fn build_mirror_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+pub(super) fn build_mirror_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: jiff::Timestamp) -> std::result::Result<PendingAction, String> {
     let FormKind::MirrorJob { hosts, existing, jobs } = kind else { return Err("not a cloud mirror job form".to_string()) };
     let host = field_value(fields, 0).trim();
     if !hosts.iter().any(|h| h == host) {
@@ -351,7 +351,7 @@ pub(super) fn build_mirror_job_action(kind: &FormKind, fields: &[FormField], sta
 
 /// Turns a submitted replication form into a save, or says what is wrong. The job is validated
 /// by `jobs::resolve`, exactly as the daemon will validate it, plus the shared-destination rule.
-pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: jiff::Timestamp) -> std::result::Result<PendingAction, String> {
     let FormKind::ReplicateJob { hosts, existing, jobs } = kind else { return Err("not a replication job form".to_string()) };
     let yes_no = |label: &str, raw: &str, blank: bool| match raw.trim().to_lowercase().as_str() {
         "" => Ok(blank),
@@ -426,7 +426,7 @@ pub(super) fn build_replicate_job_action(kind: &FormKind, fields: &[FormField], 
 
 /// Turns a submitted snapshot-job form into a save, or says what is wrong. It refuses exactly
 /// what the daemon would refuse (`jobs::resolve`) plus a prefix another job already uses.
-pub(super) fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+pub(super) fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: jiff::Timestamp) -> std::result::Result<PendingAction, String> {
     let FormKind::SnapshotJob { hosts, existing, jobs } = kind else { return Err("not a snapshot job form".to_string()) };
     let host = field_value(fields, 0).trim();
     if !hosts.iter().any(|h| h == host) {
@@ -487,7 +487,7 @@ pub(super) fn build_snapshot_job_action(kind: &FormKind, fields: &[FormField], s
 
 /// Turns a submitted job form into a save, or says what is wrong with it. An edit keeps the
 /// job's id, creation time and enabled flag; a new job gets a fresh id and `created_at = now`.
-pub(super) fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: chrono::DateTime<chrono::Utc>) -> std::result::Result<PendingAction, String> {
+pub(super) fn build_job_action(kind: &FormKind, fields: &[FormField], state_dir: &std::path::Path, now: jiff::Timestamp) -> std::result::Result<PendingAction, String> {
     let FormKind::Job { hosts, existing, taken_ids } = kind else { return Err("not a job form".to_string()) };
     let host = field_value(fields, 0).trim();
     if !hosts.iter().any(|h| h == host) {
@@ -575,7 +575,7 @@ pub(super) fn build_notify_action(fields: &[FormField], config_path: &std::path:
     };
     let settings = cfg.resolve()?;
     let to = if settings.has_mail() { format!("Email to {}", settings.mail_to.join(", ")) } else { "Email off".to_string() };
-    let report = settings.report_time.map_or("no daily report".to_string(), |t| format!("report at {}", t.format("%H:%M")));
+    let report = settings.report_time.map_or("no daily report".to_string(), |t| format!("report at {}", t.strftime("%H:%M")));
     let remind = settings.remind.map_or("never remind".to_string(), |d| format!("remind every {} hours", d.as_secs() / 3600));
     let command = if settings.has_mail() { format!("\n  Mail command (runs as root on the hub): {}", settings.mail_command) } else { String::new() };
     let prompt = format!("Save alert settings?\n  {to}{command}\n  Check every {} min, {report}, {remind}\nThe daemon applies them within seconds. (y/n)", settings.check_interval.as_secs() / 60);

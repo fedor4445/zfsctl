@@ -140,7 +140,7 @@ fn arrow_keys_move_through_the_remotes_and_s_measures_only_mirror_jobs_of_the_se
     app.handle_key(KeyCode::Char('s'));
     assert!(app.pending_cloud.is_empty(), "a restic repository is not measured");
     assert!(app.status_message.as_deref().unwrap_or("").contains("Nothing to measure"), "{:?}", app.status_message);
-    app.tx.send(WorkerMsg::CloudSize("m1".into(), crate::ui::cloud::Size { current: Some((4, 2000)), old: None, at: chrono::Utc::now(), problem: None })).unwrap();
+    app.tx.send(WorkerMsg::CloudSize("m1".into(), crate::ui::cloud::Size { current: Some((4, 2000)), old: None, at: jiff::Timestamp::now(), problem: None })).unwrap();
     app.drain_worker_messages();
     assert_eq!(app.cloud_sizes.get("m1").and_then(|s| s.current), Some((4, 2000)));
 }

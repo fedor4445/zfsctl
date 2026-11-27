@@ -6,24 +6,24 @@ use crate::daemon::cron::schedule_gap;
 use crate::daemon::storage_check::StorageFile;
 use crate::daemon::history::{Run, RunResult};
 use crate::jobs::{self, Job};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 
 /// How a job stands: the same overdue rule the Dashboard uses, with the tolerance (in schedule gaps) chosen by the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum JobState {
     Current,
-    Stopped { last_ok: DateTime<Utc> },
+    Stopped { last_ok: Timestamp },
     Failing,
     NeverRan,
 }
 
 /// When the job last succeeded (a skipped run is not a success).
-pub(crate) fn last_ok(job: &Job, runs: &[Run]) -> Option<DateTime<Utc>> {
+pub(crate) fn last_ok(job: &Job, runs: &[Run]) -> Option<Timestamp> {
     runs.iter().filter(|r| r.job_id == job.id && r.result == Some(RunResult::Ok)).map(|r| r.finished_at.unwrap_or(r.started_at)).max()
 }
 
-pub(crate) fn job_state(job: &Job, runs: &[Run], tolerance: i32, now: DateTime<Utc>) -> JobState {
+pub(crate) fn job_state(job: &Job, runs: &[Run], tolerance: i32, now: Timestamp) -> JobState {
     let mine = || runs.iter().filter(|r| r.job_id == job.id);
     let latest_finished = mine().filter(|r| r.result.is_some()).max_by_key(|r| r.finished_at.unwrap_or(r.started_at));
     if latest_finished.is_some_and(|r| r.result == Some(RunResult::Failed)) {
@@ -106,11 +106,11 @@ pub(crate) fn covers(job: &Job, host: &str, dataset: &str) -> bool {
 }
 
 /// A dataset created less than this long ago is not judged yet.
-pub const GRACE: chrono::Duration = chrono::Duration::hours(24);
+pub const GRACE: jiff::SignedDuration = crate::time::hours(24);
 
 /// A host whose dataset list is older than this says nothing about its datasets. The Dashboard has no staleness rule
 /// for the dataset list itself (its quota-check line is about the loop, not one host), so this is our own.
-pub const STALE_AFTER: chrono::Duration = chrono::Duration::days(2);
+pub const STALE_AFTER: jiff::SignedDuration = crate::time::days(2);
 
 /// Whether a dataset is the operator's data or the operating system's (ranked lower, never left out).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -141,7 +141,7 @@ pub enum Gap {
     /// the dataset was snapshotted.
     NotRecursiveYet,
     /// The job stopped succeeding in time; its last success.
-    Stopped { last_ok: DateTime<Utc> },
+    Stopped { last_ok: Timestamp },
     /// The job's latest run failed.
     Failing,
 }
@@ -198,7 +198,7 @@ pub fn fix_for(gap: &Unprotected, jobs: &[Job]) -> Fix {
 
 /// Every dataset of every host with a fresh list, past its grace, that lacks a current snapshot job or enough current
 /// copies on other machines; sorted data first, then by host and dataset.
-pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Vec<Unprotected> {
+pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: Timestamp) -> Vec<Unprotected> {
     // Worked out once per call: each enabled snapshot job and each enabled copy job, with where it stands.
     let standing = |job: &Job| gap_of(&job_state(job, runs, settings.for_host(&job.host).tolerance, now), now);
     let snap_jobs: Vec<(&Job, Option<Gap>, bool)> = jobs.iter().filter(|j| gives_snapshots(j)).map(|j| (j, standing(j), ran_recursively(j, runs))).collect();
@@ -285,7 +285,7 @@ pub fn judge(file: &StorageFile, jobs: &[Job], runs: &[Run], settings: &Protecti
                 continue;
             }
             // A missing or future creation time counts as old.
-            if seen.created.and_then(|c| DateTime::from_timestamp(c, 0)).is_some_and(|created| created <= now && now - created < GRACE) {
+            if seen.created.and_then(|c| Timestamp::from_second(c).ok()).is_some_and(|created| created <= now && now - created < GRACE) {
                 continue;
             }
             let node: Node = (host.clone(), dataset.to_string());
@@ -358,7 +358,7 @@ struct CopyJob<'a> {
 
 /// `None` for a current job, else what it lacks. A job that never ran, or a bad schedule with nothing to date it by
 /// (the state then says it stopped "now"), is `NotYet`, so nobody reads "stopped 0 minutes ago".
-fn gap_of(state: &JobState, now: DateTime<Utc>) -> Option<Gap> {
+fn gap_of(state: &JobState, now: Timestamp) -> Option<Gap> {
     match state {
         JobState::Current => None,
         JobState::Failing => Some(Gap::Failing),
@@ -390,7 +390,7 @@ fn small(n: usize) -> u8 {
 impl Unprotected {
     /// What is missing, in a short phrase (`no snapshot job; no copy job`). `age` words a past time
     /// (`3 days ago`).
-    pub fn describe(&self, age: &dyn Fn(DateTime<Utc>) -> String) -> String {
+    pub fn describe(&self, age: &dyn Fn(Timestamp) -> String) -> String {
         let mut parts: Vec<String> = Vec::new();
         match self.snapshots {
             Some(Gap::Missing) => parts.push("no snapshot job".into()),
@@ -430,22 +430,22 @@ mod tests {
     use super::*;
     use crate::config::EmailTiming;
     use crate::daemon::storage_check::{Integrity, SeenDataset, StorageResult};
-    use chrono::Duration;
+    use jiff::SignedDuration;
 
     fn seen(name: &str, created: Option<i64>) -> SeenDataset {
         SeenDataset { name: name.into(), volume: false, created }
     }
 
-    fn host_result(checked_ago: Duration, seen: Vec<SeenDataset>) -> StorageResult {
+    fn host_result(checked_ago: SignedDuration, seen: Vec<SeenDataset>) -> StorageResult {
         StorageResult { checked_at: now() - checked_ago, datasets: vec![], seen, pools: vec![], integrity: Integrity::default(), locked: vec![], integrity_stale: false, zfs_version: None, error: None }
     }
 
     /// One host's datasets, all a week old, checked five minutes ago.
     fn storage(hosts: &[(&str, &[&str])]) -> StorageFile {
-        let old = Some((now() - Duration::days(7)).timestamp());
+        let old = Some((now() - crate::time::days(7)).as_second());
         let mut file = StorageFile::default();
         for (host, names) in hosts {
-            file.hosts.insert((*host).into(), host_result(Duration::minutes(5), names.iter().map(|n| seen(n, old)).collect()));
+            file.hosts.insert((*host).into(), host_result(crate::time::minutes(5), names.iter().map(|n| seen(n, old)).collect()));
         }
         file
     }
@@ -456,7 +456,7 @@ mod tests {
 
     /// A run that succeeded ten minutes ago for each job: all current.
     fn ok_runs(jobs: &[Job]) -> Vec<Run> {
-        jobs.iter().map(|j| run(&j.id, Duration::minutes(10), Some(RunResult::Ok))).collect()
+        jobs.iter().map(|j| run(&j.id, crate::time::minutes(10), Some(RunResult::Ok))).collect()
     }
 
     fn snap(id: &str, dataset: &str) -> Job {
@@ -582,8 +582,8 @@ mod tests {
 
     #[test]
     fn each_missing_half_is_named() {
-        let at = now() - Duration::days(3);
-        let age = |t: DateTime<Utc>| if t == at { "3 days ago".to_string() } else { format!("wrong time {t}") };
+        let at = now() - crate::time::days(3);
+        let age = |t: Timestamp| if t == at { "3 days ago".to_string() } else { format!("wrong time {t}") };
         let item = |snapshots: Option<Gap>, copies: Option<CopyGap>| Unprotected { host: "h".into(), dataset: "tank/d".into(), tier: Tier::Data, snapshots, copies };
         let none = |worst: Gap| Some(CopyGap { have: 0, need: 1, online_have: 0, online_need: 0, domains: None, worst, files_ignored: 0 });
         assert_eq!(item(Some(Gap::Missing), None).describe(&age), "no snapshot job");
@@ -604,10 +604,10 @@ mod tests {
         let file = storage(&[("local", &["tank/data"])]);
         let jobs = vec![snap("s", "tank/data"), bk("b", "tank/data", "sftp:nas:/r")];
         let judged = |runs: &[Run], jobs: &[Job]| judge(&file, jobs, runs, &level(1, 0), now());
-        let failing = vec![run("s", Duration::minutes(10), Some(RunResult::Failed)), run("b", Duration::minutes(10), Some(RunResult::Failed))];
+        let failing = vec![run("s", crate::time::minutes(10), Some(RunResult::Failed)), run("b", crate::time::minutes(10), Some(RunResult::Failed))];
         let found = judged(&failing, &jobs);
         assert_eq!((found[0].snapshots, found[0].copies.map(|c| c.worst)), (Some(Gap::Failing), Some(Gap::Failing)));
-        let stopped = vec![run("s", Duration::days(3), Some(RunResult::Ok)), run("b", Duration::days(3), Some(RunResult::Ok))];
+        let stopped = vec![run("s", crate::time::days(3), Some(RunResult::Ok)), run("b", crate::time::days(3), Some(RunResult::Ok))];
         let found = judged(&stopped, &jobs);
         assert_eq!((found[0].snapshots, found[0].copies.map(|c| c.worst)), (Some(Gap::Stopped { last_ok: at }), Some(Gap::Stopped { last_ok: at })));
         assert_eq!(words(&found), ["local: tank/data: snapshots stopped 3 days ago; copy on another machine stopped 3 days ago"]);
@@ -621,9 +621,9 @@ mod tests {
         assert_eq!((found[0].snapshots, found[0].copies.map(|c| c.worst)), (Some(Gap::NotYet), Some(Gap::NotYet)));
         // Of two covering copy jobs, a failing one is named before a stopped one; of two stopped, the latest.
         let two = vec![snap("s", "tank/data"), bk("b", "tank/data", "sftp:nas:/r"), bk("c", "tank/data", "sftp:nas2:/r")];
-        let runs = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("b", Duration::days(3), Some(RunResult::Ok)), run("c", Duration::minutes(10), Some(RunResult::Failed))];
+        let runs = vec![run("s", crate::time::minutes(10), Some(RunResult::Ok)), run("b", crate::time::days(3), Some(RunResult::Ok)), run("c", crate::time::minutes(10), Some(RunResult::Failed))];
         assert_eq!(judged(&runs, &two)[0].copies.map(|c| c.worst), Some(Gap::Failing));
-        let runs = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("b", Duration::days(5), Some(RunResult::Ok)), run("c", Duration::days(3), Some(RunResult::Ok))];
+        let runs = vec![run("s", crate::time::minutes(10), Some(RunResult::Ok)), run("b", crate::time::days(5), Some(RunResult::Ok)), run("c", crate::time::days(3), Some(RunResult::Ok))];
         assert_eq!(judged(&runs, &two)[0].copies.map(|c| c.worst), Some(Gap::Stopped { last_ok: at }));
     }
 
@@ -661,7 +661,7 @@ mod tests {
         let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy"), mirror_on("fbsd16", "m", "tank/copy", "b2:bkt/photos")];
         let mut runs = ok_runs(&jobs);
         runs.retain(|r| r.job_id != "m");
-        runs.push(run("m", Duration::days(3), Some(RunResult::Ok)));
+        runs.push(run("m", crate::time::days(3), Some(RunResult::Ok)));
         let found = judge(&file, &jobs, &runs, &level(2, 1), now());
         assert_eq!(places(&found), ["fbsd16:tank/copy", "local:tank/data"], "a stopped cloud job is no copy");
     }
@@ -688,7 +688,7 @@ mod tests {
     fn a_replication_that_is_not_current_breaks_the_chain_and_the_replica_stands_alone() {
         let file = storage(&[("local", &["tank/data"]), ("fbsd16", &["tank/copy"])]);
         let jobs = vec![snap("s", "tank/data"), repl("r", "tank/data", "fbsd16", "tank/copy")];
-        let runs = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("r", Duration::days(3), Some(RunResult::Ok))];
+        let runs = vec![run("s", crate::time::minutes(10), Some(RunResult::Ok)), run("r", crate::time::days(3), Some(RunResult::Ok))];
         let found = judge(&file, &jobs, &runs, &level(1, 0), now());
         assert_eq!(places(&found), ["fbsd16:tank/copy", "local:tank/data"]);
         let by = |p: &str| found.iter().find(|u| format!("{}:{}", u.host, u.dataset) == p).unwrap();
@@ -786,7 +786,7 @@ mod tests {
     fn how_recent_is_the_groups_of_the_host_that_runs_the_job() {
         let file = storage(&[("a", &["tank/x"]), ("c", &["tank/y"])]);
         let jobs = vec![on("a", snap("s1", "tank/x")), on("c", snap("s2", "tank/y"))];
-        let runs = vec![run("s1", Duration::minutes(150), Some(RunResult::Ok)), run("s2", Duration::minutes(150), Some(RunResult::Ok))];
+        let runs = vec![run("s1", crate::time::minutes(150), Some(RunResult::Ok)), run("s2", crate::time::minutes(150), Some(RunResult::Ok))];
         let settings = grouped("[groups.db.protection]\nrecent = \"relaxed\"\n");
         let found = judge(&file, &jobs, &runs, &settings, now());
         let by = |p: &str| found.iter().find(|u| format!("{}:{}", u.host, u.dataset) == p);
@@ -802,7 +802,7 @@ mod tests {
         assert_eq!(found.iter().map(|u| (u.host.as_str(), u.dataset.as_str())).collect::<Vec<_>>(), [("fbsd16", "tank/copy"), ("fbsd16", "tank/other"), ("local", "tank/data")], "one copy is short of three for the data, wherever it is held");
         let found = judge(&file, &jobs, &ok_runs(&jobs), &level(1, 0), now());
         assert_eq!(found.iter().map(|u| u.dataset.as_str()).collect::<Vec<_>>(), ["tank/other"], "at Basic the source and its replica are both protected");
-        let stopped = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("r", Duration::days(3), Some(RunResult::Ok))];
+        let stopped = vec![run("s", crate::time::minutes(10), Some(RunResult::Ok)), run("r", crate::time::days(3), Some(RunResult::Ok))];
         let found = judge(&file, &jobs, &stopped, &level(1, 0), now());
         assert!(found.iter().any(|u| u.host == "fbsd16" && u.dataset == "tank/copy"), "a stopped source job protects nothing");
         let mut off = jobs.clone();
@@ -813,22 +813,22 @@ mod tests {
 
     #[test]
     fn grace_staleness_and_recency_boundaries() {
-        let at = |ago: Duration| Some((now() - ago).timestamp());
+        let at = |ago: SignedDuration| Some((now() - ago).as_second());
         let mut file = StorageFile::default();
-        let list = vec![seen("tank/h23", at(Duration::hours(23))), seen("tank/h24", at(Duration::hours(24))), seen("tank/h25", at(Duration::hours(25))), seen("tank/none", None), seen("tank/future", at(Duration::hours(-5)))];
-        file.hosts.insert("local".into(), host_result(Duration::days(2), list));
-        file.hosts.insert("stale".into(), host_result(Duration::days(2) + Duration::minutes(1), vec![seen("tank/x", None)]));
+        let list = vec![seen("tank/h23", at(crate::time::hours(23))), seen("tank/h24", at(crate::time::hours(24))), seen("tank/h25", at(crate::time::hours(25))), seen("tank/none", None), seen("tank/future", at(crate::time::hours(-5)))];
+        file.hosts.insert("local".into(), host_result(crate::time::days(2), list));
+        file.hosts.insert("stale".into(), host_result(crate::time::days(2) + crate::time::minutes(1), vec![seen("tank/x", None)]));
         let names: Vec<String> = judge(&file, &[], &[], &level(1, 0), now()).into_iter().map(|u| format!("{}:{}", u.host, u.dataset)).collect();
         assert_eq!(names, ["local:tank/future", "local:tank/h24", "local:tank/h25", "local:tank/none"]);
 
         // How recent: an hourly snapshot job last good 90 minutes ago is current at normal and relaxed, stopped at strict.
         let file = storage(&[("local", &["tank/data"])]);
         let jobs = vec![snap("s", "tank/data"), bk("b", "tank/data", "sftp:nas:/r")];
-        let runs = vec![run("s", Duration::minutes(90), Some(RunResult::Ok)), run("b", Duration::minutes(10), Some(RunResult::Ok))];
+        let runs = vec![run("s", crate::time::minutes(90), Some(RunResult::Ok)), run("b", crate::time::minutes(10), Some(RunResult::Ok))];
         let with = |tolerance: i32| judge(&file, &jobs, &runs, &ProtectionSettings { tolerance, ..level(1, 0) }, now());
-        assert_eq!(with(1)[0].snapshots, Some(Gap::Stopped { last_ok: now() - Duration::minutes(90) }));
+        assert_eq!(with(1)[0].snapshots, Some(Gap::Stopped { last_ok: now() - crate::time::minutes(90) }));
         assert!(with(2).is_empty() && with(4).is_empty());
-        let runs = vec![run("s", Duration::minutes(239), Some(RunResult::Ok)), run("b", Duration::minutes(10), Some(RunResult::Ok))];
+        let runs = vec![run("s", crate::time::minutes(239), Some(RunResult::Ok)), run("b", crate::time::minutes(10), Some(RunResult::Ok))];
         let with = |tolerance: i32| judge(&file, &jobs, &runs, &ProtectionSettings { tolerance, ..level(1, 0) }, now());
         assert!(matches!(with(2)[0].snapshots, Some(Gap::Stopped { .. })));
         assert!(with(4).is_empty());
@@ -838,8 +838,8 @@ mod tests {
     fn a_stale_or_empty_host_says_nothing() {
         assert!(judge(&StorageFile::default(), &[], &[], &level(1, 0), now()).is_empty());
         let mut file = StorageFile::default();
-        file.hosts.insert("empty".into(), host_result(Duration::minutes(5), vec![]));
-        file.hosts.insert("old".into(), host_result(Duration::days(3), vec![seen("tank/x", None)]));
+        file.hosts.insert("empty".into(), host_result(crate::time::minutes(5), vec![]));
+        file.hosts.insert("old".into(), host_result(crate::time::days(3), vec![seen("tank/x", None)]));
         assert!(judge(&file, &[], &[], &level(1, 0), now()).is_empty());
     }
 
@@ -878,10 +878,10 @@ mod tests {
     #[test]
     fn judging_five_thousand_datasets_is_fast() {
         let mut file = StorageFile::default();
-        let old = Some((now() - Duration::days(30)).timestamp());
+        let old = Some((now() - crate::time::days(30)).as_second());
         for h in 0..5 {
             let list = (0..1000).map(|i| seen(&format!("tank/d{}/s{i}", i % 20), old)).collect();
-            file.hosts.insert(format!("host{h}"), host_result(Duration::minutes(5), list));
+            file.hosts.insert(format!("host{h}"), host_result(crate::time::minutes(5), list));
         }
         let mut jobs = Vec::new();
         for i in 0..10 {
@@ -902,7 +902,7 @@ mod tests {
         let mut runs = Vec::new();
         for day in 0..30 {
             for j in &jobs {
-                runs.push(run(&j.id, Duration::minutes(10) + Duration::days(day), Some(RunResult::Ok)));
+                runs.push(run(&j.id, crate::time::minutes(10) + crate::time::days(day), Some(RunResult::Ok)));
             }
         }
         let start = std::time::Instant::now();
@@ -912,13 +912,13 @@ mod tests {
         assert!(took < std::time::Duration::from_millis(200), "took {took:?}");
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> Timestamp {
+        ("2026-10-22T12:00:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
-    fn run(job: &str, ago: Duration, result: Option<RunResult>) -> Run {
+    fn run(job: &str, ago: SignedDuration, result: Option<RunResult>) -> Run {
         let at = now() - ago;
-        Run { job_id: job.into(), run_id: format!("{job}-{}", ago.num_minutes()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: String::new(), catch_up: false, summary: None }
+        Run { job_id: job.into(), run_id: format!("{job}-{}", ago.as_mins()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: String::new(), catch_up: false, summary: None }
     }
 
     fn hourly() -> Job {
@@ -927,12 +927,12 @@ mod tests {
 
     #[test]
     fn job_state_follows_the_overdue_rule_at_each_tolerance() {
-        let ok = |min: i64| vec![run("snap", Duration::minutes(min), Some(RunResult::Ok))];
+        let ok = |min: i64| vec![run("snap", crate::time::minutes(min), Some(RunResult::Ok))];
         assert_eq!(job_state(&hourly(), &ok(119), 2, now()), JobState::Current);
-        assert_eq!(job_state(&hourly(), &ok(121), 2, now()), JobState::Stopped { last_ok: now() - Duration::minutes(121) });
+        assert_eq!(job_state(&hourly(), &ok(121), 2, now()), JobState::Stopped { last_ok: now() - crate::time::minutes(121) });
         assert!(matches!(job_state(&hourly(), &ok(61), 1, now()), JobState::Stopped { .. }));
         assert_eq!(job_state(&hourly(), &ok(239), 4, now()), JobState::Current);
-        let failed = vec![run("snap", Duration::hours(5), Some(RunResult::Ok)), run("snap", Duration::minutes(10), Some(RunResult::Failed))];
+        let failed = vec![run("snap", crate::time::hours(5), Some(RunResult::Ok)), run("snap", crate::time::minutes(10), Some(RunResult::Failed))];
         assert_eq!(job_state(&hourly(), &failed, 2, now()), JobState::Failing);
         assert_eq!(job_state(&hourly(), &[], 2, now()), JobState::NeverRan);
         let mut bad = hourly();
@@ -942,12 +942,12 @@ mod tests {
 
     #[test]
     fn an_up_to_date_skip_does_not_keep_a_job_current() {
-        let with_msg = |ago: i64, result: RunResult, msg: &str| Run { message: msg.into(), ..run("snap", Duration::minutes(ago), Some(result)) };
+        let with_msg = |ago: i64, result: RunResult, msg: &str| Run { message: msg.into(), ..run("snap", crate::time::minutes(ago), Some(result)) };
         let up_to_date = format!("{} (auto-2026)", crate::daemon::history::UP_TO_DATE);
         let runs = vec![with_msg(300, RunResult::Ok, ""), with_msg(10, RunResult::Skipped, &up_to_date)];
-        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - Duration::minutes(300) }, "only a real copy counts");
+        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - crate::time::minutes(300) }, "only a real copy counts");
         let runs = vec![with_msg(300, RunResult::Ok, ""), with_msg(10, RunResult::Skipped, "skipped: no snapshots with prefix 'auto' on tank/data")];
-        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - Duration::minutes(300) });
+        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - crate::time::minutes(300) });
         let runs = vec![with_msg(300, RunResult::Ok, ""), with_msg(20, RunResult::Skipped, &up_to_date), with_msg(10, RunResult::Failed, "boom")];
         assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Failing);
     }
@@ -956,9 +956,9 @@ mod tests {
     fn a_frozen_copy_that_logs_up_to_date_every_run_goes_stopped() {
         // A pinned source snapshot (or a prefix no job advances) is "up to date" on every run; that must never read as protected.
         let up_to_date = format!("{} (pinned)", crate::daemon::history::UP_TO_DATE);
-        let skip = |ago: i64| Run { message: up_to_date.clone(), ..run("snap", Duration::minutes(ago), Some(RunResult::Skipped)) };
-        let runs = vec![run("snap", Duration::days(30), Some(RunResult::Ok)), skip(180), skip(120), skip(60), skip(5)];
-        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - Duration::days(30) });
+        let skip = |ago: i64| Run { message: up_to_date.clone(), ..run("snap", crate::time::minutes(ago), Some(RunResult::Skipped)) };
+        let runs = vec![run("snap", crate::time::days(30), Some(RunResult::Ok)), skip(180), skip(120), skip(60), skip(5)];
+        assert_eq!(job_state(&hourly(), &runs, 2, now()), JobState::Stopped { last_ok: now() - crate::time::days(30) });
     }
 
     fn backup(repo: &str) -> Job {
@@ -1058,7 +1058,7 @@ mod tests {
         let mut tree = snap("s", "tank");
         tree.recursive = true;
         let jobs = vec![tree];
-        let ran = |message: &str| vec![Run { message: message.into(), ..run("s", Duration::minutes(10), Some(RunResult::Ok)) }];
+        let ran = |message: &str| vec![Run { message: message.into(), ..run("s", crate::time::minutes(10), Some(RunResult::Ok)) }];
         let judged = |runs: &[Run]| judge(&file, &jobs, runs, &level(1, 0), now()).into_iter().filter(|u| u.snapshots.is_some()).map(|u| (u.dataset, u.snapshots)).collect::<Vec<_>>();
         let before = judged(&ran("created auto-20261024T180000Z; pruned 0"));
         let rows: Vec<(&str, Option<Gap>)> = before.iter().map(|(d, g)| (d.as_str(), *g)).collect();
@@ -1067,19 +1067,19 @@ mod tests {
         assert!(after.is_empty(), "{after:?}");
         // The newest success decides: a plain run after a recursive one takes the proof away.
         let mut both = ran(&format!("created a{}; pruned 0", crate::daemon::snapshot::RECURSIVE_MARK));
-        both.push(Run { message: "created b; pruned 0".into(), ..run("s", Duration::minutes(5), Some(RunResult::Ok)) });
+        both.push(Run { message: "created b; pruned 0".into(), ..run("s", crate::time::minutes(5), Some(RunResult::Ok)) });
         assert_eq!(judged(&both).len(), 2);
         // A job of the child's own never needs the proof.
         let mut own = jobs.clone();
         own.push(snap("kid", "tank/kids/deep"));
-        let runs = vec![run("s", Duration::minutes(10), Some(RunResult::Ok)), run("kid", Duration::minutes(10), Some(RunResult::Ok))];
+        let runs = vec![run("s", crate::time::minutes(10), Some(RunResult::Ok)), run("kid", crate::time::minutes(10), Some(RunResult::Ok))];
         let names: Vec<String> = judge(&file, &own, &runs, &level(1, 0), now()).into_iter().filter(|u| u.snapshots.is_some()).map(|u| u.dataset).collect();
         assert_eq!(names, ["tank/kids"], "tank/kids is unproven; tank/kids/deep has a job of its own");
     }
 
     #[test]
     fn the_recursive_wait_is_worded_and_sent_to_the_job() {
-        let age = |_: DateTime<Utc>| String::new();
+        let age = |_: Timestamp| String::new();
         let item = Unprotected { host: "h".into(), dataset: "tank/kids".into(), tier: Tier::Data, snapshots: Some(Gap::NotRecursiveYet), copies: None };
         assert_eq!(item.describe(&age), "snapshot job has not run recursively yet");
         let mut tree = snap("s", "tank");
