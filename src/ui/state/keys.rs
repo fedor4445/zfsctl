@@ -70,6 +70,10 @@ impl App {
                 self.selected_disks.clear();
             }
             KeyCode::Esc if self.current_section() == Section::Hosts && !self.marked_hosts.is_empty() && self.modal.is_none() => self.marked_hosts.clear(),
+            KeyCode::Esc if self.current_section() == Section::Snapshots && !self.marked_snapshots.is_empty() && self.modal.is_none() && !self.browse_view_active() && !self.changes_view_active() => {
+                self.marked_snapshots.clear();
+                self.snapshot_mark_anchor = None;
+            }
             KeyCode::Esc if self.current_section() == Section::Hosts && !self.host_filter.is_empty() => {
                 self.host_filter.clear();
             }

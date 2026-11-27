@@ -223,3 +223,18 @@ fn the_acl_pane_title_says_when_the_dataset_is_posix() {
     let text = render(&mut app, 160, 30).join("\n");
     assert!(text.contains("acltype=posix") && text.contains("NFSv4"), "{text}");
 }
+
+#[test]
+fn marked_snapshots_show_a_plus_and_the_hints_offer_the_batch() {
+    let mut app = App::new(vec!["local".to_string()]);
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    let snap = |name: &str| crate::zfs::snapshot::Snapshot { dataset: "tank/a".to_string(), name: name.to_string(), used: 1, holds: 0, written: 0 };
+    app.snapshots = vec![snap("one"), snap("two")];
+    app.snapshots_table.select(Some(0));
+    app.marked_snapshots.insert("tank/a@two".to_string());
+    let rows = render(&mut app, 140, 12);
+    assert!(rows.iter().any(|r| r.contains("+ tank/a@two")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("tank/a@one") && !r.contains("+ tank/a@one")), "{rows:?}");
+    let hints = rows.last().unwrap();
+    assert!(hints.contains("Destroy marked") && hints.contains("Unmark"), "{hints}");
+}

@@ -366,6 +366,7 @@ struct Fingerprint {
     quit: bool,
     selected_disks: Vec<String>,
     marked_hosts: Vec<String>,
+    marked_snapshots: Vec<String>,
     selections: Vec<Option<usize>>,
     status: Option<String>,
 }
@@ -389,6 +390,7 @@ fn fingerprint(a: &App) -> Fingerprint {
         status: None,
         selected_disks: disks,
         marked_hosts: a.marked_hosts.iter().cloned().collect(),
+        marked_snapshots: a.marked_snapshots.iter().cloned().collect(),
         selections: vec![
             a.pools_table.selected(),
             a.datasets_table.selected(),

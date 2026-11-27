@@ -52,6 +52,7 @@ mod keys_zfs;
 mod pickers;
 mod refresh;
 mod screens;
+mod snapshot_marks;
 mod snapshot_views;
 mod modal_keys;
 mod worker;
@@ -464,6 +465,12 @@ pub struct App {
     pub removed_hosts: std::collections::BTreeSet<String>,
     /// The hosts of the last remove sent; the ones `config.toml` no longer has afterwards become `removed_hosts`.
     pub removing_hosts: Vec<String>,
+    /// Snapshots marked with Space in Snapshots, as `dataset@name`, for one destroy of several.
+    pub marked_snapshots: std::collections::BTreeSet<String>,
+    /// The host the marks belong to: another host's `tank@x` is a different snapshot.
+    pub marked_snapshots_host: usize,
+    /// The snapshot last marked with Space, where `M` starts its run.
+    pub snapshot_mark_anchor: Option<String>,
     /// Tags typed in the Add Host form, by lowercase host name, until the host is confirmed reachable.
     pub new_host_tags: HashMap<String, String>,
     /// The Hosts filter text (empty = none) and whether it is being typed. Only the drawn rows and Up/Down use
@@ -651,6 +658,9 @@ impl App {
             marked_hosts: std::collections::BTreeSet::new(),
             removed_hosts: std::collections::BTreeSet::new(),
             removing_hosts: Vec::new(),
+            marked_snapshots: std::collections::BTreeSet::new(),
+            marked_snapshots_host: 0,
+            snapshot_mark_anchor: None,
             new_host_tags: HashMap::new(),
             host_filter: String::new(),
             host_filter_editing: false,
@@ -954,6 +964,8 @@ impl App {
         self.encryption.clear();
         self.snapshots.clear();
         self.snapshot_tags.clear();
+        self.marked_snapshots.clear();
+        self.snapshot_mark_anchor = None;
         self.snapshots_loaded = false;
         self.pools_table.select(None);
         self.datasets_table.select(None);
@@ -1254,7 +1266,9 @@ Datasets: ACL sub-tab
   d                remove the selected entry by position
 
 Snapshots
-  d                destroy (type dataset@name to confirm)
+  d                destroy (type dataset@name to confirm); with marked snapshots, destroy those (type how many to confirm)
+  Space            mark or unmark the selected snapshot (Esc unmarks all)
+  M                mark every snapshot from the last one marked with Space to the selected one
   b                roll back (type dataset@name to confirm)
   H                hold the selected snapshot, or release zfsctl's hold on it (a hold protects it from destroy and pruning)
   c                show what changed since the previous snapshot, by folder (read-only; Enter opens a folder, / filters its entries by name as you type (a|b for either, * ? wildcards), [ ] sets the depth, H holds the older snapshot, Esc closes)

@@ -89,6 +89,57 @@ pub fn destroy_snapshot_with(runner: &dyn CommandRunner, dataset: &str, name: &s
     Ok(())
 }
 
+/// Destroys several snapshots, all or nothing at the checking stage: first one hold check per dataset and a dry run
+/// (`zfs destroy -n`) of every snapshot; if any is held, missing or refused by zfs (a clone, for one), nothing is
+/// destroyed and the error names them. Then each is destroyed in order; a failure does not stop the rest, and the error
+/// says how many went and which failed. Returns how many were destroyed.
+pub fn destroy_snapshots(runner: &dyn CommandRunner, items: &[(String, String)]) -> Result<usize> {
+    let mut problems = Vec::new();
+    let mut datasets: Vec<&str> = items.iter().map(|(d, _)| d.as_str()).collect();
+    datasets.sort_unstable();
+    datasets.dedup();
+    let mut holds = std::collections::HashMap::new();
+    for dataset in datasets {
+        match held_in(runner, dataset, false) {
+            Ok(rows) => holds.extend(rows),
+            Err(e) => problems.push(format!("{dataset}: the hold check failed: {e}")),
+        }
+    }
+    for (dataset, name) in items {
+        let target = format!("{dataset}@{name}");
+        match holds.get(&target) {
+            Some(Some(0)) => {}
+            Some(Some(n)) => {
+                problems.push(format!("{target} has {n} hold{}", if *n == 1 { "" } else { "s" }));
+                continue;
+            }
+            Some(None) => {
+                problems.push(format!("{target}: its holds could not be read"));
+                continue;
+            }
+            None => {
+                problems.push(format!("{target} was not seen by the hold check"));
+                continue;
+            }
+        }
+        if let Err(e) = super::run_checked(runner, "zfs", &["destroy", "-n", "--", &target], &format!("zfs destroy -n {target}")) {
+            problems.push(format!("{target}: {e}"));
+        }
+    }
+    if !problems.is_empty() {
+        return Err(AppError::Message(format!("Refused, nothing was destroyed: {}", problems.join("; "))));
+    }
+    let mut failed = Vec::new();
+    for (dataset, name) in items {
+        let target = format!("{dataset}@{name}");
+        if let Err(e) = super::run_checked(runner, "zfs", &["destroy", "--", &target], &format!("zfs destroy {target}")) {
+            failed.push(format!("{target}: {e}"));
+        }
+    }
+    let done = items.len() - failed.len();
+    if failed.is_empty() { Ok(done) } else { Err(AppError::Message(format!("destroyed {done} of {}; failed: {}", items.len(), failed.join("; ")))) }
+}
+
 /// The snapshots of `dataset` alone (`-d 1`), or of its whole tree when `recursive`.
 pub fn list_snapshots_of(runner: &dyn CommandRunner, dataset: &str, recursive: bool) -> Result<Vec<Snapshot>> {
     let mut args: Vec<&str> = SNAPSHOT_LIST_ARGS.to_vec();
@@ -333,6 +384,95 @@ tank/data@2026-09-04\t2000\t0\t0
         assert!(destroy_calls(&runner).is_empty());
         destroy_snapshot(&runner, "tank/data", "snap1").unwrap();
         assert_eq!(destroy_calls(&runner)[0][1], "--", "a leading '--' must precede the target so zfs cannot parse it as an option");
+    }
+
+    /// Answers `zfs get` with `holds` and fails exactly the `zfs` calls listed in `fail` (by their whole argument list).
+    struct BatchRunner {
+        holds: String,
+        fail: Vec<(Vec<&'static str>, &'static str)>,
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl CommandRunner for BatchRunner {
+        fn run(&self, _cmd: &str, args: &[&str]) -> Result<crate::exec::CommandOutput> {
+            self.calls.lock().unwrap().push(args.iter().map(ToString::to_string).collect());
+            if args.first() == Some(&"get") {
+                return Ok(crate::exec::CommandOutput { stdout: self.holds.clone(), stderr: String::new(), status: 0 });
+            }
+            match self.fail.iter().find(|(a, _)| a.as_slice() == args) {
+                Some((_, err)) => Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: (*err).to_string(), status: 1 }),
+                None => Ok(crate::exec::CommandOutput { stdout: String::new(), stderr: String::new(), status: 0 }),
+            }
+        }
+        fn run_with_stdin(&self, cmd: &str, args: &[&str], _: &str) -> Result<crate::exec::CommandOutput> {
+            self.run(cmd, args)
+        }
+        fn run_unprivileged(&self, cmd: &str, args: &[&str]) -> Result<crate::exec::CommandOutput> {
+            self.run(cmd, args)
+        }
+    }
+
+    fn batch(holds: &str, fail: Vec<(Vec<&'static str>, &'static str)>) -> BatchRunner {
+        BatchRunner { holds: holds.to_string(), fail, calls: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    fn items(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter().map(|(d, n)| ((*d).to_string(), (*n).to_string())).collect()
+    }
+
+    fn batch_destroys(r: &BatchRunner) -> Vec<Vec<String>> {
+        r.calls.lock().unwrap().iter().filter(|a| a[0] == "destroy").cloned().collect()
+    }
+
+    #[test]
+    fn destroy_snapshots_dry_runs_every_one_then_destroys_each() {
+        let r = batch("tank/a@s1\t0\ntank/a@s2\t0\ntank/b@s1\t0\n", vec![]);
+        let done = destroy_snapshots(&r, &items(&[("tank/a", "s1"), ("tank/a", "s2"), ("tank/b", "s1")])).unwrap();
+        assert_eq!(done, 3);
+        let want: Vec<Vec<String>> = [
+            vec!["destroy", "-n", "--", "tank/a@s1"], vec!["destroy", "-n", "--", "tank/a@s2"], vec!["destroy", "-n", "--", "tank/b@s1"],
+            vec!["destroy", "--", "tank/a@s1"], vec!["destroy", "--", "tank/a@s2"], vec!["destroy", "--", "tank/b@s1"],
+        ].iter().map(|v| v.iter().map(ToString::to_string).collect()).collect();
+        assert_eq!(batch_destroys(&r), want);
+    }
+
+    #[test]
+    fn a_held_snapshot_stops_the_whole_batch() {
+        let r = batch("tank/a@s1\t0\ntank/a@s2\t1\n", vec![]);
+        let err = destroy_snapshots(&r, &items(&[("tank/a", "s1"), ("tank/a", "s2")])).unwrap_err().to_string();
+        assert!(err.contains("tank/a@s2") && err.contains("nothing was destroyed"), "{err}");
+        assert!(batch_destroys(&r).iter().all(|a| a[1] == "-n"), "{:?}", batch_destroys(&r));
+    }
+
+    #[test]
+    fn a_snapshot_the_hold_check_does_not_list_stops_the_whole_batch() {
+        let r = batch("tank/a@s1\t0\n", vec![]);
+        let err = destroy_snapshots(&r, &items(&[("tank/a", "s1"), ("tank/a", "gone")])).unwrap_err().to_string();
+        assert!(err.contains("tank/a@gone"), "{err}");
+        assert!(batch_destroys(&r).iter().all(|a| a[1] == "-n"));
+    }
+
+    #[test]
+    fn a_dry_run_refusal_stops_the_whole_batch() {
+        let r = batch("tank/a@s1\t0\ntank/a@s2\t0\n", vec![(vec!["destroy", "-n", "--", "tank/a@s2"], "snapshot has dependent clones")]);
+        let err = destroy_snapshots(&r, &items(&[("tank/a", "s1"), ("tank/a", "s2")])).unwrap_err().to_string();
+        assert!(err.contains("tank/a@s2") && err.contains("dependent clones") && err.contains("nothing was destroyed"), "{err}");
+        assert!(batch_destroys(&r).iter().all(|a| a[1] == "-n"));
+    }
+
+    #[test]
+    fn a_failure_while_destroying_does_not_stop_the_rest() {
+        let r = batch("tank/a@s1\t0\ntank/a@s2\t0\n", vec![(vec!["destroy", "--", "tank/a@s1"], "dataset is busy")]);
+        let err = destroy_snapshots(&r, &items(&[("tank/a", "s1"), ("tank/a", "s2")])).unwrap_err().to_string();
+        assert!(err.contains("destroyed 1 of 2") && err.contains("tank/a@s1") && err.contains("busy"), "{err}");
+        assert!(batch_destroys(&r).contains(&vec!["destroy".to_string(), "--".to_string(), "tank/a@s2".to_string()]));
+    }
+
+    #[test]
+    fn destroy_snapshots_refuses_a_flag_like_name_before_running_anything() {
+        let r = batch("", vec![]);
+        assert!(destroy_snapshots(&r, &items(&[("-r", "s1")])).is_err());
+        assert!(batch_destroys(&r).is_empty());
     }
 
     fn destroy_calls(runner: &FakeRunner) -> Vec<Vec<String>> {

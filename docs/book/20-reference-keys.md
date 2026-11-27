@@ -97,7 +97,9 @@ This list is checked against the program's own Help screen (`?`) by the book's t
 
 | Key | What it does |
 |---|---|
-| `d` | destroy (type dataset@name to confirm) |
+| `d` | destroy (type dataset@name to confirm); with marked snapshots, destroy those (type how many to confirm) |
+| `Space` | mark or unmark the selected snapshot (a marked one shows `+`); `Esc` unmarks them all |
+| `M` | mark every snapshot from the last one marked with `Space` to the selected one |
 | `b` | roll back (type dataset@name to confirm) |
 | `H` | hold the selected snapshot, or release zfsctl's hold on it (a hold stops it being destroyed or pruned; other tags are never released) |
 | `c` | show what changed since the previous snapshot, by folder (read-only): `Enter` opens a folder, `/` inside a folder filters its entries by name as you type (`a|b` for either, `*` `?` wildcards), `[` and `]` set how deep the folders go, `H` holds the older snapshot, `Esc` goes back and closes |

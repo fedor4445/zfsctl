@@ -1011,3 +1011,152 @@ fn a_successful_restore_does_not_refresh_the_snapshot_list_so_its_message_is_not
     app.tx.send(WorkerMsg::MutationDone(0, Section::Snapshots, Ok(()))).unwrap();
     assert!(app.drain_worker_messages().contains(&Section::Snapshots));
 }
+
+fn snap_at(dataset: &str, name: &str, holds: u64) -> Snapshot {
+    Snapshot { dataset: dataset.to_string(), name: name.to_string(), used: 0, holds, written: 0 }
+}
+
+/// Two hosts, on the Snapshots screen, with `snaps` listed for the first one (local) and the first row selected.
+fn marks_app(snaps: Vec<Snapshot>) -> App {
+    let mut app = App::new(vec!["local".to_string(), "other".to_string()]);
+    app.snapshots = snaps;
+    app.selected_section = app.sections.iter().position(|s| *s == Section::Snapshots).unwrap();
+    app.snapshots_table.select(Some(0));
+    app
+}
+
+fn marked(app: &App) -> Vec<String> {
+    app.marked_snapshots.iter().cloned().collect()
+}
+
+#[test]
+fn space_marks_and_unmarks_the_selected_snapshot() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0), snap_at("tank/a", "2", 0)]);
+    app.handle_key(KeyCode::Char(' '));
+    assert_eq!(marked(&app), vec!["tank/a@1"]);
+    app.handle_key(KeyCode::Char(' '));
+    assert!(marked(&app).is_empty());
+}
+
+#[test]
+fn m_marks_from_the_last_mark_to_the_cursor_in_either_direction() {
+    let mut app = marks_app((1..=5).map(|i| snap_at("tank/a", &i.to_string(), 0)).collect());
+    app.snapshots_table.select(Some(1));
+    app.handle_key(KeyCode::Char(' '));
+    app.snapshots_table.select(Some(3));
+    app.handle_key(KeyCode::Char('M'));
+    assert_eq!(marked(&app), vec!["tank/a@2", "tank/a@3", "tank/a@4"]);
+    app.marked_snapshots.clear();
+    app.snapshots_table.select(Some(4));
+    app.handle_key(KeyCode::Char(' '));
+    app.snapshots_table.select(Some(2));
+    app.handle_key(KeyCode::Char('M'));
+    assert_eq!(marked(&app), vec!["tank/a@3", "tank/a@4", "tank/a@5"]);
+}
+
+#[test]
+fn esc_clears_the_snapshot_marks() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0)]);
+    app.handle_key(KeyCode::Char(' '));
+    app.handle_key(KeyCode::Esc);
+    assert!(marked(&app).is_empty());
+}
+
+#[test]
+fn d_with_marks_asks_for_the_count_and_skips_held_ones_and_a_replications_own_snapshots() {
+    // tank/b is replicated with prefix "auto" by a DISABLED job (a paused job still needs its base): its auto-* snapshots
+    // are left alone, its manual one is not.
+    let mut app = marks_app(vec![
+        snap_at("tank/a", "1", 0),
+        snap_at("tank/a", "2", 1),
+        snap_at("tank/b", "auto-20261126T010000Z", 0),
+        snap_at("tank/b", "manual", 0),
+        snap_at("tank/b", "auto-20261126T020000Z", 0),
+        snap_at("tank/c", "z", 0),
+    ]);
+    let mut job = crate::jobs::Job::test_replicate("rep", "tank/b", "auto", "other", "backup/b");
+    job.enabled = false;
+    app.jobs_view.jobs = vec![job];
+    for i in 0..6 {
+        app.snapshots_table.select(Some(i));
+        app.handle_key(KeyCode::Char(' '));
+    }
+    app.handle_key(KeyCode::Char('d'));
+    let Some(Modal::ConfirmTyped { prompt, expected, action, .. }) = &app.modal else { panic!("{:?} {:?}", app.modal, app.status_message) };
+    assert_eq!(expected, "3");
+    let MutationCall::DestroySnapshots { items } = &action.call else { panic!("{:?}", action.call) };
+    assert_eq!(items, &vec![("tank/a".to_string(), "1".to_string()), ("tank/b".to_string(), "manual".to_string()), ("tank/c".to_string(), "z".to_string())]);
+    assert!(prompt.contains("tank/a@2") && prompt.contains("hold"), "{prompt}");
+    assert!(prompt.contains("tank/b@auto-20261126T010000Z") && prompt.contains("replication"), "{prompt}");
+}
+
+#[test]
+fn the_destination_of_a_replication_keeps_its_own_snapshots_too() {
+    let mut app = marks_app(vec![snap_at("backup/b", "auto-20261126T010000Z", 0), snap_at("backup/b", "other", 0)]);
+    app.jobs_view.jobs = vec![crate::jobs::Job::test_replicate("rep", "tank/b", "auto", "local", "backup/b")];
+    app.marked_snapshots.extend(["backup/b@auto-20261126T010000Z".to_string(), "backup/b@other".to_string()]);
+    app.handle_key(KeyCode::Char('d'));
+    let Some(Modal::ConfirmTyped { action, .. }) = &app.modal else { panic!("{:?} {:?}", app.modal, app.status_message) };
+    assert!(matches!(&action.call, MutationCall::DestroySnapshots { items } if items == &vec![("backup/b".to_string(), "other".to_string())]), "{:?}", action.call);
+}
+
+#[test]
+fn m_does_not_reach_into_another_dataset() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0), snap_at("tank/a", "2", 0), snap_at("tank/b", "1", 0)]);
+    app.handle_key(KeyCode::Char(' '));
+    app.snapshots_table.select(Some(2));
+    app.handle_key(KeyCode::Char('M'));
+    assert_eq!(marked(&app), vec!["tank/a@1"], "nothing more is marked");
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("one dataset")), "{:?}", app.status_message);
+}
+
+#[test]
+fn the_marks_are_cleared_once_the_batch_question_is_asked() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0), snap_at("tank/a", "2", 3)]);
+    app.marked_snapshots.extend(["tank/a@1".to_string(), "tank/a@2".to_string()]);
+    app.handle_key(KeyCode::Char('d'));
+    assert!(matches!(&app.modal, Some(Modal::ConfirmTyped { .. })));
+    assert!(app.marked_snapshots.is_empty(), "a skipped mark must not linger and turn a later d into a batch");
+}
+
+#[test]
+fn d_refuses_when_every_marked_snapshot_is_skipped() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 2)]);
+    app.handle_key(KeyCode::Char(' '));
+    app.handle_key(KeyCode::Char('d'));
+    assert!(app.modal.is_none(), "{:?}", app.modal);
+    assert!(app.status_message.as_deref().is_some_and(|m| m.contains("tank/a@1")), "{:?}", app.status_message);
+}
+
+#[test]
+fn d_without_marks_still_destroys_only_the_selected_snapshot() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0)]);
+    app.handle_key(KeyCode::Char('d'));
+    assert!(matches!(&app.modal, Some(Modal::ConfirmTyped { expected, .. }) if expected == "tank/a@1"), "{:?}", app.modal);
+}
+
+#[test]
+fn marks_survive_a_refresh_of_the_same_host_but_not_a_host_change() {
+    let mut app = marks_app(vec![snap_at("tank/a", "1", 0), snap_at("tank/a", "2", 0)]);
+    app.handle_key(KeyCode::Char(' '));
+    app.snapshots_table.select(Some(1));
+    app.handle_key(KeyCode::Char(' '));
+    app.tx.send(WorkerMsg::Snapshots(0, Ok(vec![snap_at("tank/a", "2", 0), snap_at("tank/a", "3", 0)]))).unwrap();
+    app.drain_worker_messages();
+    assert_eq!(marked(&app), vec!["tank/a@2"], "the destroyed one is gone, the other stays");
+    app.selected_host = 1;
+    app.tx.send(WorkerMsg::Snapshots(1, Ok(vec![snap_at("tank/a", "2", 0)]))).unwrap();
+    app.drain_worker_messages();
+    assert!(marked(&app).is_empty(), "another host's tank/a@2 is a different snapshot");
+}
+
+#[test]
+fn a_long_batch_question_names_a_few_and_counts_the_rest() {
+    let mut app = marks_app((0..12).map(|i| snap_at(&format!("tank/d{i:02}"), "x", u64::from(i % 2 == 0))).collect());
+    app.marked_snapshots.extend((0..12).map(|i| format!("tank/d{i:02}@x")));
+    app.handle_key(KeyCode::Char('d'));
+    let Some(Modal::ConfirmTyped { prompt, expected, .. }) = &app.modal else { panic!("{:?}", app.modal) };
+    assert_eq!(expected, "6");
+    assert!(prompt.contains("and 1 more") && prompt.len() < 700, "{prompt}");
+    assert!(prompt.ends_with("Type 6 to go ahead:"), "{prompt}");
+}
