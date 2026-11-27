@@ -146,12 +146,12 @@ mod tests {
     fn a_program_in_an_added_directory_is_found_even_when_path_lacks_it() {
         let dir = tempfile::tempdir().unwrap();
         // A link to an existing program, not a script written just now: executing a file another test thread still
-        // has open for writing fails with "Text file busy" when tests fork in parallel.
-        let echo = ["/bin/echo", "/usr/bin/echo"].into_iter().find(|p| std::path::Path::new(p).exists()).expect("an echo program");
-        std::os::unix::fs::symlink(echo, dir.path().join("zit-probe-tool")).unwrap();
+        // has open for writing fails with "Text file busy" when tests fork in parallel. The link goes to sh, not echo:
+        // a multi-call coreutils (uutils, Ubuntu 26.04) refuses to run under a name it does not know.
+        std::os::unix::fs::symlink("/bin/sh", dir.path().join("zit-probe-tool")).unwrap();
         let extra = dir.path().to_string_lossy().into_owned();
         let mut command = Command::new("zit-probe-tool");
-        command.arg("found");
+        command.args(["-c", "echo found"]);
         with_extra_path(&mut command, &[extra.as_str()]);
         let out = command.output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "found");
