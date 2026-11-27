@@ -227,7 +227,7 @@ impl App {
     /// the list with the marks.
     fn confirm_batch_snapshot_jobs(&mut self, gaps: &[crate::daemon::protection::Unprotected], picked: &[usize], back: Modal) {
         use crate::daemon::protection::Gap;
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         let mut taken: Vec<String> = self.jobs_view.jobs.iter().map(|j| j.id.clone()).collect();
         let (mut made, mut skipped): (Vec<crate::jobs::Job>, Vec<String>) = (Vec::new(), Vec::new());
         for gap in picked.iter().filter_map(|i| gaps.get(*i)) {
@@ -769,7 +769,7 @@ impl App {
 
     /// The four job forms: a scrub job saves at once, the others go through the save confirmation.
     fn submit_job_form(&mut self, form: FormParts) -> Option<PendingAction> {
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         let (built, confirm) = match form.kind {
             FormKind::Job { .. } => (build_job_action(&form.kind, &form.fields, &self.state_dir, now), false),
             FormKind::SnapshotJob { .. } => (build_snapshot_job_action(&form.kind, &form.fields, &self.state_dir, now), true),

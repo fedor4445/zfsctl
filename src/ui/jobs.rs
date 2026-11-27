@@ -6,7 +6,7 @@ use crate::daemon::cron::Schedule;
 use crate::daemon::heartbeat::{self, Heartbeat};
 use crate::daemon::history::{self, History, Run, RunResult};
 use crate::jobs::{self, Job};
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -50,11 +50,8 @@ pub fn duration_text(secs: i64) -> String {
 
 /// One line of a job's run list: when it started (in `tz`), how it ended, how long it took, and
 /// the first line of its message.
-pub fn run_summary<Tz: TimeZone>(run: &Run, tz: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let when = run.started_at.with_timezone(tz).format("%m-%d %H:%M");
+pub fn run_summary(run: &Run, tz: &jiff::tz::TimeZone) -> String {
+    let when = run.started_at.to_zoned_datetime(tz.clone()).strftime("%m-%d %H:%M").to_string();
     let word = match run.result {
         None => "running",
         Some(RunResult::Ok) => "ok",
@@ -62,7 +59,7 @@ where
         Some(RunResult::Skipped) => "skipped",
         Some(RunResult::Cancelled) => "cancelled",
     };
-    let duration = run.finished_at.map_or_else(|| "-".to_string(), |end| duration_text((end - run.started_at).num_seconds()));
+    let duration = run.finished_at.map_or_else(|| "-".to_string(), |end| duration_text(end.duration_since(run.started_at).as_secs()));
     let mut line = format!("{when}  {word:<7}  {duration}");
     let message = run.message.lines().next().unwrap_or("").trim();
     if !message.is_empty() {
@@ -79,19 +76,13 @@ pub fn schedule_label(expr: &str) -> String {
 }
 
 /// The table's next-run column: day and time in `now`'s zone, or `never`.
-pub fn next_run_text<Tz: TimeZone>(expr: &str, now: &DateTime<Tz>) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    Schedule::parse(expr).ok().and_then(|s| s.next_after(now)).map_or_else(|| "never".to_string(), |t| t.format("%a %m-%d %H:%M").to_string())
+pub fn next_run_text(expr: &str, now: &jiff::ZonedDateTime) -> String {
+    Schedule::parse(expr).ok().and_then(|s| s.next_after(now)).map_or_else(|| "never".to_string(), |t| t.strftime("%a %m-%d %H:%M").to_string())
 }
 
 /// The form's preview under the Schedule field: what the schedule is called
 /// and its next three run times in `now`'s zone, or why it does not parse.
-pub fn preview_lines<Tz: TimeZone>(expr: &str, now: &DateTime<Tz>) -> Vec<String>
-where
-    Tz::Offset: std::fmt::Display,
-{
+pub fn preview_lines(expr: &str, now: &jiff::ZonedDateTime) -> Vec<String> {
     let schedule = match Schedule::parse(expr) {
         Ok(s) => s,
         Err(e) => return vec![format!("Schedule error: {e}")],
@@ -100,7 +91,7 @@ where
     let mut cursor = now.clone();
     for _ in 0..3 {
         let Some(next) = schedule.next_after(&cursor) else { break };
-        times.push(next.format("%a %Y-%m-%d %H:%M").to_string());
+        times.push(next.strftime("%a %Y-%m-%d %H:%M").to_string());
         cursor = next;
     }
     let next = if times.is_empty() { "never".to_string() } else { times.join(", ") };
@@ -191,7 +182,7 @@ pub fn parse_source(text: &str) -> std::result::Result<SourceFields, String> {
 /// `snap-<host>-<dataset>-<prefix>`, made safe the same way.
 /// The snapshot job the Needs attention fix makes for a dataset when nothing is typed: hourly, prefix `auto`, the newest 24
 /// kept, caught up after downtime, not recursive. `taken` are the ids already in use.
-pub fn default_snapshot_job(host: &str, dataset: &str, taken: &[String], now: chrono::DateTime<chrono::Utc>) -> Job {
+pub fn default_snapshot_job(host: &str, dataset: &str, taken: &[String], now: jiff::Timestamp) -> Job {
     Job {
         id: new_snapshot_job_id(host, dataset, jobs::DEFAULT_PREFIX, taken),
         host: host.to_string(),
@@ -244,8 +235,8 @@ pub fn job_target(job: &Job) -> String {
 }
 
 /// `just now`, `45m ago`, `3h ago`, `2d ago`. A time in the future reads as `just now`.
-pub fn age_text(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
-    let secs = (now - then).num_seconds();
+pub fn age_text(now: Timestamp, then: Timestamp) -> String {
+    let secs = (now - then).as_secs();
     if secs < 60 {
         "just now".to_string()
     } else if secs < 3_600 {
@@ -258,7 +249,7 @@ pub fn age_text(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
 }
 
 /// The last-result column: `never`, `running`, or the result and its age.
-pub fn last_result_text(run: Option<&Run>, now: DateTime<Utc>) -> String {
+pub fn last_result_text(run: Option<&Run>, now: Timestamp) -> String {
     let Some(run) = run else { return "never".to_string() };
     let Some(result) = run.result else { return "running".to_string() };
     let word = match result {
@@ -342,7 +333,7 @@ impl JobsView {
         self.jobs.iter().filter(|j| j.enabled && self.last_run(&j.id).is_some_and(|r| r.result == Some(RunResult::Failed))).count()
     }
 
-    pub fn daemon(&self, now: DateTime<Utc>) -> DaemonState {
+    pub fn daemon(&self, now: Timestamp) -> DaemonState {
         self.heartbeat.as_ref().filter(|h| h.is_fresh(now)).map_or(DaemonState::NotRunning, |h| DaemonState::Running { pid: h.pid })
     }
 }
@@ -353,10 +344,10 @@ mod tests {
     use crate::daemon::heartbeat::Heartbeat;
     use crate::daemon::history::{Event, EventKind, History, RunResult};
     use crate::jobs::{self, Job, KIND_SCRUB};
-    use chrono::FixedOffset;
+    
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        (s).parse::<jiff::Timestamp>().unwrap()
     }
 
     fn job(id: &str) -> Job {
@@ -424,8 +415,8 @@ mod tests {
 
     #[test]
     fn the_preview_lists_the_next_three_run_times_in_the_given_zone() {
-        let est = FixedOffset::west_opt(5 * 3600).unwrap();
-        let now = at("2026-10-06T10:00:00Z").with_timezone(&est); // Tue 05:00 local
+        let est = jiff::tz::TimeZone::fixed(jiff::tz::offset(-5));
+        let now = at("2026-10-06T10:00:00Z").to_zoned_datetime(est.clone()); // Tue 05:00 local
         let lines = preview_lines("0 3 * * 0", &now);
         assert_eq!(lines[0], "Weekly, Sunday 03:00");
         assert_eq!(lines[1], "Next: Sun 2026-10-11 03:00, Sun 2026-10-18 03:00, Sun 2026-10-25 03:00");
@@ -433,7 +424,7 @@ mod tests {
 
     #[test]
     fn the_preview_reports_a_bad_schedule_and_an_impossible_one() {
-        let now = at("2026-10-06T10:00:00Z");
+        let now = at("2026-10-06T10:00:00Z").to_zoned_datetime(jiff::tz::TimeZone::UTC);
         let bad = preview_lines("61 * * * *", &now);
         assert_eq!(bad.len(), 1);
         assert!(bad[0].starts_with("Schedule error:") && bad[0].contains("outside 0-59"), "{bad:?}");
@@ -545,8 +536,8 @@ mod tests {
 
     #[test]
     fn the_next_run_column_gives_a_day_and_time_or_never() {
-        let est = FixedOffset::west_opt(5 * 3600).unwrap();
-        let now = at("2026-10-06T10:00:00Z").with_timezone(&est);
+        let est = jiff::tz::TimeZone::fixed(jiff::tz::offset(-5));
+        let now = at("2026-10-06T10:00:00Z").to_zoned_datetime(est.clone());
         assert_eq!(next_run_text("0 3 * * 0", &now), "Sun 10-11 03:00");
         assert_eq!(next_run_text("0 0 31 2 *", &now), "never");
         assert_eq!(next_run_text("bogus", &now), "never");
@@ -563,7 +554,7 @@ mod tests {
 
     #[test]
     fn a_run_summary_shows_when_how_it_ended_how_long_it_took_and_why() {
-        let est = FixedOffset::west_opt(5 * 3600).unwrap();
+        let est = jiff::tz::TimeZone::fixed(jiff::tz::offset(-5));
         let dir = tempfile::tempdir().unwrap();
         jobs::save(&dir.path().join("jobs.toml"), &[job("a")]).unwrap();
         let h = History::new(dir.path().join("history.jsonl"));
@@ -605,7 +596,7 @@ mod tests {
         assert_eq!(view.failed_count(), 0, "a deliberate cancel is not a failure");
         let run = view.last_run("a").unwrap();
         assert!(last_result_text(Some(run), at("2026-10-06T09:35:00Z")).starts_with("cancelled"));
-        assert!(run_summary(run, &Utc).contains("cancelled"));
+        assert!(run_summary(run, &jiff::tz::TimeZone::UTC).contains("cancelled"));
     }
 
     #[test]
@@ -619,7 +610,7 @@ mod tests {
     fn load_reads_progress_files_and_knows_which_jobs_are_running() {
         let dir = tempfile::tempdir().unwrap();
         jobs::save(&dir.path().join("jobs.toml"), &[Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")]).unwrap();
-        let p = crate::daemon::progress::Progress { job_id: "r".into(), bytes: 5, total: Some(10), started_at: Utc::now(), updated_at: Utc::now(), rate: None };
+        let p = crate::daemon::progress::Progress { job_id: "r".into(), bytes: 5, total: Some(10), started_at: Timestamp::now(), updated_at: Timestamp::now(), rate: None };
         crate::daemon::progress::write(&dir.path().join("progress"), "run1", &p).unwrap();
         let view = load(dir.path(), &["local".to_string(), "fbsd16".to_string()], None);
         assert_eq!(view.progress_of("r").map(|p| p.bytes), Some(5));

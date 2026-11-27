@@ -3,7 +3,7 @@
 //! One line is one record, so a write torn by a power cut damages at most the
 //! last line; a reader skips any line that does not parse.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
@@ -41,9 +41,10 @@ pub struct Event {
     pub job_id: String,
     pub run_id: String,
     pub event: EventKind,
-    pub at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scheduled_for: Option<DateTime<Utc>>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub at: Timestamp,
+    #[serde(with = "crate::time::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_for: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<RunResult>,
     #[serde(default)]
@@ -62,9 +63,9 @@ pub struct Event {
 pub struct Run {
     pub job_id: String,
     pub run_id: String,
-    pub started_at: DateTime<Utc>,
-    pub scheduled_for: Option<DateTime<Utc>>,
-    pub finished_at: Option<DateTime<Utc>>,
+    pub started_at: Timestamp,
+    pub scheduled_for: Option<Timestamp>,
+    pub finished_at: Option<Timestamp>,
     /// `None` while the run is still going.
     pub result: Option<RunResult>,
     pub message: String,
@@ -107,8 +108,8 @@ pub fn runs(events: &[Event]) -> Vec<Run> {
 
 /// The latest `scheduled_for` recorded for each job, over every run including
 /// skipped ones: a skipped run still means that slot was dealt with.
-pub fn last_scheduled(runs: &[Run]) -> HashMap<String, DateTime<Utc>> {
-    let mut out: HashMap<String, DateTime<Utc>> = HashMap::new();
+pub fn last_scheduled(runs: &[Run]) -> HashMap<String, Timestamp> {
+    let mut out: HashMap<String, Timestamp> = HashMap::new();
     for run in runs {
         if let Some(t) = run.scheduled_for {
             let slot = out.entry(run.job_id.clone()).or_insert(t);
@@ -190,8 +191,8 @@ impl History {
 mod tests {
     use super::*;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        (s).parse::<jiff::Timestamp>().unwrap()
     }
 
     fn ev(job: &str, run: &str, kind: EventKind, when: &str, result: Option<RunResult>) -> Event {

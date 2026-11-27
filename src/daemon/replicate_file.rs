@@ -12,7 +12,7 @@ use super::transfer::pump_to_file;
 use crate::exec::CommandRunner;
 use crate::jobs::{effective_prefix, Job};
 use crate::zfs::replication::{list_snapshot_infos, parse_send_size, plan, send_args, Base, Plan, SnapInfo};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -75,7 +75,7 @@ fn stream_exists(dir: &str, flat: &str, snapshot: &str) -> bool {
     })
 }
 
-pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Outcome {
+pub fn run_replicate_file(env: &Env, src: &dyn CommandRunner, job: &Job, scheduled_for: Timestamp, catch_up: bool, run_id: &str) -> Outcome {
     let ctx = env.ctx;
     let dataset = job.dataset.clone().unwrap_or_default();
     let dir = job.dest_dir.clone().unwrap_or_default();
@@ -209,9 +209,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(Timestamp);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> Timestamp {
             self.0
         }
         fn sleep(&self, _: Duration) {}
@@ -259,8 +259,8 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-08T19:30:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> Timestamp {
+        ("2026-10-08T19:30:00Z").parse::<jiff::Timestamp>().unwrap()
     }
 
     const A: &str = "hourly-20261008T100000Z";

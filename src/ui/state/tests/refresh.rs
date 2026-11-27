@@ -215,7 +215,7 @@ fn c_is_refused_while_a_fresh_marker_exists_and_works_again_when_it_is_stale() {
         assert!(said.contains("already running") && said.contains("daemon"), "{said}");
     }
     // a run that died: its marker has no heartbeat for over three minutes
-    let old = chrono::Utc::now() - chrono::Duration::minutes(10);
+    let old = jiff::Timestamp::now() - crate::time::minutes(10);
     std::fs::write(dir.path().join(crate::daemon::checks::MARKER_FILE), serde_json::to_string(&crate::daemon::checks::Marker { by: "daemon".into(), since: old, beat: old, host: None }).unwrap()).unwrap();
     app.status_error = None;
     app.handle_key(KeyCode::Char('c'));

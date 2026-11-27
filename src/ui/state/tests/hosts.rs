@@ -886,7 +886,7 @@ fn c_does_nothing_while_a_manual_check_runs_and_only_in_hosts() {
 fn a_check_of_an_unreachable_host_keeps_the_old_entry_and_says_it_could_not_be_reached() {
     let (mut app, dir) = hosts_app();
     let mut before = crate::daemon::smart_check::SmartFile::default();
-    before.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: chrono::Utc::now() - chrono::Duration::hours(5), disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Issue, text: "SMART health FAILED".into() }] }], error: None });
+    before.hosts.insert("fbsd16".into(), crate::daemon::smart_check::HostResult { checked_at: jiff::Timestamp::now() - crate::time::hours(5), disks: vec![crate::smart::Disk { dev: "da1".into(), problems: vec![crate::smart::Problem { severity: crate::smart::Severity::Issue, text: "SMART health FAILED".into() }] }], error: None });
     before.save(&dir.path().join("smart.json")).unwrap();
     app.handle_key(KeyCode::Char('c'));
     app.start_host_check("fbsd16".into(), std::sync::Arc::new(crate::exec::test_support::FakeRunner::failing("ssh: connect to host h port 22: Connection timed out", 255)));
@@ -991,7 +991,7 @@ fn a_refusal_with_several_lines_is_one_status_line_and_a_repeated_ask_is_told_ap
 }
 
 fn version_of(app: &mut App, version: &str) {
-    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: chrono::Utc::now(), datasets: vec![], seen: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
+    app.storage_check.hosts.insert("local".into(), crate::daemon::storage_check::StorageResult { checked_at: jiff::Timestamp::now(), datasets: vec![], seen: vec![], pools: vec![], zfs_version: Some(version.into()), locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
 }
 
 #[test]

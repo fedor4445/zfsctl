@@ -59,7 +59,7 @@ impl App {
             storage: &self.storage_check,
             running: self.checks_marker.as_ref(),
             expand_groups: self.dashboard_expanded,
-            now: chrono::Utc::now(),
+            now: jiff::Timestamp::now(),
         })
     }
 
@@ -113,7 +113,7 @@ impl App {
         std::thread::spawn(move || {
             // A crash in the worker must still answer, or `p` would stay busy for the rest of the session.
             let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match crate::config::Config::load(&path) {
-                Ok(config) => crate::notify_cli::report_text_with(&config, &state_dir, chrono::Utc::now(), &|hosts| {
+                Ok(config) => crate::notify_cli::report_text_with(&config, &state_dir, jiff::Timestamp::now(), &|hosts| {
                     crate::daemon::monitor::probe_all(hosts, &|_| true, crate::daemon::monitor::PROBE_DEADLINE, &crate::daemon::monitor::Busy::default())
                 }),
                 Err(e) => format!("config.toml could not be read: {e}"),

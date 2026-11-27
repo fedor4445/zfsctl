@@ -98,8 +98,8 @@ pub fn group_digits(n: u64) -> String {
 fn time_text(secs: u64) -> String {
     i64::try_from(secs)
         .ok()
-        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-        .map_or_else(|| "?".to_string(), |t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+        .and_then(|s| jiff::Timestamp::from_second(s).ok())
+        .map_or_else(|| "?".to_string(), |t| t.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 impl ChangesView {

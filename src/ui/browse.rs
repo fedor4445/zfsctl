@@ -380,8 +380,8 @@ pub fn read_pending(runner: &dyn crate::exec::CommandRunner, pending: &PendingBr
 
 /// `2026-10-20 05:25` in the host's own zone; `-` when unknown.
 fn time_text(secs: Option<i64>, utc_offset: i32) -> String {
-    let zone = chrono::FixedOffset::east_opt(utc_offset).unwrap_or_else(|| chrono::FixedOffset::east_opt(0).expect("UTC"));
-    secs.and_then(|s| chrono::DateTime::from_timestamp(s, 0)).map_or_else(|| "-".to_string(), |t| t.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string())
+    let zone = jiff::tz::Offset::from_seconds(utc_offset).map_or(jiff::tz::TimeZone::UTC, jiff::tz::TimeZone::fixed);
+    secs.and_then(|s| jiff::Timestamp::from_second(s).ok()).map_or_else(|| "-".to_string(), |t| t.to_zoned_datetime(zone).strftime("%Y-%m-%d %H:%M").to_string())
 }
 
 fn size_text(row: &BrowseRow) -> String {

@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::exec::CommandRunner;
 use crate::jobs::Job;
 use crate::zfs::pool::{get_pool_vdevs, scrub_pool, ScanStatus};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,20 +14,20 @@ use std::time::Duration;
 
 /// How long a host may stay unreachable while a scrub is being watched before
 /// the run is given up on.
-const LOST_AFTER: chrono::Duration = chrono::Duration::minutes(10);
+const LOST_AFTER: jiff::SignedDuration = crate::time::minutes(10);
 /// Polls that must show the old completion summary before we conclude the scrub never started.
 const DID_NOT_START_POLLS: u32 = 3;
 
 pub trait Clock {
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> Timestamp;
     fn sleep(&self, d: Duration);
 }
 
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> Timestamp {
+        Timestamp::now()
     }
     fn sleep(&self, d: Duration) {
         std::thread::sleep(d);
@@ -56,7 +56,7 @@ pub struct Watch {
     /// The scan summary before the scrub began, if the pool had one.
     before: Option<String>,
     unchanged: u32,
-    unreachable_since: Option<DateTime<Utc>>,
+    unreachable_since: Option<Timestamp>,
 }
 
 impl Watch {
@@ -64,7 +64,7 @@ impl Watch {
         Watch { before, unchanged: 0, unreachable_since: None }
     }
 
-    pub fn observe(&mut self, obs: Observation, now: DateTime<Utc>) -> Verdict {
+    pub fn observe(&mut self, obs: Observation, now: Timestamp) -> Verdict {
         if let Observation::Unreachable(why) = &obs {
             let since = *self.unreachable_since.get_or_insert(now);
             return if now - since >= LOST_AFTER { Verdict::Lost(why.clone()) } else { Verdict::Keep };
@@ -151,7 +151,7 @@ fn observe(runner: &dyn CommandRunner, pool: &str) -> Observation {
     }
 }
 
-pub(super) fn event(job: &Job, run_id: &str, kind: EventKind, at: DateTime<Utc>) -> Event {
+pub(super) fn event(job: &Job, run_id: &str, kind: EventKind, at: Timestamp) -> Event {
     Event { job_id: job.id.clone(), run_id: run_id.to_string(), event: kind, at, scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }
 }
 
@@ -160,7 +160,7 @@ const NO_SLOT: Slot = Slot { scheduled_for: None, catch_up: false };
 /// The scheduled slot a run is for, recorded on its closing event.
 #[derive(Clone, Copy)]
 pub(super) struct Slot {
-    pub(super) scheduled_for: Option<DateTime<Utc>>,
+    pub(super) scheduled_for: Option<Timestamp>,
     pub(super) catch_up: bool,
 }
 
@@ -194,7 +194,7 @@ fn watch(ctx: &Context, runner: &dyn CommandRunner, job: &Job, pool: &str, run_i
 
 /// Runs one scheduled scrub from start to finish. `None` means the daemon is
 /// shutting down mid-watch and nothing further was recorded.
-pub fn run_scrub(ctx: &Context, runner: &dyn CommandRunner, job: &Job, scheduled_for: DateTime<Utc>, catch_up: bool, run_id: &str) -> Option<Outcome> {
+pub fn run_scrub(ctx: &Context, runner: &dyn CommandRunner, job: &Job, scheduled_for: Timestamp, catch_up: bool, run_id: &str) -> Option<Outcome> {
     let pool = job.pool.clone().unwrap_or_default();
     let slot = Slot { scheduled_for: Some(scheduled_for), catch_up };
     let Some(_guard) = ctx.locks.try_acquire(&job.host, &pool) else {
@@ -298,20 +298,20 @@ mod tests {
     }
 
     /// A clock that only moves when something sleeps.
-    struct FakeClock(Mutex<DateTime<Utc>>);
+    struct FakeClock(Mutex<Timestamp>);
 
     impl FakeClock {
         fn new() -> Self {
-            FakeClock(Mutex::new(DateTime::parse_from_rfc3339("2026-10-06T03:00:00Z").unwrap().with_timezone(&Utc)))
+            FakeClock(Mutex::new(("2026-10-06T03:00:00Z").parse::<jiff::Timestamp>().unwrap()))
         }
     }
 
     impl Clock for FakeClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> Timestamp {
             *self.0.lock().unwrap()
         }
         fn sleep(&self, d: Duration) {
-            *self.0.lock().unwrap() += chrono::Duration::from_std(d).unwrap();
+            *self.0.lock().unwrap() += jiff::SignedDuration::try_from(d).unwrap();
         }
     }
 
@@ -340,8 +340,8 @@ mod tests {
         }
     }
 
-    fn t(minutes: i64) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-06T03:00:00Z").unwrap().with_timezone(&Utc) + chrono::Duration::minutes(minutes)
+    fn t(minutes: i64) -> Timestamp {
+        ("2026-10-06T03:00:00Z").parse::<jiff::Timestamp>().unwrap() + crate::time::minutes(minutes)
     }
 
     #[test]

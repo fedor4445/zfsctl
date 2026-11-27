@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-struct FixedClock(DateTime<Utc>);
+struct FixedClock(Timestamp);
 impl Clock for FixedClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         self.0
     }
     fn sleep(&self, _: Duration) {}
@@ -201,8 +201,8 @@ impl CommandRunner for Host {
     }
 }
 
-fn now() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-10-08T23:30:00Z").unwrap().with_timezone(&Utc)
+fn now() -> Timestamp {
+    ("2026-10-08T23:30:00Z").parse::<jiff::Timestamp>().unwrap()
 }
 
 struct Rig {

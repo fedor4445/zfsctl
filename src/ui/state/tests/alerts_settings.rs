@@ -17,7 +17,7 @@ fn up_and_down_scroll_the_alert_events_within_bounds() {
     let (mut app, dir) = alerts_app("");
     let log = crate::daemon::health_text::EventLog::new(dir.path().join("health-events.jsonl"));
     for i in 0..5 {
-        log.append(&crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: format!("n{i}") }).unwrap();
+        log.append(&crate::daemon::health_text::HealthEvent { at: jiff::Timestamp::now(), host: "a".into(), kind: "alert".into(), text: format!("n{i}") }).unwrap();
     }
     app.refresh_alerts();
     assert_eq!(app.alerts_view.events.len(), 5);
@@ -37,7 +37,7 @@ fn up_and_down_scroll_the_alert_events_within_bounds() {
 fn new_events_do_not_move_the_line_the_operator_is_reading() {
     let (mut app, dir) = alerts_app("");
     let log = crate::daemon::health_text::EventLog::new(dir.path().join("health-events.jsonl"));
-    let add = |text: &str| log.append(&crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: text.into() }).unwrap();
+    let add = |text: &str| log.append(&crate::daemon::health_text::HealthEvent { at: jiff::Timestamp::now(), host: "a".into(), kind: "alert".into(), text: text.into() }).unwrap();
     for i in 0..6 {
         add(&format!("old{i}"));
     }

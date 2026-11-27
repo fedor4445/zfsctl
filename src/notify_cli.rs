@@ -8,14 +8,14 @@ use crate::daemon::monitor::{build_rows, judge_reachable, probe_all, HostInfo, P
 use crate::error::Result;
 use crate::hosts::HostInventory;
 use crate::zfs::host_health::{HostKind, HostProbe};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
 /// Sends a short test message on every configured channel and says what happened to each. Exit code 0 only if
 /// every configured channel took it; 1 if one failed or none is configured.
-pub fn notify_test(settings: &NotifySettings, hook: Option<&str>, now: DateTime<Utc>) -> (String, i32) {
+pub fn notify_test(settings: &NotifySettings, hook: Option<&str>, now: Timestamp) -> (String, i32) {
     let msg = Message {
         kind: "health-test".to_string(),
         host: deliver::default_from().trim_start_matches("zfsctl@").to_string(),
@@ -48,14 +48,14 @@ pub fn notify_test(settings: &NotifySettings, hook: Option<&str>, now: DateTime<
 
 pub fn notify_test_command(config: &Config) -> Result<i32> {
     let settings = config.notify.resolve().map_err(crate::error::AppError::Config)?;
-    let (text, code) = notify_test(&settings, config.daemon.notify_command.as_deref(), Utc::now());
+    let (text, code) = notify_test(&settings, config.daemon.notify_command.as_deref(), Timestamp::now());
     print!("{text}");
     Ok(code)
 }
 
 /// The report as it would be sent now, as `Subject: ...` then a blank line then the body. `probe` is how the hosts
 /// are probed (the real one by default, a fake in tests); nothing is sent.
-pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, probe: &dyn Fn(&[HostInfo]) -> Vec<Probed>) -> String {
+pub fn report_text_with(config: &Config, state_dir: &Path, now: Timestamp, probe: &dyn Fn(&[HostInfo]) -> Vec<Probed>) -> String {
     let inventory = HostInventory::from_config(config);
     let hosts: Vec<HostInfo> = inventory
         .hosts
@@ -75,7 +75,7 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
     let rows = build_rows(&hosts, &probed, &kinds, &jobs, &runs);
     let events = EventLog::new(state_dir.join("health-events.jsonl")).read();
     let hub = deliver::default_from().trim_start_matches("zfsctl@").to_string();
-    let local = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let local = jiff::ZonedDateTime::now().strftime("%Y-%m-%d %H:%M").to_string();
     // The same judgment the daemon makes; the alert tracker lives only in the daemon, so the preview has no "(for 3d)".
     let (settings, problems) = config.protection_settings();
     let problem = problems.into_iter().next();
@@ -85,7 +85,7 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
         s.ignored = settings.ignored_names();
         s
     });
-    let msg = report_message(now, &local, &hub, &rows, &|_| None, now - chrono::Duration::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::check_lines(state_dir), protection.as_ref());
+    let msg = report_message(now, &local, &hub, &rows, &|_| None, now - crate::time::hours(24), &runs, &jobs, &events, &crate::daemon::health_text::check_lines(state_dir), protection.as_ref());
     let mut text = format!("Subject: {}\n\n{}", msg.subject, msg.body);
     if let Some(problem) = problem {
         let _ = writeln!(text, "\nNote: config.toml {}", crate::config::protection_problem_line(&problem));
@@ -95,7 +95,7 @@ pub fn report_text_with(config: &Config, state_dir: &Path, now: DateTime<Utc>, p
 
 pub fn report_command(config: &Config, state_dir: &Path) -> Result<i32> {
     config.notify.resolve().map_err(crate::error::AppError::Config)?;
-    let text = report_text_with(config, state_dir, Utc::now(), &|hosts| probe_all(hosts, &|_| true, PROBE_DEADLINE, &crate::daemon::monitor::Busy::default()));
+    let text = report_text_with(config, state_dir, Timestamp::now(), &|hosts| probe_all(hosts, &|_| true, PROBE_DEADLINE, &crate::daemon::monitor::Busy::default()));
     print!("{text}");
     Ok(0)
 }
@@ -108,14 +108,14 @@ mod tests {
     #[test]
     fn notify_test_reports_each_channel_and_the_exit_code() {
         let s = NotifyConfig { mail_to: Some("me@x.org".into()), mail_command: Some("cat > /dev/null".into()), ..NotifyConfig::default() }.resolve().unwrap();
-        let (text, code) = notify_test(&s, Some("true"), Utc::now());
+        let (text, code) = notify_test(&s, Some("true"), Timestamp::now());
         assert_eq!(code, 0);
         assert!(text.contains("mail: ok") && text.contains("hook: ok"), "{text}");
         let s = NotifyConfig { mail_to: Some("me@x.org".into()), mail_command: Some("exit 78".into()), ..NotifyConfig::default() }.resolve().unwrap();
-        let (text, code) = notify_test(&s, None, Utc::now());
+        let (text, code) = notify_test(&s, None, Timestamp::now());
         assert_eq!(code, 1);
         assert!(text.contains("mail: failed: exited with status 78"), "{text}");
-        let (text, code) = notify_test(&NotifySettings::default(), None, Utc::now());
+        let (text, code) = notify_test(&NotifySettings::default(), None, Timestamp::now());
         assert_eq!(code, 1);
         assert!(text.contains("no channel is configured"), "{text}");
     }
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn one_failing_channel_fails_the_test_even_if_the_other_works() {
         let s = NotifyConfig { mail_to: Some("me@x.org".into()), mail_command: Some("exit 1".into()), ..NotifyConfig::default() }.resolve().unwrap();
-        let (text, code) = notify_test(&s, Some("true"), Utc::now());
+        let (text, code) = notify_test(&s, Some("true"), Timestamp::now());
         assert_eq!(code, 1);
         assert!(text.contains("mail: failed") && text.contains("hook: ok"), "{text}");
     }
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn the_report_command_builds_the_report_without_sending_anything() {
         let dir = tempfile::tempdir().unwrap();
-        let text = report_text_with(&Config::default(), dir.path(), Utc::now(), &fake_probe);
+        let text = report_text_with(&Config::default(), dir.path(), Timestamp::now(), &fake_probe);
         assert!(text.starts_with("Subject: [zfsctl] daily report: all 1 hosts ok"), "{text}");
         assert!(text.contains("\n\nzfsctl daily report\n") && text.contains("local") && text.contains("metal"), "{text}");
         assert!(!dir.path().join("notify.json").exists(), "a preview records nothing");
@@ -148,19 +148,19 @@ mod tests {
         let mut job = crate::jobs::Job::test_backup("backup-x", "tank/x", "p", "/r", "/pw");
         job.host = "local".into();
         crate::jobs::save(&dir.path().join("jobs.toml"), &[job]).unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         History::new(dir.path().join("history.jsonl"))
-            .append(&Event { job_id: "backup-x".into(), run_id: "r1".into(), event: EventKind::Finished, at: now - chrono::Duration::hours(1), scheduled_for: None, result: Some(RunResult::Failed), message: "restic exited 3".into(), catch_up: false, summary: None })
+            .append(&Event { job_id: "backup-x".into(), run_id: "r1".into(), event: EventKind::Finished, at: now - crate::time::hours(1), scheduled_for: None, result: Some(RunResult::Failed), message: "restic exited 3".into(), catch_up: false, summary: None })
             .unwrap();
         let text = report_text_with(&Config::default(), dir.path(), now, &fake_probe);
         assert!(text.contains("failed: backup-x on local") && text.contains("restic exited 3"), "{text}");
         assert!(text.contains("warning"), "a failed job makes the host a warning: {text}");
     }
 
-    fn with_unprotected_dataset(dir: &Path, now: DateTime<Utc>) {
+    fn with_unprotected_dataset(dir: &Path, now: Timestamp) {
         use crate::daemon::storage_check::{Integrity, SeenDataset, StorageFile, StorageResult};
         let mut file = StorageFile::default();
-        let seen = vec![SeenDataset { name: "tank/photos".into(), volume: false, created: Some((now - chrono::Duration::days(30)).timestamp()) }];
+        let seen = vec![SeenDataset { name: "tank/photos".into(), volume: false, created: Some((now - crate::time::days(30)).as_second()) }];
         file.hosts.insert("local".into(), StorageResult { checked_at: now, datasets: vec![], seen, pools: vec![], integrity: Integrity::default(), locked: vec![], integrity_stale: false, zfs_version: None, error: None });
         file.save(&dir.join(crate::daemon::storage_check::FILE)).unwrap();
     }
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn the_report_preview_has_the_unprotected_data_section() {
         let dir = tempfile::tempdir().unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         with_unprotected_dataset(dir.path(), now);
         let text = report_text_with(&Config::default(), dir.path(), now, &fake_probe);
         assert!(text.contains("\nUNPROTECTED DATA\n  local:tank/photos (your data): no snapshot job"), "{text}");
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn the_report_preview_says_when_protection_is_wrong() {
         let dir = tempfile::tempdir().unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         with_unprotected_dataset(dir.path(), now);
         let mut config = Config::default();
         config.protection.email = Some("of".into());
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn the_report_preview_has_no_unprotected_section_when_email_is_off() {
         let dir = tempfile::tempdir().unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         with_unprotected_dataset(dir.path(), now);
         let mut config = Config::default();
         config.protection.email = Some("off".into());

@@ -3,7 +3,7 @@
 //! read every stored byte. A backup job runs it after a successful backup once its last check is older than the job's
 //! interval, or failed, and `restic-checks.json` next to `replication.json` remembers the outcome.
 
-use chrono::{DateTime, Duration, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -14,7 +14,8 @@ use std::sync::{Mutex, PoisonError};
 /// The outcome of a job's latest check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checked {
-    pub at: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub at: Timestamp,
     pub ok: bool,
 }
 
@@ -39,16 +40,16 @@ pub fn record(path: &Path, job_id: &str, checked: Checked) -> std::io::Result<()
 
 /// Whether a check is due: never when the interval is 0; otherwise when nothing is recorded, the last check failed (so a
 /// problem keeps the job red until it is fixed) or the last one is `days` old.
-pub fn due(last: Option<&Checked>, days: u32, now: DateTime<Utc>) -> bool {
-    days > 0 && last.is_none_or(|c| !c.ok || now - c.at >= Duration::days(i64::from(days)))
+pub fn due(last: Option<&Checked>, days: u32, now: Timestamp) -> bool {
+    days > 0 && last.is_none_or(|c| !c.ok || now - c.at >= crate::time::days(i64::from(days)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn at(day: u32) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(&format!("2026-10-{day:02}T03:00:00Z")).unwrap().with_timezone(&Utc)
+    fn at(day: u32) -> Timestamp {
+        (&format!("2026-10-{day:02}T03:00:00Z")).parse::<jiff::Timestamp>().unwrap()
     }
 
     #[test]

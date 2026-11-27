@@ -7,33 +7,32 @@
 // ----- Helpers: the only lines that know the date library. -----
 
 /// An instant, from RFC 3339 text.
-fn at(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::parse_from_rfc3339(rfc3339).unwrap().with_timezone(&chrono::Utc)
+fn at(rfc3339: &str) -> jiff::Timestamp {
+    rfc3339.parse().unwrap()
 }
 
 /// A wall-clock time (`YYYY-MM-DDTHH:MM`) in a named zone; the earlier one when it happens twice; panics in a gap.
-fn local(zone: &str, civil: &str) -> chrono::DateTime<chrono_tz::Tz> {
-    use chrono::TimeZone;
-    let tz: chrono_tz::Tz = zone.parse().unwrap();
-    let naive = chrono::NaiveDateTime::parse_from_str(civil, "%Y-%m-%dT%H:%M").unwrap();
-    tz.from_local_datetime(&naive).earliest().unwrap()
+fn local(zone: &str, civil: &str) -> jiff::ZonedDateTime {
+    let tz = jiff::tz::TimeZone::get(zone).unwrap();
+    let ambiguous = tz.to_ambiguous_zoned_datetime(jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M", civil).unwrap());
+    assert!(!matches!(ambiguous.offset(), jiff::tz::AmbiguousOffset::Gap { .. }), "{civil} does not exist in {zone}");
+    ambiguous.earlier().unwrap()
 }
 
 /// The same wall-clock time as `local`, the later one when it happens twice.
-fn later(zone: &str, civil: &str) -> chrono::DateTime<chrono_tz::Tz> {
-    use chrono::TimeZone;
-    let tz: chrono_tz::Tz = zone.parse().unwrap();
-    tz.from_local_datetime(&chrono::NaiveDateTime::parse_from_str(civil, "%Y-%m-%dT%H:%M").unwrap()).latest().unwrap()
+fn later(zone: &str, civil: &str) -> jiff::ZonedDateTime {
+    let tz = jiff::tz::TimeZone::get(zone).unwrap();
+    tz.to_ambiguous_zoned_datetime(jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M", civil).unwrap()).later().unwrap()
 }
 
 /// A length of time in whole seconds.
-fn secs(d: &chrono::Duration) -> i64 {
-    d.num_seconds()
+fn secs(d: &jiff::SignedDuration) -> i64 {
+    d.as_secs()
 }
 
 /// A zoned time as RFC 3339 with its offset (`2027-03-15T02:30:00-04:00`).
-fn text(t: &chrono::DateTime<chrono_tz::Tz>) -> String {
-    t.to_rfc3339()
+fn text(t: &jiff::ZonedDateTime) -> String {
+    t.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
 // ----- Saved files -----
@@ -249,5 +248,19 @@ fn month_and_leap_year_ends() {
 fn schedule_gaps() {
     for (expr, seconds) in [("0 * * * *", 3600), ("30 * * * *", 3600), ("0 3 * * 0", 604_800)] {
         assert_eq!(crate::daemon::cron::schedule_gap(expr, at("2026-11-27T12:00:00Z")).map(|d| secs(&d)), Some(seconds), "{expr}");
+    }
+}
+
+
+/// The mail `Date:` header (RFC 2822, UTC, day not padded), as chrono wrote it.
+#[test]
+fn mail_date_headers_read_the_same() {
+    for (when, header) in [
+        ("2026-10-11T07:00:00Z", "Date: Sun, 11 Oct 2026 07:00:00 +0000"),
+        ("2026-11-01T07:05:09Z", "Date: Sun, 1 Nov 2026 07:05:09 +0000"),
+        ("2026-11-27T23:59:59.9Z", "Date: Fri, 27 Nov 2026 23:59:59 +0000"),
+    ] {
+        let mail = crate::daemon::deliver::compose_mail("a@x", &["b@x".to_string()], "s", "b", at(when));
+        assert!(mail.lines().any(|l| l == header), "{when}:\n{mail}");
     }
 }

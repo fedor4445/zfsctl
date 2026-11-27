@@ -69,7 +69,7 @@ impl AlertsView {
     pub fn monitor_text(&self) -> String {
         if let Some(s) = self.settings.as_ref().filter(|_| self.monitor_on()) {
             let minutes = s.check_interval.as_secs() / 60;
-            let report = s.report_time.map_or("no daily report".to_string(), |t| format!("report at {}", t.format("%H:%M")));
+            let report = s.report_time.map_or("no daily report".to_string(), |t| format!("report at {}", t.strftime("%H:%M")));
             return format!("Monitor on (every {minutes} min, {report})");
         }
         match &self.problem {
@@ -99,7 +99,7 @@ impl AlertsView {
 
 /// `10-10 14:02  fbsd16  alert  tank DEGRADED`, in the hub's local time.
 pub fn event_line(e: &HealthEvent) -> String {
-    format!("{}  {}  {}  {}", e.at.with_timezone(&chrono::Local).format("%m-%d %H:%M"), e.host, e.kind, e.text)
+    format!("{}  {}  {}  {}", e.at.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%m-%d %H:%M"), e.host, e.kind, e.text)
 }
 
 #[cfg(test)]
@@ -174,9 +174,9 @@ mod tests {
         std::fs::write(dir.path().join("config.toml"), "").unwrap();
         std::fs::write(dir.path().join("notify.json"), "{\"last_report\":\"2026-10-10\"}").unwrap();
         let log = EventLog::new(dir.path().join("health-events.jsonl"));
-        let t0 = chrono::DateTime::parse_from_rfc3339("2026-10-10T10:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let t0 = ("2026-10-10T10:00:00Z").parse::<jiff::Timestamp>().unwrap();
         for i in 0..20 {
-            log.append(&HealthEvent { at: t0 + chrono::Duration::minutes(i), host: "a".into(), kind: "alert".into(), text: format!("n{i}") }).unwrap();
+            log.append(&HealthEvent { at: t0 + crate::time::minutes(i), host: "a".into(), kind: "alert".into(), text: format!("n{i}") }).unwrap();
         }
         let v = load(&dir.path().join("config.toml"), dir.path());
         assert_eq!(v.last_report.as_deref(), Some("2026-10-10"));

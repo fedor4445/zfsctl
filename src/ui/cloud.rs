@@ -10,7 +10,7 @@ use crate::exec::CommandRunner;
 use crate::jobs::{self, Job};
 use crate::rclone;
 use crate::ui::jobs::{job_target, last_result_text, schedule_label, JobsView};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 
 /// `(remote name, rclone type)` per host name, as `rclone listremotes --long` reported them.
@@ -59,7 +59,8 @@ pub struct Size {
     pub current: Option<(u64, u64)>,
     /// `(files, bytes)` of `<remote>/old`; `None` when there is no `old/` yet.
     pub old: Option<(u64, u64)>,
-    pub at: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub at: Timestamp,
     /// Why `current` could not be measured.
     pub problem: Option<String>,
 }
@@ -127,7 +128,7 @@ pub fn save_sizes(state_dir: &std::path::Path, sizes: &HashMap<String, Size>) {
 
 /// Measures `<remote>/current` and `<remote>/old` with `rclone size` (read-only; it lists the bucket, so it costs
 /// requests, which is why it only runs when asked).
-pub fn measure(runner: &dyn CommandRunner, host: &str, remote: &str, now: DateTime<Utc>) -> Size {
+pub fn measure(runner: &dyn CommandRunner, host: &str, remote: &str, now: Timestamp) -> Size {
     let current = size_of(runner, host, remote, "current");
     let old = if current.is_ok() { size_of(runner, host, remote, "old") } else { Ok(None) };
     match (current, old) {
@@ -149,12 +150,9 @@ pub fn last_run<'a>(row: &Row, view: &'a JobsView) -> Option<&'a Run> {
 
 /// When the soonest of the row's enabled jobs runs next, in `now`'s zone (`Sun 10-18 14:30`), or `-` when none is enabled
 /// or none has a next time.
-pub fn next_run_text<Tz: chrono::TimeZone>(row: &Row, view: &JobsView, now: &DateTime<Tz>) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let soonest = jobs_of(row, view).into_iter().filter(|j| j.enabled).filter_map(|j| crate::daemon::cron::Schedule::parse(&j.schedule).ok()?.next_after(now)).min();
-    soonest.map_or_else(|| "-".to_string(), |t| t.format("%a %m-%d %H:%M").to_string())
+pub fn next_run_text(row: &Row, view: &JobsView, now: &jiff::ZonedDateTime) -> String {
+    let soonest = jobs_of(row, view).into_iter().filter(|j| j.enabled).filter_map(|j| crate::daemon::cron::Schedule::parse(&j.schedule).ok()?.next_after(now)).min_by_key(jiff::ZonedDateTime::timestamp);
+    soonest.map_or_else(|| "-".to_string(), |t| t.strftime("%a %m-%d %H:%M").to_string())
 }
 
 /// Whether the latest run of any of the row's enabled jobs failed.
@@ -255,13 +253,13 @@ pub fn provider_name(kind: Option<&str>) -> String {
 
 /// The Cloud table's cells: Provider, Remote, Host, Jobs, Last, In bucket. The provider's name replaces the raw rclone type,
 /// which it shows as it is for a type it does not know.
-pub fn table_cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: DateTime<Utc>) -> Vec<String> {
+pub fn table_cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: Timestamp) -> Vec<String> {
     let [name, host, _kind, jobs, last, bucket]: [String; 6] = cells(row, view, sizes, caps, now).try_into().expect("cells has six entries");
     vec![provider_name(row.kind.as_deref()), name, host, jobs, last, bucket]
 }
 
 /// The table's cells for a row: Remote, Host, Type, Jobs, Last, In bucket.
-pub fn cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: DateTime<Utc>) -> Vec<String> {
+pub fn cells(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: Timestamp) -> Vec<String> {
     let last = if row.job_ids.is_empty() { "-".to_string() } else { last_result_text(last_run(row, view), now) };
     vec![format!("{}:", row.name), row.host.clone(), row.kind.clone().unwrap_or_else(|| "?".to_string()), row.job_ids.len().to_string(), last, in_bucket(row, sizes, caps)]
 }
@@ -292,7 +290,7 @@ fn plan_lines(row: &Row, sizes: &HashMap<String, Size>, caps: &Caps) -> Vec<Line
 pub type Line = (String, bool);
 
 /// The detail panel for a row: each job that uses the remote, then what `s` measured for it.
-pub fn detail(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: DateTime<Utc>) -> Vec<Line> {
+pub fn detail(row: &Row, view: &JobsView, sizes: &HashMap<String, Size>, caps: &Caps, now: Timestamp) -> Vec<Line> {
     let mut out: Vec<Line> = Vec::new();
     let kind = row.kind.as_deref().map_or_else(String::new, |k| format!(" ({k})"));
     out.push((format!("{}:{kind} on {}", row.name, row.host), false));
@@ -410,8 +408,8 @@ mod tests {
     use super::*;
     use crate::daemon::history::{Event, EventKind, History};
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        (s).parse::<jiff::Timestamp>().unwrap()
     }
 
     fn known() -> Known {

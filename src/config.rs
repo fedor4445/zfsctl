@@ -477,13 +477,13 @@ impl DaemonConfig {
     }
 
     /// The time of the daily checks, `None` when they are switched off; an error says what is wrong with the value.
-    pub fn daily_time(&self) -> std::result::Result<Option<chrono::NaiveTime>, String> {
+    pub fn daily_time(&self) -> std::result::Result<Option<jiff::civil::Time>, String> {
         let text = self.daily_check.as_deref().or(self.smart_check.as_deref()).unwrap_or(DEFAULT_DAILY_CHECK).trim();
         if text == "off" {
             return Ok(None);
         }
         let well_formed = text.len() == 5 && text.as_bytes().get(2) == Some(&b':');
-        chrono::NaiveTime::parse_from_str(text, "%H:%M").ok().filter(|_| well_formed).map(Some).ok_or_else(|| format!("daily_check '{text}' is not HH:MM or \"off\""))
+        jiff::civil::Time::strptime("%H:%M", text).ok().filter(|_| well_formed).map(Some).ok_or_else(|| format!("daily_check '{text}' is not HH:MM or \"off\""))
     }
 }
 
@@ -535,9 +535,9 @@ impl NotifyConfig {
             return Err("notify.check_interval_minutes must be between 1 and 1440".to_string());
         }
         let report_time = match self.report_time.as_deref() {
-            None => chrono::NaiveTime::from_hms_opt(7, 0, 0),
+            None => jiff::civil::Time::new(7, 0, 0, 0).ok(),
             Some("off") => None,
-            Some(t) => Some(chrono::NaiveTime::parse_from_str(t, "%H:%M").map_err(|_| format!("notify.report_time '{t}' is not HH:MM (or off)"))?),
+            Some(t) => Some(jiff::civil::Time::strptime("%H:%M", t).map_err(|_| format!("notify.report_time '{t}' is not HH:MM (or off)"))?),
         };
         let remind = match self.remind_hours.unwrap_or(6) {
             0 => None,
@@ -984,7 +984,7 @@ pub struct NotifySettings {
     pub mail_command: String,
     pub mail_from: Option<String>,
     pub check_interval: std::time::Duration,
-    pub report_time: Option<chrono::NaiveTime>,
+    pub report_time: Option<jiff::civil::Time>,
     pub remind: Option<std::time::Duration>,
 }
 

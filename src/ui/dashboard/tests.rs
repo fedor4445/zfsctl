@@ -4,17 +4,17 @@ use crate::config::Thresholds;
 use crate::zfs::host_health::{assess, HostProbe, PoolProbe, ScanSummary};
 use crate::zfs::host_resources::Resources;
 use crate::zfs::pool::PoolHealth;
-use chrono::{DateTime, Duration, Utc};
+use jiff::Timestamp;
 
 const GIB: u64 = 1 << 30;
 
-fn now() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-10-17T12:00:00Z").unwrap().with_timezone(&Utc)
+fn now() -> Timestamp {
+    ("2026-10-17T12:00:00Z").parse::<jiff::Timestamp>().unwrap()
 }
 
 /// `zpool status`'s own wording for a scrub that finished `days` ago (host time = UTC here).
 fn when(days: i64) -> String {
-    (now() - Duration::days(days)).format("%a %b %e %H:%M:%S %Y").to_string()
+    (now() - crate::time::days(days)).strftime("%a %b %e %H:%M:%S %Y").to_string()
 }
 
 fn pool(name: &str, capacity: u8, errors: u64, last_scrub: Option<String>) -> PoolProbe {
@@ -253,7 +253,7 @@ fn view(jobs: Vec<Job>, runs: &[(&str, RunResult, &str)], heartbeat: Option<Hear
     let dir = tempfile::tempdir().unwrap();
     let history = History::new(dir.path().join("history.jsonl"));
     for (i, (job, result, message)) in runs.iter().enumerate() {
-        let when = now() - Duration::hours(2);
+        let when = now() - crate::time::hours(2);
         let ev = |kind, result| Event { job_id: (*job).into(), run_id: format!("{job}-{i}"), event: kind, at: when, scheduled_for: None, result, message: (*message).into(), catch_up: false, summary: None };
         history.append(&ev(EventKind::Started, None)).unwrap();
         history.append(&ev(EventKind::Finished, Some(*result))).unwrap();
@@ -262,7 +262,7 @@ fn view(jobs: Vec<Job>, runs: &[(&str, RunResult, &str)], heartbeat: Option<Hear
 }
 
 fn beat(seconds_ago: i64) -> Option<Heartbeat> {
-    Some(Heartbeat { pid: 4242, started_at: now() - Duration::days(1), last_tick: now() - Duration::seconds(seconds_ago) })
+    Some(Heartbeat { pid: 4242, started_at: now() - crate::time::days(1), last_tick: now() - crate::time::seconds(seconds_ago) })
 }
 
 fn alerts(mail: bool) -> crate::ui::alerts::AlertsView {
@@ -413,7 +413,7 @@ fn a_job_that_stopped_succeeding_is_a_line_in_needs_attention_that_goes_to_the_j
     // `view` puts the finished runs two hours before now: an hourly job is not late yet
     assert!(fx.build(vec![]).attention.iter().all(|i| i.subject != "snap-a"), "{:?}", fx.build(vec![]).attention);
     for run in &mut fx.view.runs {
-        run.finished_at = Some(now() - Duration::hours(6));
+        run.finished_at = Some(now() - crate::time::hours(6));
     }
     let item = fx.build(vec![]).attention.into_iter().find(|i| i.subject == "snap-a").expect("a late job is listed");
     assert_eq!((item.level, item.goto, item.target.as_deref()), (Level::Issue, Section::Jobs, Some("snap-a")));
@@ -451,12 +451,12 @@ fn the_next_run_cell_is_the_soonest_enabled_job_and_a_dash_when_none() {
     let rows = crate::ui::cloud::rows(&jobs, &known);
     let fx = Fixture::new(view(jobs.clone(), &[("m1", RunResult::Ok, "ok")], beat(1)));
     let schedule = jobs[0].schedule.clone();
-    let want = crate::daemon::cron::Schedule::parse(&schedule).unwrap().next_after(&now()).unwrap().format("%a %m-%d %H:%M").to_string();
-    assert_eq!(crate::ui::cloud::next_run_text(&rows[0], &fx.view, &now()), want);
+    let want = crate::daemon::cron::Schedule::parse(&schedule).unwrap().next_after(&now().to_zoned_datetime(jiff::tz::TimeZone::UTC)).unwrap().strftime("%a %m-%d %H:%M").to_string();
+    assert_eq!(crate::ui::cloud::next_run_text(&rows[0], &fx.view, &now().to_zoned_datetime(jiff::tz::TimeZone::UTC)), want);
     let mut off = jobs.clone();
     off[0].enabled = false;
     let view_off = view(off, &[("m1", RunResult::Ok, "ok")], beat(1));
-    assert_eq!(crate::ui::cloud::next_run_text(&rows[0], &view_off, &now()), "-", "a disabled job has no next run");
+    assert_eq!(crate::ui::cloud::next_run_text(&rows[0], &view_off, &now().to_zoned_datetime(jiff::tz::TimeZone::UTC)), "-", "a disabled job has no next run");
 }
 
 #[test]
@@ -501,7 +501,7 @@ fn smart_file(entries: &[(&str, i64, &[(&str, crate::smart::Severity, &str)])]) 
                 None => list.push(crate::smart::Disk { dev: (*dev).to_string(), problems: vec![crate::smart::Problem { severity: *severity, text: (*text).to_string() }] }),
             }
         }
-        file.hosts.insert((*host).to_string(), HostResult { checked_at: now() - Duration::hours(*hours_ago), disks: list, error: None });
+        file.hosts.insert((*host).to_string(), HostResult { checked_at: now() - crate::time::hours(*hours_ago), disks: list, error: None });
     }
     file
 }
@@ -559,20 +559,20 @@ fn a_check_older_than_three_days_while_the_daemon_runs_adds_one_yellow_line() {
     let stale: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "checks").collect();
     assert_eq!(stale.len(), 1);
     assert_eq!((stale[0].level, stale[0].what.as_str()), (Level::Watch, "disk and shares check is 4 days old"));
-    fx.smart.ran_at = Some(now() - Duration::hours(1));
+    fx.smart.ran_at = Some(now() - crate::time::hours(1));
     let still: Vec<Item> = disk_items(&fx, &["h"]).into_iter().filter(|i| i.subject == "checks").collect();
     assert_eq!(still.len(), 1, "the daemon ran an hour ago but no host has answered for 4 days: the check is broken, not fine");
-    fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::hours(24);
+    fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - crate::time::hours(24);
     assert!(disk_items(&fx, &["h"]).iter().all(|i| i.subject != "checks"), "a host answered yesterday");
-    fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - Duration::days(4);
-    fx.smart.ran_at = Some(now() - Duration::days(5));
+    fx.smart.hosts.get_mut("h").unwrap().checked_at = now() - crate::time::days(4);
+    fx.smart.ran_at = Some(now() - crate::time::days(5));
     let mut off = Fixture::new(view(vec![], &[], None));
     off.smart = fx.smart.clone();
     assert!(disk_items(&off, &["h"]).iter().all(|i| i.subject != "checks"), "the daemon is not running: its own line says so, and this one would only repeat it");
 }
 
 fn shares_entry(hours_ago: i64, nfs_running: bool, nfs_shares: usize, samba_running: bool, smb_shares: usize, smb_error: Option<&str>) -> crate::daemon::shares_check::SharesResult {
-    crate::daemon::shares_check::SharesResult { checked_at: now() - Duration::hours(hours_ago), nfs_running, samba_running, nfs_shares, smb_shares, smb_error: smb_error.map(str::to_string), error: None}
+    crate::daemon::shares_check::SharesResult { checked_at: now() - crate::time::hours(hours_ago), nfs_running, samba_running, nfs_shares, smb_shares, smb_error: smb_error.map(str::to_string), error: None}
 }
 
 fn share_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
@@ -591,7 +591,7 @@ fn quota_items(fx: &Fixture, names: &[&str]) -> Vec<Item> {
 
 fn storage_entry(minutes_ago: i64, name: &str, used_percent: u64) -> crate::daemon::storage_check::StorageResult {
     use crate::daemon::storage_check::{LimitedDataset, StorageResult};
-    StorageResult { checked_at: now() - Duration::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
+    StorageResult { checked_at: now() - crate::time::minutes(minutes_ago), datasets: vec![LimitedDataset { name: name.into(), used: used_percent, referenced: used_percent, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None }
 }
 
 #[test]
@@ -611,7 +611,7 @@ fn a_dataset_near_its_quota_is_a_line_that_goes_to_datasets_and_an_unreached_hos
 /// A storage file where each host has these datasets, all a week old, checked a minute ago.
 fn with_datasets(fx: &mut Fixture, hosts: &[(&str, &[&str])]) {
     use crate::daemon::storage_check::SeenDataset;
-    let created = Some((now() - chrono::Duration::days(7)).timestamp());
+    let created = Some((now() - crate::time::days(7)).as_second());
     for (host, names) in hosts {
         let mut entry = storage_entry(1, "x/x", 10);
         entry.datasets.clear();
@@ -864,17 +864,17 @@ fn a_pool_with_a_lone_special_disk_is_a_red_line_that_goes_to_pools() {
 #[test]
 fn a_quota_check_that_stopped_running_is_one_yellow_line_but_only_while_the_daemon_runs() {
     let mut fx = Fixture::new(view(vec![], &[], beat(1)));
-    fx.storage.ran_at = Some(now() - Duration::minutes(12));
+    fx.storage.ran_at = Some(now() - crate::time::minutes(12));
     let (r, b) = (reading(10, 0, 0, 100), reading(10, 0, 0, 100));
     let probe = reached(vec![]);
     let stale = |fx: &Fixture| -> Vec<Item> { fx.build(vec![fine_host("h", &probe, &r, &b)]).attention.into_iter().filter(|i| i.what.contains("quota check")).collect() };
     assert!(stale(&fx).is_empty(), "12 minutes is within the 10-minute cadence's slack");
-    fx.storage.ran_at = Some(now() - Duration::minutes(45));
+    fx.storage.ran_at = Some(now() - crate::time::minutes(45));
     let items = stale(&fx);
     assert_eq!((items.len(), items[0].level), (1, Level::Watch));
     assert!(items[0].what.contains("45m"), "{}", items[0].what);
     let mut down = Fixture::new(view(vec![], &[], beat(1000)));
-    down.storage.ran_at = Some(now() - Duration::minutes(45));
+    down.storage.ran_at = Some(now() - crate::time::minutes(45));
     assert!(stale(&down).is_empty(), "no daemon, no complaint about the daemon's check");
 }
 
@@ -971,7 +971,7 @@ fn the_alerts_line_says_whether_mail_can_go_out_and_when_the_last_one_did() {
     assert!(d.alerts.text.contains("monitor on"), "{}", d.alerts.text);
     let mut with_report = Fixture::new(view(vec![], &[], beat(1)));
     with_report.alerts.last_report = Some("2026-10-17".into());
-    with_report.alerts.events = vec![crate::daemon::health_text::HealthEvent { at: now() - Duration::hours(3), host: "fbsd16".into(), kind: "alert".into(), text: "zroot 86% full".into() }];
+    with_report.alerts.events = vec![crate::daemon::health_text::HealthEvent { at: now() - crate::time::hours(3), host: "fbsd16".into(), kind: "alert".into(), text: "zroot 86% full".into() }];
     let text = with_report.build(vec![]).alerts.text;
     assert!(text.contains("last alert") && text.contains("fbsd16") && text.contains("report 2026-10-17"), "{text}");
     // configured but the daemon is down: a watch.

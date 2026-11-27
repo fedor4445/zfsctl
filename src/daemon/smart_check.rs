@@ -1,9 +1,10 @@
 //! The daily disk health check: asks every host's `smartctl` once a day and keeps the answers in `smart.json` for the
 //! Dashboard and the daily report. Reads only; a host that cannot answer keeps its previous result.
 
+use jiff::civil::{DateTime as NaiveDateTime, Time as NaiveTime};
 use crate::exec::CommandRunner;
 use crate::smart::Disk;
-use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
+use jiff::Timestamp;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -29,7 +30,8 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HostResult {
-    pub checked_at: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub checked_at: Timestamp,
     pub disks: Vec<Disk>,
     /// Why the latest check did not happen; `disks` and `checked_at` are then from the last one that did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,8 +43,8 @@ pub struct SmartFile {
     #[serde(default)]
     pub hosts: BTreeMap<String, HostResult>,
     /// When the last run started, even if no host had anything to say.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ran_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::time::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    pub ran_at: Option<Timestamp>,
 }
 
 impl SmartFile {
@@ -57,12 +59,12 @@ impl SmartFile {
     }
 
     /// When the daily check last ran: the recorded run, else the newest host check. Only for deciding when to run again.
-    pub fn last_run(&self) -> Option<DateTime<Utc>> {
+    pub fn last_run(&self) -> Option<Timestamp> {
         self.ran_at.or_else(|| self.newest_check())
     }
 
     /// When any host last gave an answer. A run that learns nothing does not move this, so it shows a broken check.
-    pub fn newest_check(&self) -> Option<DateTime<Utc>> {
+    pub fn newest_check(&self) -> Option<Timestamp> {
         self.hosts.values().map(|h| h.checked_at).max()
     }
 }
@@ -79,7 +81,7 @@ pub enum Outcome {
 /// Asks one host: the device list, then each device. Only the read-only flags are ever sent. A scan that comes back
 /// empty (no `smartctl`, sudo says no, nothing listed) is silent, because that is how a host that was never set up
 /// answers; only a host that could not be reached at all is a failure.
-pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>, previous: Option<&HostResult>, budget: Duration) -> Outcome {
+pub fn check_host(runner: &dyn CommandRunner, now: Timestamp, previous: Option<&HostResult>, budget: Duration) -> Outcome {
     let unreachable = |out: &crate::exec::CommandOutput| Outcome::Failed(out.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("could not reach the host").trim().to_string());
     let scan = match runner.run("smartctl", &["--scan", "-j"]) {
         Ok(out) if out.status == 255 => return unreachable(&out),
@@ -125,7 +127,7 @@ pub struct HostProblems {
     pub severity: crate::smart::Severity,
     /// `ada0 reallocated sectors 8, temperature 63 C; ada2 SMART health FAILED`
     pub disks: String,
-    pub checked_at: DateTime<Utc>,
+    pub checked_at: Timestamp,
 }
 
 /// The hosts that have at least one disk with a problem, by host name; a host with only healthy disks is left out.
@@ -158,7 +160,7 @@ pub fn problems_with(file: &SmartFile, role_of: &dyn Fn(&str, &str) -> Option<St
 pub fn due(now_local: NaiveDateTime, at: Option<NaiveTime>, last_local: Option<NaiveDateTime>) -> bool {
     let Some(at) = at else { return false };
     let Some(last) = last_local else { return true };
-    now_local - last >= chrono::Duration::hours(24) || (now_local.time() >= at && last.date() < now_local.date())
+    now_local.duration_since(last) >= crate::time::hours(24) || (now_local.time() >= at && last.date() < now_local.date())
 }
 
 #[cfg(test)]
@@ -207,7 +209,7 @@ mod tests {
         }))
     }
 
-    fn at(s: &str) -> DateTime<Utc> {
+    fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
     }
 
@@ -310,12 +312,12 @@ mod tests {
     }
 
     fn local(s: &str) -> NaiveDateTime {
-        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()
+        NaiveDateTime::strptime("%Y-%m-%d %H:%M", s).unwrap()
     }
 
     #[test]
     fn due_once_per_local_day_from_the_time_on_and_at_start_when_the_file_is_missing_or_old() {
-        let at_0330 = NaiveTime::from_hms_opt(3, 30, 0);
+        let at_0330 = NaiveTime::new(3, 30, 0, 0).ok();
         assert!(!due(local("2026-10-17 12:00"), None, None), "off is off");
         assert!(due(local("2026-10-17 01:00"), at_0330, None), "never ran: check now");
         assert!(!due(local("2026-10-17 03:00"), at_0330, Some(local("2026-10-16 03:31"))), "before the time, and the last one is under a day old");

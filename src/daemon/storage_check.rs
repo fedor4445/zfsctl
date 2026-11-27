@@ -6,7 +6,7 @@ use crate::exec::CommandRunner;
 use crate::smart::Severity;
 use crate::zfs::pool_classes::{parse_classes, PoolClasses};
 use crate::zfs::quota::{usage, Facts};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -23,8 +23,8 @@ pub struct Integrity {
     pub pools: Vec<PoolSpace>,
     /// When each pool in `dedup_pools` was first seen with dedup on (kept across passes): the ratio of a pool that has only just
     /// started deduplicating is 1.00x however much data it holds, so the line waits `DEDUP_GRACE`.
-    #[serde(default)]
-    pub dedup_since: std::collections::BTreeMap<String, DateTime<Utc>>,
+    #[serde(with = "crate::time::rfc3339::map", default)]
+    pub dedup_since: std::collections::BTreeMap<String, Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -68,7 +68,8 @@ pub struct LockedDataset {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageResult {
-    pub checked_at: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub checked_at: Timestamp,
     #[serde(default)]
     pub datasets: Vec<LimitedDataset>,
     /// Every dataset the host has (the same `zfs list`), for the checks that judge them all.
@@ -99,8 +100,8 @@ pub struct StorageResult {
 pub struct StorageFile {
     #[serde(default)]
     pub hosts: BTreeMap<String, StorageResult>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ran_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::time::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    pub ran_at: Option<Timestamp>,
 }
 
 impl StorageFile {
@@ -116,7 +117,7 @@ impl StorageFile {
 
     /// An answer replaces the host's entry; a host that is not set up for the check loses its entry; one that could not be asked
     /// keeps the last good reading and says why it is old.
-    pub fn apply(&mut self, host: &str, outcome: Outcome, now: DateTime<Utc>) {
+    pub fn apply(&mut self, host: &str, outcome: Outcome, now: Timestamp) {
         match outcome {
             Outcome::Checked(mut result) => {
                 let old = self.hosts.get(host);
@@ -129,7 +130,7 @@ impl StorageFile {
                     }
                 } else {
                     // Remember since when each pool has had dedup on; a pool seen for the first time starts now.
-                    let since: std::collections::BTreeMap<String, DateTime<Utc>> = result
+                    let since: std::collections::BTreeMap<String, Timestamp> = result
                         .integrity
                         .dedup_pools
                         .iter()
@@ -289,7 +290,7 @@ fn parse_version(output: &str) -> Option<String> {
 }
 
 /// Asks one host which of its datasets have a quota and how full they are.
-pub fn check_host(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Outcome {
+pub fn check_host(runner: &dyn CommandRunner, now: Timestamp) -> Outcome {
     match runner.run("zfs", LIST_ARGS) {
         Err(e) => Outcome::Failed(e.to_string()),
         Ok(out) if out.status == 255 => Outcome::Failed(super::shares_check::first_line(&out.stderr, "could not reach the host")),
@@ -336,7 +337,7 @@ pub const HOST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60
 
 /// Asks one host and writes the answer into `storage.json` (load, apply, save), so `c` and the daemon's loop share one path.
 #[cfg(test)]
-pub fn check_and_merge(dir: &Path, host: &str, runner: &dyn CommandRunner, now: DateTime<Utc>) {
+pub fn check_and_merge(dir: &Path, host: &str, runner: &dyn CommandRunner, now: Timestamp) {
     let outcome = check_host(runner, now);
     let path = dir.join(FILE);
     let mut file = StorageFile::load(&path);
@@ -355,7 +356,7 @@ fn in_flight() -> &'static std::sync::Mutex<std::collections::BTreeSet<String>> 
 /// apply, save), so another writer's changes are never overwritten with an old snapshot; a host that has not answered by the
 /// deadline keeps its last reading and gets the reason. A host still unanswered from an earlier pass is skipped.
 /// Returns how many hosts answered in time.
-pub fn run_pass(dir: &Path, hosts: &[(String, std::sync::Arc<dyn CommandRunner>)], now: DateTime<Utc>, deadline: std::time::Duration) -> usize {
+pub fn run_pass(dir: &Path, hosts: &[(String, std::sync::Arc<dyn CommandRunner>)], now: Timestamp, deadline: std::time::Duration) -> usize {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut asked = Vec::new();
     let mut tasks: Vec<crate::daemon::workers::Task> = Vec::new();
@@ -413,12 +414,12 @@ pub fn retain_hosts(dir: &Path, configured: &[String]) {
 }
 
 /// How long a pool must have had dedup on before a poor ratio is reported (the ratio is 1.00x until duplicates are written).
-pub const DEDUP_GRACE: chrono::Duration = chrono::Duration::days(7);
+pub const DEDUP_GRACE: jiff::SignedDuration = crate::time::days(7);
 
 /// What one host adds to Needs attention for its integrity settings: a checksum that is off (up to three datasets named), and a
 /// pool paying for deduplication that saves less than `min_ratio_x100` (hundredths, 110 = 1.10x). A pool with under 10 GiB
 /// allocated is left alone (dedup just switched on has nothing to dedupe yet).
-pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16, now: DateTime<Utc>) -> Vec<StorageProblem> {
+pub fn integrity_problems(file: &StorageFile, min_ratio_x100: u16, now: Timestamp) -> Vec<StorageProblem> {
     const ENOUGH_DATA: u64 = 10 << 30;
     file.hosts
         .iter()
@@ -481,7 +482,7 @@ pub struct StorageProblem {
     pub host: String,
     pub severity: Severity,
     pub text: String,
-    pub checked_at: DateTime<Utc>,
+    pub checked_at: Timestamp,
 }
 
 /// One problem per host at most. `quota` is the (watch, issue) percentage pair.
@@ -513,7 +514,7 @@ mod tests {
     use crate::exec::test_support::FakeRunner;
 
     const G: u64 = 1 << 30;
-    fn at(s: &str) -> DateTime<Utc> {
+    fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
     }
     const NOW: &str = "2026-10-18T12:00:00Z";
@@ -827,21 +828,21 @@ mod tests {
         let mut file = file_with("hub", vec![]);
         let entry = file.hosts.get_mut("hub").unwrap();
         entry.integrity = Integrity { checksum_off: vec![], dedup_pools: vec!["tank".into()], pools: vec![PoolSpace { name: "tank".into(), allocated: 20 * GIB, ratio_x100: 102 }], dedup_since: [("tank".to_string(), at(NOW))].into() };
-        let p = integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30));
+        let p = integrity_problems(&file, 110, at(NOW) + crate::time::days(30));
         assert_eq!((p.len(), p[0].severity, p[0].text.as_str()), (1, Severity::Watch, "tank dedup is on but saves only 1.02x"));
-        assert!(integrity_problems(&file, 100, at(NOW) + chrono::Duration::days(30)).is_empty(), "1.02 is not below 1.00");
+        assert!(integrity_problems(&file, 100, at(NOW) + crate::time::days(30)).is_empty(), "1.02 is not below 1.00");
         let edit = |f: &mut dyn FnMut(&mut Integrity), file: &mut StorageFile| f(&mut file.hosts.get_mut("hub").unwrap().integrity);
         edit(&mut |i| i.pools[0].ratio_x100 = 150, &mut file);
-        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30)).is_empty(), "it saves 1.5x");
+        assert!(integrity_problems(&file, 110, at(NOW) + crate::time::days(30)).is_empty(), "it saves 1.5x");
         edit(&mut |i| i.pools[0] = PoolSpace { name: "tank".into(), allocated: 5 * GIB, ratio_x100: 100 }, &mut file);
-        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30)).is_empty(), "under 10 GiB: nothing to dedupe yet");
+        assert!(integrity_problems(&file, 110, at(NOW) + crate::time::days(30)).is_empty(), "under 10 GiB: nothing to dedupe yet");
         edit(&mut |i| i.dedup_pools.clear(), &mut file);
         edit(&mut |i| i.pools[0].allocated = 50 * GIB, &mut file);
-        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30)).is_empty(), "no dataset has dedup on");
+        assert!(integrity_problems(&file, 110, at(NOW) + crate::time::days(30)).is_empty(), "no dataset has dedup on");
         edit(&mut |i| i.checksum_off = ["a", "b", "c", "d", "e"].map(String::from).to_vec(), &mut file);
-        assert_eq!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30))[0].text, "a, b, c checksum is off (+2 more)");
+        assert_eq!(integrity_problems(&file, 110, at(NOW) + crate::time::days(30))[0].text, "a, b, c checksum is off (+2 more)");
         edit(&mut |i| i.checksum_off = vec!["tank/scratch".into()], &mut file);
-        assert_eq!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(30))[0].text, "tank/scratch checksum is off");
+        assert_eq!(integrity_problems(&file, 110, at(NOW) + crate::time::days(30))[0].text, "tank/scratch checksum is off");
     }
 
     #[test]
@@ -851,16 +852,16 @@ mod tests {
         let answer = |dedup: bool| StorageResult { checked_at: at(NOW), datasets: vec![], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: Integrity { checksum_off: vec![], dedup_pools: if dedup { vec!["tank".into()] } else { vec![] }, pools: vec![PoolSpace { name: "tank".into(), allocated: 2000 * GIB, ratio_x100: 100 }], dedup_since: std::collections::BTreeMap::default() }, integrity_stale: false, error: None };
         file.apply("hub", Outcome::Checked(answer(true)), at(NOW));
         assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW), "first seen now");
-        assert!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(1)).is_empty(), "2 TiB of old data, ratio 1.00x, one day after enabling: not yet");
+        assert!(integrity_problems(&file, 110, at(NOW) + crate::time::days(1)).is_empty(), "2 TiB of old data, ratio 1.00x, one day after enabling: not yet");
         // a later pass keeps the first-seen time
-        file.apply("hub", Outcome::Checked(answer(true)), at(NOW) + chrono::Duration::days(2));
+        file.apply("hub", Outcome::Checked(answer(true)), at(NOW) + crate::time::days(2));
         assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW));
-        assert_eq!(integrity_problems(&file, 110, at(NOW) + chrono::Duration::days(8)).len(), 1, "a week on, still 1.00x: now it is paying for nothing");
+        assert_eq!(integrity_problems(&file, 110, at(NOW) + crate::time::days(8)).len(), 1, "a week on, still 1.00x: now it is paying for nothing");
         // dedup switched off and on again starts a new clock
-        file.apply("hub", Outcome::Checked(answer(false)), at(NOW) + chrono::Duration::days(9));
+        file.apply("hub", Outcome::Checked(answer(false)), at(NOW) + crate::time::days(9));
         assert!(file.hosts["hub"].integrity.dedup_since.is_empty());
-        file.apply("hub", Outcome::Checked(answer(true)), at(NOW) + chrono::Duration::days(10));
-        assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW) + chrono::Duration::days(10));
+        file.apply("hub", Outcome::Checked(answer(true)), at(NOW) + crate::time::days(10));
+        assert_eq!(file.hosts["hub"].integrity.dedup_since["tank"], at(NOW) + crate::time::days(10));
     }
 
     #[test]

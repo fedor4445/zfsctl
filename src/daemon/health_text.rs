@@ -6,7 +6,7 @@ use super::history::{Run, RunResult};
 use super::protection::{Tier, Unprotected};
 use crate::jobs::Job;
 use crate::zfs::host_health::{jobs_cell, pools_cell, scan_cell, used_cell, HostKind, Level, PoolProbe};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -64,12 +64,12 @@ pub fn dur(d: Duration) -> String {
 }
 
 /// A past time as `3d ago` or `1h 30m ago` (a time in the future counts as now).
-pub fn ago(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
-    format!("{} ago", dur((now - then).to_std().unwrap_or_default()))
+pub fn ago(now: Timestamp, then: Timestamp) -> String {
+    format!("{} ago", dur(std::time::Duration::try_from(now.duration_since(then)).unwrap_or_default()))
 }
 
-fn utc(t: DateTime<Utc>) -> String {
-    t.format("%Y-%m-%d %H:%M UTC").to_string()
+fn utc(t: Timestamp) -> String {
+    t.strftime("%Y-%m-%d %H:%M UTC").to_string()
 }
 
 /// `text` cut to `width` characters with an ellipsis, then padded (`left`) or right-aligned.
@@ -111,7 +111,7 @@ fn pool_lines(pools: &[PoolProbe]) -> Vec<String> {
 }
 
 /// The message for one alert, escalation, reminder or recovery.
-pub fn alert_message(row: &HostRow, alert: &Alert, now: DateTime<Utc>, hub: &str) -> Message {
+pub fn alert_message(row: &HostRow, alert: &Alert, now: Timestamp, hub: &str) -> Message {
     let host = ascii_line(&alert.host);
     let reason = ascii_line(&alert.reason);
     let bad_for = alert.bad_for.map(dur);
@@ -141,7 +141,7 @@ pub fn alert_message(row: &HostRow, alert: &Alert, now: DateTime<Utc>, hub: &str
 
 /// The message for the datasets of one host that became unprotected (or are still, or are protected again) in one
 /// pass: `items` are each dataset with the alert the tracker gave it, data first. A warning-level alert is OS data.
-pub fn protection_message(host: &str, kind: AlertKind, items: &[(String, Alert)], now: DateTime<Utc>, hub: &str) -> Message {
+pub fn protection_message(host: &str, kind: AlertKind, items: &[(String, Alert)], now: Timestamp, hub: &str) -> Message {
     let name = ascii_line(host);
     let n = items.len();
     let what = format!("{n} dataset{}", if n == 1 { "" } else { "s" });
@@ -179,7 +179,8 @@ pub fn protection_message(host: &str, kind: AlertKind, items: &[(String, Alert)]
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthEvent {
-    pub at: DateTime<Utc>,
+    #[serde(with = "crate::time::rfc3339")]
+    pub at: Timestamp,
     pub host: String,
     pub kind: String,
     pub text: String,
@@ -252,7 +253,7 @@ pub fn storage_lines(file: &crate::daemon::storage_check::StorageFile, quota: (u
         .iter()
         .chain(crate::daemon::storage_check::locked_problems(file, jobs).iter())
         .chain(crate::daemon::storage_check::pool_problems(file).iter())
-        .chain(crate::daemon::storage_check::integrity_problems(file, dedup_ratio, chrono::Utc::now()).iter())
+        .chain(crate::daemon::storage_check::integrity_problems(file, dedup_ratio, jiff::Timestamp::now()).iter())
         .map(|p| format!("{}: {} (checked {})", p.host, p.text, utc(p.checked_at)))
         .collect()
 }
@@ -264,12 +265,12 @@ pub fn share_lines(file: &crate::daemon::shares_check::SharesFile) -> Vec<String
 
 /// The daily report's lines for datasets that are not protected: `  fbsd16:tank/photos (your data): no snapshot job (for 3d)`.
 /// The `(for ...)` part is there when `bad_since` knows the dataset's key (`host\tdataset`).
-pub fn protection_lines(items: &[Unprotected], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, now: DateTime<Utc>) -> Vec<String> {
+pub fn protection_lines(items: &[Unprotected], bad_since: &dyn Fn(&str) -> Option<Timestamp>, now: Timestamp) -> Vec<String> {
     items
         .iter()
         .map(|u| {
             let tier = if u.tier == Tier::Data { "your data" } else { "OS data" };
-            let since = bad_since(&format!("{}\t{}", u.host, u.dataset)).map(|t| format!(" (for {})", dur((now - t).to_std().unwrap_or_default()))).unwrap_or_default();
+            let since = bad_since(&format!("{}\t{}", u.host, u.dataset)).map(|t| format!(" (for {})", dur(std::time::Duration::try_from(now.duration_since(t)).unwrap_or_default()))).unwrap_or_default();
             format!("  {}:{} ({tier}): {}{since}", u.host, u.dataset, u.describe(&|t| ago(now, t)))
         })
         .collect()
@@ -351,7 +352,7 @@ fn group_lines(rows: &[HostRow]) -> Vec<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, since: DateTime<Utc>, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String], unprotected: Option<&ProtectionSection>) -> Message {
+pub fn report_message(now: Timestamp, local: &str, hub: &str, rows: &[HostRow], bad_since: &dyn Fn(&str) -> Option<Timestamp>, since: Timestamp, runs: &[Run], jobs: &[Job], events: &[HealthEvent], disks: &[String], unprotected: Option<&ProtectionSection>) -> Message {
     let count = |want: &[Level]| rows.iter().filter(|r| want.contains(&r.level)).count();
     let (ok, warning, critical) = (count(&[Level::Ok]), count(&[Level::Warning]), count(&[Level::Critical, Level::Disconnected]));
     let mut parts = vec![format!("{ok} ok")];
@@ -441,7 +442,7 @@ pub fn report_message(now: DateTime<Utc>, local: &str, hub: &str, rows: &[HostRo
         .map(|r| {
             // A job that has since been removed from jobs.toml no longer says which host it ran on.
             let host = job_of(&r.job_id).map_or(String::new(), |j| format!(" on {}", j.host));
-            format!("  failed: {}{host} at {}: {}", r.job_id, r.finished_at.unwrap_or(r.started_at).format("%H:%M"), r.message)
+            format!("  failed: {}{host} at {}: {}", r.job_id, r.finished_at.unwrap_or(r.started_at).strftime("%H:%M"), r.message)
         })
         .collect();
     for line in cut_list(failed) {
@@ -463,8 +464,8 @@ mod tests {
     use crate::zfs::host_health::ScanSummary;
     use crate::zfs::pool::PoolHealth;
 
-    fn t(min: i64) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-10-11T00:00:00Z").unwrap().with_timezone(&Utc) + chrono::Duration::minutes(min)
+    fn t(min: i64) -> Timestamp {
+        ("2026-10-11T00:00:00Z").parse::<jiff::Timestamp>().unwrap() + crate::time::minutes(min)
     }
 
     fn row(name: &str, level: Level, reason: &str) -> HostRow {
@@ -482,8 +483,8 @@ mod tests {
         j
     }
 
-    fn run(job: &str, result: Option<RunResult>, msg: &str, at: DateTime<Utc>) -> Run {
-        Run { job_id: job.into(), run_id: format!("{job}-{}", at.timestamp()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: msg.into(), catch_up: false, summary: None }
+    fn run(job: &str, result: Option<RunResult>, msg: &str, at: Timestamp) -> Run {
+        Run { job_id: job.into(), run_id: format!("{job}-{}", at.as_second()), started_at: at, scheduled_for: None, finished_at: result.map(|_| at), result, message: msg.into(), catch_up: false, summary: None }
     }
 
     fn tagged(mut r: HostRow, tag: &str) -> HostRow {
@@ -539,7 +540,7 @@ mod tests {
     fn the_report_lists_datasets_near_their_quota() {
         use crate::daemon::storage_check::{LimitedDataset, StorageFile, StorageResult};
         let mut file = StorageFile::default();
-        let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let at = ("2026-10-18T12:00:00Z").parse::<jiff::Timestamp>().unwrap();
         file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![LimitedDataset { name: "tank/home".into(), used: 94, referenced: 94, quota: 100, refquota: 0 }], seen: vec![], pools: vec![], zfs_version: None, locked: vec![], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         let lines = storage_lines(&file, (90, 98), 110, &[]);
         assert_eq!(lines.len(), 1);
@@ -550,7 +551,7 @@ mod tests {
     #[test]
     fn the_report_names_a_locked_dataset_that_a_share_or_a_job_uses() {
         use crate::daemon::storage_check::{LockedDataset, StorageFile, StorageResult};
-        let at = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let at = ("2026-10-18T12:00:00Z").parse::<jiff::Timestamp>().unwrap();
         let mut file = StorageFile::default();
         file.hosts.insert("fbsd16".into(), StorageResult { checked_at: at, datasets: vec![], seen: vec![], pools: vec![], zfs_version: None, locked: vec![LockedDataset { name: "tank/secure".into(), shared: true }], integrity: crate::daemon::storage_check::Integrity::default(), integrity_stale: false, error: None });
         let lines = storage_lines(&file, (90, 98), 110, &[]);
@@ -643,7 +644,7 @@ mod tests {
     fn the_report_lists_unprotected_data_first_with_how_long() {
         use crate::daemon::protection::Tier;
         let items = vec![unprotected("tank/photos", Tier::Data), unprotected("zroot/var/log", Tier::Os)];
-        let since = t(0) - chrono::Duration::days(3);
+        let since = t(0) - crate::time::days(3);
         let lines = protection_lines(&items, &|k| (k == "fbsd16\ttank/photos").then_some(since), t(0));
         assert_eq!(lines[0], "  fbsd16:tank/photos (your data): no snapshot job (for 3d)");
         assert_eq!(lines[1], "  fbsd16:zroot/var/log (OS data): no snapshot job");

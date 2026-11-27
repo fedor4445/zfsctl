@@ -65,7 +65,7 @@ pub(super) fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
     use crate::ui::alerts::{event_line, EVENTS_SHOWN};
     use crate::ui::jobs::DaemonState;
     let theme = app.theme.clone();
-    let daemon = match app.jobs_view.daemon(chrono::Utc::now()) {
+    let daemon = match app.jobs_view.daemon(jiff::Timestamp::now()) {
         DaemonState::Running { pid } => Span::raw(format!("daemon running (pid {pid})")),
         DaemonState::NotRunning => Span::styled("daemon NOT running: no alerts will be sent".to_string(), theme.err),
     };

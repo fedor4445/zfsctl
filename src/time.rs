@@ -22,6 +22,12 @@ pub fn format_rfc3339(t: Timestamp) -> String {
     }
 }
 
+/// `t` as chrono's `to_rfc3339` wrote it, with `+00:00` instead of `Z` (the daemon log's slot times).
+pub fn rfc3339_with_offset(t: Timestamp) -> String {
+    let z = format_rfc3339(t);
+    format!("{}+00:00", z.strip_suffix('Z').unwrap_or(&z))
+}
+
 /// `#[serde(with = "crate::time::rfc3339")]` for a `Timestamp` field; `::option` and `::map` for the other shapes.
 pub mod rfc3339 {
     use jiff::Timestamp;
@@ -71,19 +77,19 @@ pub mod rfc3339 {
     }
 }
 
-pub fn seconds(n: i64) -> SignedDuration {
+pub const fn seconds(n: i64) -> SignedDuration {
     SignedDuration::from_secs(n)
 }
 
-pub fn minutes(n: i64) -> SignedDuration {
+pub const fn minutes(n: i64) -> SignedDuration {
     SignedDuration::from_mins(n)
 }
 
-pub fn hours(n: i64) -> SignedDuration {
+pub const fn hours(n: i64) -> SignedDuration {
     SignedDuration::from_hours(n)
 }
 
-pub fn days(n: i64) -> SignedDuration {
+pub const fn days(n: i64) -> SignedDuration {
     SignedDuration::from_hours(n * 24)
 }
 

@@ -371,7 +371,7 @@ impl MutationCall {
                 crate::zfs::snapshot_restore::run_restore(runner, host, plan, source, &std::sync::atomic::AtomicBool::new(false)).map(|_| ())
             }
             MutationCall::SendTestMessage { settings, hook } => {
-                let (text, code) = crate::notify_cli::notify_test(settings, hook.as_deref(), chrono::Utc::now());
+                let (text, code) = crate::notify_cli::notify_test(settings, hook.as_deref(), jiff::Timestamp::now());
                 if code == 0 { Ok(()) } else { Err(crate::error::AppError::Config(text.trim().to_string())) }
             }
         }

@@ -25,7 +25,7 @@ pub(super) fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
     }
     for run in history {
         let style = if run.result == Some(crate::daemon::history::RunResult::Failed) { theme.err } else { Style::default() };
-        runs.push(Line::styled(run_summary(run, &chrono::Local), style));
+        runs.push(Line::styled(run_summary(run, &jiff::tz::TimeZone::system()), style));
     }
     f.render_widget(Paragraph::new(runs), left);
 
@@ -34,7 +34,7 @@ pub(super) fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
     let mut info = vec![Line::from(if label == cron { cron.to_string() } else { format!("{label}  ({cron})") })];
     match app.jobs_view.unsupported.get(&job.id) {
         Some(reason) => info.push(Line::styled(reason.clone(), theme.err)),
-        None => info.extend(preview_lines(&job.schedule, &chrono::Local::now()).into_iter().skip(1).map(Line::from)),
+        None => info.extend(preview_lines(&job.schedule, &jiff::ZonedDateTime::now()).into_iter().skip(1).map(Line::from)),
     }
     info.push(Line::from(format!("{}  catch up {}", if job.enabled { "enabled" } else { "disabled" }, if job.catch_up { "yes" } else { "no" })));
     if job.kind == crate::jobs::KIND_SNAPSHOT {
@@ -75,8 +75,8 @@ pub(super) fn draw_jobs_panel(f: &mut Frame, app: &App, area: Rect) {
 pub(super) fn draw_jobs(f: &mut Frame, app: &mut App, area: Rect) {
     use crate::ui::jobs::{job_target, last_result_text, next_run_text, schedule_label, DaemonState};
     let theme = app.theme.clone();
-    let now = chrono::Utc::now();
-    let local_now = chrono::Local::now();
+    let now = jiff::Timestamp::now();
+    let local_now = jiff::ZonedDateTime::now();
     let daemon = match app.jobs_view.daemon(now) {
         DaemonState::Running { pid } => Span::raw(format!("daemon running (pid {pid})")),
         DaemonState::NotRunning => Span::styled("daemon NOT running: jobs will not fire".to_string(), theme.err),

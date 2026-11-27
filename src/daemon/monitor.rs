@@ -1,6 +1,7 @@
 //! The health monitor: probes every host, feeds the alert tracker, queues and retries what must be sent, and
 //! sends the daily report. `observe` does everything after the probing, so it is tested without threads or ssh.
 
+use jiff::civil::{Date as NaiveDate, DateTime as NaiveDateTime, Time as NaiveTime};
 use super::deliver::Message;
 use super::health::{Alert, AlertKind, Tracker};
 use super::health_text::{ago, alert_message, dur, protection_lines, protection_message, report_message, EventLog, HealthEvent, HostRow, ProtectionSection};
@@ -11,7 +12,7 @@ use crate::config::{EmailTiming, NotifySettings, ProtectionSettings};
 use crate::exec::CommandRunner;
 use crate::jobs::Job;
 use crate::zfs::host_health::{assess, probe_host_guarded, HostKind, HostProbe, Level};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use jiff::Timestamp;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -43,7 +44,7 @@ pub struct Judged<'a> {
 
 impl Judged<'_> {
     /// The daily report's section; `bad_since` gives the `(for ...)` of a dataset key (`host\tdataset`) when known.
-    pub fn section(&self, bad_since: &dyn Fn(&str) -> Option<DateTime<Utc>>, now: DateTime<Utc>) -> ProtectionSection {
+    pub fn section(&self, bad_since: &dyn Fn(&str) -> Option<Timestamp>, now: Timestamp) -> ProtectionSection {
         ProtectionSection { lines: protection_lines(&self.found, bad_since, now), judged: self.known.len(), unchecked: self.unchecked.clone(), safety: Vec::new(), ignored: Vec::new() }
     }
 }
@@ -51,7 +52,7 @@ impl Judged<'_> {
 /// The datasets judged unprotected, only for configured hosts that answered this pass and have a fresh dataset list
 /// (unknown is not a verdict), those hosts' names, and the hosts left out with why. Shared by the monitor and the
 /// report preview so the two cannot drift apart.
-pub fn judge_reachable<'a>(file: &StorageFile, probed: &[Probed], rows: &'a [HostRow], jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: DateTime<Utc>) -> Judged<'a> {
+pub fn judge_reachable<'a>(file: &StorageFile, probed: &[Probed], rows: &'a [HostRow], jobs: &[Job], runs: &[Run], settings: &ProtectionSettings, now: Timestamp) -> Judged<'a> {
     let answered = |name: &str| probed.iter().any(|p| p.name == name && p.probe.is_some());
     let mut known: HashSet<&str> = HashSet::new();
     let mut unchecked = Vec::new();
@@ -64,7 +65,7 @@ pub fn judge_reachable<'a>(file: &StorageFile, probed: &[Probed], rows: &'a [Hos
         } else {
             match file.hosts.get(&r.name) {
                 None => Some("no dataset list yet".to_string()),
-                Some(h) if now - h.checked_at > STALE_AFTER => Some(format!("no dataset list for {}", dur((now - h.checked_at).to_std().unwrap_or_default()))),
+                Some(h) if now.duration_since(h.checked_at) > STALE_AFTER => Some(format!("no dataset list for {}", dur(std::time::Duration::try_from(now.duration_since(h.checked_at)).unwrap_or_default()))),
                 Some(_) => None,
             }
         };
@@ -196,7 +197,7 @@ pub struct Monitor {
     pending: Vec<Pending>,
     last_report: Option<NaiveDate>,
     report_attempts: u32,
-    last_report_at: Option<DateTime<Utc>>,
+    last_report_at: Option<Timestamp>,
     kinds: HashMap<String, HostKind>,
     events: EventLog,
     protection_settings: ProtectionSettings,
@@ -212,16 +213,16 @@ pub struct Monitor {
     unchecked: Vec<String>,
     /// When each dataset of `unprotected` (key `host\tdataset`) was first judged unprotected, kept whenever the email
     /// timing is not off, so the report says how long even when no alert is tracked (`report` timing, OS data).
-    first_seen: HashMap<String, DateTime<Utc>>,
+    first_seen: HashMap<String, Timestamp>,
 }
 
 impl Monitor {
-    pub fn new(settings: NotifySettings, hub: String, state_dir: PathBuf, now: DateTime<Utc>) -> Monitor {
+    pub fn new(settings: NotifySettings, hub: String, state_dir: PathBuf, now: Timestamp) -> Monitor {
         let last_report = std::fs::read_to_string(state_dir.join("notify.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|v| v.get("last_report").and_then(|d| d.as_str().map(str::to_string)))
-            .and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+            .and_then(|d| NaiveDate::strptime("%Y-%m-%d", &d).ok());
         let events = EventLog::new(state_dir.join("health-events.jsonl"));
         let _ = events.append(&HealthEvent { at: now, host: hub.clone(), kind: "daemon-started".to_string(), text: "zfsctl daemon started".to_string() });
         let tracker = Tracker::new(CONFIRM, settings.remind);
@@ -272,7 +273,7 @@ impl Monitor {
         if self.last_report == Some(local.date()) {
             return None;
         }
-        Some((at - local.time()).to_std().unwrap_or_default())
+        Some(std::time::Duration::try_from(at.duration_since(local.time())).unwrap_or_default())
     }
 
     /// Whether `host`'s type has not been read yet.
@@ -290,14 +291,14 @@ impl Monitor {
         self.last_report = Some(date);
         self.report_attempts = 0;
         if persist {
-            let _ = write_atomic(&self.state_dir.join("notify.json"), &format!("{{\"last_report\":\"{}\"}}\n", date.format("%Y-%m-%d")));
+            let _ = write_atomic(&self.state_dir.join("notify.json"), &format!("{{\"last_report\":\"{}\"}}\n", date.strftime("%Y-%m-%d")));
         }
     }
 
     /// One monitoring tick, after the probes: updates the alert state, sends (and retries) what is due, and sends the
     /// daily report when it is time.
     #[allow(clippy::too_many_arguments)]
-    pub fn observe(&mut self, now: DateTime<Utc>, local: NaiveDateTime, hosts: &[HostInfo], probed: &[Probed], jobs: &[Job], runs: &[Run], sink: &mut dyn Sink) {
+    pub fn observe(&mut self, now: Timestamp, local: NaiveDateTime, hosts: &[HostInfo], probed: &[Probed], jobs: &[Job], runs: &[Run], sink: &mut dyn Sink) {
         for p in probed {
             if let Some(HostProbe::Reached { kind: Some(k), .. }) = &p.probe {
                 self.kinds.insert(p.name.clone(), k.clone());
@@ -339,9 +340,9 @@ impl Monitor {
             }
         }
         if Self::report_due(local, self.settings.report_time, self.last_report) {
-            let since = self.last_report_at.unwrap_or(now - chrono::Duration::hours(24));
+            let since = self.last_report_at.unwrap_or(now - crate::time::hours(24));
             let protection = (!self.protection_quiet(&rows)).then(|| ProtectionSection { lines: protection_lines(&self.unprotected, &|k| self.unprotected_since(k), now), judged: self.judged_hosts, unchecked: self.unchecked.clone(), safety: super::safety::report_lines(jobs, runs, &self.protection_settings, now), ignored: self.protection_settings.ignored_names() });
-            let msg = report_message(now, &local.format("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_ref());
+            let msg = report_message(now, &local.strftime("%Y-%m-%d %H:%M").to_string(), &self.hub, &rows, &|h| self.tracker.bad_since(h), since, runs, jobs, &self.events.read(), &super::health_text::check_lines(&self.state_dir), protection.as_ref());
             if sink.send(&msg) {
                 self.last_report_at = Some(now);
                 self.mark_report_sent(local.date(), true);
@@ -356,7 +357,7 @@ impl Monitor {
     }
 
     /// Since when the dataset key has been unprotected: the earlier of its alert's start and its first-seen time.
-    fn unprotected_since(&self, key: &str) -> Option<DateTime<Utc>> {
+    fn unprotected_since(&self, key: &str) -> Option<Timestamp> {
         match (self.protection.bad_since(key), self.first_seen.get(key).copied()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -380,7 +381,7 @@ impl Monitor {
     /// Judges the datasets once for this pass and, when the email timing is immediate, feeds the dataset alerts and queues
     /// one message per host and kind. Only configured hosts that answered this pass and have a fresh dataset list are
     /// judged; the alerts of any other configured host are left as they are (unknown is not a recovery).
-    fn observe_protection(&mut self, now: DateTime<Utc>, probed: &[Probed], rows: &[HostRow], jobs: &[Job], runs: &[Run]) {
+    fn observe_protection(&mut self, now: Timestamp, probed: &[Probed], rows: &[HostRow], jobs: &[Job], runs: &[Run]) {
         if self.protection_quiet(rows) {
             self.unprotected.clear();
             self.first_seen.clear();
@@ -438,7 +439,7 @@ impl Monitor {
             // A dataset that is gone (destroyed or renamed) is forgotten without a word; so is one of the same name made
             // again (inside its grace, or made after the alert began): it is a new dataset, not a recovery.
             let Some(seen) = file.hosts.get(host).and_then(|h| h.seen.iter().find(|s| s.name == dataset)) else { continue };
-            let created = seen.created.and_then(|c| DateTime::from_timestamp(c, 0));
+            let created = seen.created.and_then(|c| Timestamp::from_second(c).ok());
             if created.is_some_and(|c| (c <= now && now - c < GRACE) || self.protection.bad_since(&key).is_some_and(|since| c > since)) {
                 continue;
             }

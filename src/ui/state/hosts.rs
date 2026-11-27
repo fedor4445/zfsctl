@@ -277,8 +277,8 @@ impl App {
             self.set_error("A check is already running".to_string());
             return;
         }
-        if let Some(other) = crate::daemon::checks::fresh_marker(&self.state_dir, chrono::Utc::now()) {
-            let since = other.since.with_timezone(&chrono::Local).format("%H:%M");
+        if let Some(other) = crate::daemon::checks::fresh_marker(&self.state_dir, jiff::Timestamp::now()) {
+            let since = other.since.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%H:%M");
             self.set_error(format!("A check is already running ({}, since {since})", other.by));
             return;
         }
@@ -334,9 +334,9 @@ impl App {
                 // storage.json like the other two), so a host that hangs holds neither.
                 let storage = {
                     let (dir, one, runner) = (state_dir.clone(), host.clone(), Arc::clone(&runner));
-                    std::thread::spawn(move || crate::daemon::storage_check::run_pass(&dir, &[(one, runner)], chrono::Utc::now(), deadline))
+                    std::thread::spawn(move || crate::daemon::storage_check::run_pass(&dir, &[(one, runner)], jiff::Timestamp::now(), deadline))
                 };
-                let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], chrono::Utc::now(), deadline);
+                let done = crate::daemon::checks::collect(&state_dir, &[(host.clone(), runner)], jiff::Timestamp::now(), deadline);
                 let _ = storage.join();
                 // Read after the storage pass has joined, so the roles are this check's.
                 let storage_file = crate::daemon::storage_check::StorageFile::load(&state_dir.join(crate::daemon::storage_check::FILE));
@@ -359,7 +359,7 @@ impl App {
     /// Re-reads the marker of a running check. Cheap (one small file), so it is also done every pass of the event loop while the
     /// Dashboard is open: the red notice must appear and vanish with the check, not with the next 60-second refresh.
     pub fn refresh_checks_marker(&mut self) {
-        self.checks_marker = crate::daemon::checks::fresh_marker(&self.state_dir, chrono::Utc::now());
+        self.checks_marker = crate::daemon::checks::fresh_marker(&self.state_dir, jiff::Timestamp::now());
     }
 
     /// Spawns the SSH reachability probe for a candidate new host and

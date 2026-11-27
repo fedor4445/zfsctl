@@ -387,7 +387,7 @@ pub fn draw_dashboard(f: &mut Frame, app: &mut App, area: Rect) {
     let d = app.dashboard();
     let selected = app.dashboard_table.selected().filter(|_| d.selectable() > 0).map(|s| s.min(d.selectable() - 1));
     app.dashboard_table.select(selected);
-    let now = chrono::Local::now().format("%a %d %b %H:%M").to_string();
+    let now = jiff::ZonedDateTime::now().strftime("%a %d %b %H:%M").to_string();
     let lines = screen_lines(&d, selected, usize::from(area.width), usize::from(area.height), &now, &app.theme);
     f.render_widget(Paragraph::new(lines), area);
 }
@@ -414,7 +414,7 @@ mod tests {
     }
 
     fn pool(capacity: u8) -> PoolProbe {
-        let when = chrono::Utc::now().format("%a %b %e %H:%M:%S %Y").to_string();
+        let when = jiff::Timestamp::now().strftime("%a %b %e %H:%M:%S %Y").to_string();
         PoolProbe { name: "tank".into(), health: PoolHealth::Online, capacity_percent: capacity, frag_percent: None, errors: Some(0), scan: None, last_scrub: Some(when) }
     }
 
@@ -423,7 +423,7 @@ mod tests {
     }
 
     fn heartbeat(app: &mut App) {
-        app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 4242, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() });
+        app.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 4242, started_at: jiff::Timestamp::now(), last_tick: jiff::Timestamp::now() });
         app.jobs_view.loaded = true;
     }
 

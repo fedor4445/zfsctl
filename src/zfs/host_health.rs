@@ -223,10 +223,10 @@ fn last_scrub_when(block: &str) -> Option<String> {
 /// How many whole days ago a scrub finished. `when` is the host's local time as `zpool status` prints it and
 /// `utc_offset_secs` is that host's offset from UTC (`date +%z`). Never negative (a skewed clock reads as today); `None` when
 /// `when` does not parse.
-pub fn scrub_age_days(when: &str, utc_offset_secs: i32, now_utc: chrono::DateTime<chrono::Utc>) -> Option<i64> {
-    let local = chrono::NaiveDateTime::parse_from_str(&when.split_whitespace().collect::<Vec<_>>().join(" "), "%a %b %d %H:%M:%S %Y").ok()?;
-    let finished = local.and_utc() - chrono::Duration::seconds(i64::from(utc_offset_secs));
-    Some((now_utc - finished).num_days().max(0))
+pub fn scrub_age_days(when: &str, utc_offset_secs: i32, now_utc: jiff::Timestamp) -> Option<i64> {
+    let local = jiff::civil::DateTime::strptime("%a %b %d %H:%M:%S %Y", &when.split_whitespace().collect::<Vec<_>>().join(" ")).ok()?;
+    let finished = local.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok()?.timestamp() - crate::time::seconds(i64::from(utc_offset_secs));
+    Some((now_utc.duration_since(finished).as_secs() / 86_400).max(0))
 }
 
 /// Splits `zpool status` (all pools) at its `pool:` lines and reads each block on its own.
@@ -373,10 +373,10 @@ pub fn scan_cell(pools: &[PoolProbe]) -> String {
     if whens.is_empty() {
         return "canceled".to_string();
     }
-    let parse = |w: &str| chrono::NaiveDateTime::parse_from_str(&w.split_whitespace().collect::<Vec<_>>().join(" "), "%a %b %d %H:%M:%S %Y").ok();
-    let dated: Vec<chrono::NaiveDateTime> = whens.iter().filter_map(|w| parse(w)).collect();
+    let parse = |w: &str| jiff::civil::DateTime::strptime("%a %b %d %H:%M:%S %Y", &w.split_whitespace().collect::<Vec<_>>().join(" ")).ok();
+    let dated: Vec<jiff::civil::DateTime> = whens.iter().filter_map(|w| parse(w)).collect();
     let first = whens.first().copied().unwrap_or("-").to_string();
-    dated.iter().min().map_or(first, |d| d.format("%b %-d %Y").to_string())
+    dated.iter().min().map_or(first, |d| d.strftime("%b %-d %Y").to_string())
 }
 
 /// The Jobs cell: `failed/total` of a host's enabled jobs, and whether any failed.
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn scrub_age_counts_whole_days_in_the_hosts_own_time() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-10-17T20:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let now = ("2026-10-17T20:00:00Z").parse::<jiff::Timestamp>().unwrap();
         // 19:48:07 host time at UTC+2 is 17:48:07 UTC on Oct 8: nine days and two hours before `now`.
         assert_eq!(scrub_age_days("Thu Oct  8 19:48:07 2026", 7200, now), Some(9));
         // At UTC-5 the same wall-clock time is 00:48:07 UTC on Oct 9: eight days and 19 hours ago.

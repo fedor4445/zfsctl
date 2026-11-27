@@ -3,7 +3,7 @@
 use super::*;
 
 fn backup_err(values: [&str; 10]) -> String {
-    build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err()
+    build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap_err()
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn a_backup_job_that_takes_snapshots_asks_before_it_starts_destroying_its_own() 
 
 #[test]
 fn a_good_backup_form_saves_a_backup_job_with_a_generated_id() {
-    let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(BACKUP_GOOD), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+    let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(BACKUP_GOOD), std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap();
     let MutationCall::SaveJob { job, .. } = action.call else { panic!("{:?}", action.call) };
     assert_eq!((job.id.as_str(), job.kind.as_str(), job.host.as_str(), job.dataset.as_deref(), job.prefix.as_deref()), ("backup-local-tank-data", "backup", "local", Some("tank/data"), Some("hourly")));
     assert_eq!((job.repository.as_deref(), job.password_file.as_deref(), job.retention.as_deref()), (Some("/mnt/usb/restic"), Some("/root/pw"), Some("7d 4w")));
@@ -40,7 +40,7 @@ fn a_blank_keep_field_saves_no_retention_and_a_blank_prefix_means_the_default() 
     let mut values = BACKUP_GOOD;
     values[7] = "  ";
     values[3] = "";
-    let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+    let action = build_backup_job_action(&backup_kind(None, vec![]), &backup_fields(values), std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap();
     let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
     assert_eq!((job.retention, job.prefix.as_deref()), (None, Some(crate::jobs::DEFAULT_PREFIX)));
 }
@@ -85,7 +85,7 @@ fn enter_on_a_backup_job_edits_it_in_the_backup_form_and_keeps_its_id_and_state(
     let kind = backup_kind(Some(job.clone()), vec![job]);
     let mut values = BACKUP_GOOD;
     values[5] = "/mnt/other";
-    let action = build_backup_job_action(&kind, &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).unwrap();
+    let action = build_backup_job_action(&kind, &backup_fields(values), std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap();
     let MutationCall::SaveJob { job, .. } = action.call else { panic!() };
     assert_eq!((job.id.as_str(), job.enabled, job.repository.as_deref()), ("backup-x", false, Some("/mnt/other")));
 }
@@ -95,7 +95,7 @@ fn edit_backup_err_or_job(host: &str, dataset: &str) -> std::result::Result<crat
     let mut values = BACKUP_GOOD;
     values[0] = host;
     values[1] = dataset;
-    build_backup_job_action(&backup_kind(Some(job.clone()), vec![job]), &backup_fields(values), std::path::Path::new("/x"), chrono::Utc::now()).map(|a| match a.call {
+    build_backup_job_action(&backup_kind(Some(job.clone()), vec![job]), &backup_fields(values), std::path::Path::new("/x"), jiff::Timestamp::now()).map(|a| match a.call {
         MutationCall::SaveJob { job, .. } => *job,
         other => panic!("{other:?}"),
     })
@@ -119,7 +119,7 @@ fn c_cancels_a_running_backup_and_is_inert_otherwise() {
     assert!(app.status_message.is_none(), "not running: nothing happens");
     assert!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")).is_empty());
     let h = crate::daemon::history::History::new(dir.path().join("history.jsonl"));
-    h.append(&crate::daemon::history::Event { job_id: "backup-x".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Started, at: chrono::Utc::now(), scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }).unwrap();
+    h.append(&crate::daemon::history::Event { job_id: "backup-x".into(), run_id: "r1".into(), event: crate::daemon::history::EventKind::Started, at: jiff::Timestamp::now(), scheduled_for: None, result: None, message: String::new(), catch_up: false, summary: None }).unwrap();
     app.refresh_jobs();
     app.handle_key(KeyCode::Char('c'));
     assert_eq!(crate::daemon::cancel::take_requests(&dir.path().join("cancel")), ["backup-x"]);
@@ -238,7 +238,7 @@ fn keep_on_target_must_be_a_whole_number_of_at_least_one() {
     for bad in ["0", "x", "-1", "2.5"] {
         let mut fields = repl_fields(GOOD).into_iter().collect::<Vec<_>>();
         fields.push(FormField { label: String::new(), value: bad.into() });
-        let err = build_replicate_job_action(&repl_kind(None, vec![]), &fields, std::path::Path::new("/x"), chrono::Utc::now()).unwrap_err();
+        let err = build_replicate_job_action(&repl_kind(None, vec![]), &fields, std::path::Path::new("/x"), jiff::Timestamp::now()).unwrap_err();
         assert!(err.contains("Keep on target"), "{bad}: {err}");
     }
 }
@@ -339,7 +339,7 @@ fn the_last_bucket_measurement_survives_a_restart_and_a_missing_or_broken_file_i
 
     let mut app = App::new(vec!["local".to_string()]);
     app.state_dir = dir.path().to_path_buf();
-    let size = crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: chrono::Utc::now(), problem: None };
+    let size = crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: jiff::Timestamp::now(), problem: None };
     app.tx.send(WorkerMsg::CloudSize("mirror-a".into(), size.clone())).unwrap();
     app.drain_worker_messages();
     assert!(dir.path().join("cloud-sizes.json").is_file());
@@ -360,16 +360,16 @@ fn the_last_bucket_measurement_survives_a_restart_and_a_missing_or_broken_file_i
 #[test]
 fn a_failed_measurement_keeps_the_last_good_numbers_and_says_why() {
     let mut app = App::new(vec!["local".to_string()]);
-    let good = crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: chrono::Utc::now() - chrono::Duration::hours(5), problem: None };
+    let good = crate::ui::cloud::Size { current: Some((3, 1_992_294)), old: None, at: jiff::Timestamp::now() - crate::time::hours(5), problem: None };
     app.cloud_sizes.insert("m".into(), good.clone());
-    let failed = crate::ui::cloud::Size { current: None, old: None, at: chrono::Utc::now(), problem: Some("rclone: timeout".into()) };
+    let failed = crate::ui::cloud::Size { current: None, old: None, at: jiff::Timestamp::now(), problem: Some("rclone: timeout".into()) };
     app.tx.send(WorkerMsg::CloudSize("m".into(), failed)).unwrap();
     app.drain_worker_messages();
     let kept = &app.cloud_sizes["m"];
     assert_eq!((kept.current, kept.at, kept.problem.as_deref()), (good.current, good.at, Some("rclone: timeout")));
     // With nothing measured before, the failure is all there is.
     let mut fresh = App::new(vec!["local".to_string()]);
-    let failed = crate::ui::cloud::Size { current: None, old: None, at: chrono::Utc::now(), problem: Some("x".into()) };
+    let failed = crate::ui::cloud::Size { current: None, old: None, at: jiff::Timestamp::now(), problem: Some("x".into()) };
     fresh.tx.send(WorkerMsg::CloudSize("m".into(), failed.clone())).unwrap();
     fresh.drain_worker_messages();
     assert_eq!(fresh.cloud_sizes["m"], failed);
@@ -380,7 +380,7 @@ fn the_check_interval_field_is_blank_for_the_default_a_number_of_days_or_zero_fo
     let build = |value: &str| {
         let mut fields = backup_fields(BACKUP_GOOD);
         fields.push(FormField { label: "Check".into(), value: value.into() });
-        build_backup_job_action(&backup_kind(None, vec![]), &fields, std::path::Path::new("/x"), chrono::Utc::now()).map(|a| match a.call {
+        build_backup_job_action(&backup_kind(None, vec![]), &fields, std::path::Path::new("/x"), jiff::Timestamp::now()).map(|a| match a.call {
             MutationCall::SaveJob { job, .. } => job.check_days,
             other => panic!("{other:?}"),
         })

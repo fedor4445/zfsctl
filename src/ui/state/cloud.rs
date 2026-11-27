@@ -89,7 +89,7 @@ impl App {
                 let _ = tx.send(WorkerMsg::CloudRemotes(pending.host_name, result));
             }
             CloudWork::Size { job_id, remote } => {
-                let size = crate::ui::cloud::measure(runner.as_ref(), &pending.host_name, &remote, chrono::Utc::now());
+                let size = crate::ui::cloud::measure(runner.as_ref(), &pending.host_name, &remote, jiff::Timestamp::now());
                 let _ = tx.send(WorkerMsg::CloudSize(job_id, size));
             }
         });
@@ -97,7 +97,7 @@ impl App {
 
     /// Reports a lookup that could not start (the host index no longer resolves) through the same channel.
     pub fn fail_cloud(&self, pending: PendingCloud, message: String) {
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         let _ = match pending.work {
             CloudWork::Remotes => self.tx.send(WorkerMsg::CloudRemotes(pending.host_name, Err(message))),
             CloudWork::Size { job_id, .. } => self.tx.send(WorkerMsg::CloudSize(job_id, crate::ui::cloud::Size { current: None, old: None, at: now, problem: Some(message) })),

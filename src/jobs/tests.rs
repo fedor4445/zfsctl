@@ -39,7 +39,7 @@ fn save_then_load_round_trips_and_the_file_is_private() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state").join("jobs.toml");
     let mut job = scrub("scrub-tank");
-    job.created_at = Some(DateTime::parse_from_rfc3339("2026-10-06T12:00:00Z").unwrap().with_timezone(&Utc));
+    job.created_at = Some(("2026-10-06T12:00:00Z").parse::<jiff::Timestamp>().unwrap());
     save(&path, &[job.clone(), scrub("scrub-two")]).unwrap();
     assert_eq!(load(&path).unwrap(), vec![job, scrub("scrub-two")]);
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);

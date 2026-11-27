@@ -23,11 +23,11 @@ pub(super) fn confirm_block(theme: &Theme, tone: Tone, label: &str, neutral_titl
 /// form, what the schedule means and its next three run times.
 pub(super) fn form_preview(kind: &crate::ui::modal::FormKind, fields: &[crate::ui::modal::FormField]) -> Vec<String> {
     match kind {
-        crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
-        crate::ui::modal::FormKind::SnapshotJob { .. } => crate::ui::jobs::preview_lines(fields.get(5).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
-        crate::ui::modal::FormKind::BackupJob { .. } => crate::ui::jobs::preview_lines(fields.get(8).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
-        crate::ui::modal::FormKind::MirrorJob { .. } => crate::ui::jobs::preview_lines(fields.get(7).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
-        crate::ui::modal::FormKind::ReplicateJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &chrono::Local::now()),
+        crate::ui::modal::FormKind::Job { .. } => crate::ui::jobs::preview_lines(fields.get(2).map_or("", |f| f.value.as_str()), &jiff::ZonedDateTime::now()),
+        crate::ui::modal::FormKind::SnapshotJob { .. } => crate::ui::jobs::preview_lines(fields.get(5).map_or("", |f| f.value.as_str()), &jiff::ZonedDateTime::now()),
+        crate::ui::modal::FormKind::BackupJob { .. } => crate::ui::jobs::preview_lines(fields.get(8).map_or("", |f| f.value.as_str()), &jiff::ZonedDateTime::now()),
+        crate::ui::modal::FormKind::MirrorJob { .. } => crate::ui::jobs::preview_lines(fields.get(7).map_or("", |f| f.value.as_str()), &jiff::ZonedDateTime::now()),
+        crate::ui::modal::FormKind::ReplicateJob { .. } => crate::ui::jobs::preview_lines(fields.get(6).map_or("", |f| f.value.as_str()), &jiff::ZonedDateTime::now()),
         _ => Vec::new(),
     }
 }

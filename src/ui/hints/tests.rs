@@ -196,7 +196,7 @@ fn dashboard(selected: bool) -> App {
 fn alerts() -> App {
     let mut a = base();
     go(&mut a, Section::Alerts);
-    let e = |n: usize| crate::daemon::health_text::HealthEvent { at: chrono::Utc::now(), host: "a".into(), kind: "alert".into(), text: format!("n{n}") };
+    let e = |n: usize| crate::daemon::health_text::HealthEvent { at: jiff::Timestamp::now(), host: "a".into(), kind: "alert".into(), text: format!("n{n}") };
     a.alerts_view.events = (0..4).map(e).collect();
     a
 }
@@ -257,7 +257,7 @@ fn the_dashboard_offers_move_always_go_only_with_a_selected_line_and_nothing_tha
     }
     let mut quiet = dashboard(false);
     quiet.host_probes.clear();
-    quiet.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() });
+    quiet.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: jiff::Timestamp::now(), last_tick: jiff::Timestamp::now() });
     let keys: Vec<&str> = hints(&quiet).iter().map(|h| h.key).collect();
     assert!(!keys.contains(&"↑↓") && !keys.contains(&"Enter"), "nothing to move through when all is quiet: {keys:?}");
 }
@@ -1015,7 +1015,7 @@ fn empty_every_list(a: &mut App) {
     a.bootenvs.clear();
     a.jobs_view.jobs.clear();
     // A running daemon: its absence is a line of the Dashboard's Needs attention list, and this clears every list.
-    a.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: chrono::Utc::now(), last_tick: chrono::Utc::now() });
+    a.jobs_view.heartbeat = Some(crate::daemon::heartbeat::Heartbeat { pid: 1, started_at: jiff::Timestamp::now(), last_tick: jiff::Timestamp::now() });
     a.cloud_known.clear();
     a.alerts_view.events.clear();
     a.settings_view.rows.clear();
@@ -1180,7 +1180,7 @@ fn cancel_is_advertised_only_for_a_running_replication() {
     a.jobs_view.jobs = vec![crate::jobs::Job::test_replicate("r", "tank/data", "hourly", "fbsd16", "backup/data")];
     a.jobs_table.select(Some(0));
     assert!(!keys(&a).contains(&"c"), "not running");
-    a.jobs_view.runs = vec![crate::daemon::history::Run { job_id: "r".into(), run_id: "r1".into(), started_at: chrono::Utc::now(), scheduled_for: None, finished_at: None, result: None, message: String::new(), catch_up: false, summary: None }];
+    a.jobs_view.runs = vec![crate::daemon::history::Run { job_id: "r".into(), run_id: "r1".into(), started_at: jiff::Timestamp::now(), scheduled_for: None, finished_at: None, result: None, message: String::new(), catch_up: false, summary: None }];
     assert!(keys(&a).contains(&"c"));
     a.jobs_view.jobs = vec![crate::jobs::Job::test_snapshot("r", "tank/data", "hourly", 3)];
     assert!(!keys(&a).contains(&"c"), "only replications can be cancelled");
